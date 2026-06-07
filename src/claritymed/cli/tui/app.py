@@ -399,24 +399,34 @@ class ClarityMedApp(App):
         return RagService(store=UserRagStore.from_defaults())
 
     def _resolve_provider_id(self) -> str:
+        """Resolve the active provider id from catalog + account default.
+
+        Caller must have validated ``--provider`` upstream (the Typer ``tui``
+        subcommand does this so a typo never reaches the App). Resolution
+        errors here surface in the status bar rather than crashing mount —
+        the user can still switch via ``/user`` or restart with a valid
+        ``--provider``.
+        """
         try:
             from claritymed.stores.models import resolve_provider
 
             provider = resolve_provider(override=self._initial_provider_id)
             return provider.id
-        except Exception:  # noqa: BLE001
-            return "-"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("provider resolution failed: %s", exc)
+            return "?"
 
     def _resolve_provider_kind(self, provider_id: str) -> str:
-        if provider_id == "-":
-            return "local"
+        if provider_id == "?":
+            return "?"
         try:
             from claritymed.stores.models import resolve_provider
 
             provider = resolve_provider(override=provider_id)
             return provider.kind
-        except Exception:  # noqa: BLE001
-            return "local"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("provider kind lookup failed: %s", exc)
+            return "?"
 
     # ----- cancellation + toasts -----------------------------------------
 

@@ -28,7 +28,7 @@ from claritymed.orchestrator.services import (
     ToolCompleted,
     ToolStarted,
 )
-from claritymed.stores.models import resolve_provider
+from claritymed.stores.models import load_models, resolve_provider
 from claritymed.stores.user_rag import UserRagStore
 
 app = typer.Typer(
@@ -183,11 +183,24 @@ def tui(
 ) -> None:
     """Launch the Textual TUI."""
     from claritymed.cli.tui import ClarityMedApp
+    from claritymed.errors import UnknownProviderError
+
+    # Resolve the provider up front so a typo (`--provider oMLX`) fails
+    # cleanly to stderr instead of opening the TUI and exploding on the
+    # first submit. Matches the project rule: provider resolution is loud,
+    # never silent.
+    try:
+        provider = resolve_provider(override=provider_id)
+    except UnknownProviderError as exc:
+        valid = ", ".join(p.id for p in load_models().providers)
+        _stderr(f"[error] {exc}")
+        _stderr(f"  valid provider ids: {valid}")
+        raise typer.Exit(code=1) from exc
 
     ClarityMedApp(
         user_id=user,
         language=language,
-        provider_id=provider_id,
+        provider_id=provider.id,
     ).run()
 
 

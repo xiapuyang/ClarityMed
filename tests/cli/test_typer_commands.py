@@ -88,3 +88,22 @@ def test_ask_help_does_not_error():
 def test_unknown_subcommand_returns_nonzero():
     result = runner.invoke(app, ["bogus-subcmd"])
     assert result.exit_code != 0
+
+
+def test_tui_unknown_provider_fails_fast(tmp_path, monkeypatch):
+    """`--provider <typo>` should exit non-zero before launching the TUI.
+
+    Regression: prior behavior was to start the TUI, show the bad id in the
+    status bar, then explode on the first user submission. The project rule
+    is loud provider-resolution failures, not silent fallbacks.
+    """
+    monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
+    result = runner.invoke(
+        app,
+        ["tui", "--user", "alice", "--provider", "oMLX"],
+    )
+    assert result.exit_code != 0
+    # Typer prints --help on Exit; mixed stdout/stderr — combined output is fine.
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "oMLX" in combined
+    assert "models.yaml" in combined
