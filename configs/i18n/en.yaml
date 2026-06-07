@@ -1,0 +1,21 @@
+disclaimer:
+  default: "This information is for general guidance only and not a substitute for professional medical advice."
+  emergency: "If this is a medical emergency, call your local emergency number now."
+  privacy_phi: "Personal health information stays on your device. Cloud models are disabled unless you opt in."
+
+redflag:
+  chest_pain_with_dyspnea: "Chest pain with shortness of breath can be a medical emergency. Please call 911 / your local emergency line immediately."
+  anaphylaxis_signs: "Trouble breathing, facial swelling, or fainting after exposure may be anaphylaxis. Call emergency services now."
+
+ui:
+  cli:
+    greeting: "ClarityMed CLI — patient-facing medical Q&A."
+    user_required: "No --user provided. Falling back to 'default'. Use 'claritymed init-user <id>' to create a new profile."
+  api:
+    health: "OK"
+
+term:
+  loinc:
+    glucose: "Blood glucose"
+    creatinine: "Creatinine"
+    hba1c: "Hemoglobin A1c"

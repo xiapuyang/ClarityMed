@@ -1,0 +1,21 @@
+disclaimer:
+  default: "本回答仅供一般参考，不能替代专业医疗建议。"
+  emergency: "如果是医疗紧急情况，请立即拨打 120 或当地急救电话。"
+  privacy_phi: "个人健康信息仅保留在本机。除非您明确开启，否则云模型不会被使用。"
+
+redflag:
+  chest_pain_with_dyspnea: "胸痛伴随呼吸困难可能是医疗紧急情况，请立即拨打 120 或当地急救电话。"
+  anaphylaxis_signs: "暴露后出现呼吸困难、面部肿胀或晕厥可能是过敏性休克，请立即拨打急救电话。"
+
+ui:
+  cli:
+    greeting: "ClarityMed 命令行 — 面向患者的医学问答。"
+    user_required: "未指定 --user，回落到 'default'。可用 'claritymed init-user <id>' 创建新档案。"
+  api:
+    health: "OK"
+
+term:
+  loinc:
+    glucose: "血糖"
+    creatinine: "肌酐"
+    hba1c: "糖化血红蛋白"
