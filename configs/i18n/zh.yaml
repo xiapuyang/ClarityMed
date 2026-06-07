@@ -19,3 +19,26 @@ term:
     glucose: "血糖"
     creatinine: "肌酐"
     hba1c: "糖化血红蛋白"
+
+modes:
+  ingest:
+    label: "我的档案"
+    description: "录入个人信息、病史、或上传体检报告。"
+    empty_prompt: "用 /upload <路径> 添加一份资料，或直接写一句事实如 '过敏：青霉素'。"
+  ask:
+    label: "咨询"
+    description: "问医疗问题，得到带引用的答案。"
+    empty_prompt: "你想了解什么？"
+  rag:
+    label: "我的资料库"
+    description: "管理参考资料（上传的文档、已激活的系统知识库）。"
+    empty_prompt: "用 /library 管理资料库，或 /upload 添加新文档。"
+
+phi:
+  redaction_marker:
+    name: "[已脱敏:姓名]"
+    phone: "[已脱敏:手机]"
+    email: "[已脱敏:邮箱]"
+    id: "[已脱敏:证件]"
+    mrn: "[已脱敏:病历号]"
+    address: "[已脱敏:地址]"

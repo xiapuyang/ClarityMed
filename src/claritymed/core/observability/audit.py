@@ -47,6 +47,13 @@ AuditKind = Literal[
     "account_created",
     "require_admin_pass",
     "require_admin_blocked",
+    # mode lifecycle (orchestrator services)
+    "mode.ingest",
+    "mode.ask",
+    "mode.ask.scrub",
+    "mode.rag",
+    "mode.routed",
+    "mode.cancelled",
 ]
 
 

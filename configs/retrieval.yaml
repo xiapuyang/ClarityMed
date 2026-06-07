@@ -1,7 +1,27 @@
-# Filled in by the text_rag plan. Kept as a placeholder so config loaders
-# never trip on a missing file.
+# Retrieval-layer config. Mostly placeholders until text_rag plan lands.
+
 hybrid:
   dense_weight: null
   sparse_weight: null
 top_k: null
 rerank_k: null
+
+# System RAG (shared authoritative knowledge) — declared as separate
+# collections so users can opt in to the subset they want consulted at ask
+# time. Each entry advertises a collection that ingestion can target and
+# Account.active_system_rag_collections may reference.
+system_rag:
+  default_active: []  # empty = no system RAG consulted unless user opts in
+  collections:
+    - name: medcorp_en
+      language: en
+      authority: tier1
+      description: "MedCorp English authoritative subset"
+    - name: cmb_zh
+      language: zh
+      authority: tier1
+      description: "CMB-Clin Chinese authoritative subset"
+
+user_rag:
+  top_k: 5
+  score_threshold: 0.4

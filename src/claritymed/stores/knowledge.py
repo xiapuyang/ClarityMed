@@ -54,15 +54,28 @@ class KnowledgeStore(ABC):
         language: str,
         top_k: int = 10,
         filters: Optional[KnowledgeFilters] = None,
+        active_collections: Optional[list[str]] = None,
     ) -> list[KnowledgeChunk]:
+        """Search shared knowledge.
+
+        ``active_collections`` restricts the search to the named subset of
+        system RAG collections (declared in ``configs/retrieval.yaml``
+        ``system_rag.collections``). ``None`` preserves the legacy behavior
+        of searching whatever the impl considers default; ``[]`` (empty
+        list) means "no system RAG is enabled for this user" and returns
+        an empty result without hitting the backend.
+        """
         if not user_id:
             raise ValueError("KnowledgeStore.search requires user_id (for audit)")
+        if active_collections == []:
+            return []
         return self._search_unchecked(
             query,
             user_id=user_id,
             language=language,
             top_k=top_k,
             filters=filters,
+            active_collections=active_collections,
         )
 
     @abstractmethod
@@ -74,6 +87,7 @@ class KnowledgeStore(ABC):
         language: str,
         top_k: int,
         filters: Optional[KnowledgeFilters],
+        active_collections: Optional[list[str]],
     ) -> list[KnowledgeChunk]: ...
 
     # --- write path (admin only) ------------------------------------
@@ -113,10 +127,12 @@ class QdrantKnowledgeStore(KnowledgeStore):
         language: str,
         top_k: int,
         filters: Optional[KnowledgeFilters],
+        active_collections: Optional[list[str]],
     ) -> list[KnowledgeChunk]:
         logger.warning(
-            "QdrantKnowledgeStore.search is a v1 stub (returning []); user=%s",
+            "QdrantKnowledgeStore.search is a v1 stub (returning []); user=%s active=%s",
             user_id,
+            active_collections,
         )
         return []
 

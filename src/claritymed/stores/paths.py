@@ -49,6 +49,16 @@ def user_settings_path(user_id: str) -> Path:
     return user_root(user_id) / "settings.yaml"
 
 
+def user_rag_qdrant_dir() -> Path:
+    """Qdrant directory for per-user RAG collections.
+
+    All user_rag chunks live in one Qdrant instance here; isolation is
+    structural via collection naming (``user_rag_<user_id>``). The directory
+    is under DATA_DIR (per-user PHI scope), not SHARED_DIR.
+    """
+    return _cfg.DATA_DIR / "qdrant" / "user_rag"
+
+
 def list_user_ids() -> list[str]:
     """Return ids of users that have a ``settings.yaml`` on disk.
 

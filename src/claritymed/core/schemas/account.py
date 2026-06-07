@@ -32,5 +32,13 @@ class Account(BaseModel):
     language: Language = "en"
     cloud_provider_opt_in: bool = False
     provider_id: str | None = Field(default=None, max_length=64)
+    active_system_rag_collections: list[str] = Field(
+        default_factory=list,
+        description=(
+            "User-opted-in system RAG collections (names from "
+            "configs/retrieval.yaml system_rag.collections). Empty list "
+            "means no system RAG is consulted during ask retrieval."
+        ),
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

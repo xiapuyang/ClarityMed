@@ -81,6 +81,32 @@ def supported_langs() -> tuple[str, ...]:
     return tuple(str(x).lower() for x in raw)
 
 
+def load_modes_config() -> "ModesConfig":
+    """Load and validate ``configs/modes.yaml``.
+
+    Single source of truth for which modes exist, what tools they may call,
+    whether LLM inference is allowed per-mode, and how the router classifies
+    inputs. Wraps :func:`load_yaml` (cached) and validates with Pydantic so
+    misspelled keys fail fast at load time, not at first runtime use.
+
+    Raises:
+        FileNotFoundError: If ``configs/modes.yaml`` does not exist.
+        pydantic.ValidationError: If the YAML is structurally wrong.
+    """
+    from claritymed.core.schemas.modes import ModesConfig
+
+    raw = load_yaml("modes.yaml")
+    if not raw:
+        raise FileNotFoundError(
+            "configs/modes.yaml missing or empty — required for mode dispatch."
+        )
+    return ModesConfig.model_validate(raw)
+
+
 def reload_configs() -> None:
     """Invalidate the YAML cache. Test helper / admin hot-reload entry."""
     load_yaml.cache_clear()
+
+
+if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
+    from claritymed.core.schemas.modes import ModesConfig  # noqa: F401

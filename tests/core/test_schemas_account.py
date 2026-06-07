@@ -66,6 +66,7 @@ def test_model_dump_has_no_phi_keys():
         "language",
         "cloud_provider_opt_in",
         "provider_id",
+        "active_system_rag_collections",
         "created_at",
         "updated_at",
     }

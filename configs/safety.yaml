@@ -12,6 +12,33 @@ phi:
     local: allow
     cloud: deny
   on_deny: redact
+  # Free-text PII scrubbing rules. Applied at two enforcement points:
+  #   1. stores/user_rag.py.add_document  — before chunks are persisted
+  #   2. orchestrator/services/*          — before any LLM prompt is assembled
+  # Both points scrub regardless of provider kind (local OR cloud), because
+  # user privacy is not solely a cloud-egress concern.
+  free_text_patterns:
+    - name: phone_cn
+      regex: '(?<!\d)1[3-9]\d{9}(?!\d)'
+      replacement: '[REDACTED:PHONE]'
+    - name: phone_intl
+      regex: '\+\d{1,3}[\s-]?\d{3,4}[\s-]?\d{3,4}[\s-]?\d{0,4}'
+      replacement: '[REDACTED:PHONE]'
+    - name: email
+      regex: '[\w.+-]+@[\w-]+\.[\w.-]+'
+      replacement: '[REDACTED:EMAIL]'
+    - name: id_cn
+      regex: '(?<!\d)\d{17}[\dXx](?!\d)'
+      replacement: '[REDACTED:ID]'
+    - name: mrn
+      regex: '\bMRN[:\s-]*\d{6,}\b'
+      replacement: '[REDACTED:MRN]'
+  # NER (Named Entity Recognition) for PERSON / ADDRESS spans. Off by
+  # default — enabling requires a local NER model (e.g. GLiNER) on the
+  # path. When off, only the regex rules above run.
+  ner:
+    enabled: false
+    entities: [PERSON, GPE, LOC]
 
 red_flags: []
 
