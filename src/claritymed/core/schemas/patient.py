@@ -13,12 +13,51 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Sex = Literal["female", "male", "intersex", "unknown"]
 AllergySeverity = Literal["mild", "moderate", "severe", "anaphylactic"]
 AllergySource = Literal["self_report", "clinical_record"]
 RecordKind = Literal["visit", "lab", "imaging", "note", "self_report"]
+
+
+class Profile(BaseModel):
+    """Biometric basics — one per user.
+
+    We store ``birth_date`` rather than ``age`` because the latter drifts: a
+    cached ``age`` is wrong the day after every birthday, while a ``birth_date``
+    is stable for life. ``age`` is exposed as a derived property.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    sex: Sex | None = None
+    weight_kg: float | None = Field(default=None, gt=0, le=500)
+    height_cm: float | None = Field(default=None, gt=0, le=300)
+    birth_date: date | None = None
+
+    @field_validator("birth_date")
+    @classmethod
+    def _birth_date_plausible(cls, v: date | None) -> date | None:
+        if v is None:
+            return v
+        today = date.today()
+        if v > today:
+            raise ValueError("birth_date cannot be in the future")
+        if (today.year - v.year) > 130:
+            raise ValueError("birth_date implies age > 130")
+        return v
+
+    @property
+    def age(self) -> int | None:
+        """Years since ``birth_date``. ``None`` if ``birth_date`` is unset."""
+        if self.birth_date is None:
+            return None
+        today = date.today()
+        years = today.year - self.birth_date.year
+        if (today.month, today.day) < (self.birth_date.month, self.birth_date.day):
+            years -= 1
+        return years
 
 
 class Allergy(BaseModel):
@@ -58,13 +97,18 @@ class LongitudinalRecord(BaseModel):
 
 
 class Patient(BaseModel):
-    """Patient profile — PHI. Bound to one ``user_id``."""
+    """Patient profile — PHI. Bound to one ``user_id``.
+
+    Composition: ``profile`` holds biometric basics (sex / weight / height /
+    birth_date); allergies / conditions / medications are independently growing
+    lists. There is no top-level ``age`` or ``sex`` — both derive from
+    ``profile`` so the two can never disagree.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     user_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,32}$")
-    age: int = Field(ge=0, le=130)
-    sex: Sex
+    profile: Profile = Field(default_factory=Profile)
     allergies: list[Allergy] = Field(default_factory=list)
     conditions: list[Condition] = Field(default_factory=list)
     medications: list[Medication] = Field(default_factory=list)

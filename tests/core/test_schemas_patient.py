@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from pydantic import ValidationError
 
-from claritymed.core.schemas import Allergy, Condition, Medication, Patient
+from claritymed.core.schemas import Allergy, Condition, Medication, Patient, Profile
 
 
 def _patient(**overrides) -> Patient:
     payload = {
         "user_id": "alice",
-        "age": 42,
-        "sex": "female",
+        "profile": Profile(sex="female", birth_date=date(1984, 1, 1)),
         "allergies": [
             Allergy(substance="penicillin", severity="severe", source="self_report"),
         ],
@@ -28,16 +29,19 @@ def _patient(**overrides) -> Patient:
 def test_happy_path_construction():
     p = _patient()
     assert p.allergies[0].substance == "penicillin"
+    assert p.profile.sex == "female"
+
+
+def test_empty_profile_legal():
+    """A brand-new patient with no biometric data must construct."""
+    p = Patient(user_id="alice")
+    assert p.profile == Profile()
+    assert p.profile.age is None
 
 
 def test_empty_allergies_legal():
     p = _patient(allergies=[])
     assert p.allergies == []
-
-
-def test_invalid_sex_rejected():
-    with pytest.raises(ValidationError):
-        _patient(sex="other")  # type: ignore[arg-type]
 
 
 def test_invalid_user_id_rejected():
@@ -50,8 +54,7 @@ def test_extra_fields_blocked():
     with pytest.raises(ValidationError):
         Patient(
             user_id="alice",
-            age=42,
-            sex="female",
+            profile=Profile(sex="female"),
             ssn="000-00-0000",  # type: ignore[call-arg]
         )
 
@@ -63,8 +66,12 @@ def test_round_trip_json():
     assert restored == p
 
 
-def test_age_bounds():
-    with pytest.raises(ValidationError):
-        _patient(age=-1)
-    with pytest.raises(ValidationError):
-        _patient(age=200)
+def test_age_derived_from_profile():
+    """No top-level ``age`` — it lives on ``profile`` and is computed."""
+    today = date.today()
+    p = _patient(
+        profile=Profile(
+            sex="female", birth_date=date(today.year - 25, today.month, today.day)
+        )
+    )
+    assert p.profile.age == 25

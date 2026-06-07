@@ -22,6 +22,7 @@ from claritymed.core.schemas.patient import (
     LongitudinalRecord,
     Medication,
     Patient,
+    Profile,
 )
 from claritymed.core.schemas.request import RequestContext
 from claritymed.core.schemas.uncertainty import (
@@ -52,6 +53,7 @@ __all__ = [
     "ModelMetadata",
     "Patient",
     "PredictionSet",
+    "Profile",
     "QualityReport",
     "RedFlag",
     "ReferenceRange",

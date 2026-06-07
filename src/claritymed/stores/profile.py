@@ -14,14 +14,14 @@ users by human-readable handles.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import event
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from claritymed.context import user_id_ctx
-from claritymed.core.schemas import Allergy
+from claritymed.core.schemas import Allergy, Profile
 from claritymed.errors import UserIdMismatch
 from claritymed.stores.paths import user_db_path, user_root, validate_user_id
 
@@ -30,6 +30,24 @@ _ENGINES: dict[str, object] = {}
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class ProfileRow(SQLModel, table=True):
+    """Singleton biometric basics for one user.
+
+    ``user_id`` is UNIQUE so there is at most one row per database. Upsert
+    semantics live in ``ProfileStore.upsert_profile``.
+    """
+
+    __tablename__ = "profile"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(unique=True, index=True)
+    sex: Optional[str] = None
+    weight_kg: Optional[float] = None
+    height_cm: Optional[float] = None
+    birth_date: Optional[date] = None
+    create_time: datetime = Field(default_factory=_now)
+    update_time: datetime = Field(default_factory=_now)
 
 
 class AllergyRow(SQLModel, table=True):
@@ -99,6 +117,42 @@ class ProfileStore:
 
             raise MissingContextError("user_id_ctx is not set")
         return cls(uid)
+
+    # --- Profile (biometric basics) ----------------------------------
+
+    def get_profile(self) -> Profile | None:
+        """Return the user's biometric row, or ``None`` if not set yet."""
+        with Session(self.engine) as session:
+            stmt = select(ProfileRow).where(ProfileRow.user_id == self.user_id)
+            row = session.exec(stmt).first()
+        if row is None:
+            return None
+        return Profile(
+            sex=row.sex,  # type: ignore[arg-type]
+            weight_kg=row.weight_kg,
+            height_cm=row.height_cm,
+            birth_date=row.birth_date,
+        )
+
+    def upsert_profile(self, profile: Profile, *, owner_user_id: str) -> Profile:
+        """Insert or update this user's biometric row. Returns the saved Profile."""
+        if owner_user_id != self.user_id:
+            raise UserIdMismatch(
+                f"upsert_profile called for {owner_user_id!r} on store {self.user_id!r}"
+            )
+        with Session(self.engine) as session:
+            stmt = select(ProfileRow).where(ProfileRow.user_id == self.user_id)
+            row = session.exec(stmt).first()
+            if row is None:
+                row = ProfileRow(user_id=self.user_id)
+            row.sex = profile.sex
+            row.weight_kg = profile.weight_kg
+            row.height_cm = profile.height_cm
+            row.birth_date = profile.birth_date
+            row.update_time = _now()
+            session.add(row)
+            session.commit()
+        return profile
 
     # --- Allergy -----------------------------------------------------
 
