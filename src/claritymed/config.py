@@ -73,6 +73,14 @@ def default_lang() -> str:
     )
 
 
+def supported_langs() -> tuple[str, ...]:
+    """Return ``app.yaml`` ``i18n.supported_langs`` or ``(DEFAULT_LANG_FALLBACK,)``."""
+    raw = load_yaml("app.yaml").get("i18n", {}).get("supported_langs")
+    if not raw:
+        return (DEFAULT_LANG_FALLBACK,)
+    return tuple(str(x).lower() for x in raw)
+
+
 def reload_configs() -> None:
     """Invalidate the YAML cache. Test helper / admin hot-reload entry."""
     load_yaml.cache_clear()

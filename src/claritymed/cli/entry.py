@@ -19,16 +19,16 @@ from claritymed.context import apply_context, new_request_id, reset_context
 from claritymed.core.observability.audit import audit_event
 
 DEFAULT_USER_ID = "default"
-SUPPORTED_LANGS = ("en", "zh")
 
 logger = logging.getLogger(__name__)
 
 
 def _resolve_language(explicit: str | None) -> str:
-    if explicit and explicit.lower() in SUPPORTED_LANGS:
+    supported = _cfg.supported_langs()
+    if explicit and explicit.lower() in supported:
         return explicit.lower()
     env_value = (os.environ.get("CLARITYMED_LANG") or "").strip().lower()
-    if env_value in SUPPORTED_LANGS:
+    if env_value in supported:
         return env_value
     if env_value:
         logger.warning(
@@ -36,7 +36,7 @@ def _resolve_language(explicit: str | None) -> str:
             env_value,
         )
     fallback = _cfg.default_lang()
-    return fallback if fallback in SUPPORTED_LANGS else "en"
+    return fallback if fallback in supported else _cfg.DEFAULT_LANG_FALLBACK
 
 
 def _resolve_user_id(explicit: str | None) -> tuple[str, bool]:
