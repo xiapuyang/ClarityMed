@@ -1,0 +1,14 @@
+/* ClarityMed Textual stylesheet.
+ *
+ * Widget-local CSS lives in each widget's `DEFAULT_CSS`. This file holds the
+ * outer app layout and a few colours that span more than one widget.
+ */
+
+Screen {
+    layout: vertical;
+}
+
+#main_row {
+    height: 1fr;
+    layout: horizontal;
+}

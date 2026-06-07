@@ -4,7 +4,11 @@ from claritymed.stores.account import (
     init_user,
     require_admin,
 )
-from claritymed.stores.chat_memory import ChatMemoryStore, LanceChatMemoryStore
+from claritymed.stores.chat_memory import (
+    ChatMemoryStore,
+    ChatTurn,
+    LanceChatMemoryStore,
+)
 from claritymed.stores.knowledge import (
     KnowledgeChunk,
     KnowledgeStore,
@@ -30,6 +34,7 @@ from claritymed.stores.profile import ProfileStore
 __all__ = [
     "AccountStore",
     "ChatMemoryStore",
+    "ChatTurn",
     "KnowledgeChunk",
     "KnowledgeStore",
     "LanceChatMemoryStore",

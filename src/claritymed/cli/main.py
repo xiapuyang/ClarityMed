@@ -175,6 +175,22 @@ def rag_add(
     _run_async(_run())
 
 
+@app.command()
+def tui(
+    user: str | None = typer.Option(None, "--user", "-u"),
+    language: str | None = typer.Option(None, "--lang", "-l"),
+    provider_id: str | None = typer.Option(None, "--provider", "-p"),
+) -> None:
+    """Launch the Textual TUI."""
+    from claritymed.cli.tui import ClarityMedApp
+
+    ClarityMedApp(
+        user_id=user,
+        language=language,
+        provider_id=provider_id,
+    ).run()
+
+
 # Convenience subcommand to list known modes — useful for shell completion.
 @app.command()
 def modes() -> None:
