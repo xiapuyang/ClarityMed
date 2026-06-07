@@ -1,0 +1,61 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# uv: uv.lock is intentionally committed for reproducible installs — do NOT ignore it.
+
+# Test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets / env
+.env
+*.env
+.env.local
+.env.production
+credentials.json
+service-account.json
+
+# Private keys
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+id_ecdsa
+
+# Logs
+logs/
+*.log
+
+# Temp / backup
+*.bak
+*.orig
+*.temp
+*.tmp
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+.context/
+.playwright-mcp/
