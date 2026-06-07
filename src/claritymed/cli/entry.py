@@ -1,0 +1,81 @@
+"""CLI entry helper: one context manager wires the three ContextVars.
+
+Concrete command functions (``claritymed ask``, ``claritymed init-user``, …)
+live in a later plan; this is the helper they will all open with::
+
+    with inject_context(user_id=args.user, language=args.lang):
+        ...
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from contextlib import contextmanager
+from typing import Iterator
+
+from claritymed import config as _cfg
+from claritymed.context import apply_context, new_request_id, reset_context
+from claritymed.core.observability.audit import audit_event
+
+DEFAULT_USER_ID = "default"
+SUPPORTED_LANGS = ("en", "zh")
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_language(explicit: str | None) -> str:
+    if explicit and explicit.lower() in SUPPORTED_LANGS:
+        return explicit.lower()
+    env_value = (os.environ.get("CLARITYMED_LANG") or "").strip().lower()
+    if env_value in SUPPORTED_LANGS:
+        return env_value
+    if env_value:
+        logger.warning(
+            "CLARITYMED_LANG=%r is not supported; falling back to app.yaml",
+            env_value,
+        )
+    fallback = _cfg.default_lang()
+    return fallback if fallback in SUPPORTED_LANGS else "en"
+
+
+def _resolve_user_id(explicit: str | None) -> tuple[str, bool]:
+    """Return (user_id, used_default)."""
+    if explicit:
+        return explicit, False
+    env_value = os.environ.get("CLARITYMED_USER", "").strip()
+    if env_value:
+        return env_value, False
+    return DEFAULT_USER_ID, True
+
+
+@contextmanager
+def inject_context(
+    user_id: str | None = None,
+    language: str | None = None,
+    request_id: str | None = None,
+) -> Iterator[tuple[str, str, str]]:
+    """Set request / user / language ContextVars for the with-block.
+
+    Emits ``request_start`` and ``request_end`` audit events. Warns once when
+    the user_id falls through to ``"default"`` so the operator notices a
+    missing ``--user`` flag.
+    """
+    rid = request_id or new_request_id()
+    uid, used_default = _resolve_user_id(user_id)
+    lang = _resolve_language(language)
+    if used_default:
+        from claritymed.core.i18n import t
+
+        logger.warning(t("ui.cli.user_required", lang=lang))
+
+    tokens = apply_context(rid, uid, lang)
+    try:
+        audit_event("request_start", payload={"entry": "cli"})
+        yield rid, uid, lang
+        audit_event("request_end", payload={"status": "ok"})
+    except BaseException:
+        audit_event("request_end", payload={"status": "exception"})
+        raise
+    finally:
+        reset_context(tokens)
