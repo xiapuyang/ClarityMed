@@ -96,6 +96,10 @@ class ClarityMedApp(App):
 
         self._session_turns: list[ChatTurn] = []
         self._stream_worker: Worker | None = None
+        # Track the active user_id at App level (not via StatusBar query) so
+        # on_unmount can save the transcript after Textual has already torn
+        # down child widgets.
+        self._current_user_id: str = self._initial_user_id
 
     # ----- layout ---------------------------------------------------------
 
@@ -145,11 +149,12 @@ class ClarityMedApp(App):
         self._refresh_input_placeholder()
 
     def on_unmount(self) -> None:
-        # Persist transcript on exit. The store keeps its own user_id, so the
-        # save call does not need ContextVars to be set.
+        # Persist transcript on exit. Use the tracked user_id rather than
+        # querying StatusBar — Textual has already unmounted child widgets
+        # by the time this runs, so query_one(StatusBar) would raise.
         try:
             store = self._chat_memory_store or LanceChatMemoryStore(
-                self.query_one(StatusBar).user_id
+                self._current_user_id
             )
             store.save_turns(self._session_turns)
         except Exception:  # noqa: BLE001
@@ -224,6 +229,17 @@ class ClarityMedApp(App):
         logger.warning("unhandled command: %s", parsed.name)
 
     def _switch_user(self, user_id: str) -> None:
+        # Flush the previous user's transcript before switching — otherwise
+        # the in-memory turns would land in the new user's file on shutdown.
+        try:
+            outgoing = self._chat_memory_store or LanceChatMemoryStore(
+                self._current_user_id
+            )
+            outgoing.save_turns(self._session_turns)
+        except Exception:  # noqa: BLE001
+            logger.exception("save_turns failed on /user switch")
+
+        self._current_user_id = user_id
         status = self.query_one(StatusBar)
         status.user_id = user_id
         self._session_turns.clear()

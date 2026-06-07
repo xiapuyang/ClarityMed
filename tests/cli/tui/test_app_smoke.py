@@ -189,6 +189,33 @@ async def test_load_recent_renders_history():
 
 
 @pytest.mark.asyncio
+async def test_unmount_without_injected_store_does_not_crash(tmp_path, monkeypatch):
+    """Regression: on_unmount used to query StatusBar after it was torn down.
+
+    The fallback path (no chat_memory_store injected) instantiates a real
+    LanceChatMemoryStore; the test asserts the unmount completes cleanly
+    and the transcript file appears on disk.
+    """
+    monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
+    import importlib
+
+    import claritymed.config as cfg
+    import claritymed.stores.paths as paths
+
+    importlib.reload(cfg)
+    importlib.reload(paths)
+
+    app = ClarityMedApp(user_id="alice", language="en")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).post_message(InputBar.Submitted("hello world"))
+        await pilot.pause()
+    transcript = paths.user_chat_memory_dir("alice") / "transcript.jsonl"
+    assert transcript.exists(), "save_turns should have written the transcript"
+    assert "hello world" in transcript.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_chat_memory_save_called_on_unmount():
     mem = _StubChatMemory("alice")
     app = ClarityMedApp(
