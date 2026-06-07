@@ -1,0 +1,12 @@
+i18n:
+  default_lang: en
+  supported_langs: [en, zh]
+
+logging:
+  level: INFO
+  app_filename: app.log
+  access_filename: access.log
+  audit_filename: audit.log
+
+access_log:
+  skip_prefixes: ["/api/health", "/favicon"]

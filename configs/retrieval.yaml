@@ -1,0 +1,7 @@
+# Filled in by the text_rag plan. Kept as a placeholder so config loaders
+# never trip on a missing file.
+hybrid:
+  dense_weight: null
+  sparse_weight: null
+top_k: null
+rerank_k: null

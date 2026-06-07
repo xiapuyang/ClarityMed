@@ -1,0 +1,11 @@
+# Base LLM provider declarations. Runtime picks one via --provider or
+# the per-user settings.yaml. The PHI guard reads `kind` to decide whether
+# outbound requests may carry PHI fields.
+providers:
+  - id: ollama-local
+    kind: local
+    base_url: http://127.0.0.1:11434
+    model: qwen3:14b
+  # Cloud providers must be added by an admin and opted into per user.
+
+default_provider: ollama-local

@@ -1,0 +1,20 @@
+# PHI guard rules + red-flag wiring. Red-flag user-facing text is in
+# configs/i18n/{en,zh}.yaml under the redflag.* namespace; this file holds
+# detection metadata only.
+phi:
+  fields:
+    - patient.allergies.*.substance
+    - patient.conditions.*.code
+    - patient.medications.*.dose
+    - lab_panel.values.*.value
+    - lab_panel.source_doc
+  providers:
+    local: allow
+    cloud: deny
+  on_deny: redact
+
+red_flags: []
+
+disclaimer:
+  always_attach_default: true
+  emergency_overrides: true

@@ -1,0 +1,11 @@
+# admin-managed registry of per-disease vision models.
+# Edited via `claritymed admin register-vision-model` (later plan) which
+# calls require_admin(). Never hand-edit unless you are admin and know
+# what you are doing — runtime model loading reads `weights_path` relative
+# to SHARED_DIR/vision_models/.
+models: []
+# Schema for entries (informational; enforced by tools/vision/registry.py later):
+#   - disease: rash
+#     modality: skin
+#     weights_path: rash/<version>/                 # resolves to ~/.claritymed/shared/vision_models/rash/<version>/
+#     skin_tone_coverage: {I: 0.9, II: 0.9, III: 0.8, IV: 0.7, V: 0.5, VI: 0.4}

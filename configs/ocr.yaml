@@ -1,0 +1,9 @@
+# OCR adapter declarations. Adapter implementations are added in the
+# lab_pipeline plan; this file freezes the selection contract.
+adapters:
+  - id: paddleocr-vl
+    kind: local
+  - id: mineru
+    kind: local
+
+default_adapter: paddleocr-vl
