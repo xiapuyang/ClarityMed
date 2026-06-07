@@ -34,9 +34,15 @@ class RagService:
         public: bool = False,
         language: str = "en",
     ) -> AsyncIterator[Event]:
-        from claritymed.context import apply_context, new_request_id, reset_context
+        from claritymed.context import (
+            apply_context,
+            new_request_id,
+            request_id_ctx,
+            reset_context,
+        )
 
-        tokens = apply_context(new_request_id(), user_id, language)
+        rid = request_id_ctx.get() or new_request_id()
+        tokens = apply_context(rid, user_id, language)
         try:
             async for ev in self._run_inner(user_input, user_id, public):
                 yield ev

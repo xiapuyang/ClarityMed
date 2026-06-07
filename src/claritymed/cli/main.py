@@ -83,10 +83,16 @@ def ask(
     """Stream a grounded answer to ``question``."""
 
     async def _run() -> None:
+        from claritymed.stores.chat_memory import LanceChatMemoryStore
+
         with inject_context(user_id=user, language=language) as (_, uid, lang):
             provider = resolve_provider(override=provider_id)
             model = build_model(provider)
-            service = AskService(model=model, language=lang)
+            service = AskService(
+                model=model,
+                language=lang,
+                chat_memory=LanceChatMemoryStore(uid),
+            )
 
             async for event in service.run(question, user_id=uid):
                 if isinstance(event, TokenChunk):

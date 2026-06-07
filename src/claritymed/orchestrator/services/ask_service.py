@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+import logging
+
 from claritymed.core.observability.audit import audit_event
 from claritymed.orchestrator import PhiGuard
 from claritymed.orchestrator.agents import make_ask_agent
@@ -17,6 +19,10 @@ from claritymed.orchestrator.services.events import (
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
+
+    from claritymed.stores.chat_memory import ChatMemoryStore
+
+logger = logging.getLogger(__name__)
 
 
 class AskService:
@@ -33,15 +39,28 @@ class AskService:
         model: "Model",
         guard: PhiGuard | None = None,
         language: str = "en",
+        chat_memory: "ChatMemoryStore | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or PhiGuard.from_config()
         self._language = language
+        self._chat_memory = chat_memory
 
     async def run(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
-        from claritymed.context import apply_context, new_request_id, reset_context
+        from claritymed.context import (
+            apply_context,
+            new_request_id,
+            request_id_ctx,
+            reset_context,
+        )
 
-        tokens = apply_context(new_request_id(), user_id, self._language)
+        # Reuse the caller's request_id when one is already in context (TUI app
+        # set it on the status bar; Typer's inject_context set it at CLI start).
+        # Generating a fresh one here would silently desynchronise the status
+        # bar and the audit log — the user would see one id, grep would find a
+        # different one.
+        rid = request_id_ctx.get() or new_request_id()
+        tokens = apply_context(rid, user_id, self._language)
         try:
             async for ev in self._run_inner(user_input, user_id):
                 yield ev
@@ -62,12 +81,19 @@ class AskService:
         )
 
         agent = make_ask_agent(self._model, language=self._language)
+        messages_json: bytes | None = None
         try:
             async with agent.run_stream(scrubbed) as stream:
                 async for chunk in stream.stream_text(delta=True):
                     if chunk:
                         yield TokenChunk(text=chunk)
                 final_text = await stream.get_output()
+                # Capture inside the ``with`` block — the stream goes out of
+                # scope once it exits and the messages disappear with it.
+                try:
+                    messages_json = stream.all_messages_json()
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to capture pydantic-ai messages")
         except Exception as exc:  # noqa: BLE001 — surface as event
             yield Error(
                 error_type="llm_error",
@@ -75,6 +101,12 @@ class AskService:
                 retryable=True,
             )
             return
+
+        if messages_json is not None and self._chat_memory is not None:
+            try:
+                self._chat_memory.append_run_messages_json(messages_json)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to append chat messages to chat memory")
 
         audit_event(
             "mode.ask",

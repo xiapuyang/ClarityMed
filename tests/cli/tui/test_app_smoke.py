@@ -29,10 +29,12 @@ from claritymed.stores.chat_memory import ChatMemoryStore, ChatTurn
 
 
 class _StubChatMemory(ChatMemoryStore):
+    """Records what AskService persists without touching disk."""
+
     def __init__(self, user_id: str, turns: list[ChatTurn] | None = None) -> None:
         super().__init__(user_id)
         self._turns = turns or []
-        self.saved: list[ChatTurn] = []
+        self.saved_messages: list[bytes] = []
 
     def search(self, query: str, k: int = 5):
         return []
@@ -40,9 +42,11 @@ class _StubChatMemory(ChatMemoryStore):
     def load_recent(self, k: int = 10):
         return list(self._turns)
 
-    def save_turns(self, turns):
-        self.saved = list(turns)
-        return len(self.saved)
+    def append_run_messages_json(self, messages_json: bytes) -> int:
+        if not messages_json:
+            return 0
+        self.saved_messages.append(messages_json)
+        return 1
 
 
 class _StubAskService:
@@ -189,48 +193,18 @@ async def test_load_recent_renders_history():
 
 
 @pytest.mark.asyncio
-async def test_unmount_without_injected_store_does_not_crash(tmp_path, monkeypatch):
-    """Regression: on_unmount used to query StatusBar after it was torn down.
-
-    The fallback path (no chat_memory_store injected) instantiates a real
-    LanceChatMemoryStore; the test asserts the unmount completes cleanly
-    and the transcript file appears on disk.
-    """
-    monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
-    import importlib
-
-    import claritymed.config as cfg
-    import claritymed.stores.paths as paths
-
-    importlib.reload(cfg)
-    importlib.reload(paths)
-
+async def test_unmount_is_a_noop_now():
+    """Regression: ``on_unmount`` used to call save_turns on a query that
+    raised after Textual tore down child widgets. Persistence has moved
+    into AskService (per-LLM-run), so the unmount path must not raise
+    even with no chat_memory_store injected."""
     app = ClarityMedApp(user_id="alice", language="en")
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one(InputBar).post_message(InputBar.Submitted("hello world"))
-        await pilot.pause()
-    transcript = paths.user_chat_memory_dir("alice") / "transcript.jsonl"
-    assert transcript.exists(), "save_turns should have written the transcript"
-    assert "hello world" in transcript.read_text(encoding="utf-8")
-
-
-@pytest.mark.asyncio
-async def test_chat_memory_save_called_on_unmount():
-    mem = _StubChatMemory("alice")
-    app = ClarityMedApp(
-        user_id="alice",
-        language="en",
-        chat_memory_store=mem,
-    )
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        # Submit one user turn — should make it into the session transcript.
         app.query_one(InputBar).post_message(InputBar.Submitted("/mode ingest"))
         await pilot.pause()
-    # After context exit, on_unmount has flushed turns to the store.
-    # mem.saved is set regardless of whether the user typed anything.
-    assert mem.saved is not None
+    # Reaching here means unmount completed cleanly.
+    assert True
 
 
 @pytest.mark.asyncio

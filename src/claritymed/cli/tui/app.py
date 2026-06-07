@@ -149,16 +149,11 @@ class ClarityMedApp(App):
         self._refresh_input_placeholder()
 
     def on_unmount(self) -> None:
-        # Persist transcript on exit. Use the tracked user_id rather than
-        # querying StatusBar — Textual has already unmounted child widgets
-        # by the time this runs, so query_one(StatusBar) would raise.
-        try:
-            store = self._chat_memory_store or LanceChatMemoryStore(
-                self._current_user_id
-            )
-            store.save_turns(self._session_turns)
-        except Exception:  # noqa: BLE001
-            logger.exception("save_turns failed on TUI shutdown")
+        # No-op: ask-mode turns are persisted in real time by AskService
+        # via ``ChatMemoryStore.append_run_messages_json`` (pydantic-ai
+        # native format). ingest/rag turns are transient UI feedback, not
+        # chat history, so nothing needs flushing here.
+        return
 
     # ----- mode + placeholder ---------------------------------------------
 
@@ -229,16 +224,9 @@ class ClarityMedApp(App):
         logger.warning("unhandled command: %s", parsed.name)
 
     def _switch_user(self, user_id: str) -> None:
-        # Flush the previous user's transcript before switching — otherwise
-        # the in-memory turns would land in the new user's file on shutdown.
-        try:
-            outgoing = self._chat_memory_store or LanceChatMemoryStore(
-                self._current_user_id
-            )
-            outgoing.save_turns(self._session_turns)
-        except Exception:  # noqa: BLE001
-            logger.exception("save_turns failed on /user switch")
-
+        # Each AskService call has already appended its own messages to the
+        # outgoing user's transcript, so nothing to flush. Just flip the
+        # tracked id and reset the display.
         self._current_user_id = user_id
         status = self.query_one(StatusBar)
         status.user_id = user_id
@@ -413,7 +401,14 @@ class ClarityMedApp(App):
 
         provider = resolve_provider(override=self._initial_provider_id)
         model = build_model(provider)
-        return AskService(model=model, language=self.query_one(StatusBar).language)
+        chat_memory = self._chat_memory_store or LanceChatMemoryStore(
+            self._current_user_id
+        )
+        return AskService(
+            model=model,
+            language=self.query_one(StatusBar).language,
+            chat_memory=chat_memory,
+        )
 
     @staticmethod
     def _default_rag_service() -> RagService:

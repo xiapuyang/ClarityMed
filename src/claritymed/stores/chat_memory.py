@@ -5,22 +5,30 @@ surfaces the TUI needs on day one:
 
 * ``search`` — placeholder for the future semantic recall path. Returns
   ``[]`` until the text_rag plan wires a real embedder.
-* ``load_recent`` / ``save_turns`` — file-backed transcript so the TUI can
-  reopen with the prior session visible and the operator can grep
-  ``~/.claritymed/data/users/<id>/chat_memory.lance/transcript.jsonl`` for
-  audit. The file is JSON-lines so it survives partial writes; the real
-  LanceDB store can ingest it later without a separate migration step.
+* ``append_run_messages_json`` / ``load_recent`` — pydantic-ai-native
+  persistence. Each ask call's ``stream.all_messages_json()`` is appended
+  to ``messages.jsonl`` (one ``[ModelMessage, ...]`` JSON array per line)
+  under ``~/.claritymed/data/users/<id>/chat_memory.lance/``. On reopen
+  the TUI loads the last K turns and projects them to ``ChatTurn``
+  display bubbles. When resume lands, the same file feeds back into
+  ``Agent.run(message_history=...)`` with zero format conversion.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from claritymed.context import MissingContextError, user_id_ctx
 from claritymed.stores.paths import user_chat_memory_dir, validate_user_id
@@ -38,7 +46,12 @@ class ChatChunk(BaseModel):
 
 
 class ChatTurn(BaseModel):
-    """One transcript turn — used by ``load_recent`` / ``save_turns``."""
+    """One display turn projected from a pydantic-ai message.
+
+    Display-only. Persistence is the raw ModelMessage JSON; this struct
+    exists so the TUI does not have to walk pydantic-ai message parts at
+    render time.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -69,16 +82,14 @@ class ChatMemoryStore(ABC):
     def load_recent(self, k: int = 10) -> list[ChatTurn]: ...
 
     @abstractmethod
-    def save_turns(self, turns: list[ChatTurn]) -> int: ...
+    def append_run_messages_json(self, messages_json: bytes) -> int: ...
 
 
 class LanceChatMemoryStore(ChatMemoryStore):
     """Default LanceDB-backed implementation.
 
-    Stub: returns an empty list and logs a warning until the text_rag plan
-    wires a real embedder. The point of this skeleton is the isolation
-    contract — the per-user directory lives at ``user_chat_memory_dir`` and
-    cannot be opened by another user's store.
+    The semantic ``search`` path is still a stub. The transcript path
+    (``append_run_messages_json`` / ``load_recent``) is live.
     """
 
     def search(self, query: str, k: int = 5) -> list[ChatChunk]:
@@ -90,39 +101,72 @@ class LanceChatMemoryStore(ChatMemoryStore):
         )
         return []
 
+    def append_run_messages_json(self, messages_json: bytes) -> int:
+        """Append one pydantic-ai run's messages_json (raw bytes) as one line.
+
+        ``messages_json`` is the exact byte payload returned by
+        ``StreamedRunResult.all_messages_json()`` — a JSON array of
+        ``ModelMessage``. We append it verbatim plus a newline so the file
+        is JSON-lines and can be tailed/grepped without parsing the
+        nested structure.
+        """
+        if not messages_json:
+            return 0
+        path = self._messages_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("ab") as fh:
+            fh.write(messages_json.rstrip(b"\n"))
+            fh.write(b"\n")
+        return 1
+
     def load_recent(self, k: int = 10) -> list[ChatTurn]:
-        path = self._transcript_path()
+        """Return the last ``k`` display turns projected from messages.jsonl."""
+        path = self._messages_path()
         if not path.exists():
             return []
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError as exc:
-            logger.warning("chat transcript read failed: %s", exc)
+            logger.warning("chat messages read failed: %s", exc)
             return []
-        recent = lines[-k:] if k > 0 else lines
         turns: list[ChatTurn] = []
-        for line in recent:
-            line = line.strip()
-            if not line:
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
                 continue
             try:
-                turns.append(ChatTurn.model_validate(json.loads(line)))
-            except (json.JSONDecodeError, ValidationError):
-                # Skip a corrupt line rather than refusing to load the
-                # whole history — the operator can grep the file to
-                # spot what broke.
+                messages = ModelMessagesTypeAdapter.validate_json(stripped)
+            except ValidationError:
+                # Corrupt line — skip rather than blow up the whole load.
                 continue
+            for msg in messages:
+                turn = _project_message(msg)
+                if turn is not None:
+                    turns.append(turn)
+        if k > 0 and len(turns) > k:
+            turns = turns[-k:]
         return turns
 
-    def save_turns(self, turns: list[ChatTurn]) -> int:
-        if not turns:
-            return 0
-        path = self._transcript_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            for turn in turns:
-                fh.write(turn.model_dump_json() + "\n")
-        return len(turns)
+    def _messages_path(self) -> Path:
+        return self.lance_dir / "messages.jsonl"
 
-    def _transcript_path(self) -> Path:
-        return self.lance_dir / "transcript.jsonl"
+
+def _project_message(msg) -> ChatTurn | None:
+    """Map one pydantic-ai ``ModelMessage`` to a display ``ChatTurn``.
+
+    Returns ``None`` for messages that have no displayable content —
+    system prompts, tool calls, tool returns. The TUI does not surface
+    those at startup; they will show up in the right-pane tool log when
+    the agent is actively running.
+    """
+    if isinstance(msg, ModelRequest):
+        for part in msg.parts:
+            if isinstance(part, UserPromptPart):
+                return ChatTurn(role="user", text=str(part.content))
+        return None
+    if isinstance(msg, ModelResponse):
+        text_chunks = [p.content for p in msg.parts if isinstance(p, TextPart)]
+        if not text_chunks:
+            return None
+        return ChatTurn(role="assistant", text="".join(text_chunks))
+    return None

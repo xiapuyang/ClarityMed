@@ -101,6 +101,77 @@ async def test_ask_service_streams_tokens_and_scrubs_input():
     assert done.final == "this is a streamed response"
 
 
+async def test_ask_service_persists_run_messages_to_chat_memory():
+    """AskService must append pydantic-ai messages_json to chat_memory.
+
+    Round-trips through the official ``ModelMessagesTypeAdapter`` so the
+    file format stays compatible with ``Agent.run(message_history=...)``
+    when resume lands.
+    """
+    from pydantic_ai.messages import (
+        ModelMessagesTypeAdapter,
+        ModelRequest,
+        ModelResponse,
+    )
+
+    captured: list[bytes] = []
+
+    class _StubMemory:
+        def append_run_messages_json(self, blob: bytes) -> int:
+            captured.append(blob)
+            return 1
+
+    service = AskService(
+        model=TestModel(custom_output_text="hello there"),
+        chat_memory=_StubMemory(),
+    )
+    events = []
+    async for ev in service.run("how are you?", user_id="alice"):
+        events.append(ev)
+
+    assert captured, "AskService did not call chat_memory"
+    messages = ModelMessagesTypeAdapter.validate_json(captured[0])
+    kinds = [type(m).__name__ for m in messages]
+    assert "ModelRequest" in kinds
+    assert "ModelResponse" in kinds
+    assert any(isinstance(m, ModelRequest) for m in messages)
+    assert any(isinstance(m, ModelResponse) for m in messages)
+
+
+async def test_ask_service_reuses_existing_request_id():
+    """Regression: AskService used to generate a fresh request_id, which
+    desynchronised the TUI status bar from the audit log. With a rid
+    already in context (TUI's _run_stream sets one), the service must
+    reuse it instead of overwriting."""
+    from claritymed.context import apply_context, reset_context
+
+    rid = "20260607123045ABCDEF12"
+    tokens = apply_context(rid, "alice", "en")
+    captured_rid: list[str] = []
+
+    class _RidSpyMemory:
+        def append_run_messages_json(self, blob: bytes) -> int:
+            from claritymed.context import request_id_ctx
+
+            captured_rid.append(request_id_ctx.get() or "")
+            return 1
+
+    try:
+        service = AskService(
+            model=TestModel(custom_output_text="ok"),
+            chat_memory=_RidSpyMemory(),
+        )
+        async for _ in service.run("hi", user_id="alice"):
+            pass
+    finally:
+        reset_context(tokens)
+
+    assert captured_rid == [rid], (
+        f"AskService overwrote request_id: caller had {rid!r}, "
+        f"service used {captured_rid!r}"
+    )
+
+
 async def test_ask_service_phi_scrub_before_llm(monkeypatch):
     """Verify scrub_free_text is called with the original input before
     anything is handed to the LLM. We intercept the guard directly because
