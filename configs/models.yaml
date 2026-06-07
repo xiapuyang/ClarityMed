@@ -1,11 +1,78 @@
-# Base LLM provider declarations. Runtime picks one via --provider or
-# the per-user settings.yaml. The PHI guard reads `kind` to decide whether
-# outbound requests may carry PHI fields.
+# Provider catalog. Each entry says HOW to reach a backend, never WHAT key to
+# use. Keys are loaded from env vars named by ``api_key_env`` and are gitignored
+# via ``.env`` — see ``.env.example`` for the list of variables.
+#
+#   kind:        local | cloud      — PHI guard reads this. PHI may only leave
+#                                     the box when kind == local.
+#   api:         openai | anthropic — wire protocol / SDK to use. Most vendors
+#                                     expose an OpenAI-compatible endpoint;
+#                                     ``anthropic`` is for the native Messages
+#                                     API (and any local server emulating it).
+#   base_url:    HTTP endpoint root.
+#   model:       model id sent on each request (override per call if needed).
+#   api_key_env: env var name holding the key. Omit for local backends.
+#
+# Adding a cloud entry just declares the option exists. A user still has to
+# opt in (``Account.cloud_provider_opt_in``) and the admin must populate the
+# env var before any request actually goes out.
+
 providers:
-  - id: ollama-local
+  # ---- Local: pick the wire format your server speaks ----
+  - id: ollama-openai
     kind: local
+    api: openai
+    base_url: http://127.0.0.1:11434/v1
+    model: qwen3:14b
+  - id: ollama-anthropic
+    kind: local
+    api: anthropic
     base_url: http://127.0.0.1:11434
     model: qwen3:14b
-  # Cloud providers must be added by an admin and opted into per user.
 
-default_provider: ollama-local
+  # ---- Cloud: OpenAI-compatible vendors ----
+  - id: openai
+    kind: cloud
+    api: openai
+    base_url: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+  - id: deepseek
+    kind: cloud
+    api: openai
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+  - id: gemini
+    kind: cloud
+    api: openai
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    model: gemini-2.0-flash
+    api_key_env: GEMINI_API_KEY
+  - id: qwen
+    kind: cloud
+    api: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    model: qwen-max
+    api_key_env: DASHSCOPE_API_KEY
+  - id: kimi
+    kind: cloud
+    api: openai
+    base_url: https://api.moonshot.cn/v1
+    model: moonshot-v1-32k
+    api_key_env: MOONSHOT_API_KEY
+  - id: openrouter
+    kind: cloud
+    api: openai
+    base_url: https://openrouter.ai/api/v1
+    model: anthropic/claude-sonnet-4.5
+    api_key_env: OPENROUTER_API_KEY
+
+  # ---- Cloud: native Anthropic Messages API ----
+  - id: claude
+    kind: cloud
+    api: anthropic
+    base_url: https://api.anthropic.com
+    model: claude-sonnet-4-5
+    api_key_env: ANTHROPIC_API_KEY
+
+default_provider: ollama-openai

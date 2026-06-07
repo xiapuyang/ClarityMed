@@ -24,3 +24,7 @@ class PermissionDeniedError(PermissionError):
 
 class PhiViolationError(ValueError):
     """Outbound payload contained PHI that policy refuses to release."""
+
+
+class UnknownProviderError(KeyError):
+    """Resolver was asked for a provider id that is not in ``models.yaml``."""

@@ -16,6 +16,12 @@ from claritymed.core.schemas.answer import (
     RedFlag,
 )
 from claritymed.core.schemas.lab import LabFlag, LabPanel, LabValue, ReferenceRange
+from claritymed.core.schemas.models import (
+    ModelsConfig,
+    ProviderApi,
+    ProviderConfig,
+    ProviderKind,
+)
 from claritymed.core.schemas.patient import (
     Allergy,
     Condition,
@@ -51,9 +57,13 @@ __all__ = [
     "LongitudinalRecord",
     "Medication",
     "ModelMetadata",
+    "ModelsConfig",
     "Patient",
     "PredictionSet",
     "Profile",
+    "ProviderApi",
+    "ProviderConfig",
+    "ProviderKind",
     "QualityReport",
     "RedFlag",
     "ReferenceRange",

@@ -31,5 +31,6 @@ class Account(BaseModel):
     role: Role = "user"
     language: Language = "en"
     cloud_provider_opt_in: bool = False
+    provider_id: str | None = Field(default=None, max_length=64)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

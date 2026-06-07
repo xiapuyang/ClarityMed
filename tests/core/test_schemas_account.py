@@ -65,7 +65,21 @@ def test_model_dump_has_no_phi_keys():
         "role",
         "language",
         "cloud_provider_opt_in",
+        "provider_id",
         "created_at",
         "updated_at",
     }
     assert keys == expected
+
+
+def test_provider_id_defaults_to_none():
+    """Unset means 'use models.yaml default_provider' — see resolve_provider."""
+    a = Account(user_id="alice", display_name="Alice")
+    assert a.provider_id is None
+
+
+def test_provider_id_can_be_set_and_mutated():
+    a = Account(user_id="alice", display_name="Alice", provider_id="claude")
+    assert a.provider_id == "claude"
+    a.provider_id = "deepseek"
+    assert a.provider_id == "deepseek"

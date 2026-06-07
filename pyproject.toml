@@ -5,7 +5,7 @@ description = "Patient-facing medical Q&A with structured uncertainty propagatio
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.9",
-    "pydantic-ai-slim>=0.0.50",
+    "pydantic-ai-slim[anthropic,openai]>=1.0",
     "pyyaml>=6.0.2",
     "sqlmodel>=0.0.22",
     "starlette>=0.41.0",

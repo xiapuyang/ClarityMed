@@ -10,6 +10,7 @@ from claritymed.stores.knowledge import (
     KnowledgeStore,
     QdrantKnowledgeStore,
 )
+from claritymed.stores.models import load_models, resolve_provider
 from claritymed.stores.paths import (
     list_user_ids,
     shared_knowledge_normalized_dir,
@@ -37,7 +38,9 @@ __all__ = [
     "current_account",
     "init_user",
     "list_user_ids",
+    "load_models",
     "require_admin",
+    "resolve_provider",
     "shared_knowledge_normalized_dir",
     "shared_knowledge_raw_dir",
     "shared_qdrant_dir",
