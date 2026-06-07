@@ -1,4 +1,4 @@
-from claritymed.core.orchestrator.phi_guard import (
+from claritymed.orchestrator.phi_guard import (
     PhiGuard,
     PhiHit,
     PhiRules,

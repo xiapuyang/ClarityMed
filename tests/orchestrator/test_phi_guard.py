@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from claritymed.core.orchestrator import PhiGuard
+from claritymed.orchestrator import PhiGuard
 
 
 def _sample_payload() -> dict:
@@ -58,7 +58,7 @@ def test_missing_field_no_hit():
 
 
 def test_payload_unchanged_when_no_rules():
-    from claritymed.core.orchestrator.phi_guard import PhiRules
+    from claritymed.orchestrator.phi_guard import PhiRules
 
     guard = PhiGuard(PhiRules(fields=[], providers={"cloud": "deny"}))
     payload = _sample_payload()
