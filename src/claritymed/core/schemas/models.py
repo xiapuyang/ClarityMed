@@ -1,15 +1,30 @@
-"""Provider catalog: how to reach each model, never the credential itself.
+"""Provider catalog: declares WHICH backends this deployment will allow.
 
-A ``ProviderConfig`` declares HOW to talk to a backend:
+A ``ProviderConfig`` is intentionally tiny:
 
-* ``kind`` — ``local`` traffic may carry PHI; ``cloud`` traffic must pass the
-  PHI guard first. The orchestrator reads this field directly.
-* ``api`` — wire protocol. ``openai`` covers Ollama, DeepSeek, Gemini's
-  OpenAI-compatible mode, DashScope/Qwen, Kimi, OpenRouter, and most others.
-  ``anthropic`` is for the native Anthropic Messages API (and any local
-  server emulating it).
-* ``api_key_env`` — name of the env var holding the key. The actual key is
-  never written to YAML or stored on disk. ``None`` for local backends.
+* ``id`` — our catalog key. Stored in ``Account.provider_id`` and on every
+  audit log line, so it is the single string the rest of the system uses
+  to refer to a backend.
+* ``kind`` — ``local`` may receive PHI; ``cloud`` must pass the PHI guard
+  first. The orchestrator reads this field directly. pydantic-ai has no
+  equivalent concept, which is why we keep our own catalog.
+* ``model`` — model name. Two shapes, depending on ``base_url``:
+
+      base_url is None  → must be ``"<prefix>:<model>"`` (pydantic-ai's
+                          ``KnownModelName`` form, e.g. ``"openai:gpt-4o"``).
+                          ``infer_model`` picks the right Model + Provider
+                          and reads the conventional env var for the key.
+      base_url is set   → bare model name, e.g. ``"qwen3:14b"`` or
+                          ``"mlx-community/Llama-3.2-3B"``. The string is
+                          forwarded as-is in the request body. No prefix
+                          is needed because the endpoint is already pinned.
+
+* ``base_url`` — optional. Set when the endpoint is self-hosted (Ollama,
+  MLX server, llama.cpp, LM Studio) or a corporate mirror.
+* ``api_key_env`` — optional. Honored **only** when ``base_url`` is set,
+  for endpoints that need auth (LM Studio with a token, a Tailscale-fronted
+  Ollama, etc.). Missing env in that case raises ``MissingApiKeyError``.
+  Stock cloud providers ignore this field — they read their own env vars.
 
 Declaring a cloud entry only says "this option exists." Per-user opt-in
 (``Account.cloud_provider_opt_in``) and the admin populating the env var
@@ -23,7 +38,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ProviderKind = Literal["local", "cloud"]
-ProviderApi = Literal["openai", "anthropic"]
 
 
 class ProviderConfig(BaseModel):
@@ -33,10 +47,33 @@ class ProviderConfig(BaseModel):
 
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     kind: ProviderKind
-    api: ProviderApi
-    base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    api_key_env: str | None = Field(default=None, max_length=64)
+    base_url: str | None = Field(default=None, min_length=1)
+    api_key_env: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _check_model_shape(self) -> "ProviderConfig":
+        # When no base_url is set, pydantic-ai's ``infer_model`` needs the
+        # ``"<prefix>:<model>"`` form to pick the right backend. We enforce
+        # the shape here so a typo in YAML fails at load, not at first request.
+        if self.base_url is None and ":" not in self.model:
+            raise ValueError(
+                f"model {self.model!r} needs '<provider>:<model>' format "
+                "when no base_url is set (e.g. 'openai:gpt-4o'). "
+                "For self-hosted endpoints, set base_url and use a bare "
+                "model name."
+            )
+        if self.base_url is None and self.api_key_env is not None:
+            # Stock cloud providers read their own env vars; honoring
+            # api_key_env here would create two layers doing the same job.
+            raise ValueError(
+                f"api_key_env={self.api_key_env!r} is only honored when "
+                "base_url is set. Stock cloud providers read their own env "
+                "vars (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) — drop "
+                "api_key_env, or set base_url if you really want a custom "
+                "endpoint with custom auth."
+            )
+        return self
 
 
 class ModelsConfig(BaseModel):

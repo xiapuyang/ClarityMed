@@ -3,25 +3,120 @@
 ## Commands
 
 ```bash
-# TODO: 填写启动命令
-# uv run python serve.py
-
-# 同步依赖
+# 同步依赖（含 dev group）
 uv sync
+
+# 跑测试 + 覆盖率门槛（pyproject.toml 设了 --cov-fail-under=80）
+uv run pytest
+
+# 跑全部 pre-commit hook（gitleaks / ruff / ruff-format / AI bypass 检测）
+uv run pre-commit run --all-files
 ```
+
+> Server / CLI 启动命令目前还没接（`src/claritymed/cli/entry.py` 只暴露
+> `inject_context`，没有具体子命令；HTTP 入口未实现）。
 
 ## Architecture
 
-TODO: 描述目录结构和数据流
+```
+src/claritymed/
+  config.py             # YAML 加载器（mtime 缓存）、env 读取
+  context.py            # ContextVars：当前 user / request_id / language
+  errors.py             # 项目异常：PHI / Permission / UnknownProvider…
+  cli/                  # CLI 入口；inject_context 负责把 ContextVars 装好
+  core/
+    i18n/               # 翻译加载器，mtime hot-reload
+    llm/                # 对 pydantic-ai 的薄包装（chat 边界层）
+    observability/      # 结构化日志、审计、ASGI middleware
+    orchestrator/       # PHI guard（后续：回答 pipeline）
+    prompts/            # Prompt registry（文件系统支撑）
+    schemas/            # Pydantic 契约：Account/Patient/Answer/Lab/Models…
+  stores/               # IO 边界：account/profile/knowledge/chat/models YAML
+configs/                # *.yaml — app/models/ocr/retrieval/safety/uncertainty
+data/                   # gitignored — 每用户目录、知识库、SQLite
+docs/{brainstorms,plans,solutions}/   # ce skills 的输出
+tests/                  # pytest，覆盖率门槛 80%
+```
 
-```
-myapp/
-  # TODO: 填写模块说明
-```
+**数据流（目标态）：**
+CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
+`prompts/registry` 取模板 → `phi_guard` 判 cloud vs local → `LLMClient.chat()`
+（内部委托 pydantic-ai）→ 响应归一化 → audit log 落盘。
 
 ## Key design constraints
 
-- TODO: 写反直觉的约定和决策（颜色规范、特殊数据格式等），而不是显而易见的东西
+- **PHI 出域只看一个字段**：`ProviderConfig.kind`。`local` 可以带 PHI；`cloud`
+  必须先过 `core.orchestrator.phi_guard`。任何绕过 orchestrator 直接调
+  `LLMClient` 的代码都破坏这条不变量——不要这么做。
+- **Cloud 调用是三层 AND**：env var 存在 ∧ `Account.cloud_provider_opt_in == True`
+  ∧ 用户的 `provider_id` 指向一个 cloud 条目。少任意一层就回落到 local。
+- **每用户偏好以文件为准**：`data/<user_id>/settings.yaml` 是单一真相，
+  SQLite 表只是查询用的镜像；冲突时 YAML 赢。
+- **Provider resolution 失败即响**：`settings.yaml` 里把 `provider_id`
+  打错字会抛 `UnknownProviderError`，**不会**静默回落到 default —— 默认回落
+  会让 opt-in 过 cloud 的用户在不知情下被切到别的后端。
+- **解析顺序**：`override`（CLI `--provider`） > `Account.provider_id` >
+  `ModelsConfig.default_provider`。这个顺序在 `stores/models.py:resolve_provider`
+  里硬编码，改的话连带改文档。
+- **`model` 字段两种形态**，由 `base_url` 决定：
+  - `base_url` 缺省 → 必须 `"<prefix>:<model>"`（pydantic-ai 的
+    `KnownModelName` 形式，如 `"openai:gpt-4o"`）。pydantic-ai 用 prefix
+    选 Model/Provider 并读官方 env var。
+  - `base_url` 有值 → 裸 model 名（如 `"qwen3:14b"`、
+    `"mlx-community/Llama-3.2-3B"`），原样转发给服务端。
+  混着写（`"openai:gpt-4o"` + `base_url`）会被 validator 拒。
+- **`api_key_env` 只在 `base_url` 有值时生效**。stock cloud entry 里写它
+  会被 validator 拒（避免和 pydantic-ai 自己读的 env 出现两层来源）。
+  自托管端点声明了 `api_key_env` 但 env 没设 → `MissingApiKeyError`
+  立刻抛，而不是悄悄回落到 `OllamaProvider` 的 placeholder。
+- **本地 OpenAI-compatible 服务器都走同一条路**：Ollama / MLX / llama.cpp /
+  LM Studio 在 `build_model` 里全部映射到 `OllamaProvider(base_url, api_key)`
+  —— 它是 pydantic-ai 里唯一不强求 API key 的 Provider，恰好能承载"要不要
+  auth"两种情况。要加新本地后端，只在 YAML 加条目就行，不用动 Python。
+- **No JOINs / no FKs**（全局规则的项目化复述）—— 跨表关联用 app 代码拼，
+  引用永远用 `*_id` 整数而不是 name 字符串。
+
+## Use pydantic-ai's built-ins before writing your own
+
+依赖里有 `pydantic-ai-slim[anthropic,openai]>=1.0`。在自己写 provider 分发、
+消息类型、env 读取、重试、token 统计**之前**，先确认 pydantic-ai 是不是已
+经给了。
+
+**不要重造的轮子：**
+
+- **按字符串选 model**：`Agent('openai:gpt-4o')` / `infer_model('anthropic:claude-sonnet-4-5')`
+  已经把 `'<provider>:<model>'` 解析成正确的 `Model + Provider`。不要再手写
+  `if api == "openai": ... elif api == "anthropic": ...`。
+- **env → api_key**：`OpenAIProvider`/`AnthropicProvider`/`DeepSeekProvider`/
+  `OpenRouterProvider`/`MoonshotAIProvider`/`AlibabaProvider`/`GoogleGLAProvider`/
+  `OllamaProvider` 构造时自动读对应 env var；不要再自己 `os.environ.get(...)`
+  + raise `MissingApiKeyError`。
+- **消息 / 响应类型**：`pydantic_ai.messages.ModelRequest` / `ModelResponse`、
+  `pydantic_ai.usage.RunUsage` / `RequestUsage`、`AgentRunResult` 已经覆盖
+  text、finish_reason、model name、token usage。不要再自定义 `ChatMessage` /
+  `Usage` 的子集。
+- **多模型回退**：`pydantic_ai.models.fallback.FallbackModel(primary, secondary)`，
+  不要自己写 try/except 链。
+- **结构化输出 + 工具循环**：`Agent(..., output_type=GroundedAnswer)` +
+  `@agent.tool` 自带 JSON schema 重试。不要再写 parse-retry-validate。
+- **采样参数**：`pydantic_ai.settings.ModelSettings` 覆盖 max_tokens /
+  temperature / top_p / 等。
+
+**只有这几种情况才包一层：**
+
+- 包装在执行项目特有策略（PHI guard 读 `ProviderConfig.kind`——pydantic-ai
+  不知道这个概念）。
+- 需要 fail-loud 语义而 pydantic-ai 给的是 silent fallback。例：自托管端点
+  的 `api_key_env` 声明了但 env 没设——`OllamaProvider` 会静默用
+  placeholder，我们要立刻 `MissingApiKeyError`。这种"加一层就为了让它响"
+  是可以的，但要在新代码里**明确写明**"为什么不让框架自己处理"。
+- 真的需要在 `Agent` 之下的层（用 `pydantic_ai.direct.model_request`，那是
+  官方支持的 public API）。
+- 某个 vendor / endpoint 确实不在 `pydantic_ai.providers` 里（罕见，**先 grep
+  再说**）。
+
+**写之前自查：** 在 `pydantic_ai` 包里 grep 想写的类型或函数名。如果你打算
+写 50 行 adapter 干 pydantic-ai 用 10 行就能干的事，回头看是不是漏了这一步。
 
 ## Development Workflow
 

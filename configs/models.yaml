@@ -1,78 +1,72 @@
-# Provider catalog. Each entry says HOW to reach a backend, never WHAT key to
-# use. Keys are loaded from env vars named by ``api_key_env`` and are gitignored
-# via ``.env`` — see ``.env.example`` for the list of variables.
+# Provider catalog. Each entry is a tiny declaration:
 #
-#   kind:        local | cloud      — PHI guard reads this. PHI may only leave
-#                                     the box when kind == local.
-#   api:         openai | anthropic — wire protocol / SDK to use. Most vendors
-#                                     expose an OpenAI-compatible endpoint;
-#                                     ``anthropic`` is for the native Messages
-#                                     API (and any local server emulating it).
-#   base_url:    HTTP endpoint root.
-#   model:       model id sent on each request (override per call if needed).
-#   api_key_env: env var name holding the key. Omit for local backends.
+#   id:          our catalog key (stored in Account.provider_id, audit logs).
+#   kind:        local | cloud — PHI guard reads this. PHI may only leave
+#                the box when kind == local.
+#   model:       Two shapes:
+#                  - no base_url → pydantic-ai "<prefix>:<model>" form
+#                    (e.g. "openai:gpt-4o"). The prefix selects wire format
+#                    and which env var holds the API key.
+#                  - with base_url → bare model name (e.g. "qwen3:14b",
+#                    "mlx-community/Llama-3.2-3B"). Forwarded as-is to the
+#                    server.
+#   base_url:    optional — set when the endpoint is self-hosted (Ollama,
+#                MLX, llama.cpp, LM Studio) or a corporate mirror.
+#   api_key_env: optional — env var name for the API key. Only honored
+#                when base_url is set; raises MissingApiKeyError if
+#                declared but unset. Stock cloud entries ignore this and
+#                use pydantic-ai's own env-var conventions.
 #
-# Adding a cloud entry just declares the option exists. A user still has to
-# opt in (``Account.cloud_provider_opt_in``) and the admin must populate the
-# env var before any request actually goes out.
+# Adding a cloud entry only declares the option exists. A user still has
+# to opt in (Account.cloud_provider_opt_in) and the admin must populate
+# the env var before any request actually goes out.
 
 providers:
-  # ---- Local: pick the wire format your server speaks ----
-  - id: ollama-openai
+  # ---- Local: OpenAI-compatible servers ----
+  - id: ollama
     kind: local
-    api: openai
-    base_url: http://127.0.0.1:11434/v1
-    model: qwen3:14b
-  - id: ollama-anthropic
+    model: "qwen3:14b"
+    base_url: "http://127.0.0.1:11434/v1"
+
+  - id: mlx
     kind: local
-    api: anthropic
-    base_url: http://127.0.0.1:11434
-    model: qwen3:14b
+    model: "mlx-community/Llama-3.2-3B-Instruct-4bit"
+    base_url: "http://127.0.0.1:8080/v1"
+
+  # Example: remote local model behind auth (uncomment + set env var to use).
+  # - id: ollama-remote
+  #   kind: local
+  #   model: "qwen3:14b"
+  #   base_url: "https://ollama.example.internal/v1"
+  #   api_key_env: OLLAMA_REMOTE_KEY
 
   # ---- Cloud: OpenAI-compatible vendors ----
+  # Env vars (read by pydantic-ai's stock providers, no code in this repo
+  # touches them): OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY,
+  # ALIBABA_API_KEY (or DASHSCOPE_API_KEY), MOONSHOTAI_API_KEY,
+  # OPENROUTER_API_KEY, ANTHROPIC_API_KEY.
   - id: openai
     kind: cloud
-    api: openai
-    base_url: https://api.openai.com/v1
-    model: gpt-4o
-    api_key_env: OPENAI_API_KEY
+    model: "openai:gpt-4o"
   - id: deepseek
     kind: cloud
-    api: openai
-    base_url: https://api.deepseek.com/v1
-    model: deepseek-chat
-    api_key_env: DEEPSEEK_API_KEY
+    model: "deepseek:deepseek-chat"
   - id: gemini
     kind: cloud
-    api: openai
-    base_url: https://generativelanguage.googleapis.com/v1beta/openai
-    model: gemini-2.0-flash
-    api_key_env: GEMINI_API_KEY
+    model: "google-gla:gemini-2.0-flash"
   - id: qwen
     kind: cloud
-    api: openai
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model: qwen-max
-    api_key_env: DASHSCOPE_API_KEY
+    model: "alibaba:qwen-max"
   - id: kimi
     kind: cloud
-    api: openai
-    base_url: https://api.moonshot.cn/v1
-    model: moonshot-v1-32k
-    api_key_env: MOONSHOT_API_KEY
+    model: "moonshotai:kimi-k2-0711-preview"
   - id: openrouter
     kind: cloud
-    api: openai
-    base_url: https://openrouter.ai/api/v1
-    model: anthropic/claude-sonnet-4.5
-    api_key_env: OPENROUTER_API_KEY
+    model: "openrouter:anthropic/claude-sonnet-4.5"
 
   # ---- Cloud: native Anthropic Messages API ----
   - id: claude
     kind: cloud
-    api: anthropic
-    base_url: https://api.anthropic.com
-    model: claude-sonnet-4-5
-    api_key_env: ANTHROPIC_API_KEY
+    model: "anthropic:claude-sonnet-4-5"
 
-default_provider: ollama-openai
+default_provider: ollama

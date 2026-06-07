@@ -1,23 +1,10 @@
-"""Unified async chat client over the ``openai`` and ``anthropic`` SDKs.
+"""Bridge to pydantic-ai.
 
-One ``LLMClient`` per ``ProviderConfig``; dispatch is by ``provider.api``.
-PHI guard runs in the orchestrator *before* this layer — by the time bytes
-reach an adapter, the payload is already either local-allowed or redacted.
+Only one helper lives here: ``build_model(provider) -> pydantic_ai.models.Model``.
+For chat, structured output, tool use, etc., import from ``pydantic_ai``
+directly — wrapping ``Agent`` is intentionally not this module's job.
 """
 
-from claritymed.core.llm.client import LLMClient, MissingApiKeyError
-from claritymed.core.llm.request import (
-    ChatMessage,
-    ChatRequest,
-    ChatResponse,
-    Usage,
-)
+from claritymed.core.llm.model import build_model
 
-__all__ = [
-    "ChatMessage",
-    "ChatRequest",
-    "ChatResponse",
-    "LLMClient",
-    "MissingApiKeyError",
-    "Usage",
-]
+__all__ = ["build_model"]

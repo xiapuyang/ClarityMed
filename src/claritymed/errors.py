@@ -28,3 +28,12 @@ class PhiViolationError(ValueError):
 
 class UnknownProviderError(KeyError):
     """Resolver was asked for a provider id that is not in ``models.yaml``."""
+
+
+class MissingApiKeyError(RuntimeError):
+    """A provider declared ``api_key_env`` but the env var is unset.
+
+    Only raised for custom endpoints (``base_url`` set). Stock cloud
+    providers go through pydantic-ai, which raises its own ``UserError``
+    for missing keys — we don't shadow that path.
+    """

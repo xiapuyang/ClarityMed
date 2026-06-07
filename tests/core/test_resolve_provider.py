@@ -45,9 +45,10 @@ def test_unknown_account_id_raises_not_silently_falls_back():
         resolve_provider(account=a)
 
 
-def test_resolved_provider_carries_wire_format():
-    """The resolver returns a full ProviderConfig — callers read api/kind from it."""
+def test_resolved_provider_carries_full_config():
+    """The resolver returns a full ProviderConfig — callers read kind/model
+    from it. (`kind` is what the PHI guard branches on; `model` is the
+    pydantic-ai prefix string that build_model() consumes.)"""
     p = resolve_provider(override="claude")
     assert p.kind == "cloud"
-    assert p.api == "anthropic"
-    assert p.api_key_env == "ANTHROPIC_API_KEY"
+    assert p.model.startswith("anthropic:")

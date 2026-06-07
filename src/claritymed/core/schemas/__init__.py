@@ -18,7 +18,6 @@ from claritymed.core.schemas.answer import (
 from claritymed.core.schemas.lab import LabFlag, LabPanel, LabValue, ReferenceRange
 from claritymed.core.schemas.models import (
     ModelsConfig,
-    ProviderApi,
     ProviderConfig,
     ProviderKind,
 )
@@ -61,7 +60,6 @@ __all__ = [
     "Patient",
     "PredictionSet",
     "Profile",
-    "ProviderApi",
     "ProviderConfig",
     "ProviderKind",
     "QualityReport",
