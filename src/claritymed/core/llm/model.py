@@ -32,6 +32,7 @@ import os
 from typing import TYPE_CHECKING
 
 from pydantic_ai.models import infer_model
+from pydantic_ai.settings import ModelSettings
 
 from claritymed.core.schemas import ProviderConfig
 from claritymed.errors import MissingApiKeyError
@@ -54,6 +55,26 @@ def build_model(provider: ProviderConfig) -> "Model":
         provider.model,
         provider=OllamaProvider(base_url=provider.base_url, api_key=api_key),
     )
+
+
+def build_model_settings(provider: ProviderConfig) -> ModelSettings | None:
+    """Translate catalog defaults into a pydantic-ai ``ModelSettings``.
+
+    Returns ``None`` when the catalog entry sets no overrides, so callers
+    can omit ``model_settings`` from the ``Agent`` constructor entirely.
+    Right now the only knob is ``thinking`` — pydantic-ai's unified
+    reasoning field, mapped to each vendor's native shape by the Model
+    layer (``anthropic_thinking``, ``openai_reasoning_effort``,
+    ``google_thinking_config``, …). Silently ignored on models that
+    don't support reasoning, which is fine — the same setting can
+    decorate ``claude-sonnet-4-5`` and ``qwen3:14b`` without branching.
+
+    Per-request overrides belong at the orchestrator: merge the dict
+    returned here with the per-call value before handing it to ``Agent``.
+    """
+    if provider.thinking is None:
+        return None
+    return ModelSettings(thinking=provider.thinking)
 
 
 def _resolve_api_key(provider: ProviderConfig) -> str | None:

@@ -16,6 +16,17 @@
 #                when base_url is set; raises MissingApiKeyError if
 #                declared but unset. Stock cloud entries ignore this and
 #                use pydantic-ai's own env-var conventions.
+#   thinking:    optional reasoning toggle. One of:
+#                  - omitted  → use the vendor's default behavior
+#                  - true     → enable with the vendor's default effort
+#                  - false    → explicitly disable (useful for always-on
+#                               models like Gemini 2.5 where you want it off)
+#                  - "minimal" | "low" | "medium" | "high" | "xhigh"
+#                               → enable at a specific effort level
+#                Forwarded to pydantic-ai's unified ModelSettings.thinking,
+#                which maps to anthropic_thinking / openai_reasoning_effort /
+#                google_thinking_config under the hood. Silently ignored on
+#                models that don't support reasoning.
 #
 # Adding a cloud entry only declares the option exists. A user still has
 # to opt in (Account.cloud_provider_opt_in) and the admin must populate
@@ -68,5 +79,13 @@ providers:
   - id: claude
     kind: cloud
     model: "anthropic:claude-sonnet-4-5"
+
+  # Example: same Claude model with extended thinking turned on. The
+  # orchestrator may still override per-request when a specific question
+  # needs more or less reasoning.
+  # - id: claude-thinking
+  #   kind: cloud
+  #   model: "anthropic:claude-sonnet-4-5"
+  #   thinking: high
 
 default_provider: ollama

@@ -75,6 +75,43 @@ def test_api_key_env_without_base_url_rejected():
         )
 
 
+# ---------- thinking field ----------
+
+
+def test_thinking_defaults_to_none():
+    """Omitting ``thinking`` means 'use vendor default' — no settings emitted."""
+    p = ProviderConfig.model_validate(_provider())
+    assert p.thinking is None
+
+
+def test_thinking_accepts_bool():
+    """``True`` = enable with vendor default effort; ``False`` = explicitly disable."""
+    p_on = ProviderConfig.model_validate(_provider(thinking=True))
+    p_off = ProviderConfig.model_validate(_provider(thinking=False))
+    assert p_on.thinking is True
+    assert p_off.thinking is False
+
+
+@pytest.mark.parametrize("level", ["minimal", "low", "medium", "high", "xhigh"])
+def test_thinking_accepts_effort_levels(level):
+    """The five canonical effort labels pydantic-ai accepts."""
+    p = ProviderConfig.model_validate(_provider(thinking=level))
+    assert p.thinking == level
+
+
+def test_thinking_rejects_unknown_level():
+    """Typos like 'extreme' must fail at YAML load, not at first request."""
+    with pytest.raises(ValidationError):
+        ProviderConfig.model_validate(_provider(thinking="extreme"))
+
+
+def test_thinking_rejects_integer():
+    """Raw token budgets aren't supported — use the effort levels instead.
+    A future escape hatch would go through extra_body, not this field."""
+    with pytest.raises(ValidationError):
+        ProviderConfig.model_validate(_provider(thinking=8000))
+
+
 # ---------- generic field validation ----------
 
 

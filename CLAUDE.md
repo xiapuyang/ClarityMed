@@ -73,6 +73,14 @@ CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
   LM Studio 在 `build_model` 里全部映射到 `OllamaProvider(base_url, api_key)`
   —— 它是 pydantic-ai 里唯一不强求 API key 的 Provider，恰好能承载"要不要
   auth"两种情况。要加新本地后端，只在 YAML 加条目就行，不用动 Python。
+- **Reasoning 走一个统一字段**：`ProviderConfig.thinking` 接受
+  `true / false / "minimal" / "low" / "medium" / "high" / "xhigh"`，由
+  `build_model_settings` 透传到 pydantic-ai 的 `ModelSettings.thinking`。
+  pydantic-ai 自己把它翻成 `anthropic_thinking` / `openai_reasoning_effort` /
+  `google_thinking_config`，所以我们这边**不要**按 vendor 分支翻译——
+  那是它的活。模型不支持推理时静默忽略，可以放心地把同一档位挂在 cloud
+  和 local 条目上。需要按问题复杂度临时上调？orchestrator 把 catalog
+  默认值和 per-request 值合并后再传给 `Agent`，schema 不用动。
 - **No JOINs / no FKs**（全局规则的项目化复述）—— 跨表关联用 app 代码拼，
   引用永远用 `*_id` 整数而不是 name 字符串。
 

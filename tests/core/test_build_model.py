@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from claritymed.core.llm import build_model
+from claritymed.core.llm import build_model, build_model_settings
 from claritymed.core.schemas import ProviderConfig
 from claritymed.errors import MissingApiKeyError
 
@@ -128,3 +128,44 @@ def test_no_api_key_env_means_no_auth(monkeypatch):
     # not look like a real API key.
     key = m._provider.client.api_key
     assert key and "not-set" in key.lower()
+
+
+# ---------- build_model_settings ----------
+
+
+def test_settings_none_when_thinking_unset():
+    """No thinking → no settings → caller omits model_settings from Agent."""
+    assert build_model_settings(_provider()) is None
+
+
+def test_settings_pass_thinking_true_through():
+    """``thinking: true`` → ModelSettings(thinking=True). pydantic-ai's
+    Model layer translates it to each vendor's native field."""
+    s = build_model_settings(_provider(thinking=True))
+    assert s == {"thinking": True}
+
+
+def test_settings_pass_thinking_false_through():
+    """``thinking: false`` is *explicit* disable — distinct from omitted."""
+    s = build_model_settings(_provider(thinking=False))
+    assert s == {"thinking": False}
+
+
+@pytest.mark.parametrize("level", ["minimal", "low", "medium", "high", "xhigh"])
+def test_settings_pass_effort_level_through(level):
+    """Effort levels go through verbatim; pydantic-ai owns the vendor mapping."""
+    s = build_model_settings(_provider(thinking=level))
+    assert s == {"thinking": level}
+
+
+def test_settings_work_for_stock_cloud_provider(monkeypatch):
+    """Stock cloud entry (no base_url) — same translation, no special-casing."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    p = _provider(
+        id="claude",
+        kind="cloud",
+        model="anthropic:claude-sonnet-4-5",
+        base_url=None,
+        thinking="high",
+    )
+    assert build_model_settings(p) == {"thinking": "high"}

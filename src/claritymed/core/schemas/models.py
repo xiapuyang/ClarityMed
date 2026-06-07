@@ -25,6 +25,13 @@ A ``ProviderConfig`` is intentionally tiny:
   for endpoints that need auth (LM Studio with a token, a Tailscale-fronted
   Ollama, etc.). Missing env in that case raises ``MissingApiKeyError``.
   Stock cloud providers ignore this field — they read their own env vars.
+* ``thinking`` — optional reasoning/thinking toggle. Forwarded to
+  ``pydantic_ai.settings.ModelSettings.thinking``, which knows how to
+  translate the unified value into each vendor's native field
+  (Anthropic ``thinking``, OpenAI ``reasoning_effort``, Google
+  ``thinking_config``, …). Silently ignored on models that don't
+  support reasoning, which is why we keep this one knob instead of
+  duplicating per-vendor schemas.
 
 Declaring a cloud entry only says "this option exists." Per-user opt-in
 (``Account.cloud_provider_opt_in``) and the admin populating the env var
@@ -38,6 +45,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ProviderKind = Literal["local", "cloud"]
+ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
 
 
 class ProviderConfig(BaseModel):
@@ -50,6 +58,7 @@ class ProviderConfig(BaseModel):
     model: str = Field(min_length=1)
     base_url: str | None = Field(default=None, min_length=1)
     api_key_env: str | None = Field(default=None, min_length=1, max_length=64)
+    thinking: bool | ThinkingLevel | None = Field(default=None)
 
     @model_validator(mode="after")
     def _check_model_shape(self) -> "ProviderConfig":

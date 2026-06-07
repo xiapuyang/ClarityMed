@@ -20,6 +20,7 @@ from claritymed.core.schemas.models import (
     ModelsConfig,
     ProviderConfig,
     ProviderKind,
+    ThinkingLevel,
 )
 from claritymed.core.schemas.patient import (
     Allergy,
@@ -67,6 +68,7 @@ __all__ = [
     "ReferenceRange",
     "RequestContext",
     "Role",
+    "ThinkingLevel",
     "UncertaintyResult",
     "UncertaintySource",
     "UncertaintyType",
