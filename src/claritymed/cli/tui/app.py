@@ -100,11 +100,11 @@ class ClarityMedApp(App):
     # ----- layout ---------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield StatusBar()
         with Horizontal(id="main_row"):
             yield Conversation(id="conversation")
             yield ToolSteps(id="tool_steps")
         yield InputBar()
+        yield StatusBar()
 
     def on_mount(self) -> None:
         status = self.query_one(StatusBar)
@@ -227,6 +227,7 @@ class ClarityMedApp(App):
         status = self.query_one(StatusBar)
         status.user_id = user_id
         self._session_turns.clear()
+        status.context_chars = 0
         conv = self.query_one(Conversation)
         for child in list(conv.children):
             child.remove()
@@ -263,6 +264,7 @@ class ClarityMedApp(App):
         steps.reset()
         conv.add_user_turn(text)
         self._session_turns.append(ChatTurn(role="user", text=text))
+        self._refresh_context_chars()
 
         mode: ModeName = force_mode or status.mode  # type: ignore[assignment]
         # Stream the chosen service in a Textual worker so the UI stays
@@ -328,9 +330,9 @@ class ClarityMedApp(App):
     def _on_done(self, mode: ModeName, final, streamed_text: str) -> None:
         conv = self.query_one(Conversation)
         if mode == "ask":
-            bubble = conv.finalize_active()
             text = streamed_text or (final if isinstance(final, str) else str(final))
-            if bubble is None:
+            bubble = conv.finalize_active(markdown_text=text)
+            if bubble is None and text:
                 conv.add_system_turn(text)
             self._session_turns.append(ChatTurn(role="assistant", text=text))
         else:
@@ -339,6 +341,11 @@ class ClarityMedApp(App):
             self._session_turns.append(
                 ChatTurn(role="system", text=f"{mode}: {summary}")
             )
+        self._refresh_context_chars()
+
+    def _refresh_context_chars(self) -> None:
+        total = sum(len(turn.text) for turn in self._session_turns)
+        self.query_one(StatusBar).context_chars = total
 
     def _flash_routing(self, mode: ModeName, confidence: float) -> None:
         status = self.query_one(StatusBar)

@@ -27,12 +27,20 @@ def _confidence_band(value: float | None) -> str:
     return "low"
 
 
+def _fmt_ctx(chars: int) -> str:
+    """Compact display: 0 / 980 / 12.4k / 1.2M."""
+    if chars < 1000:
+        return str(chars)
+    if chars < 1_000_000:
+        return f"{chars / 1000:.1f}k"
+    return f"{chars / 1_000_000:.1f}M"
+
+
 class StatusBar(Static):
     """Reactive status line. Updates whenever any of its fields change."""
 
     DEFAULT_CSS = """
     StatusBar {
-        dock: top;
         height: 1;
         background: $primary;
         color: $text;
@@ -51,6 +59,7 @@ class StatusBar(Static):
     request_id: reactive[str] = reactive("-")
     confidence: reactive[float | None] = reactive(None)
     routing_flash: reactive[str] = reactive("")
+    context_chars: reactive[int] = reactive(0)
 
     def render(self) -> str:
         band = _confidence_band(self.confidence)
@@ -59,7 +68,8 @@ class StatusBar(Static):
             f"user={self.user_id}  "
             f"mode={self.mode}{flash}  "
             f"lang={self.language}  "
-            f"provider={self.provider_id}({self.provider_kind})  "
+            f"model={self.provider_id}({self.provider_kind})  "
+            f"ctx={_fmt_ctx(self.context_chars)}  "
             f"req={self.request_id[-8:]}  "
             f"conf={band}"
         )

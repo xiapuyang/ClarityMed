@@ -12,7 +12,7 @@ from typing import Literal
 
 from textual.containers import VerticalScroll
 from textual.reactive import reactive
-from textual.widgets import Static
+from textual.widgets import Markdown, Static
 
 Role = Literal["user", "assistant", "system"]
 
@@ -90,6 +90,19 @@ class TurnBubble(Static):
         self.update(f"{prefix}{self.streaming_text}{suffix}")
 
 
+class AssistantMarkdown(Markdown):
+    """Final rendered Markdown bubble for an assistant turn."""
+
+    DEFAULT_CSS = """
+    AssistantMarkdown {
+        margin: 0 1 1 1;
+        padding: 0 1;
+        border-left: thick $success;
+        background: $surface;
+    }
+    """
+
+
 class Conversation(VerticalScroll):
     """Scrolling list of turns plus the empty-state placeholder."""
 
@@ -97,7 +110,6 @@ class Conversation(VerticalScroll):
     Conversation {
         width: 2fr;
         background: $surface;
-        border-right: solid $primary;
     }
     Conversation > .empty {
         color: $text-muted;
@@ -150,9 +162,25 @@ class Conversation(VerticalScroll):
         self._active_assistant.append(chunk)
         self.scroll_end(animate=False)
 
-    def finalize_active(self) -> TurnBubble | None:
+    def finalize_active(self, markdown_text: str | None = None) -> TurnBubble | None:
+        """Lock the active assistant turn.
+
+        When ``markdown_text`` is provided, the streaming Static bubble is
+        replaced with a fully rendered ``AssistantMarkdown`` widget so the
+        LLM's markdown (lists, headings, bold) shows properly. When it is
+        ``None`` (e.g. system / ingest finalize), the streaming bubble is
+        left as-is.
+        """
         finalized = self._active_assistant
         self._active_assistant = None
+        if finalized is not None and markdown_text is not None:
+            try:
+                finalized.remove()
+                md = AssistantMarkdown(markdown_text)
+                self.mount(md)
+                self.scroll_end(animate=False)
+            except Exception:  # noqa: BLE001 — fall through to raw bubble
+                pass
         return finalized
 
     def cancel_active(self) -> TurnBubble | None:

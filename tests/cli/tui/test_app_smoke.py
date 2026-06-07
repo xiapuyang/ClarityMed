@@ -139,30 +139,30 @@ async def test_slash_mode_switches_mode():
 
 @pytest.mark.asyncio
 async def test_ask_dispatch_streams_tokens_and_finalizes():
+    """After Done, the assistant turn is swapped to a rendered Markdown widget."""
+    from textual.widgets import Markdown
+
     app = ClarityMedApp(
         user_id="alice",
         language="en",
         chat_memory_store=_StubChatMemory("alice"),
-        ask_service_factory=lambda: _StubAskService(["he", "llo"]),
+        ask_service_factory=lambda: _StubAskService(["hel", "lo"]),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
         app.query_one(InputBar).post_message(InputBar.Submitted("how are you?"))
-        # Drain the worker.
         await pilot.pause()
         for _ in range(20):
             await pilot.pause()
             if app._stream_worker is None or app._stream_worker.is_finished:
                 break
         conv = app.query_one(Conversation)
-        # User turn + assistant turn at minimum.
-        assert len(conv.children) >= 2
-        all_text = " ".join(
-            str(child.renderable)
-            for child in conv.children
-            if hasattr(child, "renderable")
-        )
-        assert "hello" in all_text
+        # User turn + Markdown assistant turn.
+        markdown_widgets = list(conv.query(Markdown))
+        assert markdown_widgets, "assistant turn should be a Markdown widget after Done"
+        # The session transcript carries the assembled text.
+        assistant_texts = [t.text for t in app._session_turns if t.role == "assistant"]
+        assert any("hello" in t for t in assistant_texts)
 
 
 @pytest.mark.asyncio
