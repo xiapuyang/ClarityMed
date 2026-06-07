@@ -46,5 +46,88 @@ def _isolate_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     importlib.reload(_config)
     _config.reload_configs()
+
+    # Per-user engines and account cache are process-global; reset between
+    # tests so one test's "alice" cannot leak into another's tmp tree.
+    from claritymed.stores import profile as _profile
+
+    _profile._ENGINES.clear()
+    from claritymed.stores.account import reset_account_cache
+
+    reset_account_cache()
+
+    # Reset the three loggers between tests so audit / access handlers from a
+    # previous test do not still write into the previous tmp_path's logs dir.
+    # Lazy getters reconfigure on next call against the current LOG_DIR.
+    import logging as _logging
+
+    for name in ("claritymed", "claritymed.access", "claritymed.audit"):
+        lg = _logging.getLogger(name)
+        for h in list(lg.handlers):
+            lg.removeHandler(h)
+        # setup_logging sets propagate=False; reset so caplog can see records
+        # in tests that did not call setup_logging themselves.
+        lg.propagate = True
+
     yield
     _config.reload_configs()
+
+
+@pytest.fixture
+def alice():
+    """First user — auto-promoted to admin by ``init_user``."""
+    from claritymed.stores.account import init_user
+
+    return init_user("alice", display_name="Alice")
+
+
+@pytest.fixture
+def bob(alice):
+    """Second user — default ``user`` role. Depends on alice for ordering."""
+    from claritymed.stores.account import init_user
+
+    return init_user("bob", display_name="Bob")
+
+
+@pytest.fixture
+def carol(alice):
+    """Third user — default ``user`` role. Depends on alice for ordering."""
+    from claritymed.stores.account import init_user
+
+    return init_user("carol", display_name="Carol")
+
+
+@pytest.fixture
+def trio(alice, bob, carol):
+    """admin + two users, the canonical role-isolation fixture."""
+    return {"admin": alice, "users": [bob, carol]}
+
+
+@pytest.fixture
+def as_():
+    """Context manager that sets the three ContextVars for a given account.
+
+    Usage::
+
+        with as_(bob):
+            with pytest.raises(PermissionDeniedError):
+                require_admin()
+    """
+    from contextlib import contextmanager
+
+    from claritymed.context import apply_context, new_request_id, reset_context
+
+    @contextmanager
+    def _switch(account_or_uid):
+        uid = (
+            account_or_uid.user_id
+            if hasattr(account_or_uid, "user_id")
+            else account_or_uid
+        )
+        tokens = apply_context(new_request_id(), uid, "en")
+        try:
+            yield
+        finally:
+            reset_context(tokens)
+
+    return _switch

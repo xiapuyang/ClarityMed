@@ -1,0 +1,128 @@
+"""Per-user PHI store (SQLModel + SQLite).
+
+Each user gets their own SQLite file under ``data/users/<id>/profile.db``.
+The schema mirrors the Pydantic contracts in ``core/schemas/patient.py``;
+every table also carries a ``user_id`` column as defense-in-depth — if path
+isolation ever fails, the ``WHERE user_id = ?`` filter still catches a cross-
+user read.
+
+The CLAUDE.md "No JOINs / No FKs / surrogate id + create_time + update_time"
+rules apply per the project standard. We deliberately deviate on one point:
+``user_id`` is ``str``, not ``BigInteger``, because ClarityMed identifies
+users by human-readable handles.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional
+
+from sqlalchemy import event
+from sqlmodel import Field, Session, SQLModel, create_engine, select
+
+from claritymed.context import user_id_ctx
+from claritymed.core.schemas import Allergy
+from claritymed.errors import UserIdMismatch
+from claritymed.stores.paths import user_db_path, user_root, validate_user_id
+
+_ENGINES: dict[str, object] = {}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class AllergyRow(SQLModel, table=True):
+    __tablename__ = "allergy"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    substance: str
+    severity: str
+    source: str
+    create_time: datetime = Field(default_factory=_now)
+    update_time: datetime = Field(default_factory=_now)
+
+
+class ConditionRow(SQLModel, table=True):
+    __tablename__ = "condition"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    display: str
+    code: Optional[str] = None
+    onset_date: Optional[datetime] = None
+    create_time: datetime = Field(default_factory=_now)
+    update_time: datetime = Field(default_factory=_now)
+
+
+class MedicationRow(SQLModel, table=True):
+    __tablename__ = "medication"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    display: str
+    code: Optional[str] = None
+    dose: Optional[str] = None
+    frequency: Optional[str] = None
+    create_time: datetime = Field(default_factory=_now)
+    update_time: datetime = Field(default_factory=_now)
+
+
+def _engine_for(user_id: str):
+    cached = _ENGINES.get(user_id)
+    if cached is not None:
+        return cached
+    user_root(user_id).mkdir(parents=True, exist_ok=True)
+    engine = create_engine(f"sqlite:///{user_db_path(user_id)}", echo=False)
+    SQLModel.metadata.create_all(engine)
+    _ENGINES[user_id] = engine
+    return engine
+
+
+@event.listens_for(SQLModel.metadata, "before_create")
+def _enable_foreign_keys(target, connection, **kw):  # noqa: ARG001
+    # We have no FKs by policy, but enabling the pragma keeps any future
+    # ORM-default FKs honest in this single-user database.
+    connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+
+class ProfileStore:
+    """CRUD against one user's profile.db. All methods refuse cross-user writes."""
+
+    def __init__(self, user_id: str) -> None:
+        self.user_id = validate_user_id(user_id)
+        self.engine = _engine_for(self.user_id)
+
+    @classmethod
+    def for_current_user(cls) -> "ProfileStore":
+        uid = user_id_ctx.get()
+        if not uid:
+            from claritymed.context import MissingContextError
+
+            raise MissingContextError("user_id_ctx is not set")
+        return cls(uid)
+
+    # --- Allergy -----------------------------------------------------
+
+    def list_allergies(self) -> list[Allergy]:
+        with Session(self.engine) as session:
+            stmt = select(AllergyRow).where(AllergyRow.user_id == self.user_id)
+            rows = session.exec(stmt).all()
+        return [
+            Allergy(substance=r.substance, severity=r.severity, source=r.source)  # type: ignore[arg-type]
+            for r in rows
+        ]
+
+    def add_allergy(self, allergy: Allergy, *, owner_user_id: str) -> Allergy:
+        if owner_user_id != self.user_id:
+            raise UserIdMismatch(
+                f"add_allergy called for {owner_user_id!r} on store {self.user_id!r}"
+            )
+        row = AllergyRow(
+            user_id=self.user_id,
+            substance=allergy.substance,
+            severity=allergy.severity,
+            source=allergy.source,
+        )
+        with Session(self.engine) as session:
+            session.add(row)
+            session.commit()
+        return allergy
