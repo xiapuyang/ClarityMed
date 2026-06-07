@@ -1,24 +1,26 @@
 """Per-user chat memory store skeleton.
 
-v1 is read-only (architecture A6). The fact-extraction-and-write loop is a
-v2 plan, but the per-user directory and search interface live here so the
-text_rag plan can wire calls before the real implementation lands.
+Semantic chat memory (LanceDB + embedder) is a v2 plan. v1 ships two
+surfaces the TUI needs on day one:
 
-Two transcript-level helpers exist for the TUI session lifecycle: ``load_recent``
-returns the most recent turns on startup (currently a stub returning ``[]``),
-and ``save_turns`` persists the session transcript on shutdown (currently a
-no-op log line). The TUI calls both so the surface is stable for the real
-v2 implementation.
+* ``search`` — placeholder for the future semantic recall path. Returns
+  ``[]`` until the text_rag plan wires a real embedder.
+* ``load_recent`` / ``save_turns`` — file-backed transcript so the TUI can
+  reopen with the prior session visible and the operator can grep
+  ``~/.claritymed/data/users/<id>/chat_memory.lance/transcript.jsonl`` for
+  audit. The file is JSON-lines so it survives partial writes; the real
+  LanceDB store can ingest it later without a separate migration step.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from claritymed.context import MissingContextError, user_id_ctx
 from claritymed.stores.paths import user_chat_memory_dir, validate_user_id
@@ -89,17 +91,38 @@ class LanceChatMemoryStore(ChatMemoryStore):
         return []
 
     def load_recent(self, k: int = 10) -> list[ChatTurn]:
-        logger.info(
-            "chat memory load_recent stub: user=%s k=%d returning []",
-            self.user_id,
-            k,
-        )
-        return []
+        path = self._transcript_path()
+        if not path.exists():
+            return []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            logger.warning("chat transcript read failed: %s", exc)
+            return []
+        recent = lines[-k:] if k > 0 else lines
+        turns: list[ChatTurn] = []
+        for line in recent:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                turns.append(ChatTurn.model_validate(json.loads(line)))
+            except (json.JSONDecodeError, ValidationError):
+                # Skip a corrupt line rather than refusing to load the
+                # whole history — the operator can grep the file to
+                # spot what broke.
+                continue
+        return turns
 
     def save_turns(self, turns: list[ChatTurn]) -> int:
-        logger.info(
-            "chat memory save_turns stub: user=%s turns=%d (not persisted)",
-            self.user_id,
-            len(turns),
-        )
+        if not turns:
+            return 0
+        path = self._transcript_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for turn in turns:
+                fh.write(turn.model_dump_json() + "\n")
         return len(turns)
+
+    def _transcript_path(self) -> Path:
+        return self.lance_dir / "transcript.jsonl"

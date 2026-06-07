@@ -17,9 +17,9 @@ class InputBar(Container):
     DEFAULT_CSS = """
     InputBar {
         height: 4;
-        padding: 0 1 1 1;
+        padding: 0 1;
+        margin: 0 0 1 0;
         background: $surface;
-        border-top: solid $primary;
     }
     InputBar Input {
         background: $boost;
