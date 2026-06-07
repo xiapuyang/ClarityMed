@@ -17,6 +17,7 @@ from rich.console import Console
 from claritymed import config as _cfg
 from claritymed.cli.entry import inject_context
 from claritymed.core.llm.model import build_model
+from claritymed.core.observability.logging import setup_logging
 from claritymed.orchestrator.services import (
     AskService,
     Done,
@@ -36,6 +37,29 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+_BOOTSTRAPPED = False
+
+
+def _bootstrap_once() -> None:
+    """Idempotent CLI bootstrap: load ~/.claritymed/.env then init the three loggers.
+
+    Called from every subcommand. The first call wins; subsequent calls in the
+    same process are no-ops. Tests that need a fresh state can re-enter via
+    ``setup_logging`` directly.
+    """
+    global _BOOTSTRAPPED
+    if _BOOTSTRAPPED:
+        return
+    _cfg.load_env_file()
+    setup_logging(script_name="claritymed", console_level=None)
+    _BOOTSTRAPPED = True
+
+
+@app.callback()
+def _cli_root() -> None:
+    """Root callback — runs before every subcommand."""
+    _bootstrap_once()
 
 
 def _stderr(msg: str) -> None:

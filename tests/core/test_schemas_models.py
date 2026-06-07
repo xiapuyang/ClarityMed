@@ -189,5 +189,5 @@ def test_shipped_models_yaml_parses():
         "kimi",
         "openrouter",
         "ollama",
-        "mlx",
+        "omlx",
     } <= ids

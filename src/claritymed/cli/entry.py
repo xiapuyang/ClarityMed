@@ -17,6 +17,7 @@ from typing import Iterator
 from claritymed import config as _cfg
 from claritymed.context import apply_context, new_request_id, reset_context
 from claritymed.core.observability.audit import audit_event
+from claritymed.core.observability.logging import get_access_logger
 
 DEFAULT_USER_ID = "default"
 
@@ -70,12 +71,16 @@ def inject_context(
         logger.warning(t("ui.cli.user_required", lang=lang))
 
     tokens = apply_context(rid, uid, lang)
+    access = get_access_logger()
     try:
         audit_event("request_start", payload={"entry": "cli"})
+        access.info("cli_start user=%s lang=%s", uid, lang)
         yield rid, uid, lang
         audit_event("request_end", payload={"status": "ok"})
+        access.info("cli_end status=ok")
     except BaseException:
         audit_event("request_end", payload={"status": "exception"})
+        access.info("cli_end status=exception")
         raise
     finally:
         reset_context(tokens)

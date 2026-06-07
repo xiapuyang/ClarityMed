@@ -103,6 +103,36 @@ def load_modes_config() -> "ModesConfig":
     return ModesConfig.model_validate(raw)
 
 
+def load_env_file(path: Path | None = None) -> dict[str, str]:
+    """Load ``KEY=VALUE`` lines from ``CLARITYMED_HOME/.env`` into ``os.environ``.
+
+    Per-user keys (provider API keys, language overrides, default user) live
+    in the runtime root rather than the repo, so an open-source clone never
+    ships secrets. Lines starting with ``#`` are ignored. Existing env vars
+    are preserved — the file is a default, not an override.
+
+    Returns the dict of keys that were applied (useful for tests).
+    """
+    env_path = path or CLARITYMED_HOME / ".env"
+    if not env_path.exists():
+        return {}
+    applied: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value
+        applied[key] = value
+    return applied
+
+
 def reload_configs() -> None:
     """Invalidate the YAML cache. Test helper / admin hot-reload entry."""
     load_yaml.cache_clear()
