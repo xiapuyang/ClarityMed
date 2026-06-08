@@ -183,6 +183,103 @@ def rag_add(
     _run_async(_run())
 
 
+corpora_app = typer.Typer(help="Manage system RAG corpora (admin).")
+rag_app.add_typer(corpora_app, name="corpora")
+
+
+@corpora_app.command("list")
+def corpora_list() -> None:
+    """List system corpora declared in ``configs/retrieval.yaml``."""
+    from claritymed.core.rag.schemas import load_retrieval_config
+
+    cfg = load_retrieval_config()
+    for c in cfg.system_rag.collections:
+        console.print(
+            f"  [bold]{c.name}[/bold]  lang={c.language}  tier={c.authority_tier}  "
+            f"size={c.size_chunks}  topics={c.topics}"
+        )
+
+
+@corpora_app.command("ingest")
+def corpora_ingest(
+    name: str = typer.Argument(..., help="Corpus name (e.g. statpearls)"),
+    limit: int | None = typer.Option(None, "--limit", help="Max docs to ingest"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Parse + chunk only"),
+    raw_dir: str | None = typer.Option(
+        None, "--raw-dir", help="Override raw corpus path"
+    ),
+) -> None:
+    """Ingest a system corpus into Qdrant + parent docstore.
+
+    Admin only. Run from the host once the raw download is in place.
+    """
+    from pathlib import Path
+
+    from qdrant_client import AsyncQdrantClient
+
+    from claritymed.core.rag.chunking.factory import build_chunker
+    from claritymed.core.rag.embedding.factory import build_embedder
+    from claritymed.core.rag.parent_store import ParentStore
+    from claritymed.core.rag.qdrant_store import RagCollectionStore
+    from claritymed.ingest.corpus.base import ingest_corpus
+    from claritymed.ingest.corpus.statpearls import StatPearlsSource
+    from claritymed.stores.account import require_admin
+    from claritymed.stores.paths import (
+        shared_knowledge_raw_dir,
+        shared_parent_docstore_path,
+        shared_qdrant_dir,
+    )
+
+    require_admin()
+    if name != "statpearls":
+        console.print(f"[red]Unknown corpus: {name}[/red]")
+        raise typer.Exit(code=2)
+
+    root = Path(raw_dir) if raw_dir else shared_knowledge_raw_dir() / name
+    source = StatPearlsSource(root)
+    chunker = build_chunker()
+    embedder = build_embedder() if not dry_run else _NoOpEmbedder()
+    aclient = AsyncQdrantClient(path=str(shared_qdrant_dir()))
+    store = RagCollectionStore(
+        aclient=aclient,
+        collection_name=source.name,
+        dense_dim=embedder.dimension,
+    )
+    parent_store = ParentStore(shared_parent_docstore_path())
+
+    async def _run() -> None:
+        stats = await ingest_corpus(
+            source,
+            chunker=chunker,
+            embedder=embedder,
+            store=store,
+            parent_store=parent_store,
+            limit=limit,
+            dry_run=dry_run,
+        )
+        console.print(
+            f"[green]{stats.source}: {stats.docs_processed} docs / "
+            f"{stats.parents_written} parents / {stats.children_written} "
+            f"children (skipped {stats.docs_skipped})[/green]"
+        )
+
+    _run_async(_run())
+
+
+class _NoOpEmbedder:
+    """Dry-run embedder stand-in; advertises a dimension but never called."""
+
+    @property
+    def dimension(self) -> int:
+        return 1024
+
+    async def embed_dense(self, texts):
+        return [[0.0] * 1024 for _ in texts]
+
+    async def embed_sparse(self, texts):
+        return [{} for _ in texts]
+
+
 @rag_app.command("migrate")
 def rag_migrate(
     user: str = typer.Argument(..., help="user_id to migrate"),
@@ -211,6 +308,42 @@ def rag_migrate(
             console.print(f"[green]Migrated user '{uid}': RAG data dropped.[/green]")
 
     _run_async(_run())
+
+
+finetune_app = typer.Typer(help="Preprocess fine-tune corpora (NOT indexed in RAG).")
+app.add_typer(finetune_app, name="finetune")
+
+
+@finetune_app.command("preprocess")
+def finetune_preprocess(
+    name: str = typer.Argument(..., help="Corpus name (e.g. meddialog_cn)"),
+    input_dir: str = typer.Option(..., "--input", help="Raw corpus directory"),
+    output_dir: str = typer.Option(..., "--output", help="JSONL output directory"),
+    limit: int | None = typer.Option(None, "--limit", help="Cap dialogs processed"),
+) -> None:
+    """Clean a fine-tune corpus into Alpaca-style JSONL splits.
+
+    These corpora are NOT indexed in Qdrant — they are training material
+    only. Output goes under ``data/finetune/<name>/`` by convention.
+    """
+    from pathlib import Path
+
+    from claritymed.ingest.finetune.meddialog_cn import preprocess_meddialog_cn
+
+    if name != "meddialog_cn":
+        console.print(f"[red]Unknown fine-tune corpus: {name}[/red]")
+        raise typer.Exit(code=2)
+
+    stats = preprocess_meddialog_cn(Path(input_dir), Path(output_dir), limit=limit)
+    console.print(
+        f"[green]meddialog_cn: total={stats.total_dialogs} kept={stats.kept} "
+        f"(no_answer={stats.dropped_no_answer} short={stats.dropped_short_answer} "
+        f"long_q={stats.dropped_long_question} dedup={stats.dropped_dedup})[/green]"
+    )
+    console.print(
+        f"  train={stats.written_train}  val={stats.written_val}  "
+        f"test={stats.written_test}"
+    )
 
 
 @app.command()
