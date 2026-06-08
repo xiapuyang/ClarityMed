@@ -366,6 +366,101 @@ class _NoOpEmbedder:
         return [{} for _ in texts]
 
 
+@corpora_app.command("migrate-payload")
+def corpora_migrate_payload(
+    name: str = typer.Argument(..., help="Corpus name (e.g. statpearls)"),
+    user: str | None = typer.Option(None, "--user", "-u"),
+) -> None:
+    """Patch Qdrant payloads in-place — no re-embedding needed.
+
+    Fixes metadata fields on existing points (e.g. source_uri format,
+    adding doc_title) without touching vectors. Use this after an ingest
+    that left stale payload values; much faster than a full re-ingest.
+    """
+    import asyncio
+
+    from claritymed.core.rag import load_retrieval_config
+    from claritymed.core.rag.qdrant_store import build_qdrant_client
+    from claritymed.stores.account import require_admin
+
+    with inject_context(user_id=user) as (_, _uid, _):
+        require_admin()
+        if name != "statpearls":
+            console.print(f"[red]Unknown corpus: {name}[/red]")
+            raise typer.Exit(code=2)
+
+        from claritymed.ingest.corpus.statpearls import (
+            COLLECTION_NAME,
+            _nbk_uri,
+        )
+
+        cfg = load_retrieval_config()
+        aclient = build_qdrant_client(
+            url=cfg.qdrant.url,
+            api_key_env=cfg.qdrant.api_key_env,
+        )
+
+        async def _run() -> None:
+            from qdrant_client.models import PointIdsList
+
+            patched = 0
+            offset = None
+            while True:
+                results, next_offset = await aclient.scroll(
+                    collection_name=COLLECTION_NAME,
+                    with_payload=True,
+                    with_vectors=False,
+                    limit=256,
+                    offset=offset,
+                )
+                if not results:
+                    break
+
+                ids_to_patch: list = []
+                for point in results:
+                    payload = dict(point.payload or {})
+                    src_uri = payload.get("source_uri")
+                    doc_id = payload.get("doc_id", "")
+                    needs_patch = False
+                    # source_uri: clear fake article-XXXXX URLs
+                    if src_uri and "/article-" in src_uri:
+                        needs_patch = True
+                    # doc_title: backfill from legacy "title" key
+                    if "doc_title" not in payload and payload.get("title"):
+                        needs_patch = True
+                    if needs_patch:
+                        ids_to_patch.append(point.id)
+
+                for point in results:
+                    if point.id not in ids_to_patch:
+                        continue
+                    payload = dict(point.payload or {})
+                    doc_id = payload.get("doc_id", "")
+                    new_payload: dict = {}
+                    src_uri = payload.get("source_uri")
+                    if src_uri and "/article-" in src_uri:
+                        new_payload["source_uri"] = _nbk_uri(doc_id)
+                    if "doc_title" not in payload and payload.get("title"):
+                        new_payload["doc_title"] = payload["title"]
+                    if new_payload:
+                        await aclient.set_payload(
+                            collection_name=COLLECTION_NAME,
+                            payload=new_payload,
+                            points=PointIdsList(points=[point.id]),
+                        )
+                        patched += 1
+
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            console.print(
+                f"[green]Patched {patched} points in '{COLLECTION_NAME}'.[/green]"
+            )
+
+        asyncio.run(_run())
+
+
 @rag_app.command("migrate")
 def rag_migrate(
     user: str = typer.Argument(..., help="user_id to migrate"),
