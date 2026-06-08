@@ -256,6 +256,67 @@ async def test_ask_service_emits_token_and_latency_audit():
     assert "steps" in payload and len(payload["steps"]) >= 1
 
 
+async def test_ask_service_audit_picks_up_trace_id_when_tracing_active(monkeypatch):
+    """Regression: the `mode.ask` audit line used to land with `trace_id=null`
+    because we wrote it after the pydantic-ai span had already closed. With
+    the request-scoped `ask.request` span in place, both the scrub audit
+    and the final mode.ask audit must share the same non-null trace_id.
+    """
+    import json
+    import logging
+
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from claritymed.orchestrator.services import ChatSession
+
+    # Local provider — we patch get_tracer instead of mutating the global
+    # so concurrent tests in the session don't inherit our tracer state.
+    # ask_service does ``from opentelemetry import trace as otel_trace``
+    # inside _run_inner, so the patch target is opentelemetry.trace.
+    provider = TracerProvider(resource=Resource.create({SERVICE_NAME: "test"}))
+    monkeypatch.setattr(
+        otel_trace,
+        "get_tracer",
+        lambda name: provider.get_tracer(name),
+    )
+
+    session = ChatSession.new("alice")
+    service = AskService(
+        model=TestModel(custom_output_text="ok"),
+        chat_session=session,
+        provider_id="test_provider",
+        model_name="test:model",
+    )
+
+    audit_records: list[dict] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:  # noqa: D401
+            audit_records.append(json.loads(record.getMessage()))
+
+    handler = _Capture()
+    audit_logger = logging.getLogger("claritymed.audit")
+    audit_logger.addHandler(handler)
+    try:
+        async for _ in service.run("hi", user_id="alice"):
+            pass
+    finally:
+        audit_logger.removeHandler(handler)
+        provider.shutdown()
+
+    asks = [r for r in audit_records if r["kind"] == "mode.ask"]
+    scrubs = [r for r in audit_records if r["kind"] == "mode.ask.scrub"]
+    assert asks and scrubs, "expected mode.ask and mode.ask.scrub events"
+    assert asks[-1]["trace_id"] is not None, (
+        "mode.ask trace_id is null — the request-scoped span did not wrap the audit"
+    )
+    assert scrubs[-1]["trace_id"] == asks[-1]["trace_id"], (
+        "scrub and final audit must share trace_id under the same ask.request span"
+    )
+
+
 async def test_ask_service_phi_scrub_before_llm(monkeypatch):
     """Verify scrub_free_text is called with the original input before
     anything is handed to the LLM. We intercept the guard directly because

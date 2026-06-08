@@ -86,6 +86,18 @@ class AskService:
             reset_context(tokens)
 
     async def _run_inner(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
+        from opentelemetry import trace as otel_trace
+
+        # Open a request-scoped root span so both the scrub audit and the
+        # final mode.ask audit pick up the same trace_id. When tracing is
+        # off, get_tracer returns a no-op tracer and the span is invalid —
+        # audit lines fall back to trace_id=null exactly as before.
+        tracer = otel_trace.get_tracer("claritymed.ask")
+        with tracer.start_as_current_span("ask.request"):
+            async for ev in self._run_scoped(user_input, user_id):
+                yield ev
+
+    async def _run_scoped(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import attach_session_baggage, detach_session_baggage
 
         # R18: scrub PHI from the prompt before any LLM call.
