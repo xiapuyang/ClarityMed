@@ -34,6 +34,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from claritymed.servers._devices import default_device
+
 try:
     import torch
     import uvicorn
@@ -51,7 +53,6 @@ logger = logging.getLogger("claritymed.servers.reranker")
 
 DEFAULT_MODEL_PATH = Path.home() / ".claritymed" / "models" / "bge-reranker-v2-m3"
 DEFAULT_PORT = 8083
-DEFAULT_DEVICE = "cpu"
 MAX_BATCH_TEXTS = 128
 # bge-reranker-v2-m3 was trained at this max length; truncating to it
 # matches the upstream serving recipe.
@@ -85,7 +86,7 @@ class RerankHit(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
     model_path = Path(os.environ.get("BGE_RERANKER_MODEL_PATH", DEFAULT_MODEL_PATH))
-    device = os.environ.get("BGE_RERANKER_DEVICE", DEFAULT_DEVICE)
+    device = os.environ.get("BGE_RERANKER_DEVICE") or default_device()
     if not model_path.exists():
         raise RuntimeError(
             f"bge-reranker model dir not found: {model_path}\n"

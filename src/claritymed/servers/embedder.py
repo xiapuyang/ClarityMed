@@ -20,8 +20,9 @@ Run::
 
 Defaults: ``MODEL_PATH=~/.claritymed/models/bge-m3``, ``PORT=8082``.
 Override via env: ``BGE_M3_MODEL_PATH``, ``BGE_M3_PORT``, ``BGE_M3_DEVICE``
-(``cpu`` / ``cuda`` / ``mps``; default ``cpu`` because Apple Silicon MPS
-still has flaky kernels for some XLMRoberta ops as of FlagEmbedding 1.3).
+(``cpu`` / ``cuda`` / ``mps``). Default auto-detects: ``mps`` on Apple
+Silicon, ``cuda`` on NVIDIA, else ``cpu``. Force ``cpu`` if a specific
+FlagEmbedding release exhibits MPS kernel instability for XLMRoberta ops.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+
+from claritymed.servers._devices import default_device
 
 try:
     import uvicorn
@@ -48,7 +51,6 @@ logger = logging.getLogger("claritymed.servers.embedder")
 
 DEFAULT_MODEL_PATH = Path.home() / ".claritymed" / "models" / "bge-m3"
 DEFAULT_PORT = 8082
-DEFAULT_DEVICE = "cpu"
 # Match TEI's payload limit (2 MB) — keeps memory bounded under concurrent load.
 MAX_BATCH_TEXTS = 64
 
@@ -64,7 +66,7 @@ class EmbedRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
     model_path = Path(os.environ.get("BGE_M3_MODEL_PATH", DEFAULT_MODEL_PATH))
-    device = os.environ.get("BGE_M3_DEVICE", DEFAULT_DEVICE)
+    device = os.environ.get("BGE_M3_DEVICE") or default_device()
     if not model_path.exists():
         raise RuntimeError(
             f"BGE-M3 model dir not found: {model_path}\n"
