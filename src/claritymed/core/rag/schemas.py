@@ -86,6 +86,15 @@ class RetrievalTrace(BaseModel):
     parent_expand_ms: int = Field(default=0, ge=0)
     grader: GraderReport | None = None
     fallback_triggered: bool = False
+    rerank_fallback: bool = Field(
+        default=False,
+        description=(
+            "True when the reranker raised RerankerUnreachableError and the "
+            "retriever fell back to RRF order. Surfaced here so the service "
+            "layer can audit / degrade; retriever stays free of context-bound "
+            "side effects."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_fallback_requires_grader(self) -> "RetrievalTrace":
