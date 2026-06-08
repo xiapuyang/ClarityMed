@@ -300,3 +300,96 @@ async def test_ingest_corpus_continues_when_one_doc_fails(tmp_path, caplog):
     assert stats.docs_processed == 1
     assert stats.docs_skipped == 1
     assert await store.count() == 1
+
+
+# --- incremental / resume -------------------------------------------------
+
+
+async def test_ingest_corpus_is_incremental_across_runs(tmp_path):
+    """Second ingest of the same source must skip docs already in Qdrant.
+
+    Drives the user-visible 'partial ingest can be safely re-run' contract.
+    Without this, every interruption costs a full re-embed.
+    """
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "data.jsonl").write_text(
+        "\n".join(
+            json.dumps({"doc_id": f"NBK{i}", "title": "T", "text": f"body {i}"})
+            for i in range(3)
+        ),
+        encoding="utf-8",
+    )
+    aclient = AsyncQdrantClient(":memory:")
+    store = RagCollectionStore(aclient, "statpearls_en", DENSE_DIM)
+    parent_store = ParentStore(tmp_path / "parent.json")
+    source = StatPearlsSource(raw)
+
+    # First pass — all three docs are new.
+    first = await ingest_corpus(
+        source,
+        chunker=_StubChunker(),
+        embedder=_StubEmbedder(),
+        store=store,
+        parent_store=parent_store,
+    )
+    assert first.docs_processed == 3
+    assert first.docs_resumed == 0
+
+    # Second pass against the same source + store — every doc_id already
+    # exists in Qdrant, so the resume probe must skip them all. Critical
+    # property: docs_processed == 0 (no chunker / embedder calls), and
+    # children_written == 0 (no Qdrant write).
+    second = await ingest_corpus(
+        source,
+        chunker=_StubChunker(),
+        embedder=_StubEmbedder(),
+        store=store,
+        parent_store=parent_store,
+    )
+    assert second.docs_processed == 0
+    assert second.docs_resumed == 3
+    assert second.children_written == 0
+
+
+async def test_ingest_corpus_resumes_partial_run(tmp_path):
+    """When only a subset is already ingested, resume skips those and
+    processes the rest — the typical 'interrupted ingest, re-run later'
+    case."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "data.jsonl").write_text(
+        "\n".join(
+            json.dumps({"doc_id": f"NBK{i}", "title": "T", "text": f"body {i}"})
+            for i in range(5)
+        ),
+        encoding="utf-8",
+    )
+    aclient = AsyncQdrantClient(":memory:")
+    store = RagCollectionStore(aclient, "statpearls_en", DENSE_DIM)
+    parent_store = ParentStore(tmp_path / "parent.json")
+    source = StatPearlsSource(raw)
+
+    # First pass with limit=2 — only NBK0 and NBK1 are ingested.
+    first = await ingest_corpus(
+        source,
+        chunker=_StubChunker(),
+        embedder=_StubEmbedder(),
+        store=store,
+        parent_store=parent_store,
+        limit=2,
+    )
+    assert first.docs_processed == 2
+    assert first.docs_resumed == 0
+
+    # Second pass without limit — should skip the first two, process the
+    # remaining three.
+    second = await ingest_corpus(
+        source,
+        chunker=_StubChunker(),
+        embedder=_StubEmbedder(),
+        store=store,
+        parent_store=parent_store,
+    )
+    assert second.docs_processed == 3
+    assert second.docs_resumed == 2

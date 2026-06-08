@@ -88,7 +88,9 @@ def test_rag_add_with_file(tmp_path, monkeypatch):
             )
             return ChunkedDocument(parents=[parent], children=[child])
 
-    def _factory():
+    def _factory(_user_id: str):
+        # Signature matches make_user_rag_store(user_id); the user_id is
+        # ignored because the in-memory backend doesn't care about paths.
         return _ur.UserRagStore(
             aclient=AsyncQdrantClient(":memory:"),
             embedder=_StubEmbedder(),
@@ -96,10 +98,10 @@ def test_rag_add_with_file(tmp_path, monkeypatch):
             guard=PhiGuard.from_config(),
         )
 
-    monkeypatch.setattr(_ur, "make_default_user_rag_store", _factory)
+    monkeypatch.setattr(_ur, "make_user_rag_store", _factory)
     import claritymed.cli.main as _cli_main
 
-    monkeypatch.setattr(_cli_main, "make_default_user_rag_store", _factory)
+    monkeypatch.setattr(_cli_main, "make_user_rag_store", _factory)
     monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
     sample = tmp_path / "sample.txt"
     sample.write_text("para one\n\npara two", encoding="utf-8")

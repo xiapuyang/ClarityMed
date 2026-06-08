@@ -25,6 +25,7 @@ sparse hits merge at the engine, not in Python.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -34,6 +35,7 @@ from qdrant_client.http import models as qm
 
 from claritymed.core.rag.chunking.base import ChildChunk
 from claritymed.core.rag.embedding.base import SparseVector
+from claritymed.errors import MissingApiKeyError
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,35 @@ SPARSE_VECTOR_NAME = "sparse"
 # limit is larger than the final limit so the fusion has enough candidates
 # to merge meaningfully.
 PREFETCH_MULTIPLIER = 4
+
+
+def build_qdrant_client(
+    *,
+    url: str,
+    api_key_env: str | None = None,
+) -> AsyncQdrantClient:
+    """Connect to a Qdrant server (Docker, native binary, or Qdrant Cloud).
+
+    Local file-locked mode is intentionally not supported. The SQLite
+    layout used by ``qdrant-client.local`` is incompatible with the
+    server's segment format (no in-place migration; switching costs a
+    full re-embed), and the file lock forces a single-process model
+    that breaks under ingest + TUI concurrency. Run a real server.
+
+    ``api_key_env`` names an env var holding the Qdrant Cloud key.
+    Declaring it without setting the env fail-louds rather than
+    silently sending unauthenticated requests — a misconfig that would
+    otherwise surface as opaque HTTP errors deep in the query path.
+    """
+    api_key = None
+    if api_key_env:
+        api_key = os.environ.get(api_key_env)
+        if not api_key:
+            raise MissingApiKeyError(
+                f"qdrant.api_key_env={api_key_env} is set but the env "
+                "var is empty or unset",
+            )
+    return AsyncQdrantClient(url=url, api_key=api_key)
 
 
 @dataclass(frozen=True)
@@ -73,15 +104,11 @@ class RagCollectionStore:
     async def ensure_collection(self) -> None:
         """Create the collection if missing (named dense + sparse layout).
 
-        We deliberately do **not** create a ``doc_id`` payload index here:
-        qdrant local mode emits ``UserWarning: payload indexes have no
-        effect in the local Qdrant`` because the local store ignores
-        them. ``ingest_corpus`` instead pre-loads existing ``doc_id``s
-        into an in-memory set for O(1) resume lookups. When this project
-        moves to a real qdrant server, add a
-        ``create_payload_index(field_name="doc_id",
-        field_schema=PayloadSchemaType.KEYWORD)`` call here to keep
-        ``has_doc`` / ``delete_by_doc_id`` fast there too.
+        Also creates a keyword payload index on ``doc_id`` so resume
+        probes (``has_doc``) and bulk deletes (``delete_by_doc_id``) hit
+        an index instead of full-scanning. Server-only — the local
+        backend used to ignore this with a warning, but local mode is
+        no longer supported.
         """
         if await self._aclient.collection_exists(self._collection):
             return
@@ -94,6 +121,11 @@ class RagCollectionStore:
                 )
             },
             sparse_vectors_config={SPARSE_VECTOR_NAME: qm.SparseVectorParams()},
+        )
+        await self._aclient.create_payload_index(
+            collection_name=self._collection,
+            field_name="doc_id",
+            field_schema=qm.PayloadSchemaType.KEYWORD,
         )
 
     async def drop_collection(self) -> bool:
@@ -111,12 +143,11 @@ class RagCollectionStore:
     async def list_doc_ids(self) -> set[str]:
         """Scroll the whole collection and collect every unique ``doc_id``.
 
-        Used at ingest startup to pre-build an in-memory resume set when
-        the backing Qdrant has no usable payload index. Qdrant local mode
-        ignores ``create_payload_index`` (it emits ``UserWarning: payload
-        indexes have no effect in the local Qdrant``), so per-doc
-        ``has_doc`` calls degrade to ~300 ms full-scan filtered counts;
-        a single sweep ahead of the loop is O(N) once instead.
+        Used at ingest startup to pre-build an in-memory resume set so the
+        per-doc check is O(1). For ~250k chunks against localhost Docker
+        this takes ~5s (≈125 round-trips × 2048 batch). Faster than per-doc
+        ``has_doc`` even with the payload index, since we'd still pay the
+        network round-trip per doc.
         """
         if not await self._aclient.collection_exists(self._collection):
             return set()
@@ -241,6 +272,17 @@ class RagCollectionStore:
         if top_k <= 0:
             raise ValueError(f"top_k must be positive, got {top_k}")
         if not await self._aclient.collection_exists(self._collection):
+            # Silent [] return on missing collection is a footgun: the
+            # router still announces the collection as 'active', but
+            # rag.retrieval audit shows num_chunks=0 with no hint that
+            # the collection itself is absent. Most common cause is
+            # ingesting via one backend (local path) and querying via
+            # another (Docker server) — the storage isn't shared.
+            logger.warning(
+                "qdrant collection %r not found on the active client "
+                "(check CLARITYMED_QDRANT_URL vs ingest backend)",
+                self._collection,
+            )
             return []
 
         per_stream_limit = max(top_k, top_k * PREFETCH_MULTIPLIER)

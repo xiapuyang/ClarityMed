@@ -39,12 +39,26 @@ def test_user_root_rejects_slash():
 
 def test_shared_paths_resolve_under_shared_dir():
     assert paths.shared_root() == _cfg.SHARED_DIR
-    assert paths.shared_qdrant_dir() == _cfg.SHARED_DIR / "qdrant"
     assert paths.shared_knowledge_raw_dir() == _cfg.SHARED_DIR / "knowledge" / "raw"
     assert (
         paths.shared_vision_models_dir("rash", "v1")
         == _cfg.SHARED_DIR / "vision_models" / "rash" / "v1"
     )
+
+
+def test_user_rag_qdrant_dir_is_per_user():
+    """Each user's local-mode user_rag storage must live in their own dir.
+
+    This is the file-isolation guarantee: two users' qdrant directories
+    are physically separate, so a bug that picks the wrong path can't
+    cross-leak data. The path also stays under ``user_root`` so existing
+    per-user OS file-mode bits apply.
+    """
+    alice = paths.user_rag_qdrant_dir("alice")
+    bob = paths.user_rag_qdrant_dir("bob")
+    assert alice != bob
+    assert alice == paths.user_root("alice") / "qdrant"
+    assert bob == paths.user_root("bob") / "qdrant"
 
 
 def test_list_user_ids_ignores_dangling_empty_dir():

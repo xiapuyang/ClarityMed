@@ -8,13 +8,15 @@ This is the bootstrap seam called by the CLI and TUI on startup when
 * ``TermService``    — from ``term_service.active``.
 * ``Router``         — ``CollectionRouter`` populated with the
   ``system_rag.collections`` catalog.
-* ``system_store``   — one ``AsyncQdrantClient`` pointed at
-  ``shared_qdrant_dir()``; a per-collection wrapper per name.
+* ``aclient``        — one ``AsyncQdrantClient`` pointed at
+  ``qdrant.url`` (Docker server). Holds **system** collections only.
 * ``system_parent_store`` — single JSON KV at
   ``shared_parent_docstore_path()``.
-* ``user_store``     — second ``AsyncQdrantClient`` pointed at
-  ``user_rag_qdrant_dir()``; returns ``None`` when the per-user
-  collection does not yet exist (so the retriever still falls back to
+* ``user_store``     — separate per-user local-mode
+  ``AsyncQdrantClient(path=user_rag_qdrant_dir(user_id))``, lazily
+  created and cached. Each user's data stays in their own SQLite
+  outside the shared server (PHI isolation). Returns ``None`` when
+  the per-user dir does not yet exist (retriever falls back to
   system-only).
 * ``user_parent_store`` — one ``ParentStore`` per user, lazily.
 
@@ -29,10 +31,10 @@ Fail-loud once opted in:
   ``build_hybrid_retriever`` itself does not re-check the flag (mirrors
   pattern: ``build_model`` does not check ``cloud_provider_opt_in``).
 
-The two ``AsyncQdrantClient`` instances are created at startup and live
-for the process lifetime; the underlying ``qdrant_client.local`` is
-file-locked per directory, so the system and user Qdrant directories
-must stay separate (they already are, via ``paths.py``).
+The system ``AsyncQdrantClient`` is created at startup and lives for
+the process lifetime. Per-user clients are lazily opened on first use
+and cached for the same lifetime — opening one per query would churn
+the per-user file lock.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from qdrant_client import AsyncQdrantClient
 
 from claritymed.core.rag.embedding.factory import build_embedder
 from claritymed.core.rag.parent_store import ParentStore
-from claritymed.core.rag.qdrant_store import RagCollectionStore
+from claritymed.core.rag.qdrant_store import RagCollectionStore, build_qdrant_client
 from claritymed.core.rag.reranking.factory import build_reranker
 from claritymed.core.rag.retriever import HybridRetriever
 from claritymed.core.rag.routing.factory import build_router
@@ -51,7 +53,6 @@ from claritymed.core.rag.schemas import RetrievalConfig, load_retrieval_config
 from claritymed.core.rag.terms.factory import build_term_service
 from claritymed.stores.paths import (
     shared_parent_docstore_path,
-    shared_qdrant_dir,
     user_parent_docstore_path,
     user_rag_qdrant_dir,
 )
@@ -89,8 +90,10 @@ def build_hybrid_retriever(
     term_service = build_term_service(cfg.term_service)
     router = build_router(router_config=cfg.router, system_rag=cfg.system_rag)
 
-    system_aclient = AsyncQdrantClient(path=str(shared_qdrant_dir()))
-    user_aclient = AsyncQdrantClient(path=str(user_rag_qdrant_dir()))
+    aclient = build_qdrant_client(
+        url=cfg.qdrant.url,
+        api_key_env=cfg.qdrant.api_key_env,
+    )
     system_parent_store = ParentStore(shared_parent_docstore_path())
 
     return HybridRetriever(
@@ -98,9 +101,9 @@ def build_hybrid_retriever(
         reranker=reranker,
         term_service=term_service,
         router=router,
-        system_store_factory=_make_system_store_factory(system_aclient, embedder),
+        system_store_factory=_make_system_store_factory(aclient, embedder),
         system_parent_store=system_parent_store,
-        user_store_factory=_make_user_store_factory(user_aclient, embedder),
+        user_store_factory=_make_user_store_factory(embedder),
         user_parent_store_factory=_make_user_parent_store_factory(),
         rerank_top_k=cfg.user_rag.rerank_k,
     )
@@ -117,8 +120,30 @@ def _make_system_store_factory(aclient: AsyncQdrantClient, embedder: "Embedder")
     return factory
 
 
-def _make_user_store_factory(aclient: AsyncQdrantClient, embedder: "Embedder"):
+def _make_user_store_factory(embedder: "Embedder"):
+    """Per-user local-mode store factory with a process-lifetime cache.
+
+    Each user_rag collection lives in its own on-disk SQLite under
+    ``user_rag_qdrant_dir(user_id)``. The first lookup for a user opens
+    the AsyncQdrantClient (acquires the file lock) and caches it;
+    subsequent lookups reuse the same client. Returns ``None`` when the
+    per-user dir doesn't exist yet — retriever then falls back to
+    system-only.
+
+    Why not share one server client like system collections do? PHI
+    isolation. The file lock means the same user can't ``rag add`` and
+    query concurrently (see docs/rag-setup.md §user_rag); accepted
+    trade-off so user data never enters the shared server's namespace.
+    """
+    clients: dict[str, AsyncQdrantClient] = {}
+
     async def factory(user_id: str) -> RagCollectionStore | None:
+        user_dir = user_rag_qdrant_dir(user_id)
+        if not user_dir.exists():
+            return None
+        if user_id not in clients:
+            clients[user_id] = AsyncQdrantClient(path=str(user_dir))
+        aclient = clients[user_id]
         name = _user_collection_name(user_id)
         if not await aclient.collection_exists(name):
             return None

@@ -76,12 +76,10 @@ async def ingest_corpus(
     parents_written = 0
     children_written = 0
 
-    # Pre-load existing doc_ids into an in-memory set so the resume
-    # check is O(1). qdrant local mode ignores payload indexes (a
-    # ``create_payload_index`` warns "no effect in the local Qdrant"),
-    # so a per-doc ``has_doc`` would full-scan ~300 ms per call —
-    # at 9k docs that's ~45 min of pure resume overhead. One scroll
-    # up front pays the O(N) cost once.
+    # Pre-load existing doc_ids into an in-memory set so the per-doc
+    # resume check is O(1). One full scroll up front is faster than
+    # ~10k per-doc round-trips even with the payload index on doc_id,
+    # since the bottleneck is network latency not Qdrant work.
     if not dry_run:
         await store.ensure_collection()
         existing_doc_ids: set[str] = await store.list_doc_ids()

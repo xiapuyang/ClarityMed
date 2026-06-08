@@ -234,25 +234,29 @@ class UserRagStore:
         )
 
 
-def make_default_user_rag_store(
-    qdrant_path: str | None = None,
-) -> UserRagStore:
-    """Build a ``UserRagStore`` from current config.
+def make_user_rag_store(user_id: str) -> UserRagStore:
+    """Build a ``UserRagStore`` for one user (local-mode file storage).
 
-    Wires the active embedder + chunker + AsyncQdrantClient pointed at
-    ``data/qdrant/user_rag/`` (or ``:memory:`` for tests when callers
-    pass that explicitly).
+    Opens ``AsyncQdrantClient(path=user_rag_qdrant_dir(user_id))`` —
+    each user gets a separate on-disk SQLite under their data scope,
+    holding the file lock for the process lifetime. System collections
+    live on the shared Docker server (see ``build_hybrid_retriever``);
+    only user_rag stays local because PHI isolation is worth the
+    single-process-per-user concurrency limit.
+
+    Caveat: the same user cannot run ``rag add`` and TUI at the same
+    time (file lock is exclusive). Different users never conflict.
+    Tests that need in-memory storage construct ``UserRagStore``
+    directly with ``AsyncQdrantClient(":memory:")`` instead of going
+    through this factory.
     """
     from claritymed.core.rag.chunking.factory import build_chunker
     from claritymed.core.rag.embedding.factory import build_embedder
     from claritymed.stores.paths import user_rag_qdrant_dir
 
-    path = qdrant_path or str(user_rag_qdrant_dir())
-    aclient = (
-        AsyncQdrantClient(path=path)
-        if path != ":memory:"
-        else AsyncQdrantClient(":memory:")
-    )
+    user_dir = user_rag_qdrant_dir(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    aclient = AsyncQdrantClient(path=str(user_dir))
     return UserRagStore(
         aclient=aclient,
         embedder=build_embedder(),

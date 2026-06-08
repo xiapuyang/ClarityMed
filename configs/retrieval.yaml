@@ -11,8 +11,17 @@
 # a bare laptop with no RAG stack running. When `enabled: true` CLI/TUI
 # build the HybridRetriever at startup; any missing dep fails loud.
 rag:
-  enabled: true
+  enabled: false
   max_evidence: 5
+
+# --- qdrant connection -------------------------------------------------
+# Required — server-only (local file-locked mode was removed; see
+# docs/rag-setup.md §1 for the Docker recipe). CLARITYMED_QDRANT_URL env
+# var overrides this. api_key_env is only needed for Qdrant Cloud; local
+# Docker server uses no auth.
+qdrant:
+  url: "http://localhost:6333"
+  api_key_env: null
 
 # --- strategies (top-level RAG approach; pluggable) ---------------------
 # v1 ships `naive_hybrid` only. Future ids: `agentic` (Self-RAG / CRAG /

@@ -50,14 +50,22 @@ def user_settings_path(user_id: str) -> Path:
     return user_root(user_id) / "settings.yaml"
 
 
-def user_rag_qdrant_dir() -> Path:
-    """Qdrant directory for per-user RAG collections.
+def user_rag_qdrant_dir(user_id: str) -> Path:
+    """Per-user Qdrant local-mode storage directory.
 
-    All user_rag chunks live in one Qdrant instance here; isolation is
-    structural via collection naming (``user_rag_<user_id>``). The directory
-    is under DATA_DIR (per-user PHI scope), not SHARED_DIR.
+    user_rag uses ``qdrant-client``'s local file-locked SQLite mode (each
+    user gets their own ``<user_root>/qdrant/storage.sqlite``) rather
+    than the shared server Docker that holds system collections. The
+    split is intentional: PHI never leaves the per-user filesystem
+    scope, OS file-mode bits enforce isolation, and a code bug picking
+    the wrong path is structurally impossible since the path is derived
+    from ``user_id``. Trade-off: the same user can't concurrently
+    upload (``rag add``) and query (TUI) — file lock is exclusive — but
+    cross-user reads/writes are physically separate.
+
+    See ``docs/rag-setup.md`` §user_rag for the why and the caveat.
     """
-    return _cfg.DATA_DIR / "qdrant" / "user_rag"
+    return user_root(user_id) / "qdrant"
 
 
 def user_parent_docstore_path(user_id: str) -> Path:
@@ -101,10 +109,6 @@ def shared_knowledge_raw_dir() -> Path:
 
 def shared_knowledge_normalized_dir() -> Path:
     return _cfg.SHARED_DIR / "knowledge" / "normalized"
-
-
-def shared_qdrant_dir() -> Path:
-    return _cfg.SHARED_DIR / "qdrant"
 
 
 def shared_parent_docstore_path() -> Path:

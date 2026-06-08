@@ -319,4 +319,5 @@ def _base_raw_config() -> dict:
             ],
         },
         "user_rag": {"top_k": 5, "rerank_k": 3, "score_threshold": 0.4},
+        "qdrant": {"url": "http://localhost:6333", "api_key_env": None},
     }

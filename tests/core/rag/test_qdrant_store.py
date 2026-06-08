@@ -175,3 +175,41 @@ async def test_delete_by_doc_id_missing_collection_no_op(aclient):
     store = RagCollectionStore(aclient, "ghost", DENSE_DIM)
     # Just doesn't raise
     await store.delete_by_doc_id("anything")
+
+
+# --- build_qdrant_client ----------------------------------------------------
+
+
+def test_build_qdrant_client_returns_remote_client():
+    """build_qdrant_client always returns a server-mode client."""
+    from claritymed.core.rag.qdrant_store import build_qdrant_client
+
+    client = build_qdrant_client(url="http://localhost:6333")
+    # _client is AsyncQdrantRemote in server mode; local mode was removed.
+    assert "Remote" in type(client._client).__name__
+
+
+def test_build_qdrant_client_missing_api_key_env_raises(monkeypatch):
+    """Declaring api_key_env without setting it must fail loud."""
+    from claritymed.core.rag.qdrant_store import build_qdrant_client
+    from claritymed.errors import MissingApiKeyError
+
+    monkeypatch.delenv("QDRANT_CLOUD_KEY", raising=False)
+    with pytest.raises(MissingApiKeyError):
+        build_qdrant_client(
+            url="https://cloud.example.com",
+            api_key_env="QDRANT_CLOUD_KEY",
+        )
+
+
+def test_build_qdrant_client_reads_api_key_from_env(monkeypatch):
+    """When the env var is set, the key is forwarded to the client."""
+    from claritymed.core.rag.qdrant_store import build_qdrant_client
+
+    monkeypatch.setenv("QDRANT_CLOUD_KEY", "secret-token")
+    # No raise — construction completes; key flows through to AsyncQdrantClient.
+    client = build_qdrant_client(
+        url="https://cloud.example.com",
+        api_key_env="QDRANT_CLOUD_KEY",
+    )
+    assert "Remote" in type(client._client).__name__

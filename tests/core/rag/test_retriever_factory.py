@@ -29,6 +29,46 @@ def test_default_yaml_has_rag_disabled():
     assert cfg.rag.enabled is False
 
 
+def test_env_var_can_enable_rag(monkeypatch):
+    """``CLARITYMED_RAG_ENABLED=true`` flips on without editing YAML."""
+    for value in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("CLARITYMED_RAG_ENABLED", value)
+        assert load_retrieval_config().rag.enabled is True
+
+
+def test_env_var_can_disable_rag(monkeypatch, tmp_path):
+    """``CLARITYMED_RAG_ENABLED=false`` overrides a yaml-enabled config too."""
+    for value in ("0", "false", "FALSE", "no", "off"):
+        monkeypatch.setenv("CLARITYMED_RAG_ENABLED", value)
+        assert load_retrieval_config().rag.enabled is False
+
+
+def test_env_var_typo_falls_back_to_yaml(monkeypatch):
+    """An unrecognized value is ignored — typos must not silently flip RAG."""
+    monkeypatch.setenv("CLARITYMED_RAG_ENABLED", "ture")  # common typo
+    assert load_retrieval_config().rag.enabled is False  # yaml default
+
+
+def test_default_yaml_has_qdrant_url():
+    """Shipped yaml points at the local Docker port — server-only model."""
+    cfg = load_retrieval_config()
+    assert cfg.qdrant.url == "http://localhost:6333"
+    assert cfg.qdrant.api_key_env is None
+
+
+def test_qdrant_url_env_var_overrides_yaml(monkeypatch):
+    """``CLARITYMED_QDRANT_URL`` overrides yaml — convenient for dev to
+    point at a remote / alternate-port server without editing config."""
+    monkeypatch.setenv("CLARITYMED_QDRANT_URL", "http://qdrant.staging:6333")
+    assert load_retrieval_config().qdrant.url == "http://qdrant.staging:6333"
+
+
+def test_qdrant_url_env_var_empty_leaves_yaml(monkeypatch):
+    """Empty / whitespace env var must not zero-out yaml — only set values win."""
+    monkeypatch.setenv("CLARITYMED_QDRANT_URL", "   ")
+    assert load_retrieval_config().qdrant.url == "http://localhost:6333"
+
+
 def test_build_hybrid_retriever_returns_real_retriever():
     """The factory wires every dependency without touching the network.
 

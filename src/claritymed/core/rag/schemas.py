@@ -22,6 +22,7 @@ the router treats 0 as "not yet ingested" and may skip it.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -36,6 +37,11 @@ from claritymed.errors import (
     UnknownStrategyError,
     UnknownTermServiceError,
 )
+
+_RAG_ENABLED_ENV = "CLARITYMED_RAG_ENABLED"
+_QDRANT_URL_ENV = "CLARITYMED_QDRANT_URL"
+_TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
 
 # --- collection metadata (router input) ---------------------------------
 
@@ -362,12 +368,36 @@ class RagBootstrapConfig(BaseModel):
     max_evidence: int = Field(default=5, ge=1)
 
 
+class QdrantConfig(BaseModel):
+    """Qdrant server connection settings.
+
+    Server-only — local file-locked mode was removed because (a) the
+    SQLite storage format is incompatible with server segment format
+    (no in-place migration; switching backends costs a full re-embed),
+    (b) the file lock forces a single-process model that breaks under
+    ingest + TUI concurrency, and (c) maintaining two storage layouts
+    doubled the test matrix without adding any production value. Run
+    Qdrant via Docker / native binary / Qdrant Cloud — see
+    ``docs/rag-setup.md`` §1.
+
+    ``api_key_env`` is the name of an env var holding the Qdrant Cloud
+    API key. Declaring it without setting the env var fail-louds at
+    startup rather than silently sending unauthenticated requests.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    url: str
+    api_key_env: str | None = None
+
+
 class RetrievalConfig(BaseModel):
     """Root of ``configs/retrieval.yaml``."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     rag: RagBootstrapConfig = Field(default_factory=RagBootstrapConfig)
+    qdrant: QdrantConfig
     strategies: StrategiesConfig
     chunker: ChunkerConfig
     embedders: EmbedderConfig
@@ -381,8 +411,29 @@ class RetrievalConfig(BaseModel):
 def load_retrieval_config() -> RetrievalConfig:
     """Parse ``configs/retrieval.yaml`` through the mtime-cached loader.
 
+    Two env vars can override yaml fields so local dev can flip without
+    editing (and accidentally committing) the shipped defaults:
+
+    * ``CLARITYMED_RAG_ENABLED`` — overrides ``rag.enabled``. Accepts
+      ``1/true/yes/on`` (case-insensitive) for on, ``0/false/no/off``
+      for off; anything else is ignored so a typo cannot silently flip.
+    * ``CLARITYMED_QDRANT_URL`` — overrides ``qdrant.url``. Any
+      non-empty value wins; unset / empty leaves yaml intact.
+
     Tests can call ``claritymed.config.reload_configs()`` to force a
     re-read after redirecting CONFIG_DIR.
     """
     raw = _cfg.load_yaml("retrieval.yaml")
+    rag_override = os.environ.get(_RAG_ENABLED_ENV, "").strip().lower()
+    if rag_override in _TRUTHY or rag_override in _FALSY:
+        raw = {
+            **raw,
+            "rag": {**raw.get("rag", {}), "enabled": rag_override in _TRUTHY},
+        }
+    qdrant_override = os.environ.get(_QDRANT_URL_ENV, "").strip()
+    if qdrant_override:
+        raw = {
+            **raw,
+            "qdrant": {**raw.get("qdrant", {}), "url": qdrant_override},
+        }
     return RetrievalConfig.model_validate(raw)

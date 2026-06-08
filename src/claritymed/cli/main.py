@@ -29,7 +29,7 @@ from claritymed.orchestrator.services import (
     ToolStarted,
 )
 from claritymed.stores.models import load_models, resolve_provider
-from claritymed.stores.user_rag import make_default_user_rag_store
+from claritymed.stores.user_rag import make_user_rag_store
 
 app = typer.Typer(
     name="claritymed",
@@ -190,7 +190,7 @@ def rag_add(
         with inject_context(user_id=user, language=language) as (_, uid, _):
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
-            store = make_default_user_rag_store()
+            store = make_user_rag_store(uid)
             service = RagService(store=store)
             async for event in service.run(text, user_id=uid, public=public):
                 if isinstance(event, ToolStarted):
@@ -242,19 +242,17 @@ def corpora_ingest(
     """
     from pathlib import Path
 
-    from qdrant_client import AsyncQdrantClient
-
+    from claritymed.core.rag import load_retrieval_config
     from claritymed.core.rag.chunking.factory import build_chunker
     from claritymed.core.rag.embedding.factory import build_embedder
     from claritymed.core.rag.parent_store import ParentStore
-    from claritymed.core.rag.qdrant_store import RagCollectionStore
+    from claritymed.core.rag.qdrant_store import RagCollectionStore, build_qdrant_client
     from claritymed.ingest.corpus.base import ingest_corpus
     from claritymed.ingest.corpus.statpearls import StatPearlsSource
     from claritymed.stores.account import require_admin
     from claritymed.stores.paths import (
         shared_knowledge_raw_dir,
         shared_parent_docstore_path,
-        shared_qdrant_dir,
     )
 
     with inject_context(user_id=user) as (_, _uid, _):
@@ -267,7 +265,11 @@ def corpora_ingest(
         source = StatPearlsSource(root)
         chunker = build_chunker()
         embedder = build_embedder() if not dry_run else _NoOpEmbedder()
-        aclient = AsyncQdrantClient(path=str(shared_qdrant_dir()))
+        cfg = load_retrieval_config()
+        aclient = build_qdrant_client(
+            url=cfg.qdrant.url,
+            api_key_env=cfg.qdrant.api_key_env,
+        )
         store = RagCollectionStore(
             aclient=aclient,
             collection_name=source.name,
@@ -384,7 +386,7 @@ def rag_migrate(
 
     async def _run() -> None:
         with inject_context(user_id=user) as (_, uid, _):
-            store = make_default_user_rag_store()
+            store = make_user_rag_store(uid)
             await store.migrate_user(uid)
             console.print(f"[green]Migrated user '{uid}': RAG data dropped.[/green]")
 
