@@ -569,7 +569,8 @@ class AskService:
         for i, c in enumerate(chunks, start=1):
             col = c.collection_name or "unknown"
             score = f"{c.score:.3f}" if c.score else "—"
-            lines.append(f"- [{i}] `{col}` (score {score})")
+            doc = c.doc_id or "—"
+            lines.append(f"- [{i}] `{col}` · `{doc}` (score {score})")
         return "\n".join(lines) + "\n"
 
     @staticmethod
