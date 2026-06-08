@@ -58,7 +58,14 @@ AuditKind = Literal[
 
 
 class AuditEvent(BaseModel):
-    """One audit line. Serialized as JSON, one event per log line."""
+    """One audit line. Serialized as JSON, one event per log line.
+
+    ``trace_id`` / ``span_id`` are populated when an OpenTelemetry span is
+    active at audit time. They let an operator pivot from a grep hit in
+    ``audit.log`` straight to the matching trace in Phoenix / Tempo without
+    timestamp gymnastics. Absent when tracing is off — the field is null,
+    not missing, so downstream parsers don't need to care.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -68,6 +75,25 @@ class AuditEvent(BaseModel):
     user_id: str
     language: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    trace_id: str | None = None
+    span_id: str | None = None
+
+
+def _current_trace_context() -> tuple[str | None, str | None]:
+    """Return (trace_id_hex, span_id_hex) for the currently active span,
+    or ``(None, None)`` when no provider / no active span. Never raises —
+    a broken tracer must not break the audit path.
+    """
+    try:
+        from opentelemetry import trace
+
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if not ctx.is_valid:
+            return None, None
+        return format(ctx.trace_id, "032x"), format(ctx.span_id, "016x")
+    except Exception:  # noqa: BLE001
+        return None, None
 
 
 def audit_event(kind: AuditKind, payload: dict[str, Any] | None = None) -> AuditEvent:
@@ -83,12 +109,15 @@ def audit_event(kind: AuditKind, payload: dict[str, Any] | None = None) -> Audit
         raise MissingContextError(
             "audit_event requires request_id / user_id / language to be set"
         )
+    trace_id, span_id = _current_trace_context()
     event = AuditEvent(
         kind=kind,
         payload=payload or {},
         request_id=rid,
         user_id=uid,
         language=lang,
+        trace_id=trace_id,
+        span_id=span_id,
     )
     get_audit_logger().info(event.model_dump_json())
     return event

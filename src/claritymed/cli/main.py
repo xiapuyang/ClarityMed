@@ -83,7 +83,7 @@ def ask(
     """Stream a grounded answer to ``question``."""
 
     async def _run() -> None:
-        from claritymed.stores.chat_memory import LanceChatMemoryStore
+        from claritymed.orchestrator.services import ChatSession
 
         with inject_context(user_id=user, language=language) as (_, uid, lang):
             provider = resolve_provider(override=provider_id)
@@ -91,7 +91,9 @@ def ask(
             service = AskService(
                 model=model,
                 language=lang,
-                chat_memory=LanceChatMemoryStore(uid),
+                chat_session=ChatSession.new(uid),
+                provider_id=provider.id,
+                model_name=provider.model,
             )
 
             async for event in service.run(question, user_id=uid):
@@ -208,6 +210,97 @@ def tui(
         language=language,
         provider_id=provider.id,
     ).run()
+
+
+prompts_app = typer.Typer(
+    name="prompts",
+    help="Sync YAML prompts with a Phoenix instance.",
+    no_args_is_help=True,
+)
+app.add_typer(prompts_app, name="prompts")
+
+
+def _print_sync_report(report) -> None:
+    for entry in report.entries:
+        marker = {
+            "pushed": "[green]→[/green]",
+            "pulled": "[green]←[/green]",
+            "skipped": "[dim]·[/dim]",
+            "missing": "[yellow]?[/yellow]",
+            "error": "[red]✗[/red]",
+        }.get(entry.action, "?")
+        console.print(
+            f"  {marker} {entry.prompt_name}({entry.language}) "
+            f"-> {entry.phoenix_name}  {entry.detail}"
+        )
+    changed = len(report.changed)
+    errors = len(report.errors)
+    console.print(
+        f"\n[bold]{report.direction}[/bold] "
+        f"{'(dry-run) ' if report.dry_run else ''}"
+        f"changed={changed} errors={errors}"
+    )
+
+
+@prompts_app.command("push")
+def prompts_push(
+    name: str | None = typer.Argument(None, help="Filter to one prompt name."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report changes without writing to Phoenix."
+    ),
+) -> None:
+    """Push local YAML prompts (latest version) to Phoenix as the ``production`` tag."""
+    from claritymed.core.prompts.phoenix_sync import push
+
+    try:
+        report = push(name=name, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001
+        _stderr(f"[error] {exc}")
+        raise typer.Exit(code=1) from exc
+    _print_sync_report(report)
+    if report.errors:
+        raise typer.Exit(code=1)
+
+
+@prompts_app.command("pull")
+def prompts_pull(
+    name: str | None = typer.Argument(None, help="Filter to one prompt name."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report changes without writing YAML."
+    ),
+    into_new_version: bool = typer.Option(
+        False,
+        "--into-new-version",
+        help="Append a new YAML version instead of overwriting the latest in place.",
+    ),
+    new_version_name: str | None = typer.Option(
+        None,
+        "--version-name",
+        help="Override the new version label (implies --into-new-version). "
+        "Default auto-bumps to vN+1.",
+    ),
+) -> None:
+    """Pull Phoenix ``production``-tagged prompts back into YAML.
+
+    Default: overwrite the latest version in place (compact diff). Use
+    ``--into-new-version`` to append a fresh version block instead, and
+    ``--version-name v1.1`` to tag it explicitly.
+    """
+    from claritymed.core.prompts.phoenix_sync import pull
+
+    try:
+        report = pull(
+            name=name,
+            dry_run=dry_run,
+            into_new_version=into_new_version,
+            new_version_name=new_version_name,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _stderr(f"[error] {exc}")
+        raise typer.Exit(code=1) from exc
+    _print_sync_report(report)
+    if report.errors:
+        raise typer.Exit(code=1)
 
 
 # Convenience subcommand to list known modes — useful for shell completion.

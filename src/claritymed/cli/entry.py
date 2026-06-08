@@ -18,6 +18,7 @@ from claritymed import config as _cfg
 from claritymed.context import apply_context, new_request_id, reset_context
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.logging import get_access_logger
+from claritymed.core.observability.tracing import setup_tracing
 
 DEFAULT_USER_ID = "default"
 
@@ -69,6 +70,10 @@ def inject_context(
         from claritymed.core.i18n import t
 
         logger.warning(t("ui.cli.user_required", lang=lang))
+
+    # Idempotent — every CLI invocation calls this; only the first one
+    # with PHOENIX_COLLECTOR_ENDPOINT set actually installs the provider.
+    setup_tracing()
 
     tokens = apply_context(rid, uid, lang)
     access = get_access_logger()

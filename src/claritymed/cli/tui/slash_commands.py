@@ -15,6 +15,7 @@ CommandName = Literal[
     "library",
     "mode",
     "user",
+    "clear",
     "help",
     "quit",
     "unknown",
@@ -26,6 +27,7 @@ KNOWN_COMMANDS: tuple[str, ...] = (
     "library",
     "mode",
     "user",
+    "clear",
     "help",
     "quit",
 )
@@ -71,6 +73,7 @@ HELP_TEXT: str = (
     "  /library          Manage reference materials (rag mode)\n"
     "  /mode <name>      Switch mode: ingest / ask / rag\n"
     "  /user <id>        Switch active user\n"
+    "  /clear            Start a new chat session (keeps history on disk)\n"
     "  /help             Show this help\n"
     "  /quit             Exit the TUI\n"
     "Anything not starting with / is routed automatically (default: ask)."

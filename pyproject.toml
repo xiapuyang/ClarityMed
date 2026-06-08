@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "Patient-facing medical Q&A with structured uncertainty propagation."
 requires-python = ">=3.11"
 dependencies = [
+    "arize-phoenix-client>=2.7.0",
+    "openinference-instrumentation-pydantic-ai>=0.1.16",
+    "opentelemetry-exporter-otlp>=1.42.1",
+    "opentelemetry-sdk>=1.42.1",
     "pydantic>=2.9",
     "pydantic-ai-slim[anthropic,openai]>=1.0",
     "pyyaml>=6.0.2",

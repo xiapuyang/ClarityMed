@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
-
-import logging
 
 from claritymed.core.observability.audit import audit_event
 from claritymed.orchestrator import PhiGuard
 from claritymed.orchestrator.agents import make_ask_agent
+from claritymed.orchestrator.services.chat_session import (
+    LatencyTrace,
+    _usage_dict,
+    build_step_records,
+)
 from claritymed.orchestrator.services.events import (
     Done,
     Error,
@@ -19,19 +24,28 @@ from claritymed.orchestrator.services.events import (
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
+    from pydantic_ai.usage import RunUsage
 
-    from claritymed.stores.chat_memory import ChatMemoryStore
+    from claritymed.orchestrator.services.chat_session import ChatSession
 
 logger = logging.getLogger(__name__)
+
+_UNKNOWN = "?"
 
 
 class AskService:
     """Drive ask mode: scrub user input, stream LLM tokens, finalize.
 
-    Retrieval (system_rag + user_rag) and context assembly land in the real
-    text_rag plan; the Phase 1 stub feeds the LLM only the (scrubbed) user
-    input. The streaming surface and the PHI scrubbing point are stable so
-    the real plan does not change the service contract.
+    The service owns three boundaries the agent does not:
+
+    * PHI scrubbing before any LLM call (cloud / local invariant).
+    * Token + latency accounting — captured from
+      ``StreamedRunResult.usage()`` and a perf_counter span, then emitted
+      both to the audit log (``mode.ask``) and to the chat session log
+      (assistant event payload).
+    * Chat session persistence — handing the prior ``message_history`` to
+      ``Agent.run_stream`` for multi-turn context, then appending the new
+      assistant turn back to the session JSONL.
     """
 
     def __init__(
@@ -39,12 +53,16 @@ class AskService:
         model: "Model",
         guard: PhiGuard | None = None,
         language: str = "en",
-        chat_memory: "ChatMemoryStore | None" = None,
+        chat_session: "ChatSession | None" = None,
+        provider_id: str = _UNKNOWN,
+        model_name: str = _UNKNOWN,
     ) -> None:
         self._model = model
         self._guard = guard or PhiGuard.from_config()
         self._language = language
-        self._chat_memory = chat_memory
+        self._chat_session = chat_session
+        self._provider_id = provider_id
+        self._model_name = model_name
 
     async def run(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import (
@@ -68,6 +86,8 @@ class AskService:
             reset_context(tokens)
 
     async def _run_inner(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
+        from claritymed.context import attach_session_baggage, detach_session_baggage
+
         # R18: scrub PHI from the prompt before any LLM call.
         scrubbed, report = self._guard.scrub_free_text(user_input)
         audit_event(
@@ -80,12 +100,53 @@ class AskService:
             },
         )
 
+        # Record the user turn first so the JSONL timeline reflects send
+        # order, then pull the prior history for the LLM call.
+        if self._chat_session is not None:
+            try:
+                self._chat_session.append_user(scrubbed)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to append user turn to chat session")
+        message_history = (
+            self._chat_session.message_history() if self._chat_session else None
+        )
+
+        # Stamp ``claritymed.session_id`` baggage onto every span the LLM
+        # call produces so Phoenix can group traces by conversation, not
+        # just by request. Detach in the finally so a different session
+        # cannot accidentally inherit this one's id on the next turn.
+        session_token = (
+            attach_session_baggage(self._chat_session.session_id)
+            if self._chat_session is not None
+            else None
+        )
+        try:
+            async for event in self._run_with_agent(scrubbed, message_history, user_id):
+                yield event
+        finally:
+            detach_session_baggage(session_token)
+
+    async def _run_with_agent(
+        self,
+        scrubbed: str,
+        message_history,
+        user_id: str,
+    ) -> AsyncIterator[Event]:
         agent = make_ask_agent(self._model, language=self._language)
         messages_json: bytes | None = None
+        usage: RunUsage | None = None
+        steps: list[dict] = []
+        final_text: str = ""
+        t_start = time.perf_counter()
+        t_first_token: float | None = None
         try:
-            async with agent.run_stream(scrubbed) as stream:
+            async with agent.run_stream(
+                scrubbed, message_history=message_history or None
+            ) as stream:
                 async for chunk in stream.stream_text(delta=True):
                     if chunk:
+                        if t_first_token is None:
+                            t_first_token = time.perf_counter()
                         yield TokenChunk(text=chunk)
                 final_text = await stream.get_output()
                 # Capture inside the ``with`` block — the stream goes out of
@@ -94,6 +155,14 @@ class AskService:
                     messages_json = stream.all_messages_json()
                 except Exception:  # noqa: BLE001
                     logger.exception("failed to capture pydantic-ai messages")
+                try:
+                    usage = stream.usage
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to capture pydantic-ai usage")
+                try:
+                    steps = build_step_records(list(stream.new_messages()))
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to build per-step records")
         except Exception as exc:  # noqa: BLE001 — surface as event
             yield Error(
                 error_type="llm_error",
@@ -101,18 +170,51 @@ class AskService:
                 retryable=True,
             )
             return
-
-        if messages_json is not None and self._chat_memory is not None:
-            try:
-                self._chat_memory.append_run_messages_json(messages_json)
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to append chat messages to chat memory")
-
-        audit_event(
-            "mode.ask",
-            payload={
-                "user_id": user_id,
-                "answer_len": len(final_text),
-            },
+        t_end = time.perf_counter()
+        latency = LatencyTrace(
+            total_ms=int((t_end - t_start) * 1000),
+            ttft_ms=(
+                int((t_first_token - t_start) * 1000)
+                if t_first_token is not None
+                else None
+            ),
+            completion_ms=(
+                int((t_end - t_first_token) * 1000)
+                if t_first_token is not None
+                else None
+            ),
         )
+
+        if self._chat_session is not None and messages_json is not None:
+            try:
+                self._chat_session.append_assistant(
+                    text=final_text,
+                    messages_json=messages_json,
+                    model=self._model_name,
+                    provider_id=self._provider_id,
+                    usage=usage,
+                    latency=latency,
+                    steps=steps,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to append assistant turn to chat session")
+
+        payload: dict[str, object] = {
+            "user_id": user_id,
+            "answer_len": len(final_text),
+            "model": self._model_name,
+            "provider_id": self._provider_id,
+            "latency_ms": latency.total_ms,
+        }
+        if latency.ttft_ms is not None:
+            payload["ttft_ms"] = latency.ttft_ms
+        if latency.completion_ms is not None:
+            payload["completion_ms"] = latency.completion_ms
+        if usage is not None:
+            payload.update(_usage_dict(usage))
+        if steps:
+            payload["steps"] = steps
+        if self._chat_session is not None:
+            payload["session_id"] = self._chat_session.session_id
+        audit_event("mode.ask", payload=payload)
         yield Done(final=final_text)

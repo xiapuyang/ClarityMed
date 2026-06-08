@@ -1,0 +1,190 @@
+"""Slash-command autocomplete on the input bar.
+
+Verifies the popup shows when ``/`` is typed, filters by prefix, navigates
+with Up/Down, completes on Tab, and submits-on-exact-match on Enter so
+the existing routing flow still works.
+"""
+
+from __future__ import annotations
+
+import pytest
+from textual.app import App
+from textual.widgets import Input, Static
+
+from claritymed.cli.tui.widgets import InputBar
+
+
+class _Host(App):
+    """Tiny host that mounts only the InputBar so the tests don't pay for
+    the full ClarityMedApp surface (status bar, conversation, modals)."""
+
+    def compose(self):
+        yield InputBar()
+
+
+def _input(app: _Host) -> Input:
+    return app.query_one("#input", Input)
+
+
+def _popup(app: _Host) -> Static:
+    return app.query_one("#slash-popup", Static)
+
+
+@pytest.mark.asyncio
+async def test_typing_slash_opens_popup_with_all_commands():
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/")
+        await pilot.pause()
+        assert bar._popup_visible
+        rendered = str(_popup(app).renderable)
+        # All known commands should be listed under "/".
+        for cmd in ("clear", "help", "library", "mode", "quit", "upload", "user"):
+            assert f"/{cmd}" in rendered
+
+
+@pytest.mark.asyncio
+async def test_popup_filters_by_prefix():
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/", "c")
+        await pilot.pause()
+        assert bar._popup_visible
+        assert bar._popup_matches == ["clear"]
+        rendered = str(_popup(app).renderable)
+        assert "/clear" in rendered
+        # No leakage from other commands.
+        assert "/library" not in rendered
+        assert "/help" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_unknown_prefix_hides_popup():
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/", "z")
+        await pilot.pause()
+        assert not bar._popup_visible
+
+
+@pytest.mark.asyncio
+async def test_down_arrow_navigates_selection_wraps():
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/")
+        await pilot.pause()
+        initial = bar._popup_selected
+        await pilot.press("down")
+        await pilot.pause()
+        assert bar._popup_selected == (initial + 1) % len(bar._popup_matches)
+        await pilot.press("up")
+        await pilot.pause()
+        assert bar._popup_selected == initial
+
+
+@pytest.mark.asyncio
+async def test_tab_completes_to_selected_command():
+    """Tab on a non-arg command like /help fills the input and hides the popup."""
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/", "h")
+        await pilot.pause()
+        assert bar._popup_matches == ["help"]
+        await pilot.press("tab")
+        await pilot.pause()
+        assert _input(app).value == "/help"
+        assert not bar._popup_visible
+
+
+@pytest.mark.asyncio
+async def test_tab_completes_arg_command_with_trailing_space():
+    """Arg-taking commands (/upload, /mode, /user) complete with a trailing
+    space so the user can keep typing without backspacing."""
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/", "m")
+        await pilot.pause()
+        assert bar._popup_matches == ["mode"]
+        await pilot.press("tab")
+        await pilot.pause()
+        assert _input(app).value == "/mode "
+        assert not bar._popup_visible
+
+
+@pytest.mark.asyncio
+async def test_enter_on_exact_match_submits():
+    """If the input already equals the highlighted command, Enter should
+    submit through the existing flow (no double-Enter required)."""
+    submitted: list[str] = []
+
+    class _Spy(_Host):
+        def on_input_bar_submitted(self, message: InputBar.Submitted) -> None:
+            submitted.append(message.value)
+
+    async with _Spy().run_test() as pilot:
+        app = pilot.app
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        for ch in "/help":
+            await pilot.press(ch)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert submitted == ["/help"]
+
+
+@pytest.mark.asyncio
+async def test_escape_closes_popup_without_changing_input():
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/", "h")
+        await pilot.pause()
+        before = _input(app).value
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not bar._popup_visible
+        assert _input(app).value == before
+
+
+@pytest.mark.asyncio
+async def test_popup_hides_once_user_starts_typing_args():
+    """After completing a /<cmd> with a space, the popup should step out of
+    the way — further chars are arguments, not command prefixes."""
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("/", "m")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+        assert _input(app).value == "/mode "
+        await pilot.press("a", "s", "k")
+        await pilot.pause()
+        assert not bar._popup_visible
+        assert _input(app).value == "/mode ask"
+
+
+@pytest.mark.asyncio
+async def test_typing_non_slash_input_does_not_show_popup():
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("h", "e", "l", "l", "o")
+        await pilot.pause()
+        assert not bar._popup_visible

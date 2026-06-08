@@ -38,8 +38,11 @@ from claritymed.context import (
     reset_context,
 )
 from claritymed.core.i18n import t
+from claritymed.core.observability.tracing import setup_tracing
 from claritymed.orchestrator.services import (
     Cancelled,
+    ChatSession,
+    ChatTurn,
     Done,
     Error,
     IngestService,
@@ -50,7 +53,6 @@ from claritymed.orchestrator.services import (
     ToolCompleted,
     ToolStarted,
 )
-from claritymed.stores.chat_memory import ChatTurn, LanceChatMemoryStore
 
 if TYPE_CHECKING:
     from claritymed.cli.tui.slash_commands import ParsedCommand
@@ -83,7 +85,7 @@ class ClarityMedApp(App):
         ask_service_factory=None,
         ingest_service_factory=None,
         rag_service_factory=None,
-        chat_memory_store=None,
+        chat_session: ChatSession | None = None,
     ) -> None:
         super().__init__()
         self._initial_user_id = user_id or DEFAULT_USER_ID
@@ -92,13 +94,12 @@ class ClarityMedApp(App):
         self._ask_service_factory = ask_service_factory
         self._ingest_service_factory = ingest_service_factory
         self._rag_service_factory = rag_service_factory
-        self._chat_memory_store = chat_memory_store
+        self._chat_session: ChatSession | None = chat_session
 
         self._session_turns: list[ChatTurn] = []
         self._stream_worker: Worker | None = None
         # Track the active user_id at App level (not via StatusBar query) so
-        # on_unmount can save the transcript after Textual has already torn
-        # down child widgets.
+        # on_unmount runs after Textual has already torn down child widgets.
         self._current_user_id: str = self._initial_user_id
 
     # ----- layout ---------------------------------------------------------
@@ -111,6 +112,9 @@ class ClarityMedApp(App):
         yield StatusBar()
 
     def on_mount(self) -> None:
+        # Boot tracing first turn — no-op when PHOENIX_COLLECTOR_ENDPOINT
+        # is unset, so headless tests and offline runs stay untouched.
+        setup_tracing()
         status = self.query_one(StatusBar)
         status.user_id = self._initial_user_id
         status.language = self._initial_language
@@ -126,14 +130,18 @@ class ClarityMedApp(App):
         # message handlers run in separate Contexts, so tokens applied here
         # would not be resettable from on_unmount.
 
-        # Load recent turns from chat memory (v1 stub returns []).
-        store = self._chat_memory_store or LanceChatMemoryStore(status.user_id)
-        recent = store.load_recent(k=10)
+        # Start with a fresh chat session unless one was injected (tests do
+        # this; future /resume command will too). Previous sessions stay
+        # discoverable on disk via ChatSession.list_sessions(user_id).
+        if self._chat_session is None:
+            self._chat_session = ChatSession.new(status.user_id)
         conv = self.query_one(Conversation)
+        recent = self._chat_session.load_turns()
         if not recent:
             conv.show_empty_state(self._empty_hint(status.mode, status.language))
         else:
             for turn in recent:
+                self._session_turns.append(turn)
                 if turn.role == "user":
                     conv.add_user_turn(turn.text)
                 elif turn.role == "system":
@@ -144,15 +152,16 @@ class ClarityMedApp(App):
                     if turn.cancelled:
                         bubble.mark_cancelled()
                     conv.finalize_active()
+            self._refresh_context_chars()
 
         self.query_one(InputBar).focus_input()
         self._refresh_input_placeholder()
 
     def on_unmount(self) -> None:
         # No-op: ask-mode turns are persisted in real time by AskService
-        # via ``ChatMemoryStore.append_run_messages_json`` (pydantic-ai
-        # native format). ingest/rag turns are transient UI feedback, not
-        # chat history, so nothing needs flushing here.
+        # via ``ChatSession.append_assistant`` after each turn. ingest/rag
+        # turns are transient UI feedback, not chat history, so nothing
+        # needs flushing here.
         return
 
     # ----- mode + placeholder ---------------------------------------------
@@ -214,6 +223,9 @@ class ClarityMedApp(App):
                 return
             self._switch_user(new_uid)
             return
+        if parsed.name == "clear":
+            self._clear_session()
+            return
         if parsed.name == "upload":
             self._open_upload_modal(parsed.arg.strip())
             return
@@ -224,10 +236,11 @@ class ClarityMedApp(App):
         logger.warning("unhandled command: %s", parsed.name)
 
     def _switch_user(self, user_id: str) -> None:
-        # Each AskService call has already appended its own messages to the
-        # outgoing user's transcript, so nothing to flush. Just flip the
-        # tracked id and reset the display.
+        # AskService has already persisted the outgoing user's turns to
+        # their chat session file. Flip the tracked id, start that user a
+        # fresh session, reset the display.
         self._current_user_id = user_id
+        self._chat_session = ChatSession.new(user_id)
         status = self.query_one(StatusBar)
         status.user_id = user_id
         self._session_turns.clear()
@@ -237,6 +250,22 @@ class ClarityMedApp(App):
             child.remove()
         conv.show_empty_state(self._empty_hint(status.mode, status.language))
         self.query_one(ToolSteps).reset()
+
+    def _clear_session(self) -> None:
+        # /clear starts a new session_id and a new on-disk file. The old
+        # file is left as-is for resume / audit (Claude Code semantics).
+        # In-memory history and the visible conversation reset together so
+        # the next agent.run_stream call sees a fresh context.
+        status = self.query_one(StatusBar)
+        self._chat_session = ChatSession.new(self._current_user_id)
+        self._session_turns.clear()
+        status.context_chars = 0
+        conv = self.query_one(Conversation)
+        for child in list(conv.children):
+            child.remove()
+        conv.show_empty_state(self._empty_hint(status.mode, status.language))
+        self.query_one(ToolSteps).reset()
+        self._toast("New chat session started", kind="info")
 
     def _open_upload_modal(self, path: str) -> None:
         from claritymed.cli.tui.modals.upload_modal import UploadModal
@@ -401,13 +430,14 @@ class ClarityMedApp(App):
 
         provider = resolve_provider(override=self._initial_provider_id)
         model = build_model(provider)
-        chat_memory = self._chat_memory_store or LanceChatMemoryStore(
-            self._current_user_id
-        )
+        if self._chat_session is None:
+            self._chat_session = ChatSession.new(self._current_user_id)
         return AskService(
             model=model,
             language=self.query_one(StatusBar).language,
-            chat_memory=chat_memory,
+            chat_session=self._chat_session,
+            provider_id=provider.id,
+            model_name=provider.model,
         )
 
     @staticmethod

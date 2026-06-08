@@ -101,39 +101,48 @@ async def test_ask_service_streams_tokens_and_scrubs_input():
     assert done.final == "this is a streamed response"
 
 
-async def test_ask_service_persists_run_messages_to_chat_memory():
-    """AskService must append pydantic-ai messages_json to chat_memory.
+async def test_ask_service_persists_run_messages_to_chat_session():
+    """AskService must append the user+assistant turns to the chat session.
 
-    Round-trips through the official ``ModelMessagesTypeAdapter`` so the
-    file format stays compatible with ``Agent.run(message_history=...)``
-    when resume lands.
+    The persisted assistant event embeds the pydantic-ai messages array;
+    we round-trip it through ``ModelMessagesTypeAdapter`` to prove it can
+    feed back into ``Agent.run(message_history=...)`` next turn.
     """
+    import json
+
     from pydantic_ai.messages import (
         ModelMessagesTypeAdapter,
         ModelRequest,
         ModelResponse,
     )
 
-    captured: list[bytes] = []
+    from claritymed.orchestrator.services import ChatSession
 
-    class _StubMemory:
-        def append_run_messages_json(self, blob: bytes) -> int:
-            captured.append(blob)
-            return 1
-
+    session = ChatSession.new("alice")
     service = AskService(
         model=TestModel(custom_output_text="hello there"),
-        chat_memory=_StubMemory(),
+        chat_session=session,
+        provider_id="test_provider",
+        model_name="test:model",
     )
     events = []
     async for ev in service.run("how are you?", user_id="alice"):
         events.append(ev)
 
-    assert captured, "AskService did not call chat_memory"
-    messages = ModelMessagesTypeAdapter.validate_json(captured[0])
-    kinds = [type(m).__name__ for m in messages]
-    assert "ModelRequest" in kinds
-    assert "ModelResponse" in kinds
+    lines = session.path.read_text("utf-8").splitlines()
+    kinds = [json.loads(line)["type"] for line in lines]
+    assert "user" in kinds and "assistant" in kinds
+
+    assistant = json.loads(
+        next(line for line in lines if json.loads(line)["type"] == "assistant")
+    )
+    assert assistant["model"] == "test:model"
+    assert assistant["providerId"] == "test_provider"
+    assert assistant["latency"]["totalMs"] >= 0
+    assert "steps" in assistant and len(assistant["steps"]) >= 1
+    assert "messages" in assistant
+
+    messages = ModelMessagesTypeAdapter.validate_python(assistant["messages"])
     assert any(isinstance(m, ModelRequest) for m in messages)
     assert any(isinstance(m, ModelResponse) for m in messages)
 
@@ -143,23 +152,23 @@ async def test_ask_service_reuses_existing_request_id():
     desynchronised the TUI status bar from the audit log. With a rid
     already in context (TUI's _run_stream sets one), the service must
     reuse it instead of overwriting."""
-    from claritymed.context import apply_context, reset_context
+    from claritymed.context import apply_context, request_id_ctx, reset_context
+    from claritymed.orchestrator.services import ChatSession
 
     rid = "20260607123045ABCDEF12"
     tokens = apply_context(rid, "alice", "en")
     captured_rid: list[str] = []
 
-    class _RidSpyMemory:
-        def append_run_messages_json(self, blob: bytes) -> int:
-            from claritymed.context import request_id_ctx
-
+    class _RidSpySession(ChatSession):
+        def append_assistant(self, **kwargs) -> str:
             captured_rid.append(request_id_ctx.get() or "")
-            return 1
+            return super().append_assistant(**kwargs)
 
     try:
+        session = _RidSpySession.new("alice")
         service = AskService(
             model=TestModel(custom_output_text="ok"),
-            chat_memory=_RidSpyMemory(),
+            chat_session=session,
         )
         async for _ in service.run("hi", user_id="alice"):
             pass
@@ -170,6 +179,81 @@ async def test_ask_service_reuses_existing_request_id():
         f"AskService overwrote request_id: caller had {rid!r}, "
         f"service used {captured_rid!r}"
     )
+
+
+async def test_ask_service_passes_message_history_for_multi_turn():
+    """Multi-turn proof: turn 2 sees turn 1's messages as message_history.
+
+    Without ChatSession plumbing this regresses to the original bug where
+    the agent had no memory of prior turns.
+    """
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from claritymed.orchestrator.services import ChatSession
+
+    session = ChatSession.new("alice")
+    service = AskService(
+        model=TestModel(custom_output_text="first answer"),
+        chat_session=session,
+    )
+    async for _ in service.run("question one", user_id="alice"):
+        pass
+
+    history = session.message_history()
+    assert history, "first turn left no in-memory history"
+    user_prompts = [
+        part.content
+        for msg in history
+        if isinstance(msg, ModelRequest)
+        for part in msg.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert "question one" in user_prompts
+
+
+async def test_ask_service_emits_token_and_latency_audit():
+    """``mode.ask`` audit payload must include token + latency telemetry."""
+    import json
+    import logging
+
+    from claritymed.orchestrator.services import ChatSession
+
+    session = ChatSession.new("alice")
+    service = AskService(
+        model=TestModel(custom_output_text="ok"),
+        chat_session=session,
+        provider_id="test_provider",
+        model_name="test:model",
+    )
+
+    audit_records: list[dict] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:  # noqa: D401
+            audit_records.append(json.loads(record.getMessage()))
+
+    handler = _Capture()
+    audit_logger = logging.getLogger("claritymed.audit")
+    audit_logger.addHandler(handler)
+    try:
+        async for _ in service.run("hi", user_id="alice"):
+            pass
+    finally:
+        audit_logger.removeHandler(handler)
+
+    asks = [r for r in audit_records if r["kind"] == "mode.ask"]
+    assert asks, "no mode.ask audit event emitted"
+    payload = asks[-1]["payload"]
+    assert payload["model"] == "test:model"
+    assert payload["provider_id"] == "test_provider"
+    assert payload["session_id"] == session.session_id
+    assert "latency_ms" in payload
+    assert "ttft_ms" in payload
+    assert "completion_ms" in payload
+    assert "input_tokens" in payload
+    assert "output_tokens" in payload
+    assert "total_tokens" in payload
+    assert "steps" in payload and len(payload["steps"]) >= 1
 
 
 async def test_ask_service_phi_scrub_before_llm(monkeypatch):

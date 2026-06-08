@@ -19,34 +19,19 @@ from claritymed.cli.tui.widgets import (
     ToolSteps,
 )
 from claritymed.orchestrator.services import (
+    ChatSession,
     Done,
     Event,
     TokenChunk,
     ToolCompleted,
     ToolStarted,
 )
-from claritymed.stores.chat_memory import ChatMemoryStore, ChatTurn
 
 
-class _StubChatMemory(ChatMemoryStore):
-    """Records what AskService persists without touching disk."""
-
-    def __init__(self, user_id: str, turns: list[ChatTurn] | None = None) -> None:
-        super().__init__(user_id)
-        self._turns = turns or []
-        self.saved_messages: list[bytes] = []
-
-    def search(self, query: str, k: int = 5):
-        return []
-
-    def load_recent(self, k: int = 10):
-        return list(self._turns)
-
-    def append_run_messages_json(self, messages_json: bytes) -> int:
-        if not messages_json:
-            return 0
-        self.saved_messages.append(messages_json)
-        return 1
+def _fresh_session(user_id: str = "alice") -> ChatSession:
+    """A fresh ChatSession in the per-test tmp tree. Per conftest isolation
+    every test gets its own DATA_DIR, so no cross-test bleed."""
+    return ChatSession.new(user_id)
 
 
 class _StubAskService:
@@ -69,7 +54,7 @@ async def test_app_mounts_with_status_bar_and_widgets():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
         ask_service_factory=lambda: _StubAskService(["hi"]),
     )
     async with app.run_test() as pilot:
@@ -89,7 +74,7 @@ async def test_shift_tab_cycles_mode():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -111,7 +96,7 @@ async def test_slash_help_shows_help_bubble():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -132,7 +117,7 @@ async def test_slash_mode_switches_mode():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -149,7 +134,7 @@ async def test_ask_dispatch_streams_tokens_and_finalizes():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
         ask_service_factory=lambda: _StubAskService(["hel", "lo"]),
     )
     async with app.run_test() as pilot:
@@ -171,14 +156,29 @@ async def test_ask_dispatch_streams_tokens_and_finalizes():
 
 @pytest.mark.asyncio
 async def test_load_recent_renders_history():
-    history = [
-        ChatTurn(role="user", text="prior question"),
-        ChatTurn(role="assistant", text="prior answer"),
-    ]
+    """A pre-existing session is resumed and its on-disk turns render."""
+    from pydantic_ai import Agent
+    from pydantic_ai.models.test import TestModel
+
+    seed = ChatSession.new("alice")
+    seed.append_user("prior question")
+    agent = Agent(TestModel(custom_output_text="prior answer"))
+    result = await agent.run("prior question")
+    from claritymed.orchestrator.services import LatencyTrace
+
+    seed.append_assistant(
+        text="prior answer",
+        messages_json=result.all_messages_json(),
+        model="?",
+        provider_id="?",
+        usage=result.usage,
+        latency=LatencyTrace(total_ms=0),
+    )
+    resumed = ChatSession.resume("alice", seed.session_id)
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice", history),
+        chat_session=resumed,
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -197,7 +197,7 @@ async def test_unmount_is_a_noop_now():
     """Regression: ``on_unmount`` used to call save_turns on a query that
     raised after Textual tore down child widgets. Persistence has moved
     into AskService (per-LLM-run), so the unmount path must not raise
-    even with no chat_memory_store injected."""
+    even with no chat_session injected."""
     app = ClarityMedApp(user_id="alice", language="en")
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -212,7 +212,7 @@ async def test_slash_user_switches_user_and_clears_history():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -228,7 +228,7 @@ async def test_slash_user_without_arg_toasts_error():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -243,7 +243,7 @@ async def test_slash_mode_invalid_arg_toasts():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -257,7 +257,7 @@ async def test_unknown_slash_command_toasts():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -278,7 +278,7 @@ async def test_ingest_mode_dispatch_runs_service():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -302,11 +302,43 @@ async def test_ingest_mode_dispatch_runs_service():
 
 
 @pytest.mark.asyncio
+async def test_slash_clear_rotates_session_and_keeps_old_file_on_disk():
+    initial = _fresh_session()
+    initial_session_id = initial.session_id
+    # Pre-seed the initial session so a file exists on disk to verify
+    # /clear preserves it (Claude Code semantics).
+    initial.append_user("first session content")
+    old_path = initial.path
+    assert old_path.exists()
+
+    app = ClarityMedApp(
+        user_id="alice",
+        language="en",
+        chat_session=initial,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).post_message(InputBar.Submitted("/clear"))
+        await pilot.pause()
+        # New session_id was minted
+        assert app._chat_session is not None
+        assert app._chat_session.session_id != initial_session_id
+        # Old file is untouched
+        assert old_path.exists()
+        assert "first session content" in old_path.read_text("utf-8")
+        # In-memory history reset
+        assert app._chat_session.message_history() == []
+        # Visible conversation reset to the empty-state placeholder
+        conv = app.query_one(Conversation)
+        assert all("empty" in child.classes for child in conv.children)
+
+
+@pytest.mark.asyncio
 async def test_quit_command_exits_app():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
-        chat_memory_store=_StubChatMemory("alice"),
+        chat_session=_fresh_session(),
     )
     async with app.run_test() as pilot:
         await pilot.pause()

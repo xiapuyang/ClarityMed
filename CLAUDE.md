@@ -11,10 +11,78 @@ uv run pytest
 
 # 跑全部 pre-commit hook（gitleaks / ruff / ruff-format / AI bypass 检测）
 uv run pre-commit run --all-files
+
+# 启动 TUI（headless 镜像走 ask/ingest/rag 子命令）
+uv run claritymed tui [--user <id>] [--lang en|zh] [--provider <id>]
+
+# 单次问答 / 数据落盘
+uv run claritymed ask "..." [--user <id>] [--provider <id>]
+uv run claritymed ingest profile allergy=penicillin --user <id>
+uv run claritymed rag add ./path/to/note.md --user <id>
+
+# Phoenix prompts 双向同步（详见下面 Prompts workflow）
+uv run claritymed prompts push [NAME] [--dry-run]
+uv run claritymed prompts pull [NAME] [--dry-run] \
+    [--into-new-version] [--version-name v1.1]
 ```
 
-> Server / CLI 启动命令目前还没接（`src/claritymed/cli/entry.py` 只暴露
-> `inject_context`，没有具体子命令；HTTP 入口未实现）。
+## Observability — Phoenix tracing
+
+Tracing 是 opt-in：设了 `PHOENIX_COLLECTOR_ENDPOINT` 就上，没设就完全 no-op
+（CI / 离线 / headless test 零影响）。
+
+```bash
+# 本地起 Phoenix（任选其一）
+docker run -p 6006:6006 arizephoenix/phoenix:latest
+# 或
+uvx arize-phoenix serve
+
+# 跑应用时指向它
+export PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
+uv run claritymed tui
+```
+
+打开 `http://localhost:6006` 就能看到每一次 `agent.run` / `model_call` 的
+prompt / response / token usage（含 `cache_read_tokens` / `cache_write_tokens`）/
+latency 分层（`total_ms` / `ttft_ms` / `completion_ms`）/ 多步 trace。
+
+**Audit ↔ Trace 关联**：每条 `audit.log` 行带 `trace_id` + `span_id`；每个 OTel
+span 带三个 baggage attribute：
+- `claritymed.request_id` —— 跟 audit 行的 `request_id` 一一对应
+- `claritymed.user_id`
+- `claritymed.session_id` —— `AskService` 在调 LLM 时 attach，可按对话粒度聚合
+
+→ Phoenix 里搜某个 `trace_id` 能定位到对应的 audit 行；反过来 grep audit.log 拿
+到 `claritymed.session_id` 也能在 Phoenix 里 group by 对话。
+
+**PHI 提醒**：pydantic-ai 的 OpenInference instrumentation 默认把 prompt / response
+全部塞进 span。Phoenix 本地跑没问题。**绝对不要**把 `PHOENIX_COLLECTOR_ENDPOINT`
+指向第三方 SaaS endpoint —— PHI 会出域。需要 SaaS 时必须先在
+`OpenInferenceSpanProcessor` 之前包一道 PHI scrubber。
+
+## Prompts workflow
+
+Prompts 仍以 `core/prompts/store/*.yaml` 为**运行时唯一真相**。Phoenix 只是
+编辑 UI + eval 平台。Runtime 完全不调 Phoenix。
+
+```bash
+# 1. 把 YAML 现状推到 Phoenix，让 UI 能编辑、能跑 experiments
+uv run claritymed prompts push
+
+# 2. (在 Phoenix UI 改 prompt、跑 eval、确认满意)
+
+# 3. 把 Phoenix 改动拉回 YAML —— 三种粒度选一：
+uv run claritymed prompts pull               # 默认: in-place 覆盖最新 version（compact diff）
+uv run claritymed prompts pull --into-new-version          # 追加 v(N+1) 新 block，保留旧 version
+uv run claritymed prompts pull --version-name v1.1         # 追加，显式指定版本号（implies --into-new-version）
+
+# dry-run 看 diff 不写盘
+uv run claritymed prompts pull --dry-run
+```
+
+命名约定：每个 `(name, language)` 对应一个 Phoenix prompt `claritymed_<name>_<lang>`
+（例：`claritymed_ask_en`、`claritymed_ask_zh`），用 `production` tag 标识当前
+同步到 YAML 的版本。
 
 ## Architecture
 

@@ -37,8 +37,9 @@ def user_db_path(user_id: str) -> Path:
     return user_root(user_id) / "profile.db"
 
 
-def user_chat_memory_dir(user_id: str) -> Path:
-    return user_root(user_id) / "chat_memory.lance"
+def user_sessions_dir(user_id: str) -> Path:
+    """One JSONL per chat session under ``<user_root>/sessions/``."""
+    return user_root(user_id) / "sessions"
 
 
 def user_uploads_dir(user_id: str) -> Path:

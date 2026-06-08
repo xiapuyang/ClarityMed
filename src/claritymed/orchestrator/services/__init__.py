@@ -8,6 +8,13 @@ scrubbing step before any LLM call, audit log writes, and the
 """
 
 from claritymed.orchestrator.services.ask_service import AskService
+from claritymed.orchestrator.services.chat_session import (
+    ChatSession,
+    ChatTurn,
+    LatencyTrace,
+    SessionMeta,
+    build_step_records,
+)
 from claritymed.orchestrator.services.events import (
     Cancelled,
     Done,
@@ -25,14 +32,19 @@ from claritymed.orchestrator.services.rag_service import RagService
 __all__ = [
     "AskService",
     "Cancelled",
+    "ChatSession",
+    "ChatTurn",
     "Done",
     "Error",
     "Event",
     "IngestService",
+    "LatencyTrace",
     "ModeRouted",
     "RagService",
     "RetrievalFiltered",
+    "SessionMeta",
     "TokenChunk",
     "ToolCompleted",
     "ToolStarted",
+    "build_step_records",
 ]

@@ -4,11 +4,6 @@ from claritymed.stores.account import (
     init_user,
     require_admin,
 )
-from claritymed.stores.chat_memory import (
-    ChatMemoryStore,
-    ChatTurn,
-    LanceChatMemoryStore,
-)
 from claritymed.stores.knowledge import (
     KnowledgeChunk,
     KnowledgeStore,
@@ -22,9 +17,9 @@ from claritymed.stores.paths import (
     shared_qdrant_dir,
     shared_root,
     shared_vision_models_dir,
-    user_chat_memory_dir,
     user_db_path,
     user_root,
+    user_sessions_dir,
     user_settings_path,
     user_uploads_dir,
     validate_user_id,
@@ -33,11 +28,8 @@ from claritymed.stores.profile import ProfileStore
 
 __all__ = [
     "AccountStore",
-    "ChatMemoryStore",
-    "ChatTurn",
     "KnowledgeChunk",
     "KnowledgeStore",
-    "LanceChatMemoryStore",
     "ProfileStore",
     "QdrantKnowledgeStore",
     "current_account",
@@ -51,9 +43,9 @@ __all__ = [
     "shared_qdrant_dir",
     "shared_root",
     "shared_vision_models_dir",
-    "user_chat_memory_dir",
     "user_db_path",
     "user_root",
+    "user_sessions_dir",
     "user_settings_path",
     "user_uploads_dir",
     "validate_user_id",
