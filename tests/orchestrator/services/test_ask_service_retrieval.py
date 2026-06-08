@@ -234,6 +234,23 @@ def test_evidence_format_empty_returns_empty_string():
     assert AskService._format_evidence([]) == ""
 
 
+def test_evidence_format_debug_includes_collection_name(monkeypatch):
+    """CLARITYMED_DEBUG=1 prepends [collection_name] to each source label so
+    developers can see which RAG collection each cited chunk came from."""
+    monkeypatch.setenv("CLARITYMED_DEBUG", "1")
+    # Default _chunk() has collection_name="statpearls_en" (source=system_rag)
+    formatted = AskService._format_evidence([_chunk(text="body text")])
+    assert "[statpearls_en]" in formatted
+
+
+def test_evidence_format_no_debug_omits_collection_name(monkeypatch):
+    """Without CLARITYMED_DEBUG, collection name is NOT wrapped in brackets."""
+    monkeypatch.delenv("CLARITYMED_DEBUG", raising=False)
+    formatted = AskService._format_evidence([_chunk(text="body text")])
+    # collection_name may surface as src fallback but NOT as [bracketed] label
+    assert "[statpearls_en]" not in formatted
+
+
 def test_compose_prompt_appends_evidence_with_question_label():
     out = AskService._compose_prompt("what is X?", "EVIDENCE_BLOCK")
     assert "EVIDENCE_BLOCK" in out

@@ -351,3 +351,61 @@ async def test_quit_command_exits_app():
         await pilot.pause()
         # The app should have queued an exit; subsequent pause drains it.
         # We just assert the call didn't raise.
+
+
+@pytest.mark.asyncio
+async def test_f2_toggles_steps_panel():
+    """F2 adds/removes user_collapsed on ToolSteps without clearing content."""
+    app = ClarityMedApp(
+        user_id="alice",
+        language="en",
+        chat_session=_fresh_session(),
+        ask_service_factory=lambda: _StubAskService(["hi"]),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        steps = app.query_one(ToolSteps)
+        # Panel starts without the collapsed class.
+        assert "user_collapsed" not in steps.classes
+        app.action_toggle_steps()
+        await pilot.pause()
+        assert "user_collapsed" in steps.classes
+        # Toggle again restores it.
+        app.action_toggle_steps()
+        await pilot.pause()
+        assert "user_collapsed" not in steps.classes
+
+
+@pytest.mark.asyncio
+async def test_streaming_label_cleared_after_done():
+    """'streaming…' on the llm-first-token step is replaced with 'done'
+    once the stream worker finishes (Done event received)."""
+    from claritymed.orchestrator.services import LlmFirstToken
+
+    class _StreamingStubService:
+        async def run(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
+            yield LlmFirstToken(ttft_ms=100)
+            yield TokenChunk(text="answer")
+            yield Done(final="answer")
+
+    app = ClarityMedApp(
+        user_id="alice",
+        language="en",
+        chat_session=_fresh_session(),
+        ask_service_factory=lambda: _StreamingStubService(),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).post_message(InputBar.Submitted("q"))
+        for _ in range(20):
+            await pilot.pause()
+            if app._stream_worker is None or app._stream_worker.is_finished:
+                break
+        steps = app.query_one(ToolSteps)
+        step_text = " ".join(
+            str(child.renderable)
+            for child in steps.children
+            if hasattr(child, "renderable")
+        )
+        assert "streaming…" not in step_text
+        assert "done" in step_text

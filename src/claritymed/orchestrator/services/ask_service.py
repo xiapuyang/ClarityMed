@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
@@ -451,10 +452,14 @@ class AskService:
     def _format_evidence(chunks: "list[RetrievedChunk]") -> str:
         if not chunks:
             return ""
+        debug = bool(os.environ.get("CLARITYMED_DEBUG"))
         lines = ["", "Evidence (cite by [n]):"]
         for i, c in enumerate(chunks, start=1):
             body = c.parent_text or c.text
-            src = c.source_uri or c.collection_name or c.source
+            if debug and c.collection_name:
+                src = f"[{c.collection_name}] {c.source_uri or c.source}"
+            else:
+                src = c.source_uri or c.collection_name or c.source
             lines.append(f"[{i}] ({src}) {body}")
         return "\n".join(lines)
 

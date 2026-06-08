@@ -107,6 +107,7 @@ class ClarityMedApp(App):
         Binding("shift+tab", "cycle_mode", "Cycle mode", show=True),
         Binding("escape", "cancel_stream", "Cancel", show=False),
         Binding("ctrl+c", "quit", "Quit", show=True),
+        Binding("f2", "toggle_steps", "Steps", show=True),
     ]
 
     def __init__(
@@ -242,6 +243,10 @@ class ClarityMedApp(App):
         idx = _MODE_CYCLE.index(status.mode) if status.mode in _MODE_CYCLE else 0
         status.mode = _MODE_CYCLE[(idx + 1) % len(_MODE_CYCLE)]
         self._refresh_input_placeholder()
+
+    def action_toggle_steps(self) -> None:
+        """Toggle the right-side steps panel open/closed (F2)."""
+        self.query_one(ToolSteps).toggle_collapse()
 
     def set_mode(self, mode: ModeName) -> None:
         status = self.query_one(StatusBar)
@@ -389,6 +394,7 @@ class ClarityMedApp(App):
         per_turn = apply_context(rid, status.user_id, status.language)
         access = get_access_logger()
         request_status = "ok"
+        llm_step = None  # Static widget for the LlmFirstToken step; cleared in finally
         try:
             audit_event(
                 "request_start",
@@ -438,7 +444,7 @@ class ClarityMedApp(App):
                         label = event.model_name or event.provider_id or "model"
                         steps.push_start("llm", f"{label}, awaiting first token…")
                     elif isinstance(event, LlmFirstToken):
-                        steps.push_complete(
+                        llm_step = steps.push_complete(
                             "llm first token", event.ttft_ms, "streaming…"
                         )
                     elif isinstance(event, TokenChunk):
@@ -474,6 +480,7 @@ class ClarityMedApp(App):
                     request_status = "exception"
                     conv.add_error_turn(f"stream failed: {exc}")
         finally:
+            steps.clear_streaming(llm_step)
             try:
                 audit_event(
                     "request_end",
