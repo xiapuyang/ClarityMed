@@ -501,6 +501,14 @@ class AskService:
                 "strategy": bundle.trace.strategy,
                 "active_collections": bundle.trace.active_collections,
                 "num_chunks": len(safe_chunks),
+                "chunks": [
+                    {
+                        "collection": c.collection_name,
+                        "doc_id": c.doc_id,
+                        "doc_title": c.doc_title,
+                    }
+                    for c in safe_chunks
+                ],
                 "filtered_phi": filtered,
                 "fallback_triggered": bundle.trace.fallback_triggered,
                 "rerank_fallback": bundle.trace.rerank_fallback,
