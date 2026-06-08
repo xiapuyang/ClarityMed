@@ -5,6 +5,8 @@ description = "Patient-facing medical Q&A with structured uncertainty propagatio
 requires-python = ">=3.11"
 dependencies = [
     "arize-phoenix-client>=2.7.0",
+    "llama-index-core>=0.14.22",
+    "llama-index-vector-stores-qdrant>=0.10.1",
     "openinference-instrumentation-pydantic-ai>=0.1.16",
     "opentelemetry-exporter-otlp>=1.42.1",
     "opentelemetry-sdk>=1.42.1",

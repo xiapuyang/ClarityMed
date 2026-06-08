@@ -60,6 +60,17 @@ def user_rag_qdrant_dir() -> Path:
     return _cfg.DATA_DIR / "qdrant" / "user_rag"
 
 
+def user_parent_docstore_path(user_id: str) -> Path:
+    """LlamaIndex ``SimpleDocumentStore`` JSON for a user's RAG uploads.
+
+    Holds parent-chunk text keyed by id; child chunks live in Qdrant. Per-
+    user PHI: kept under ``data/users/<id>/`` so file isolation does the
+    work that a cross-user filter would otherwise have to. Mirrors the
+    foundation §04 lesson (filter-only isolation is unreliable).
+    """
+    return user_root(user_id) / "parent_docstore.json"
+
+
 def list_user_ids() -> list[str]:
     """Return ids of users that have a ``settings.yaml`` on disk.
 
@@ -94,6 +105,16 @@ def shared_knowledge_normalized_dir() -> Path:
 
 def shared_qdrant_dir() -> Path:
     return _cfg.SHARED_DIR / "qdrant"
+
+
+def shared_parent_docstore_path() -> Path:
+    """LlamaIndex ``SimpleDocumentStore`` JSON for system RAG collections.
+
+    Holds parent-chunk text for shared corpora (StatPearls, ...). Admin-
+    managed: only ingest CLI writes here. Read path is open to any
+    authenticated user — system parent text is not PHI by construction.
+    """
+    return _cfg.SHARED_DIR / "parent_docstore.json"
 
 
 def shared_vision_models_dir(
