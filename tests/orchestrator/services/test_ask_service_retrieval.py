@@ -25,6 +25,8 @@ from claritymed.orchestrator.services.events import (
     RetrievalFiltered,
     RetrievalStarted,
     TokenChunk,
+    ToolCompleted,
+    ToolStarted,
 )
 
 if TYPE_CHECKING:
@@ -455,6 +457,34 @@ async def test_translate_queries_fallback_on_failure(monkeypatch):
     events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
     assert strategy.calls[0].query == "我血红蛋白105"
     assert any(isinstance(e, Done) for e in events)
+
+
+async def test_translate_queries_emits_tool_events(monkeypatch):
+    """ToolStarted/ToolCompleted are yielded for each translation step."""
+    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    strategy = StubStrategy(bundle)
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=strategy,
+        provider_config=_provider("local"),
+        language="zh",
+        translation_service=_translation_svc("hemoglobin 105"),
+    )
+    events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
+    types = [type(e).__name__ for e in events]
+
+    assert "ToolStarted" in types
+    assert "ToolCompleted" in types
+    started = next(e for e in events if isinstance(e, ToolStarted))
+    completed = next(e for e in events if isinstance(e, ToolCompleted))
+    assert started.tool_name == "translate.query"
+    assert completed.tool_name == "translate.query"
+    assert completed.summary == "done"
+    # Tool events precede the retrieval pipeline
+    assert types.index("ToolStarted") < types.index("RetrievalPending")
 
 
 # --- auto output language -------------------------------------------

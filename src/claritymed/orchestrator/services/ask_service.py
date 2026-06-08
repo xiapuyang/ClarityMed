@@ -27,6 +27,8 @@ from claritymed.orchestrator.services.events import (
     RetrievalPending,
     RetrievalStarted,
     TokenChunk,
+    ToolCompleted,
+    ToolStarted,
 )
 
 if TYPE_CHECKING:
@@ -414,10 +416,20 @@ class AskService:
         if self._translation_service and os.environ.get("CLARITYMED_TRANSLATE_QUERIES"):
             target_lang = self._collection_target_language()
             if target_lang:
-                embedding_query = await self._translation_service.translate_query(
-                    scrubbed_query,
-                    target_lang=target_lang,  # type: ignore[arg-type]
-                )
+                from claritymed.core.observability.steps import capture_steps
+
+                with capture_steps() as translation_steps:
+                    embedding_query = await self._translation_service.translate_query(
+                        scrubbed_query,
+                        target_lang=target_lang,  # type: ignore[arg-type]
+                    )
+                for rec in translation_steps:
+                    yield ToolStarted(tool_name=rec.name, args_preview=rec.details)
+                    yield ToolCompleted(
+                        tool_name=rec.name,
+                        duration_ms=rec.duration_ms,
+                        summary=rec.summary if not rec.failed else "failed",
+                    )
 
         ctx = RetrievalContext(
             query=embedding_query,

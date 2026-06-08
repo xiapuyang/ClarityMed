@@ -113,6 +113,7 @@ class TranslationService:
         """Shared LLM translation call. Raises on failure — callers handle fallback."""
         from pydantic_ai import Agent
 
+        from claritymed.core.observability.steps import step
         from claritymed.core.prompts.registry import PromptRegistry
 
         system_prompt = PromptRegistry().get(_PROMPT_NAME, language=target_lang)
@@ -121,15 +122,17 @@ class TranslationService:
             system_prompt=system_prompt,
             output_type=str,
         )
-        result = await agent.run(text)
-        translated = result.output.strip()
-        if translated:
-            logger.debug(
-                "translation (%s → %s, %s): %r",
-                self.detect_language(text),
-                target_lang,
-                context,
-                translated[:120],
-            )
-            return translated
+        with step(f"translate.{context}", details=f"translate/{target_lang}") as s:
+            result = await agent.run(text)
+            translated = result.output.strip()
+            if translated:
+                logger.debug(
+                    "translation (%s → %s, %s): %r",
+                    self.detect_language(text),
+                    target_lang,
+                    context,
+                    translated[:120],
+                )
+                s.summary = "done"
+                return translated
         return text

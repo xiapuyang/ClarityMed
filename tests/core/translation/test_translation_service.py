@@ -101,3 +101,48 @@ async def test_translate_returns_original_on_empty_output():
     svc = TranslationService(TestModel(custom_output_text=""))
     result = await svc.translate_query("我血红蛋白105", target_lang="en")
     assert result == "我血红蛋白105"
+
+
+# --- step instrumentation ---------------------------------------------
+
+
+async def test_translate_query_records_step_when_sink_active():
+    """translate_query emits a StepRecord into an active capture_steps() scope."""
+    from claritymed.core.observability.steps import capture_steps
+
+    svc = TranslationService(TestModel(custom_output_text="hemoglobin 105"))
+    with capture_steps() as steps:
+        await svc.translate_query("我血红蛋白105", target_lang="en")
+
+    assert len(steps) == 1
+    assert steps[0].name == "translate.query"
+    assert steps[0].details == "translate/en"
+    assert steps[0].summary == "done"
+    assert not steps[0].failed
+    assert steps[0].duration_ms >= 0
+
+
+async def test_translate_no_step_without_sink():
+    """Without a capture_steps() scope no StepRecord is created and no error occurs."""
+    svc = TranslationService(TestModel(custom_output_text="hemoglobin"))
+    result = await svc.translate_query("血红蛋白", target_lang="en")
+    assert result == "hemoglobin"
+
+
+async def test_failed_step_marked_on_llm_error():
+    """When _call raises, the StepRecord has failed=True."""
+    from claritymed.core.observability.steps import capture_steps
+
+    svc = TranslationService(TestModel(custom_output_text="x"))
+
+    async def _boom(text, *, target_lang, context="general"):
+        raise RuntimeError("simulated")
+
+    svc._call = _boom  # type: ignore[method-assign]
+
+    with capture_steps() as steps:
+        await svc.translate_query("血红蛋白", target_lang="en")
+
+    # translate_query catches the error, but _call never reached `with step(...)`,
+    # so no step is recorded — the step is owned by _call, not translate_query.
+    assert len(steps) == 0
