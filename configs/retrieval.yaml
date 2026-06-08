@@ -52,7 +52,7 @@ embedders:
       kind: http
       base_url: "http://127.0.0.1:8082"
       dense_dim: 1024
-      batch_size: 32
+      batch_size: 64
       timeout_s: 30
       api_key_env: null
 
@@ -69,7 +69,7 @@ rerankers:
 
 # --- term service (query expansion only in v1) --------------------------
 term_service:
-  active: umls_cmekg_local
+  active: none
   catalog:
     - id: umls_cmekg_local
       kind: local
