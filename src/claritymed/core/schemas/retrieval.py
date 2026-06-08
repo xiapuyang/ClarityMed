@@ -56,3 +56,43 @@ class RetrievedChunk(BaseModel):
         None, description="Optional pointer to the original source for citation."
     )
     ingested_at: datetime | None = Field(None)
+
+    # --- hybrid-retrieval fields (Unit 1 of RAG plan) -------------------
+    # All optional so existing v1 callers (UserRagStore stub, mode plan
+    # tests) keep validating; populated by HybridRetriever in Unit 6.
+
+    collection_name: str | None = Field(
+        None,
+        description=(
+            "Source collection (e.g. ``statpearls_en``, ``user_rag_alice``). "
+            "Used by ParentStore lookup and citation grouping."
+        ),
+    )
+    parent_id: str | None = Field(
+        None,
+        description=(
+            "Parent chunk id (parent-child layout). ``None`` for legacy single-"
+            "level chunks."
+        ),
+    )
+    parent_text: str | None = Field(
+        None,
+        description=(
+            "Hydrated parent chunk text. Filled by HybridRetriever after a "
+            "ParentStore lookup; prompt assembly uses parent_text when "
+            "present, falling back to text otherwise."
+        ),
+    )
+    dense_score: float | None = Field(
+        None, description="Dense (bge-m3 dense) similarity score, when known."
+    )
+    sparse_score: float | None = Field(
+        None, description="Sparse (bge-m3 lexical) similarity score, when known."
+    )
+    rerank_score: float | None = Field(
+        None,
+        description=(
+            "Cross-encoder rerank score (e.g. bge-reranker-v2-m3). "
+            "Authoritative ranking signal after rerank stage."
+        ),
+    )

@@ -1,27 +1,109 @@
-# Retrieval-layer config. Mostly placeholders until text_rag plan lands.
+# Retrieval-layer config. Catalog + active-id resolution mirrors models.yaml.
+#
+# Schema is owned by RetrievalConfig (src/claritymed/core/rag/schemas.py).
+# Every section that has a `catalog` also has an `active` id that must
+# resolve to one of the catalog entries — a typo raises Unknown*Error
+# (fail-loud, not silent fallback).
 
-hybrid:
-  dense_weight: null
-  sparse_weight: null
-top_k: null
-rerank_k: null
+# --- strategies (top-level RAG approach; pluggable) ---------------------
+# v1 ships `naive_hybrid` only. Future ids: `agentic` (Self-RAG / CRAG /
+# FLARE family), `hyde`, `graph` (GraphRAG / MedGraphRAG), `raptor`,
+# `late_chunking`. See docs/plans/2026-06-07-002-feat-rag-module-plan.md.
+strategies:
+  active: naive_hybrid
+  catalog:
+    - id: naive_hybrid
+      grader:
+        # CRAG-lite hook. Off by default. When on, computes mean rerank
+        # score over top_n hits and re-issues one rewritten query when
+        # below threshold. Deterministic — not Agentic RAG.
+        enabled: false
+        threshold: 0.5
+        top_n: 5
+        rewrite_mode: deterministic  # deterministic | llm
 
-# System RAG (shared authoritative knowledge) — declared as separate
-# collections so users can opt in to the subset they want consulted at ask
-# time. Each entry advertises a collection that ingestion can target and
-# Account.active_system_rag_collections may reference.
+# --- chunker (parent-child default) -------------------------------------
+chunker:
+  active: parent_child
+  catalog:
+    - id: parent_child
+      child_tok: 200
+      parent_tok: 1000
+      overlap_tok: 20
+
+# --- embedders (catalog + active) ---------------------------------------
+# kind: http → an OpenAI/TEI-style embedding server reachable over HTTP.
+# `base_url` is the server root; the client appends /embed and
+# /embed_sparse for BGE-M3 dual outputs. `api_key_env` is honored when
+# set; missing env raises MissingApiKeyError.
+embedders:
+  active: bge_m3_http
+  catalog:
+    - id: bge_m3_http
+      kind: http
+      base_url: "http://127.0.0.1:8082"
+      dense_dim: 1024
+      batch_size: 32
+      timeout_s: 30
+      api_key_env: null
+
+# --- rerankers (catalog + active) ---------------------------------------
+rerankers:
+  active: bge_v2_m3_http
+  catalog:
+    - id: bge_v2_m3_http
+      kind: http
+      base_url: "http://127.0.0.1:8083"
+      batch_size: 32
+      timeout_s: 30
+      api_key_env: null
+
+# --- term service (query expansion only in v1) --------------------------
+term_service:
+  active: umls_cmekg_local
+  catalog:
+    - id: umls_cmekg_local
+      kind: local
+      data_dir: "data/terminology"
+    - id: none
+      kind: noop
+
+# --- collection router (rule-based v1) ----------------------------------
+router:
+  active: rule_based
+  catalog:
+    - id: rule_based
+      max_active: 3
+      # Topic-overlap threshold per authority tier — lower tiers need
+      # stronger topic match to survive routing.
+      authority_bias:
+        "1": 0.0
+        "2": 0.2
+        "3": 0.5
+
+# --- system RAG (shared authoritative knowledge) ------------------------
+# Declared as a list of collections, each with the metadata
+# CollectionRouter uses for per-query selection. `default_active` is the
+# fallback whitelist when Account.active_system_rag_collections is empty
+# AND no per-request override is given.
 system_rag:
-  default_active: []  # empty = no system RAG consulted unless user opts in
+  default_active: []
   collections:
-    - name: medcorp_en
+    - name: statpearls_en
       language: en
-      authority: tier1
-      description: "MedCorp English authoritative subset"
-    - name: cmb_zh
-      language: zh
-      authority: tier1
-      description: "CMB-Clin Chinese authoritative subset"
+      cross_lingual: true
+      authority_tier: 1
+      size_chunks: 0
+      topics:
+        - general clinical
+        - differential diagnosis
+        - drug therapy
+      disease_codes: []
+      source_uri_prefix: "https://www.ncbi.nlm.nih.gov/books/"
+      license: "Creative Commons (StatPearls)"
 
+# --- user RAG (per-user uploads) ----------------------------------------
 user_rag:
   top_k: 5
+  rerank_k: 3
   score_threshold: 0.4

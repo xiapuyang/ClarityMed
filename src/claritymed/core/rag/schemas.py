@@ -1,0 +1,362 @@
+"""RAG-layer pydantic contracts and the retrieval.yaml loader.
+
+The catalog + active-id pattern mirrors ``stores/models.py``:
+
+* Each section that has a ``catalog`` also has an ``active`` id. A typo in
+  ``active`` raises ``Unknown<Section>Error`` at config load time — never
+  silently falls back to a default, because the default may not be what
+  the operator intended (and certainly not what a paper experiment
+  expects).
+* ``CollectionMetadata`` is the per-collection routing input the
+  ``CollectionRouter`` consumes (see Unit 5 of the RAG plan).
+* ``RetrievalTrace`` + ``EvidenceBundle`` are the strategy → service
+  return contract. ``RetrievalTrace.fallback_triggered=True`` requires
+  ``grader`` to be populated, since CRAG-lite is the only thing that can
+  raise the flag in v1.
+
+Optional ``CollectionMetadata.size_chunks`` defaults to 0 so a YAML entry
+can be written before ingest has actually populated the collection;
+ingest code is expected to update the YAML after a successful run, or
+the router treats 0 as "not yet ingested" and may skip it.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from claritymed import config as _cfg
+from claritymed.core.schemas.retrieval import RetrievedChunk
+from claritymed.errors import (
+    UnknownChunkerError,
+    UnknownEmbedderError,
+    UnknownRerankerError,
+    UnknownRouterError,
+    UnknownStrategyError,
+    UnknownTermServiceError,
+)
+
+# --- collection metadata (router input) ---------------------------------
+
+CollectionLanguage = Literal["en", "zh"]
+COLLECTION_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+
+
+class CollectionMetadata(BaseModel):
+    """Static per-collection metadata the CollectionRouter routes on."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=COLLECTION_NAME_PATTERN)
+    language: CollectionLanguage
+    cross_lingual: bool = False
+    authority_tier: int = Field(ge=1, le=3)
+    size_chunks: int = Field(default=0, ge=0)
+    topics: list[str] = Field(default_factory=list)
+    disease_codes: list[str] = Field(default_factory=list)
+    source_uri_prefix: str | None = None
+    license: str | None = None
+
+
+# --- retrieval trace / grader / evidence bundle -------------------------
+
+
+class GraderReport(BaseModel):
+    """CRAG-lite grader output for a single retrieval pass."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    threshold: float = Field(ge=0.0, le=1.0)
+    mean_rerank_score: float
+    decision: Literal["pass", "rewrite"]
+
+
+class RetrievalTrace(BaseModel):
+    """Observability payload returned alongside chunks."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    strategy: str
+    active_collections: list[str] = Field(default_factory=list)
+    expanded_query: str | None = None
+    embed_ms: int = Field(default=0, ge=0)
+    search_ms: int = Field(default=0, ge=0)
+    rerank_ms: int = Field(default=0, ge=0)
+    parent_expand_ms: int = Field(default=0, ge=0)
+    grader: GraderReport | None = None
+    fallback_triggered: bool = False
+
+    @model_validator(mode="after")
+    def _check_fallback_requires_grader(self) -> "RetrievalTrace":
+        if self.fallback_triggered and self.grader is None:
+            raise ValueError(
+                "fallback_triggered=True requires a GraderReport (CRAG-lite "
+                "is the only thing that raises the flag in v1)"
+            )
+        return self
+
+
+class EvidenceBundle(BaseModel):
+    """Return type of ``RagStrategy.retrieve``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    chunks: list[RetrievedChunk]
+    trace: RetrievalTrace
+
+
+# --- retrieval.yaml top-level config ------------------------------------
+
+
+class GraderConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    enabled: bool = False
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    top_n: int = Field(default=5, ge=1)
+    rewrite_mode: Literal["deterministic", "llm"] = "deterministic"
+
+
+class NaiveHybridStrategyConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: Literal["naive_hybrid"]
+    grader: GraderConfig = Field(default_factory=GraderConfig)
+
+
+# Open union for future strategies; v1 only validates naive_hybrid.
+StrategyConfig = NaiveHybridStrategyConfig
+
+
+class StrategiesConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    active: str
+    catalog: list[StrategyConfig]
+
+    @model_validator(mode="after")
+    def _resolve_active(self) -> "StrategiesConfig":
+        ids = {entry.id for entry in self.catalog}
+        if self.active not in ids:
+            raise UnknownStrategyError(
+                f"strategies.active={self.active!r} not in catalog {sorted(ids)!r}"
+            )
+        return self
+
+    def resolved(self) -> StrategyConfig:
+        for entry in self.catalog:
+            if entry.id == self.active:
+                return entry
+        # Validator guarantees this is unreachable.
+        raise UnknownStrategyError(self.active)
+
+
+class ParentChildChunkerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: Literal["parent_child"]
+    child_tok: int = Field(ge=10)
+    parent_tok: int = Field(ge=50)
+    overlap_tok: int = Field(default=0, ge=0)
+
+
+ChunkerEntry = ParentChildChunkerConfig
+
+
+class ChunkerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    active: str
+    catalog: list[ChunkerEntry]
+
+    @model_validator(mode="after")
+    def _resolve_active(self) -> "ChunkerConfig":
+        ids = {entry.id for entry in self.catalog}
+        if self.active not in ids:
+            raise UnknownChunkerError(
+                f"chunker.active={self.active!r} not in catalog {sorted(ids)!r}"
+            )
+        return self
+
+    def resolved(self) -> ChunkerEntry:
+        for entry in self.catalog:
+            if entry.id == self.active:
+                return entry
+        raise UnknownChunkerError(self.active)
+
+
+class EmbedderEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: str = Field(min_length=1)
+    kind: Literal["http"]
+    base_url: str = Field(min_length=1)
+    dense_dim: int = Field(ge=1)
+    batch_size: int = Field(default=32, ge=1)
+    timeout_s: int = Field(default=30, ge=1)
+    api_key_env: str | None = None
+
+
+class EmbedderConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    active: str
+    catalog: list[EmbedderEntry]
+
+    @model_validator(mode="after")
+    def _resolve_active(self) -> "EmbedderConfig":
+        ids = {entry.id for entry in self.catalog}
+        if self.active not in ids:
+            raise UnknownEmbedderError(
+                f"embedders.active={self.active!r} not in catalog {sorted(ids)!r}"
+            )
+        return self
+
+    def resolved(self) -> EmbedderEntry:
+        for entry in self.catalog:
+            if entry.id == self.active:
+                return entry
+        raise UnknownEmbedderError(self.active)
+
+
+class RerankerEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: str = Field(min_length=1)
+    kind: Literal["http"]
+    base_url: str = Field(min_length=1)
+    batch_size: int = Field(default=32, ge=1)
+    timeout_s: int = Field(default=30, ge=1)
+    api_key_env: str | None = None
+
+
+class RerankerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    active: str
+    catalog: list[RerankerEntry]
+
+    @model_validator(mode="after")
+    def _resolve_active(self) -> "RerankerConfig":
+        ids = {entry.id for entry in self.catalog}
+        if self.active not in ids:
+            raise UnknownRerankerError(
+                f"rerankers.active={self.active!r} not in catalog {sorted(ids)!r}"
+            )
+        return self
+
+    def resolved(self) -> RerankerEntry:
+        for entry in self.catalog:
+            if entry.id == self.active:
+                return entry
+        raise UnknownRerankerError(self.active)
+
+
+class TermServiceEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: str = Field(min_length=1)
+    kind: Literal["local", "noop"]
+    data_dir: str | None = None
+
+
+class TermServiceConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    active: str
+    catalog: list[TermServiceEntry]
+
+    @model_validator(mode="after")
+    def _resolve_active(self) -> "TermServiceConfig":
+        ids = {entry.id for entry in self.catalog}
+        if self.active not in ids:
+            raise UnknownTermServiceError(
+                f"term_service.active={self.active!r} not in catalog {sorted(ids)!r}"
+            )
+        return self
+
+    def resolved(self) -> TermServiceEntry:
+        for entry in self.catalog:
+            if entry.id == self.active:
+                return entry
+        raise UnknownTermServiceError(self.active)
+
+
+class RouterEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: Literal["rule_based"]
+    max_active: int = Field(default=3, ge=1)
+    # Keys are stringified tier numbers in YAML for stable YAML int-key
+    # behavior; convert to int-keyed dict here.
+    authority_bias: dict[int, float] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_authority_bias_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            bias = data.get("authority_bias")
+            if isinstance(bias, dict):
+                data = {
+                    **data,
+                    "authority_bias": {int(k): float(v) for k, v in bias.items()},
+                }
+        return data
+
+
+class RouterConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    active: str
+    catalog: list[RouterEntry]
+
+    @model_validator(mode="after")
+    def _resolve_active(self) -> "RouterConfig":
+        ids = {entry.id for entry in self.catalog}
+        if self.active not in ids:
+            raise UnknownRouterError(
+                f"router.active={self.active!r} not in catalog {sorted(ids)!r}"
+            )
+        return self
+
+    def resolved(self) -> RouterEntry:
+        for entry in self.catalog:
+            if entry.id == self.active:
+                return entry
+        raise UnknownRouterError(self.active)
+
+
+class SystemRagConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    default_active: list[str] = Field(default_factory=list)
+    collections: list[CollectionMetadata] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _default_active_must_be_known(self) -> "SystemRagConfig":
+        known = {c.name for c in self.collections}
+        unknown = [n for n in self.default_active if n not in known]
+        if unknown:
+            raise ValueError(
+                f"system_rag.default_active references unknown collections: {unknown!r}"
+            )
+        return self
+
+
+class UserRagConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    top_k: int = Field(default=5, ge=1)
+    rerank_k: int = Field(default=3, ge=1)
+    score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+
+
+class RetrievalConfig(BaseModel):
+    """Root of ``configs/retrieval.yaml``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    strategies: StrategiesConfig
+    chunker: ChunkerConfig
+    embedders: EmbedderConfig
+    rerankers: RerankerConfig
+    term_service: TermServiceConfig
+    router: RouterConfig
+    system_rag: SystemRagConfig
+    user_rag: UserRagConfig
+
+
+def load_retrieval_config() -> RetrievalConfig:
+    """Parse ``configs/retrieval.yaml`` through the mtime-cached loader.
+
+    Tests can call ``claritymed.config.reload_configs()`` to force a
+    re-read after redirecting CONFIG_DIR.
+    """
+    raw = _cfg.load_yaml("retrieval.yaml")
+    return RetrievalConfig.model_validate(raw)

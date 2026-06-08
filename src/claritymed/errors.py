@@ -37,3 +37,36 @@ class MissingApiKeyError(RuntimeError):
     providers go through pydantic-ai, which raises its own ``UserError``
     for missing keys — we don't shadow that path.
     """
+
+
+# --- RAG catalog resolution errors --------------------------------------
+#
+# Same fail-loud contract as ``UnknownProviderError``: ``configs/retrieval.yaml``
+# has an ``active`` id at each catalog section, and a typo there must refuse
+# to load rather than silently fall back to a default (the default may not be
+# what the operator intended, and certainly is not what a paper experiment
+# wants to reproduce).
+
+
+class UnknownStrategyError(KeyError):
+    """``strategies.active`` does not appear in the catalog."""
+
+
+class UnknownChunkerError(KeyError):
+    """``chunker.active`` does not appear in the catalog."""
+
+
+class UnknownEmbedderError(KeyError):
+    """``embedders.active`` does not appear in the catalog."""
+
+
+class UnknownRerankerError(KeyError):
+    """``rerankers.active`` does not appear in the catalog."""
+
+
+class UnknownTermServiceError(KeyError):
+    """``term_service.active`` does not appear in the catalog."""
+
+
+class UnknownRouterError(KeyError):
+    """``router.active`` does not appear in the catalog."""
