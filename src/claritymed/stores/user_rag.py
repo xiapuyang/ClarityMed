@@ -1,270 +1,266 @@
-"""Per-user RAG store backed by Qdrant.
+"""Per-user RAG store: chunk + embed + persist user-uploaded reference text.
 
-Each user gets their own Qdrant collection (``user_rag_<user_id>``) — a
-forgotten ``user_id`` filter cannot leak chunks across users because there
-is no shared collection to leak from. Removing a user is a single
-``drop_collection`` call.
+This module is the ingest-side facade for ``user_rag_<user_id>`` Qdrant
+collections and their per-user ``ParentStore`` JSON. The retrieval side
+(HybridRetriever) talks to the same underlying ``RagCollectionStore`` +
+``ParentStore`` pair directly — UserRagStore just owns the writes.
 
-Two enforcement points wire into ``PhiGuard``:
+Pipeline for ``add_document``:
 
-1. ``add_document`` scrubs each chunk's free text with
-   ``PhiGuard.scrub_free_text`` *before* the chunk is embedded or
-   persisted. The original (un-scrubbed) text is held only in memory and
-   discarded as soon as the embedding + write completes. When the caller
-   sets ``public=True`` (user-marked public reference, e.g. a published
-   paper), the scrub is skipped and ``can_cloud`` is recorded as True.
+1. Scrub the raw text through ``PhiGuard.scrub_free_text`` unless the
+   caller marked the source ``public=True`` (e.g. a published paper the
+   user explicitly chose to share with cloud models).
+2. Chunk into (parents, children) via the configured ``Chunker`` (v1:
+   parent-child via LlamaIndex HierarchicalNodeParser).
+3. Embed every child with the async ``Embedder`` (dense + sparse).
+4. Persist parents to the user's ``ParentStore`` JSON; persist children
+   (with embeddings) to the user's ``RagCollectionStore`` Qdrant
+   collection.
 
-2. ``search`` returns ``RetrievedChunk`` objects whose ``is_phi`` /
-   ``can_cloud`` payload feeds the retrieval-layer filter in
-   ``PhiGuard.filter_chunks_for_provider``.
+Per-user isolation is structural: each user has its own Qdrant collection
+(``user_rag_<user_id>``) and its own ParentStore JSON
+(``data/users/<id>/parent_docstore.json``). A forgotten ``user_id`` filter
+cannot leak across users because there is no shared collection / file to
+leak from.
 
-Embedding is pluggable via the ``Embedder`` protocol — the default
-implementation lazy-loads ``fastembed`` for CPU-friendly local embeddings;
-tests inject a deterministic stub so they need not download model weights.
+Migration note: the previous fastembed BGE-small (384-dim) implementation
+was retired in Unit 8 of the RAG plan. Existing collections created with
+the old embedder are dimension-incompatible; use ``rag migrate <user_id>``
+to drop + recreate (no automatic re-embed in v1 since user_rag is
+expected to be empty during the alpha window).
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
-from typing import Any, Protocol
 
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qmodels
+from qdrant_client import AsyncQdrantClient
 
+from claritymed.core.rag.chunking.base import Chunker, RawDocument
+from claritymed.core.rag.embedding.base import Embedder
+from claritymed.core.rag.parent_store import ParentStore
+from claritymed.core.rag.qdrant_store import RagCollectionStore
 from claritymed.core.schemas.retrieval import RetrievedChunk
 from claritymed.orchestrator import PhiGuard
+from claritymed.stores.paths import user_parent_docstore_path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VECTOR_DIM = 384  # fastembed BAAI/bge-small-en-v1.5
 
-
-class Embedder(Protocol):
-    """Anything that turns text into a dense vector and reports its dim."""
-
-    def embed(self, text: str) -> list[float]: ...
-
-    @property
-    def dimension(self) -> int: ...
-
-
-def _collection_name(user_id: str) -> str:
+def collection_name(user_id: str) -> str:
+    """``user_rag_<user_id>`` — also used by HybridRetriever for routing."""
     return f"user_rag_{user_id}"
 
 
 class UserRagStore:
-    """CRUD for per-user RAG collections with PHI scrubbing baked in."""
+    """High-level ingest facade for per-user RAG content."""
 
     def __init__(
         self,
-        client: QdrantClient,
+        aclient: AsyncQdrantClient,
         embedder: Embedder,
+        chunker: Chunker,
         guard: PhiGuard,
     ) -> None:
-        self._client = client
+        self._aclient = aclient
         self._embedder = embedder
+        self._chunker = chunker
         self._guard = guard
 
-    @classmethod
-    def from_defaults(cls, qdrant_path: str | None = None) -> "UserRagStore":
-        """Build a store with a local Qdrant client and the default embedder.
+    # --- factory caches (per user_id) ----------------------------------
 
-        Pass ``qdrant_path=":memory:"`` to get an in-process store useful for
-        tests; otherwise the client persists under ``DATA_DIR/qdrant/user_rag/``.
-        """
-        from claritymed.stores.paths import user_rag_qdrant_dir
-
-        path = qdrant_path or str(user_rag_qdrant_dir())
-        client = (
-            QdrantClient(path=path) if path != ":memory:" else QdrantClient(":memory:")
-        )
-        return cls(
-            client=client,
-            embedder=_LazyFastEmbedEmbedder(),
-            guard=PhiGuard.from_config(),
+    def _collection_store(self, user_id: str) -> RagCollectionStore:
+        return RagCollectionStore(
+            aclient=self._aclient,
+            collection_name=collection_name(user_id),
+            dense_dim=self._embedder.dimension,
         )
 
-    def ensure_collection(self, user_id: str) -> None:
-        """Create the user's collection if it does not exist."""
-        name = _collection_name(user_id)
-        if self._client.collection_exists(name):
-            return
-        self._client.create_collection(
-            collection_name=name,
-            vectors_config=qmodels.VectorParams(
-                size=self._embedder.dimension,
-                distance=qmodels.Distance.COSINE,
-            ),
-        )
+    def _parent_store(self, user_id: str) -> ParentStore:
+        return ParentStore(user_parent_docstore_path(user_id))
 
-    def add_document(
+    # --- write ---------------------------------------------------------
+
+    async def add_document(
         self,
         user_id: str,
         doc_id: str,
-        chunks: list[str],
-        metadata: dict[str, Any] | None = None,
+        text: str,
+        *,
+        metadata: dict | None = None,
         public: bool = False,
     ) -> int:
-        """Scrub, embed, and persist chunks. Returns chunk count written.
+        """Scrub, chunk, embed, persist. Returns child-chunk count written.
 
-        When ``public=False`` (the default), each chunk's text is passed
-        through ``PhiGuard.scrub_free_text`` before embedding — the original
-        text never reaches Qdrant. When ``public=True`` the caller has
-        explicitly declared the document is public reference material
-        (e.g. a published paper) and the scrub is skipped.
+        When ``public=False`` (default) the raw text is PHI-scrubbed and
+        the resulting chunks land with ``is_phi=True / can_cloud=False``.
+        When ``public=True`` the scrub is skipped and chunks are marked
+        ``is_phi=False / can_cloud=True`` — the user has explicitly
+        consented to share this document with cloud models.
+
+        Empty / whitespace-only input writes nothing and returns 0.
         """
-        self.ensure_collection(user_id)
+        if not text or not text.strip():
+            return 0
 
-        now = datetime.now(UTC).isoformat()
-        is_phi = not public
-        can_cloud = public
-        source_uri = (metadata or {}).get("source_uri")
+        # 1. PHI scrub
+        scrubbed = text if public else self._guard.scrub_free_text(text)[0]
 
-        points: list[qmodels.PointStruct] = []
-        for i, raw_text in enumerate(chunks):
-            text = raw_text
-            if not public:
-                text, _ = self._guard.scrub_free_text(raw_text)
-
-            vector = self._embedder.embed(text)
-            point_id = str(uuid.uuid4())
-            payload = {
-                "doc_id": doc_id,
-                "chunk_index": i,
-                "text": text,
-                "user_id": user_id,
-                "is_phi": is_phi,
-                "can_cloud": can_cloud,
-                "source_uri": source_uri,
-                "ingested_at": now,
-            }
-            points.append(
-                qmodels.PointStruct(id=point_id, vector=vector, payload=payload)
-            )
-
-        self._client.upsert(
-            collection_name=_collection_name(user_id),
-            points=points,
+        # 2. chunk
+        doc = RawDocument(
+            doc_id=doc_id,
+            text=scrubbed,
+            metadata=metadata or {},
         )
-        return len(points)
+        chunked = self._chunker.chunk(doc)
+        if not chunked.children:
+            return 0
 
-    def search(
+        # 3. persist parents (the JSON ParentStore is sync; small write)
+        parent_store = self._parent_store(user_id)
+        parent_store.bulk_put(chunked.parents)
+        parent_store.persist()
+
+        # 4. embed children
+        child_texts = [c.text for c in chunked.children]
+        dense_vecs = await self._embedder.embed_dense(child_texts)
+        sparse_vecs = await self._embedder.embed_sparse(child_texts)
+
+        # 5. write children to Qdrant
+        col_store = self._collection_store(user_id)
+        written = await col_store.upsert(
+            children=chunked.children,
+            dense_vectors=dense_vecs,
+            sparse_vectors=sparse_vecs,
+            is_phi=not public,
+            can_cloud=public,
+        )
+        return written
+
+    # --- search (independent path; HybridRetriever uses lower stores) --
+
+    async def search(
         self,
         user_id: str,
         query: str,
         top_k: int = 5,
+        *,
         only_cloud_safe: bool = False,
     ) -> list[RetrievedChunk]:
-        """Return top-k chunks for the user. Empty list if no collection yet.
+        """Hybrid search within one user's collection. Empty list when none.
 
-        ``only_cloud_safe=True`` filters down to chunks whose ``can_cloud=True``
-        — equivalent to the retrieval-layer PHI filter for the cloud provider.
-        Most callers should retrieve unfiltered and let
-        ``PhiGuard.filter_chunks_for_provider`` decide later, but this knob
-        helps when the caller already knows the destination is cloud.
+        This is the single-user convenience path (e.g. ``claritymed rag
+        search``). The full multi-collection AskService path goes through
+        ``HybridRetriever`` which consumes the same underlying
+        ``RagCollectionStore`` + ``ParentStore``.
         """
-        name = _collection_name(user_id)
-        if not self._client.collection_exists(name):
+        col_store = self._collection_store(user_id)
+        dense_vecs = await self._embedder.embed_dense([query])
+        sparse_vecs = await self._embedder.embed_sparse([query])
+        if not dense_vecs or not sparse_vecs:
             return []
-
-        query_vector = self._embedder.embed(query)
-        query_filter: qmodels.Filter | None = None
-        if only_cloud_safe:
-            query_filter = qmodels.Filter(
-                must=[
-                    qmodels.FieldCondition(
-                        key="can_cloud", match=qmodels.MatchValue(value=True)
-                    )
-                ]
-            )
-
-        hits = self._client.query_points(
-            collection_name=name,
-            query=query_vector,
-            limit=top_k,
-            query_filter=query_filter,
-            with_payload=True,
-        ).points
-
-        return [self._point_to_chunk(hit) for hit in hits]
-
-    def delete_document(self, user_id: str, doc_id: str) -> int:
-        """Delete every chunk whose payload ``doc_id`` matches."""
-        name = _collection_name(user_id)
-        if not self._client.collection_exists(name):
-            return 0
-        result = self._client.delete(
-            collection_name=name,
-            points_selector=qmodels.FilterSelector(
-                filter=qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key="doc_id", match=qmodels.MatchValue(value=doc_id)
-                        )
-                    ]
-                )
-            ),
+        hits = await col_store.search_hybrid(
+            dense_vecs[0],
+            sparse_vecs[0],
+            top_k,
+            only_cloud_safe=only_cloud_safe,
         )
-        # qdrant returns UpdateResult; the per-doc count isn't exposed but the
-        # collection now has fewer points. Best-effort return value.
-        return getattr(result, "operation_id", 0) or 0
+        parent_store = self._parent_store(user_id)
+        return [self._to_retrieved_chunk(user_id, hit, parent_store) for hit in hits]
 
-    def drop_user(self, user_id: str) -> bool:
-        """Remove the user's collection entirely (PHI-clean erase)."""
-        name = _collection_name(user_id)
-        if not self._client.collection_exists(name):
-            return False
-        self._client.delete_collection(collection_name=name)
-        return True
+    # --- delete / drop -------------------------------------------------
 
-    @staticmethod
-    def _point_to_chunk(point: qmodels.ScoredPoint) -> RetrievedChunk:
-        p = point.payload or {}
+    async def delete_document(self, user_id: str, doc_id: str) -> None:
+        """Remove every chunk + parent record for ``doc_id``."""
+        col_store = self._collection_store(user_id)
+        await col_store.delete_by_doc_id(doc_id)
+        parent_store = self._parent_store(user_id)
+        if parent_store.delete_by_doc_id(doc_id) > 0:
+            parent_store.persist()
+
+    async def drop_user(self, user_id: str) -> bool:
+        """PHI-clean erase: drop the Qdrant collection + parent JSON file.
+
+        Returns True iff anything was actually removed.
+        """
+        col_store = self._collection_store(user_id)
+        dropped_qdrant = await col_store.drop_collection()
+        path = user_parent_docstore_path(user_id)
+        dropped_parent = path.exists()
+        if dropped_parent:
+            path.unlink()
+        return dropped_qdrant or dropped_parent
+
+    # --- migration helper ---------------------------------------------
+
+    async def migrate_user(self, user_id: str) -> None:
+        """Drop the user's collection + docstore so the next ``add_document``
+        rebuilds at the current embedder dimension.
+
+        v1 does **not** auto-reembed: pre-Unit-8 vectors (384-dim fastembed)
+        cannot be re-encoded without the original text, which lived only in
+        the scrubbed payload. Users in the alpha window have effectively
+        no real data; ``rag migrate`` is documented as destructive in the
+        CLI help.
+        """
+        await self.drop_user(user_id)
+
+    # --- internals -----------------------------------------------------
+
+    def _to_retrieved_chunk(
+        self,
+        user_id: str,
+        hit,
+        parent_store: ParentStore,
+    ) -> RetrievedChunk:
+        payload = hit.payload
+        parent_id = payload.get("parent_id")
+        parent_text = parent_store.get_text(parent_id) if parent_id else None
         return RetrievedChunk(
-            text=p.get("text", ""),
+            text=hit.text,
             source="user_rag",
-            score=point.score,
-            doc_id=p.get("doc_id", ""),
-            chunk_index=p.get("chunk_index", 0),
-            is_phi=p.get("is_phi", True),
-            can_cloud=p.get("can_cloud", False),
-            user_id=None,  # int cast not used here; user_id is str in our system
-            source_uri=p.get("source_uri"),
-            ingested_at=_parse_iso(p.get("ingested_at")),
+            score=hit.score,
+            doc_id=str(payload.get("doc_id", "")),
+            chunk_index=int(payload.get("chunk_index", 0)),
+            is_phi=bool(payload.get("is_phi", True)),
+            can_cloud=bool(payload.get("can_cloud", False)),
+            user_id=None,
+            source_uri=payload.get("source_uri"),
+            ingested_at=None,
+            collection_name=collection_name(user_id),
+            parent_id=parent_id,
+            parent_text=parent_text,
         )
 
 
-def _parse_iso(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
+def make_default_user_rag_store(
+    qdrant_path: str | None = None,
+) -> UserRagStore:
+    """Build a ``UserRagStore`` from current config.
 
-
-class _LazyFastEmbedEmbedder:
-    """Default embedder. Lazily imports fastembed so the module loads fast
-    and tests that inject a stub never need fastembed installed.
+    Wires the active embedder + chunker + AsyncQdrantClient pointed at
+    ``data/qdrant/user_rag/`` (or ``:memory:`` for tests when callers
+    pass that explicitly).
     """
+    from claritymed.core.rag.chunking.factory import build_chunker
+    from claritymed.core.rag.embedding.factory import build_embedder
+    from claritymed.stores.paths import user_rag_qdrant_dir
 
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5") -> None:
-        self._model_name = model_name
-        self._model: Any | None = None
+    path = qdrant_path or str(user_rag_qdrant_dir())
+    aclient = (
+        AsyncQdrantClient(path=path)
+        if path != ":memory:"
+        else AsyncQdrantClient(":memory:")
+    )
+    return UserRagStore(
+        aclient=aclient,
+        embedder=build_embedder(),
+        chunker=build_chunker(),
+        guard=PhiGuard.from_config(),
+    )
 
-    def _ensure_model(self) -> Any:
-        if self._model is None:
-            from fastembed import TextEmbedding  # imported lazily
 
-            self._model = TextEmbedding(model_name=self._model_name)
-        return self._model
-
-    def embed(self, text: str) -> list[float]:
-        model = self._ensure_model()
-        return next(iter(model.embed([text]))).tolist()
-
-    @property
-    def dimension(self) -> int:
-        return DEFAULT_VECTOR_DIM
+def generate_doc_id() -> str:
+    """Random doc id (UUID4 shortened to 12 chars)."""
+    return f"doc-{uuid.uuid4().hex[:12]}"

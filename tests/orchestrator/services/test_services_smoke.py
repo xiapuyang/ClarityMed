@@ -6,8 +6,15 @@ import hashlib
 
 import pytest
 from pydantic_ai.models.test import TestModel
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 
+from claritymed.core.rag.chunking.base import (
+    ChildChunk,
+    ChunkedDocument,
+    ParentChunk,
+    RawDocument,
+)
+from claritymed.core.rag.embedding.base import Embedder, SparseVector
 from claritymed.core.schemas.receipts import IngestionReceipt, IngestReceipt
 from claritymed.orchestrator import PhiGuard
 from claritymed.orchestrator.services import (
@@ -20,21 +27,51 @@ from claritymed.orchestrator.services import (
 from claritymed.stores.user_rag import UserRagStore
 
 
-class _StubEmbedder:
-    def embed(self, text: str) -> list[float]:
-        digest = hashlib.sha256(text.encode()).digest()
-        return [b / 255.0 for b in digest[: self.dimension]]
-
+class _StubEmbedder(Embedder):
     @property
     def dimension(self) -> int:
         return 32
+
+    async def embed_dense(self, texts: list[str]) -> list[list[float]]:
+        out = []
+        for text in texts:
+            digest = hashlib.sha256(text.encode()).digest()
+            out.append([b / 255.0 for b in digest[: self.dimension]])
+        return out
+
+    async def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
+        return [{abs(hash(t)) % 100: 0.5} for t in texts]
+
+
+class _StubChunker:
+    def chunk(self, doc: RawDocument) -> ChunkedDocument:
+        if not doc.text.strip():
+            return ChunkedDocument(parents=[], children=[])
+        import uuid
+
+        parent_id = f"{doc.doc_id}#p0"
+        parent = ParentChunk(
+            parent_id=parent_id,
+            text=doc.text,
+            doc_id=doc.doc_id,
+            parent_index=0,
+        )
+        child = ChildChunk(
+            child_id=str(uuid.uuid5(uuid.NAMESPACE_URL, doc.doc_id)),
+            text=doc.text,
+            parent_id=parent_id,
+            doc_id=doc.doc_id,
+            chunk_index=0,
+        )
+        return ChunkedDocument(parents=[parent], children=[child])
 
 
 @pytest.fixture
 def rag_store():
     return UserRagStore(
-        client=QdrantClient(":memory:"),
+        aclient=AsyncQdrantClient(":memory:"),
         embedder=_StubEmbedder(),
+        chunker=_StubChunker(),
         guard=PhiGuard.from_config(),
     )
 
@@ -72,9 +109,10 @@ async def test_rag_service_persists_via_user_rag(rag_store):
 
     done = next(e for e in events if isinstance(e, Done))
     assert isinstance(done.final, IngestionReceipt)
-    assert done.final.chunk_count == 2
+    # _StubChunker emits one child per doc.
+    assert done.final.chunk_count == 1
 
-    hits = rag_store.search("alice", "paragraph", top_k=5)
+    hits = await rag_store.search("alice", "paragraph", top_k=5)
     assert hits != []
 
 

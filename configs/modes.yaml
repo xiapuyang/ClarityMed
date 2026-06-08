@@ -40,7 +40,6 @@ modes:
     # (auto labels, doc type detection) only. Prompt forbids free-form generation.
     allow_llm_inference: false
     tools:
-      - chunk_document_stub
       - embed_and_store
       - tag_phi
       - fetch_web_link_stub

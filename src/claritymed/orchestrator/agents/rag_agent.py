@@ -1,18 +1,23 @@
-"""Rag mode: ingest documents into the per-user RAG store.
+"""Rag mode tools: persist user-uploaded text into the per-user RAG store.
 
-The single non-stub tool here is ``embed_and_store``, which calls
-``stores/user_rag.UserRagStore.add_document``. Phase 1 stubs the
-chunking / web-fetching steps so the rest of the system can still be
-exercised end-to-end before those real pipelines land.
+The chunking + embedding pipeline lives in ``stores/user_rag.py`` (the
+ingest facade) — this module is now a thin async wrapper that the
+``RagService`` calls. The previous Phase-1 stubs (``chunk_document_stub``
+etc.) were retired in Unit 8 of the RAG plan when real parent-child
+chunking + bge-m3 embedding came online.
+
+``tag_phi`` and ``fetch_web_link_stub`` remain as reserved tool names
+because the rag agent (LLM-mediated mode) still exposes them — the
+deterministic ingest path used by ``RagService`` does not need them.
 """
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from claritymed.core.prompts.registry import PromptRegistry
 from claritymed.core.schemas.receipts import IngestionReceipt
+from claritymed.stores.user_rag import generate_doc_id
 
 if TYPE_CHECKING:
     from pydantic_ai import Agent
@@ -21,54 +26,50 @@ if TYPE_CHECKING:
     from claritymed.stores.user_rag import UserRagStore
 
 RAG_TOOL_NAMES: list[str] = [
-    "chunk_document_stub",
     "embed_and_store",
     "tag_phi",
     "fetch_web_link_stub",
 ]
 
 
-def chunk_document_stub(text: str, target_chunk_size: int = 500) -> list[str]:
-    """Trivial naive chunker — splits on blank lines. Real plan replaces."""
-    parts = [p.strip() for p in text.split("\n\n") if p.strip()]
-    return parts or [text]
-
-
 def fetch_web_link_stub(url: str) -> str:
+    """Reserved tool name; LLM-mediated fetch is out of scope for v1."""
     return f"[stub: fetch_web_link not implemented for {url}]"
 
 
 def tag_phi(text: str) -> dict[str, bool]:
-    """Naive PHI detector used to flag chunks. Real plan adds NER + heuristics."""
+    """Reserved tool name; UserRagStore already scrubs at ingest time."""
     markers = ("MRN", "13", "@")
     return {"is_phi": any(m in text for m in markers)}
 
 
-def embed_and_store(
+async def embed_and_store(
     store: "UserRagStore",
     user_id: str,
-    chunks: list[str],
+    text: str,
+    *,
     doc_id: str | None = None,
     public: bool = False,
     metadata: dict | None = None,
 ) -> IngestionReceipt:
-    """Real tool: persist ``chunks`` to the user's RAG collection.
+    """Persist ``text`` to the user's RAG store.
 
-    ``UserRagStore.add_document`` already scrubs each chunk through the PHI
-    guard before embedding, so the rag agent does not need to scrub here.
+    Replaces the Phase-1 ``chunk_document_stub`` + sync ``embed_and_store``
+    pair. ``UserRagStore.add_document`` scrubs through ``PhiGuard`` and
+    chunks via the configured parent-child chunker before embedding.
     """
-    final_doc_id = doc_id or f"doc-{uuid.uuid4().hex[:12]}"
-    written = store.add_document(
+    final_doc_id = doc_id or generate_doc_id()
+    written = await store.add_document(
         user_id=user_id,
         doc_id=final_doc_id,
-        chunks=chunks,
+        text=text,
         metadata=metadata,
         public=public,
     )
     return IngestionReceipt(
         doc_id=final_doc_id,
         chunk_count=written,
-        embedding_status="ok",
+        embedding_status="ok" if written else "stub",
         public=public,
     )
 
@@ -78,15 +79,14 @@ def make_rag_agent(
     registry: PromptRegistry | None = None,
     language: str = "en",
 ) -> "Agent[None, IngestionReceipt]":
-    """Build the Pydantic AI agent for rag mode (only used when LLM enabled)."""
+    """Build the Pydantic AI agent for rag mode (LLM-mediated path only)."""
     from pydantic_ai import Agent
 
     reg = registry or PromptRegistry()
     system_prompt = reg.get("rag", language=language)  # type: ignore[arg-type]
 
-    agent = Agent(
+    return Agent(
         model,
         output_type=IngestionReceipt,
         system_prompt=system_prompt,
     )
-    return agent

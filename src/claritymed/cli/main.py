@@ -29,7 +29,7 @@ from claritymed.orchestrator.services import (
     ToolStarted,
 )
 from claritymed.stores.models import load_models, resolve_provider
-from claritymed.stores.user_rag import UserRagStore
+from claritymed.stores.user_rag import make_default_user_rag_store
 
 app = typer.Typer(
     name="claritymed",
@@ -164,7 +164,7 @@ def rag_add(
         with inject_context(user_id=user, language=language) as (_, uid, _):
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
-            store = UserRagStore.from_defaults()
+            store = make_default_user_rag_store()
             service = RagService(store=store)
             async for event in service.run(text, user_id=uid, public=public):
                 if isinstance(event, ToolStarted):
@@ -179,6 +179,36 @@ def rag_add(
                 elif isinstance(event, Error):
                     _stderr(f"[error] {event.message}")
                     raise typer.Exit(code=1)
+
+    _run_async(_run())
+
+
+@rag_app.command("migrate")
+def rag_migrate(
+    user: str = typer.Argument(..., help="user_id to migrate"),
+    force: bool = typer.Option(False, "--force", help="Skip the confirmation prompt."),
+) -> None:
+    """Drop the user's per-user RAG collection + parent docstore.
+
+    DESTRUCTIVE: v1 does not auto-reembed (pre-bge-m3 collections were
+    384-dim fastembed; the source text was scrubbed during ingest and is
+    no longer recoverable). Re-upload after migrating. Intended for the
+    alpha window where user_rag is expected to be empty.
+    """
+    if not force:
+        confirm = typer.confirm(
+            f"This will drop user '{user}' RAG data. Continue?",
+            default=False,
+        )
+        if not confirm:
+            console.print("[yellow]Migrate cancelled.[/yellow]")
+            raise typer.Exit(code=1)
+
+    async def _run() -> None:
+        with inject_context(user_id=user) as (_, uid, _):
+            store = make_default_user_rag_store()
+            await store.migrate_user(uid)
+            console.print(f"[green]Migrated user '{uid}': RAG data dropped.[/green]")
 
     _run_async(_run())
 

@@ -58,6 +58,28 @@ class RetrievalFiltered(_EventBase):
     reason: str = ""
 
 
+class RetrievalStarted(_EventBase):
+    """RAG retrieval begun. Drives the 'searching N collections' UI hint."""
+
+    type: Literal["retrieval_started"] = "retrieval_started"
+    active_collections: list[str] = []
+    strategy: str = "naive_hybrid"
+
+
+class RetrievalCompleted(_EventBase):
+    """RAG retrieval finished. ``trace_summary`` is a small dict the TUI
+    can render directly — no chunk content (audit-safe)."""
+
+    type: Literal["retrieval_completed"] = "retrieval_completed"
+    num_chunks: int
+    fallback_triggered: bool = False
+    rerank_fallback: bool = False
+    embed_ms: int = 0
+    search_ms: int = 0
+    rerank_ms: int = 0
+    parent_expand_ms: int = 0
+
+
 class ModeRouted(_EventBase):
     """Router decided the mode for this turn. Drives the status-bar flash."""
 
@@ -91,6 +113,8 @@ Event = Union[
     ToolStarted,
     ToolCompleted,
     TokenChunk,
+    RetrievalStarted,
+    RetrievalCompleted,
     RetrievalFiltered,
     ModeRouted,
     Cancelled,

@@ -39,32 +39,67 @@ def test_rag_add_with_file(tmp_path, monkeypatch):
     """Patch the embedder so the test does not download a fastembed model."""
     import hashlib
 
-    from qdrant_client import QdrantClient
+    from qdrant_client import AsyncQdrantClient
 
+    from claritymed.core.rag.chunking.base import (
+        ChildChunk,
+        ChunkedDocument,
+        ParentChunk,
+        RawDocument,
+    )
+    from claritymed.core.rag.embedding.base import Embedder, SparseVector
     from claritymed.orchestrator import PhiGuard
     from claritymed.stores import user_rag as _ur
 
-    class _StubEmbedder:
-        def embed(self, text: str) -> list[float]:
-            digest = hashlib.sha256(text.encode()).digest()
-            return [b / 255.0 for b in digest[: self.dimension]]
-
+    class _StubEmbedder(Embedder):
         @property
         def dimension(self) -> int:
             return 32
 
-    def _factory(qdrant_path: str | None = None):
+        async def embed_dense(self, texts: list[str]) -> list[list[float]]:
+            out = []
+            for text in texts:
+                digest = hashlib.sha256(text.encode()).digest()
+                out.append([b / 255.0 for b in digest[: self.dimension]])
+            return out
+
+        async def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
+            return [{abs(hash(t)) % 100: 0.5} for t in texts]
+
+    class _StubChunker:
+        def chunk(self, doc: RawDocument) -> ChunkedDocument:
+            if not doc.text.strip():
+                return ChunkedDocument(parents=[], children=[])
+            import uuid
+
+            parent_id = f"{doc.doc_id}#p0"
+            parent = ParentChunk(
+                parent_id=parent_id,
+                text=doc.text,
+                doc_id=doc.doc_id,
+                parent_index=0,
+            )
+            child = ChildChunk(
+                child_id=str(uuid.uuid5(uuid.NAMESPACE_URL, doc.doc_id)),
+                text=doc.text,
+                parent_id=parent_id,
+                doc_id=doc.doc_id,
+                chunk_index=0,
+            )
+            return ChunkedDocument(parents=[parent], children=[child])
+
+    def _factory():
         return _ur.UserRagStore(
-            client=QdrantClient(":memory:"),
+            aclient=AsyncQdrantClient(":memory:"),
             embedder=_StubEmbedder(),
+            chunker=_StubChunker(),
             guard=PhiGuard.from_config(),
         )
 
-    monkeypatch.setattr(
-        _ur.UserRagStore,
-        "from_defaults",
-        classmethod(lambda cls, qdrant_path=None: _factory()),
-    )
+    monkeypatch.setattr(_ur, "make_default_user_rag_store", _factory)
+    import claritymed.cli.main as _cli_main
+
+    monkeypatch.setattr(_cli_main, "make_default_user_rag_store", _factory)
     monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
     sample = tmp_path / "sample.txt"
     sample.write_text("para one\n\npara two", encoding="utf-8")

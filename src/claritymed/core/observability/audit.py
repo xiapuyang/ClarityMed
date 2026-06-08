@@ -55,6 +55,10 @@ AuditKind = Literal[
     "mode.routed",
     "mode.cancelled",
     "mode.ask.history_trimmed",
+    # RAG retrieval lifecycle
+    "rag.retrieval",
+    "rag.retrieval.failed",
+    "rag.rerank.fallback",
 ]
 
 

@@ -1,4 +1,9 @@
-"""Rag service: Phase 1 deterministic ingestion into ``user_rag``."""
+"""Rag service: deterministic ingestion into ``user_rag``.
+
+The chunking + embedding pipeline lives in ``stores/user_rag.py`` (Unit 8
+of the RAG plan). RagService just drives the audit + event flow the
+TUI / CLI listens to.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +11,7 @@ import time
 from collections.abc import AsyncIterator
 
 from claritymed.core.observability.audit import audit_event
-from claritymed.orchestrator.agents import embed_and_store
-from claritymed.orchestrator.agents.rag_agent import chunk_document_stub
+from claritymed.orchestrator.agents.rag_agent import embed_and_store
 from claritymed.orchestrator.services.events import (
     Done,
     Event,
@@ -18,11 +22,7 @@ from claritymed.stores.user_rag import UserRagStore
 
 
 class RagService:
-    """Drive rag mode end-to-end.
-
-    The store is injected so tests can use an in-memory Qdrant and a stub
-    embedder without touching the local filesystem or downloading a model.
-    """
+    """Drive rag mode end-to-end (deterministic ingest path)."""
 
     def __init__(self, store: UserRagStore) -> None:
         self._store = store
@@ -55,19 +55,12 @@ class RagService:
         user_id: str,
         public: bool,
     ) -> AsyncIterator[Event]:
-        yield ToolStarted(tool_name="chunk_document_stub", args_preview="")
-        chunks = chunk_document_stub(user_input)
-        yield ToolCompleted(
-            tool_name="chunk_document_stub",
-            summary=f"{len(chunks)} chunks",
-        )
-
         yield ToolStarted(tool_name="embed_and_store", args_preview=user_id)
         t0 = time.monotonic()
-        receipt = embed_and_store(
+        receipt = await embed_and_store(
             store=self._store,
             user_id=user_id,
-            chunks=chunks,
+            text=user_input,
             public=public,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)

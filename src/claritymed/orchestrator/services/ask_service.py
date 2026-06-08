@@ -19,6 +19,9 @@ from claritymed.orchestrator.services.events import (
     Done,
     Error,
     Event,
+    RetrievalCompleted,
+    RetrievalFiltered,
+    RetrievalStarted,
     TokenChunk,
 )
 
@@ -26,6 +29,9 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
     from pydantic_ai.usage import RunUsage
 
+    from claritymed.core.rag.strategies.base import RagStrategy
+    from claritymed.core.schemas import ProviderConfig
+    from claritymed.core.schemas.retrieval import RetrievedChunk
     from claritymed.orchestrator.services.chat_session import ChatSession
 
 logger = logging.getLogger(__name__)
@@ -95,6 +101,10 @@ class AskService:
         chat_session: "ChatSession | None" = None,
         provider_id: str = _UNKNOWN,
         model_name: str = _UNKNOWN,
+        *,
+        strategy: "RagStrategy | None" = None,
+        provider_config: "ProviderConfig | None" = None,
+        user_whitelist: list[str] | None = None,
     ) -> None:
         self._model = model
         self._guard = guard or PhiGuard.from_config()
@@ -102,6 +112,9 @@ class AskService:
         self._chat_session = chat_session
         self._provider_id = provider_id
         self._model_name = model_name
+        self._strategy = strategy
+        self._provider_config = provider_config
+        self._user_whitelist = user_whitelist
 
     async def run(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import (
@@ -151,8 +164,22 @@ class AskService:
             },
         )
 
+        # RAG retrieval (Unit 8): if a strategy is configured, fetch evidence
+        # before calling the LLM. Cloud providers filter PHI chunks at the
+        # Qdrant query layer (only_cloud_safe=True); local providers keep
+        # everything so user-uploaded PHI can ground the answer.
+        evidence_block = ""
+        async for ev in self._maybe_retrieve(scrubbed, user_id):
+            if isinstance(ev, _EvidenceReady):
+                evidence_block = ev.text
+            else:
+                yield ev
+        prompt = self._compose_prompt(scrubbed, evidence_block)
+
         # Record the user turn first so the JSONL timeline reflects send
-        # order, then pull the prior history for the LLM call.
+        # order, then pull the prior history for the LLM call. The chat
+        # session stores the scrubbed user text (no evidence) so re-loading
+        # a session does not re-inject yesterday's evidence.
         if self._chat_session is not None:
             try:
                 self._chat_session.append_user(scrubbed)
@@ -186,7 +213,7 @@ class AskService:
             else None
         )
         try:
-            async for event in self._run_with_agent(scrubbed, message_history, user_id):
+            async for event in self._run_with_agent(prompt, message_history, user_id):
                 yield event
         finally:
             detach_session_baggage(session_token)
@@ -283,3 +310,132 @@ class AskService:
             payload["session_id"] = self._chat_session.session_id
         audit_event("mode.ask", payload=payload)
         yield Done(final=final_text)
+
+    # --- retrieval seam ------------------------------------------------
+
+    async def _maybe_retrieve(
+        self, scrubbed_query: str, user_id: str
+    ) -> AsyncIterator[Event]:
+        """Stream RetrievalStarted/Filtered/Completed events and stash the
+        evidence_block on a private sentinel so the caller can splice it
+        into the prompt without losing event ordering.
+        """
+        if self._strategy is None:
+            return
+        from claritymed.core.rag.strategies.base import RetrievalContext
+
+        only_cloud_safe = self._is_cloud_provider()
+        ctx = RetrievalContext(
+            query=scrubbed_query,
+            user_id=user_id,
+            language=self._language,  # type: ignore[arg-type]
+            user_whitelist=self._user_whitelist,
+            only_cloud_safe=only_cloud_safe,
+        )
+        try:
+            bundle = await self._strategy.retrieve(ctx)
+        except Exception as exc:  # noqa: BLE001 — surface as audit + event
+            logger.exception("retrieval failed")
+            audit_event(
+                "rag.retrieval.failed",
+                payload={"user_id": user_id, "error": str(exc)[:200]},
+            )
+            yield Error(
+                error_type="retrieval_failed",
+                message=str(exc),
+                retryable=True,
+            )
+            return
+        yield RetrievalStarted(
+            active_collections=bundle.trace.active_collections,
+            strategy=bundle.trace.strategy,
+        )
+
+        # Cloud-safe filter at the provider boundary. The Qdrant layer
+        # already pre-filters when only_cloud_safe=True, but PhiGuard's
+        # filter_chunks_for_provider is the canonical defense-in-depth check.
+        chunks_pre = list(bundle.chunks)
+        safe_chunks = self._filter_for_provider(chunks_pre)
+        filtered = len(chunks_pre) - len(safe_chunks)
+        if filtered > 0:
+            yield RetrievalFiltered(
+                total=len(chunks_pre),
+                kept=len(safe_chunks),
+                filtered_phi=filtered,
+                reason="cloud_provider_phi_guard",
+            )
+
+        if bundle.trace.rerank_fallback:
+            audit_event(
+                "rag.rerank.fallback",
+                payload={
+                    "user_id": user_id,
+                    "collections": bundle.trace.active_collections,
+                },
+            )
+
+        yield RetrievalCompleted(
+            num_chunks=len(safe_chunks),
+            fallback_triggered=bundle.trace.fallback_triggered,
+            rerank_fallback=bundle.trace.rerank_fallback,
+            embed_ms=bundle.trace.embed_ms,
+            search_ms=bundle.trace.search_ms,
+            rerank_ms=bundle.trace.rerank_ms,
+            parent_expand_ms=bundle.trace.parent_expand_ms,
+        )
+
+        audit_event(
+            "rag.retrieval",
+            payload={
+                "user_id": user_id,
+                "strategy": bundle.trace.strategy,
+                "active_collections": bundle.trace.active_collections,
+                "num_chunks": len(safe_chunks),
+                "filtered_phi": filtered,
+                "fallback_triggered": bundle.trace.fallback_triggered,
+            },
+        )
+
+        yield _EvidenceReady(text=self._format_evidence(safe_chunks))
+
+    def _is_cloud_provider(self) -> bool:
+        if self._provider_config is None:
+            return False
+        return getattr(self._provider_config, "kind", None) == "cloud"
+
+    def _filter_for_provider(
+        self, chunks: "list[RetrievedChunk]"
+    ) -> "list[RetrievedChunk]":
+        if not self._is_cloud_provider():
+            return chunks
+        safe, _report = self._guard.filter_chunks_for_provider(
+            chunks, provider_kind="cloud"
+        )
+        return safe
+
+    @staticmethod
+    def _format_evidence(chunks: "list[RetrievedChunk]") -> str:
+        if not chunks:
+            return ""
+        lines = ["", "Evidence (cite by [n]):"]
+        for i, c in enumerate(chunks, start=1):
+            body = c.parent_text or c.text
+            src = c.source_uri or c.collection_name or c.source
+            lines.append(f"[{i}] ({src}) {body}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _compose_prompt(scrubbed: str, evidence_block: str) -> str:
+        if not evidence_block:
+            return scrubbed
+        return f"{evidence_block}\n\nQuestion: {scrubbed}"
+
+
+class _EvidenceReady:
+    """Private sentinel: carries the formatted evidence_block out of
+    ``_maybe_retrieve`` without polluting the public ``Event`` union."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
