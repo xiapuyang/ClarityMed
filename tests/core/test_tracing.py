@@ -30,6 +30,23 @@ def test_no_endpoint_returns_false_without_side_effects():
     assert is_configured() is False
 
 
+def test_conftest_strips_phoenix_env_so_tui_tests_do_not_upload():
+    """Regression: if PHOENIX_COLLECTOR_ENDPOINT leaks in from the dev's
+    shell, TUI smoke tests (App.on_mount → setup_tracing) would install
+    a real OTLP exporter and Agent.instrument_all(), uploading every
+    later test's agent.run to the dev's local Phoenix. The session-level
+    conftest must strip it before any test runs."""
+    import os
+
+    # _isolate_tracing's monkeypatch.delenv already cleared it for this
+    # test, so assert against the pristine os.environ used by tests that
+    # do not opt in: there is no autouse fixture in tests/conftest.py
+    # that re-adds it, and pytest_configure removed it once at session
+    # start. We rely on the same os.environ here.
+    assert "PHOENIX_COLLECTOR_ENDPOINT" not in os.environ
+    assert "PHOENIX_API_KEY" not in os.environ
+
+
 def test_endpoint_set_installs_provider_once(monkeypatch: pytest.MonkeyPatch):
     install_calls: list[str] = []
 
