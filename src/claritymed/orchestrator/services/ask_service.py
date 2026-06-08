@@ -364,15 +364,13 @@ class AskService:
         """
         from pydantic_ai import Agent
 
+        from claritymed.core.prompts.registry import PromptRegistry
+
         try:
+            system_prompt = PromptRegistry().get("translate_query", language="en")
             agent: Agent[None, str] = Agent(
                 self._model,
-                system_prompt=(
-                    "You are a medical translator. "
-                    "Translate the Chinese medical query to English. "
-                    "Output only the translated query — no explanation, "
-                    "no punctuation changes beyond what the translation requires."
-                ),
+                system_prompt=system_prompt,
                 output_type=str,
             )
             result = await agent.run(query)
