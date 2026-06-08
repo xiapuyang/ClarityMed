@@ -5,6 +5,15 @@
 # resolve to one of the catalog entries — a typo raises Unknown*Error
 # (fail-loud, not silent fallback).
 
+# --- rag bootstrap ------------------------------------------------------
+# Master switch. When `enabled: false` AskService runs without a strategy
+# and the embedder/reranker/qdrant deps are never touched — ask works on
+# a bare laptop with no RAG stack running. When `enabled: true` CLI/TUI
+# build the HybridRetriever at startup; any missing dep fails loud.
+rag:
+  enabled: true
+  max_evidence: 5
+
 # --- strategies (top-level RAG approach; pluggable) ---------------------
 # v1 ships `naive_hybrid` only. Future ids: `agentic` (Self-RAG / CRAG /
 # FLARE family), `hyde`, `graph` (GraphRAG / MedGraphRAG), `raptor`,

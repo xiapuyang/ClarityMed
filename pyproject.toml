@@ -21,8 +21,25 @@ dependencies = [
     "typer>=0.26.7",
 ]
 
+[project.optional-dependencies]
+# RAG inference servers (BGE-M3 embedder + bge-reranker-v2-m3). Optional
+# because they pull in heavy ML deps (torch + FlagEmbedding ~2GB) that
+# nobody needs unless they're hosting the servers themselves. Install
+# with ``uv sync --extra rag-server``.
+rag-server = [
+    "FlagEmbedding>=1.3",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+
 [project.scripts]
 claritymed = "claritymed.cli.main:main"
+# Long-running RAG servers — installed but only usable after
+# `uv sync --extra rag-server` (FlagEmbedding + fastapi + uvicorn).
+# Without the extra, invoking either prints a clear remediation hint
+# and exits non-zero (see servers/embedder.py top-of-file try/except).
+claritymed-embedder = "claritymed.servers.embedder:main"
+claritymed-reranker = "claritymed.servers.reranker:main"
 
 [build-system]
 requires = ["hatchling"]

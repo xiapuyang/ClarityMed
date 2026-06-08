@@ -70,6 +70,29 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+def _maybe_build_strategy():
+    """Return a RagStrategy when ``rag.enabled=true``, else ``None``.
+
+    Lazy-imports the retrieval factory so a disabled-RAG ``ask`` does not
+    pay the import cost of qdrant / llama-index. Fail-loud once enabled —
+    a missing dependency raises rather than silently degrading to LLM-only.
+    """
+    from claritymed.core.rag import load_retrieval_config
+
+    cfg = load_retrieval_config()
+    if not cfg.rag.enabled:
+        return None
+    from claritymed.core.rag import build_hybrid_retriever
+    from claritymed.core.rag.strategies import build_strategy
+
+    retriever = build_hybrid_retriever(cfg)
+    return build_strategy(
+        retriever,
+        config=cfg.strategies,
+        max_evidence=cfg.rag.max_evidence,
+    )
+
+
 # --- ask ----------------------------------------------------------------
 
 
@@ -88,12 +111,15 @@ def ask(
         with inject_context(user_id=user, language=language) as (_, uid, lang):
             provider = resolve_provider(override=provider_id)
             model = build_model(provider)
+            strategy = _maybe_build_strategy()
             service = AskService(
                 model=model,
                 language=lang,
                 chat_session=ChatSession.new(uid),
                 provider_id=provider.id,
                 model_name=provider.model,
+                strategy=strategy,
+                provider_config=provider,
             )
 
             async for event in service.run(question, user_id=uid):

@@ -123,6 +123,10 @@ class ClarityMedApp(App):
         self._ingest_service_factory = ingest_service_factory
         self._rag_service_factory = rag_service_factory
         self._chat_session: ChatSession | None = chat_session
+        # Cached per-session RagStrategy when rag.enabled=true. Owns the
+        # two AsyncQdrantClient handles inside HybridRetriever; rebuilding
+        # per turn would churn the qdrant file lock.
+        self._cached_strategy = None
 
         self._session_turns: list[ChatTurn] = []
         self._stream_worker: Worker | None = None
@@ -491,6 +495,7 @@ class ClarityMedApp(App):
 
         provider = resolve_provider(override=self._initial_provider_id)
         model = build_model(provider)
+        strategy = self._strategy_for_session()
         if self._chat_session is None:
             self._chat_session = ChatSession.new(self._current_user_id)
         return AskService(
@@ -499,7 +504,35 @@ class ClarityMedApp(App):
             chat_session=self._chat_session,
             provider_id=provider.id,
             model_name=provider.model,
+            strategy=strategy,
+            provider_config=provider,
         )
+
+    def _strategy_for_session(self):
+        """Build the RAG strategy once per session and cache it.
+
+        The retriever owns AsyncQdrantClient instances that should outlive
+        a single turn; rebuilding per ``send`` would re-open the qdrant
+        file lock and re-create HTTP clients. Returns ``None`` when
+        ``rag.enabled=false`` (no caching needed — fast path stays fast).
+        """
+        if self._cached_strategy is not None:
+            return self._cached_strategy
+        from claritymed.core.rag import load_retrieval_config
+
+        cfg = load_retrieval_config()
+        if not cfg.rag.enabled:
+            return None
+        from claritymed.core.rag import build_hybrid_retriever
+        from claritymed.core.rag.strategies import build_strategy
+
+        retriever = build_hybrid_retriever(cfg)
+        self._cached_strategy = build_strategy(
+            retriever,
+            config=cfg.strategies,
+            max_evidence=cfg.rag.max_evidence,
+        )
+        return self._cached_strategy
 
     @staticmethod
     def _default_rag_service() -> RagService:

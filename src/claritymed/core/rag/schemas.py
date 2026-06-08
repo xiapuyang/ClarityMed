@@ -346,11 +346,28 @@ class UserRagConfig(BaseModel):
     score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
 
 
+class RagBootstrapConfig(BaseModel):
+    """Top-level RAG bootstrap switch.
+
+    Off by default. When ``enabled=False``, ``AskService`` runs without a
+    strategy (no retrieval; no calls to the embedder / reranker / Qdrant).
+    When ``enabled=True``, the CLI / TUI build a HybridRetriever + strategy
+    at startup; any missing dependency (embedder server down, qdrant path
+    unreachable) raises fail-loud — silent fallback to LLM-only would mask
+    a misconfiguration the operator is opting in to.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    enabled: bool = False
+    max_evidence: int = Field(default=5, ge=1)
+
+
 class RetrievalConfig(BaseModel):
     """Root of ``configs/retrieval.yaml``."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    rag: RagBootstrapConfig = Field(default_factory=RagBootstrapConfig)
     strategies: StrategiesConfig
     chunker: ChunkerConfig
     embedders: EmbedderConfig

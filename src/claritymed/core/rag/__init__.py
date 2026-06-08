@@ -16,6 +16,7 @@ Each layer is a Protocol with a catalog + active-id selection in
 ``configs/retrieval.yaml`` — mirror of ``stores/models.py``'s pattern.
 """
 
+from claritymed.core.rag.retriever_factory import build_hybrid_retriever
 from claritymed.core.rag.schemas import (
     ChunkerConfig,
     CollectionMetadata,
@@ -25,6 +26,7 @@ from claritymed.core.rag.schemas import (
     GraderReport,
     NaiveHybridStrategyConfig,
     ParentChildChunkerConfig,
+    RagBootstrapConfig,
     RerankerConfig,
     RetrievalConfig,
     RetrievalTrace,
@@ -45,6 +47,7 @@ __all__ = [
     "GraderReport",
     "NaiveHybridStrategyConfig",
     "ParentChildChunkerConfig",
+    "RagBootstrapConfig",
     "RerankerConfig",
     "RetrievalConfig",
     "RetrievalTrace",
@@ -53,5 +56,6 @@ __all__ = [
     "SystemRagConfig",
     "TermServiceConfig",
     "UserRagConfig",
+    "build_hybrid_retriever",
     "load_retrieval_config",
 ]
