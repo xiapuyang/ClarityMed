@@ -407,33 +407,51 @@ async def test_translate_queries_fallback_on_failure(monkeypatch):
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
     strategy = StubStrategy(bundle)
-
-    class _BrokenModel:
-        """Minimal Model stub that always raises on run."""
-
-        async def request(self, *args, **kwargs):  # noqa: ANN001
-            raise RuntimeError("model unavailable")
-
-        async def request_stream(self, *args, **kwargs):  # noqa: ANN001
-            raise RuntimeError("model unavailable")
-
-    from pydantic_ai.models.test import TestModel as _TM
-
     service = AskService(
-        model=_TM(custom_output_text="answer"),
+        model=TestModel(custom_output_text="answer"),
         strategy=strategy,
         provider_config=_provider("local"),
         language="zh",
     )
 
     # Monkey-patch the translation method to raise.
-    async def _boom(q):  # noqa: ANN001
+    async def _boom(q, *, target_lang):  # noqa: ANN001
         raise RuntimeError("simulated translation failure")
 
-    service._translate_query_to_en = _boom  # type: ignore[method-assign]
+    service._translate_query = _boom  # type: ignore[method-assign]
 
     events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
     # Original query reaches the strategy.
     assert strategy.calls[0].query == "我血红蛋白105"
     # Stream still completes normally.
+    assert any(isinstance(e, Done) for e in events)
+
+
+# --- auto output language -------------------------------------------
+
+
+def test_detect_query_language_cjk():
+    """CJK-dominant text returns 'zh'; Latin-dominant returns 'en'."""
+    detect = AskService._detect_query_language
+    assert detect("我血红蛋白105，需要担心吗") == "zh"
+    assert detect("hemoglobin 105, should I worry?") == "en"
+    assert detect("我的hemoglobin值很低") == "zh"
+    assert detect("") == "en"
+
+
+async def test_auto_language_off_uses_session_lang(monkeypatch):
+    """Without CLARITYMED_AUTO_LANGUAGE the output language follows --lang,
+    even when the user types in a different language."""
+    monkeypatch.delenv("CLARITYMED_AUTO_LANGUAGE", raising=False)
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=StubStrategy(bundle),
+        provider_config=_provider("local"),
+        language="en",
+    )
+    # Chinese input but env var not set — stream still completes without error.
+    events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
     assert any(isinstance(e, Done) for e in events)

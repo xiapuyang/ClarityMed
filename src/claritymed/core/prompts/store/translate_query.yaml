@@ -1,10 +1,10 @@
 name: translate_query
 description: |
-  System prompt for the zh→en query translation agent used in retrieval.
-  The agent translates a Chinese medical query to English so BGE-M3
-  embedding produces en→en similarity scores against the English
-  StatPearls corpus rather than lower cross-lingual scores.
-  Output is always English regardless of session language.
+  System prompt for the query translation agent used in retrieval.
+  Translates the user query to match the collection's native language
+  before embedding, improving BGE-M3 similarity scores for cross-lingual
+  searches. The registry language key is the TARGET language (what to
+  translate into), not the session language.
 versions:
   - version: v1
     created_at: 2026-06-08
@@ -15,6 +15,5 @@ versions:
         to English. Output only the translated query — no explanation, no
         punctuation changes beyond what the translation requires.
       zh: |
-        You are a medical translator. Translate the Chinese medical query
-        to English. Output only the translated query — no explanation, no
-        punctuation changes beyond what the translation requires.
+        你是医疗翻译专家。将英文医疗查询翻译为中文。只输出翻译后的查询，不要添加解释，
+        不要改变原意，不要添加标点符号。

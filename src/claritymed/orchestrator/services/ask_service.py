@@ -168,6 +168,13 @@ class AskService:
             },
         )
 
+        # CLARITYMED_AUTO_LANGUAGE=1: detect output language from the input
+        # rather than from the --lang setting. Useful when users mix languages
+        # in a single session. Default: output follows the configured language.
+        output_lang = self._language
+        if os.environ.get("CLARITYMED_AUTO_LANGUAGE"):
+            output_lang = self._detect_query_language(scrubbed)
+
         # RAG retrieval (Unit 8): if a strategy is configured, fetch evidence
         # before calling the LLM. Cloud providers filter PHI chunks at the
         # Qdrant query layer (only_cloud_safe=True); local providers keep
@@ -219,7 +226,9 @@ class AskService:
             else None
         )
         try:
-            async for event in self._run_with_agent(prompt, message_history, user_id):
+            async for event in self._run_with_agent(
+                prompt, message_history, user_id, output_lang=output_lang
+            ):
                 # Inject the debug collections block just before Done so the
                 # TUI's event loop processes it while the stream is still open.
                 # Yielding it after Done would be dropped — the TUI returns on
@@ -241,8 +250,9 @@ class AskService:
         scrubbed: str,
         message_history,
         user_id: str,
+        output_lang: str | None = None,
     ) -> AsyncIterator[Event]:
-        agent = make_ask_agent(self._model, language=self._language)
+        agent = make_ask_agent(self._model, language=output_lang or self._language)
         messages_json: bytes | None = None
         usage: RunUsage | None = None
         steps: list[dict] = []
@@ -350,24 +360,55 @@ class AskService:
 
     # --- retrieval seam ------------------------------------------------
 
-    async def _translate_query_to_en(self, query: str) -> str:
-        """Translate a Chinese medical query to English for embedding.
+    @staticmethod
+    def _detect_query_language(text: str) -> str:
+        """Return 'zh' if >20 % of characters are CJK, else 'en'."""
+        if not text:
+            return "en"
+        cjk = sum(1 for c in text if "一" <= c <= "鿿")
+        return "zh" if cjk / len(text) > 0.2 else "en"
 
-        BGE-M3's cross-lingual cosine similarity is notably lower for
-        zh→en pairs than for en→en pairs, especially in the sparse SPLADE
-        component where token overlap is near-zero. Translating before
-        embedding closes most of that gap without changing the user-facing
-        language or the collection-routing logic.
+    def _collection_target_language(self) -> str | None:
+        """Return the language to translate the query INTO for embedding.
+
+        Looks at all cross-lingual system collections. When their language
+        differs from the session language, embedding quality suffers —
+        translating the query to the collection's language before embed
+        closes most of that gap. Returns None when no mismatch exists
+        (no translation needed) or when the config cannot be read.
+        """
+        try:
+            from claritymed.core.rag.schemas import load_retrieval_config
+
+            cfg = load_retrieval_config()
+            mismatched = [
+                c.language
+                for c in cfg.system_rag.collections
+                if c.cross_lingual and c.language != self._language
+            ]
+            if not mismatched:
+                return None
+            return max(set(mismatched), key=mismatched.count)
+        except Exception:  # noqa: BLE001
+            logger.warning("could not determine collection target language")
+            return None
+
+    async def _translate_query(self, query: str, *, target_lang: str) -> str:
+        """Translate query to target_lang for better embedding alignment.
 
         Falls back to the original query on any error so the retrieval
-        path is never blocked by a translation failure.
+        path is never blocked by a translation failure. The registry key
+        for translate_query is the TARGET language, not the session language.
         """
         from pydantic_ai import Agent
 
         from claritymed.core.prompts.registry import PromptRegistry
 
         try:
-            system_prompt = PromptRegistry().get("translate_query", language="en")
+            system_prompt = PromptRegistry().get(
+                "translate_query",
+                language=target_lang,  # type: ignore[arg-type]
+            )
             agent: Agent[None, str] = Agent(
                 self._model,
                 system_prompt=system_prompt,
@@ -376,10 +417,20 @@ class AskService:
             result = await agent.run(query)
             translated = result.output.strip()
             if translated:
-                logger.debug("zh→en query translation: %r → %r", query, translated)
+                logger.debug(
+                    "query translation (%s→%s): %r → %r",
+                    self._language,
+                    target_lang,
+                    query,
+                    translated,
+                )
                 return translated
         except Exception:  # noqa: BLE001
-            logger.warning("zh→en query translation failed; using original query")
+            logger.warning(
+                "query translation (%s→%s) failed; using original",
+                self._language,
+                target_lang,
+            )
         return query
 
     async def _maybe_retrieve(
@@ -395,20 +446,25 @@ class AskService:
 
         only_cloud_safe = self._is_cloud_provider()
 
-        # When CLARITYMED_TRANSLATE_QUERIES=1 and the session language is
-        # Chinese, translate to English before embedding.  BGE-M3 cross-lingual
-        # similarity for zh→en pairs is significantly lower than en→en due to
-        # sparse-component token mismatch; translating closes that gap.
-        # We keep ctx.language="zh" so the CollectionRouter still selects the
-        # right collections — translation is purely an embedding optimisation.
+        # CLARITYMED_TRANSLATE_QUERIES=1: translate the query to the
+        # collection's native language before embedding.  BGE-M3 similarity
+        # is significantly lower for cross-lingual pairs; translating closes
+        # that gap. Direction is derived from the configured system collections
+        # (e.g. statpearls_en has language="en" → zh session → translate zh→en;
+        # a hypothetical statpearls_zh would trigger the reverse). ctx.language
+        # stays as the session language so CollectionRouter routing is unchanged.
         embedding_query = scrubbed_query
-        if self._language == "zh" and os.environ.get("CLARITYMED_TRANSLATE_QUERIES"):
-            try:
-                embedding_query = await self._translate_query_to_en(scrubbed_query)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "zh→en query translation raised; using original query for retrieval"
-                )
+        if os.environ.get("CLARITYMED_TRANSLATE_QUERIES"):
+            target_lang = self._collection_target_language()
+            if target_lang:
+                try:
+                    embedding_query = await self._translate_query(
+                        scrubbed_query, target_lang=target_lang
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "query translation raised; using original query for retrieval"
+                    )
 
         ctx = RetrievalContext(
             query=embedding_query,
