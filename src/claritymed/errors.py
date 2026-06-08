@@ -70,3 +70,20 @@ class UnknownTermServiceError(KeyError):
 
 class UnknownRouterError(KeyError):
     """``router.active`` does not appear in the catalog."""
+
+
+# --- RAG runtime errors -------------------------------------------------
+#
+# Embedder is fail-loud (a silently substituted CPU embedder would write
+# 384-dim vectors into a 1024-dim Qdrant collection — worse than failure).
+# Reranker is fail-soft at the caller (HybridRetriever), but the wire
+# layer still surfaces the failure as a typed exception so the caller
+# can audit and degrade explicitly.
+
+
+class EmbedderUnreachableError(RuntimeError):
+    """Embedding server returned non-2xx, timed out, or sent a bad shape."""
+
+
+class RerankerUnreachableError(RuntimeError):
+    """Reranker server returned non-2xx, timed out, or sent a bad shape."""
