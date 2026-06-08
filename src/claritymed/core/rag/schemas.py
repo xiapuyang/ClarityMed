@@ -352,6 +352,26 @@ class UserRagConfig(BaseModel):
     score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
 
 
+class TranslationConfig(BaseModel):
+    """Configuration for the translation provider.
+
+    ``provider`` selects the backend used for query and answer translation:
+
+    * ``"llm"`` — pydantic-ai Agent; works with any configured model, zero
+      extra infra.  Adds one LLM call per translated query/answer.
+    * (planned) ``"bge_m3"`` — BGE-M3 multilingual instruction embedding;
+      no LLM call, uses the already-running embedder server.
+    * (planned) ``"deepl"`` / ``"google"`` — cloud translation APIs; requires
+      ``api_key_env`` to be set.
+
+    Default is ``"llm"`` so the section can be omitted from ``retrieval.yaml``
+    without breaking startup.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    provider: Literal["llm"] = "llm"
+
+
 class RagBootstrapConfig(BaseModel):
     """Top-level RAG bootstrap switch.
 
@@ -406,6 +426,7 @@ class RetrievalConfig(BaseModel):
     router: RouterConfig
     system_rag: SystemRagConfig
     user_rag: UserRagConfig
+    translation: TranslationConfig = Field(default_factory=TranslationConfig)
 
 
 def load_retrieval_config() -> RetrievalConfig:

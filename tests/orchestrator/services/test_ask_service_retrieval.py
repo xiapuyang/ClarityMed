@@ -30,7 +30,7 @@ from claritymed.orchestrator.services.events import (
 )
 
 if TYPE_CHECKING:
-    from claritymed.core.translation import TranslationService
+    from claritymed.core.translation import TranslationProvider
 
 
 def _chunk(
@@ -344,18 +344,18 @@ async def test_user_whitelist_threads_through_to_strategy(whitelist):
     assert strategy.calls[0].user_whitelist == whitelist
 
 
-# --- query translation via TranslationService -----------------------
+# --- query translation via TranslationProvider -----------------------
 
 
-def _translation_svc(output: str = "hemoglobin 105") -> "TranslationService":
-    from claritymed.core.translation import TranslationService
+def _translation_svc(output: str = "hemoglobin 105") -> "TranslationProvider":
+    from claritymed.core.translation import LLMTranslationProvider
 
-    return TranslationService(TestModel(custom_output_text=output))
+    return LLMTranslationProvider(TestModel(custom_output_text=output))
 
 
 async def test_translate_queries_off_by_default(monkeypatch):
     """Without CLARITYMED_TRANSLATE_QUERIES the strategy receives the original
-    Chinese query even when a TranslationService is wired in."""
+    Chinese query even when a TranslationProvider is wired in."""
     monkeypatch.delenv("CLARITYMED_TRANSLATE_QUERIES", raising=False)
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
@@ -374,7 +374,7 @@ async def test_translate_queries_off_by_default(monkeypatch):
 
 async def test_translate_queries_env_on_sends_english_query_to_strategy(monkeypatch):
     """CLARITYMED_TRANSLATE_QUERIES=1 replaces the embedding query with the
-    TranslationService output. ctx.language stays 'zh' so routing is unchanged."""
+    TranslationProvider output. ctx.language stays 'zh' so routing is unchanged."""
     monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
@@ -394,7 +394,7 @@ async def test_translate_queries_env_on_sends_english_query_to_strategy(monkeypa
 
 
 async def test_translate_queries_skipped_when_no_service(monkeypatch):
-    """Without a TranslationService, CLARITYMED_TRANSLATE_QUERIES is silently
+    """Without a TranslationProvider, CLARITYMED_TRANSLATE_QUERIES is silently
     ignored — the original query reaches the strategy unchanged."""
     monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
     bundle = EvidenceBundle(
@@ -432,7 +432,7 @@ async def test_translate_queries_only_fires_for_collection_mismatch(monkeypatch)
 
 
 async def test_translate_queries_fallback_on_failure(monkeypatch):
-    """When TranslationService.translate_query raises, the original query is
+    """When TranslationProvider.translate_query raises, the original query is
     used and retrieval proceeds — no event is dropped."""
     monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
     bundle = EvidenceBundle(
@@ -441,7 +441,7 @@ async def test_translate_queries_fallback_on_failure(monkeypatch):
     strategy = StubStrategy(bundle)
     svc = _translation_svc()
 
-    # Patch _call so the TranslationService fallback mechanism is exercised.
+    # Patch _call so the TranslationProvider fallback mechanism is exercised.
     async def _boom(text, *, target_lang, context="general"):  # noqa: ANN001
         raise RuntimeError("simulated translation failure")
 

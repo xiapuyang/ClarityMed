@@ -111,7 +111,7 @@ def ask(
         with inject_context(user_id=user, language=language) as (_, uid, lang):
             provider = resolve_provider(override=provider_id)
             model = build_model(provider)
-            from claritymed.core.translation import TranslationService
+            from claritymed.core.translation import make_translation_provider
 
             strategy = _maybe_build_strategy()
             service = AskService(
@@ -122,7 +122,7 @@ def ask(
                 model_name=provider.model,
                 strategy=strategy,
                 provider_config=provider,
-                translation_service=TranslationService(model),
+                translation_service=make_translation_provider(model),
             )
 
             async for event in service.run(question, user_id=uid):

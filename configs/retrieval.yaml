@@ -120,6 +120,15 @@ system_rag:
       source_uri_prefix: "https://www.ncbi.nlm.nih.gov/books/"
       license: "Creative Commons (StatPearls)"
 
+# --- translation (query + answer translation) ---------------------------
+# provider: llm   — LLM call via the configured model (default, zero extra
+#                   infra). Adds one LLM round-trip per translated text.
+# provider: bge_m3 — (planned) Multilingual instruction embedding; reuses
+#                   the running embedder server; no LLM call.
+# provider: deepl/google — (planned) Cloud translation API; needs api_key_env.
+translation:
+  provider: llm
+
 # --- user RAG (per-user uploads) ----------------------------------------
 user_rag:
   top_k: 5

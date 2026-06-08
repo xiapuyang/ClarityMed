@@ -1,4 +1,4 @@
-"""Unit tests for TranslationService.
+"""Unit tests for LLMTranslationProvider and shared translation utilities.
 
 All LLM calls use TestModel so no real network requests are made.
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from claritymed.core.translation import TranslationService
+from claritymed.core.translation import LLMTranslationProvider, detect_language
 
 
 # --- detect_language ---------------------------------------------------
@@ -26,25 +26,25 @@ from claritymed.core.translation import TranslationService
     ],
 )
 def test_detect_language(text, expected):
-    assert TranslationService.detect_language(text) == expected
+    assert detect_language(text) == expected
 
 
-def test_detect_language_is_static():
-    """Can be called without constructing an instance."""
-    assert TranslationService.detect_language("测试") == "zh"
+def test_detect_language_is_module_function():
+    """Can be called without constructing a provider instance."""
+    assert detect_language("测试") == "zh"
 
 
 # --- translate_query ---------------------------------------------------
 
 
 async def test_translate_query_returns_model_output():
-    svc = TranslationService(TestModel(custom_output_text="hemoglobin 105"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="hemoglobin 105"))
     result = await svc.translate_query("我血红蛋白105", target_lang="en")
     assert result == "hemoglobin 105"
 
 
 async def test_translate_query_zh_target():
-    svc = TranslationService(TestModel(custom_output_text="血红蛋白105"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="血红蛋白105"))
     result = await svc.translate_query("hemoglobin 105", target_lang="zh")
     assert result == "血红蛋白105"
 
@@ -54,7 +54,7 @@ async def test_translate_query_zh_target():
 
 async def test_translate_answer_preserves_output():
     long_answer = "Hemoglobin of 105 g/L is mildly low. See [1] for ranges."
-    svc = TranslationService(TestModel(custom_output_text="血红蛋白105克/升略低。"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="血红蛋白105克/升略低。"))
     result = await svc.translate_answer(long_answer, target_lang="zh")
     assert result == "血红蛋白105克/升略低。"
 
@@ -63,7 +63,7 @@ async def test_translate_answer_preserves_output():
 
 
 async def test_translate_term():
-    svc = TranslationService(TestModel(custom_output_text="hemoglobin"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="hemoglobin"))
     result = await svc.translate_term("血红蛋白", target_lang="en")
     assert result == "hemoglobin"
 
@@ -72,7 +72,7 @@ async def test_translate_term():
 
 
 async def test_translate_general():
-    svc = TranslationService(TestModel(custom_output_text="anemia"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="anemia"))
     result = await svc.translate("贫血", target_lang="en")
     assert result == "anemia"
 
@@ -82,11 +82,8 @@ async def test_translate_general():
 
 async def test_translate_falls_back_to_original_on_error():
     """If the LLM call raises, the original text is returned unchanged."""
-    from pydantic_ai.models.test import TestModel as _TM
+    svc = LLMTranslationProvider(TestModel(custom_output_text="answer"))
 
-    svc = TranslationService(_TM(custom_output_text="answer"))
-
-    # Patch _call to raise
     async def _boom(text, *, target_lang, context="general"):
         raise RuntimeError("simulated failure")
 
@@ -98,7 +95,7 @@ async def test_translate_falls_back_to_original_on_error():
 
 async def test_translate_returns_original_on_empty_output():
     """An empty model output falls through to the original text."""
-    svc = TranslationService(TestModel(custom_output_text=""))
+    svc = LLMTranslationProvider(TestModel(custom_output_text=""))
     result = await svc.translate_query("我血红蛋白105", target_lang="en")
     assert result == "我血红蛋白105"
 
@@ -110,7 +107,7 @@ async def test_translate_query_records_step_when_sink_active():
     """translate_query emits a StepRecord into an active capture_steps() scope."""
     from claritymed.core.observability.steps import capture_steps
 
-    svc = TranslationService(TestModel(custom_output_text="hemoglobin 105"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="hemoglobin 105"))
     with capture_steps() as steps:
         await svc.translate_query("我血红蛋白105", target_lang="en")
 
@@ -124,16 +121,16 @@ async def test_translate_query_records_step_when_sink_active():
 
 async def test_translate_no_step_without_sink():
     """Without a capture_steps() scope no StepRecord is created and no error occurs."""
-    svc = TranslationService(TestModel(custom_output_text="hemoglobin"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="hemoglobin"))
     result = await svc.translate_query("血红蛋白", target_lang="en")
     assert result == "hemoglobin"
 
 
 async def test_failed_step_marked_on_llm_error():
-    """When _call raises, the StepRecord has failed=True."""
+    """When _call is patched to raise, no step is recorded (step lives in _call)."""
     from claritymed.core.observability.steps import capture_steps
 
-    svc = TranslationService(TestModel(custom_output_text="x"))
+    svc = LLMTranslationProvider(TestModel(custom_output_text="x"))
 
     async def _boom(text, *, target_lang, context="general"):
         raise RuntimeError("simulated")
@@ -143,6 +140,6 @@ async def test_failed_step_marked_on_llm_error():
     with capture_steps() as steps:
         await svc.translate_query("血红蛋白", target_lang="en")
 
-    # translate_query catches the error, but _call never reached `with step(...)`,
-    # so no step is recorded — the step is owned by _call, not translate_query.
+    # translate_query catches the error, but _boom never entered `with step(...)`,
+    # so no step is recorded.
     assert len(steps) == 0

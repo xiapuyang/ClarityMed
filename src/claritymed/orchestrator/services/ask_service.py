@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
     from claritymed.core.schemas.retrieval import RetrievedChunk
-    from claritymed.core.translation import TranslationService
+    from claritymed.core.translation import TranslationProvider
     from claritymed.orchestrator.services.chat_session import ChatSession
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ class AskService:
         strategy: "RagStrategy | None" = None,
         provider_config: "ProviderConfig | None" = None,
         user_whitelist: list[str] | None = None,
-        translation_service: "TranslationService | None" = None,
+        translation_service: "TranslationProvider | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or PhiGuard.from_config()
@@ -178,9 +178,9 @@ class AskService:
         # in a single session. Default: output follows the configured language.
         output_lang = self._language
         if os.environ.get("CLARITYMED_AUTO_LANGUAGE"):
-            from claritymed.core.translation import TranslationService
+            from claritymed.core.translation import detect_language
 
-            output_lang = TranslationService.detect_language(scrubbed)
+            output_lang = detect_language(scrubbed)
 
         # RAG retrieval (Unit 8): if a strategy is configured, fetch evidence
         # before calling the LLM. Cloud providers filter PHI chunks at the
