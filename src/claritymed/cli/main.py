@@ -108,7 +108,9 @@ def ask(
     async def _run() -> None:
         from claritymed.orchestrator.services import ChatSession
 
-        with inject_context(user_id=user, language=language) as (_, uid, lang):
+        with inject_context(
+            user_id=user, language=language, command=f"ask q={question[:60]!r}"
+        ) as (_, uid, lang):
             provider = resolve_provider(override=provider_id)
             model = build_model(provider)
             from claritymed.core.translation import make_translation_provider
@@ -153,7 +155,9 @@ def ingest_profile(
     """Save a single profile field."""
 
     async def _run() -> None:
-        with inject_context(user_id=user, language=language) as (_, uid, _):
+        with inject_context(
+            user_id=user, language=language, command=f"ingest.profile {field!r}"
+        ) as (_, uid, _):
             service = IngestService()
             async for event in service.run(field, user_id=uid):
                 if isinstance(event, ToolStarted):
@@ -190,7 +194,9 @@ def rag_add(
     """Add a document to the user's personal RAG store."""
 
     async def _run() -> None:
-        with inject_context(user_id=user, language=language) as (_, uid, _):
+        with inject_context(
+            user_id=user, language=language, command=f"rag.add path={path!r}"
+        ) as (_, uid, _):
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
             store = make_user_rag_store(uid)
@@ -258,7 +264,11 @@ def corpora_ingest(
         shared_parent_docstore_path,
     )
 
-    with inject_context(user_id=user) as (_, _uid, _):
+    with inject_context(user_id=user, command=f"corpora.ingest name={name!r}") as (
+        _,
+        _uid,
+        _,
+    ):
         require_admin()
         if name != "statpearls":
             console.print(f"[red]Unknown corpus: {name}[/red]")
@@ -383,7 +393,9 @@ def corpora_migrate_payload(
     from claritymed.core.rag.qdrant_store import build_qdrant_client
     from claritymed.stores.account import require_admin
 
-    with inject_context(user_id=user) as (_, _uid, _):
+    with inject_context(
+        user_id=user, command=f"corpora.migrate-payload name={name!r}"
+    ) as (_, _uid, _):
         require_admin()
         if name != "statpearls":
             console.print(f"[red]Unknown corpus: {name}[/red]")
@@ -502,7 +514,11 @@ def rag_migrate(
             raise typer.Exit(code=1)
 
     async def _run() -> None:
-        with inject_context(user_id=user) as (_, uid, _):
+        with inject_context(user_id=user, command=f"rag.migrate user={user!r}") as (
+            _,
+            uid,
+            _,
+        ):
             store = make_user_rag_store(uid)
             await store.migrate_user(uid)
             console.print(f"[green]Migrated user '{uid}': RAG data dropped.[/green]")

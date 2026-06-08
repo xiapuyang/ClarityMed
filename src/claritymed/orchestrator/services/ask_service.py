@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from claritymed.core.observability.audit import audit_event
+from claritymed.core.observability.logging import get_access_logger
 from claritymed.orchestrator import PhiGuard
 from claritymed.orchestrator.agents import make_ask_agent
 from claritymed.orchestrator.services.chat_session import (
@@ -273,6 +274,9 @@ class AskService:
                 "model": self._model_name,
             },
         )
+        get_access_logger().info(
+            "llm.call.start model=%s provider=%s", self._model_name, self._provider_id
+        )
         try:
             async with agent.run_stream(
                 scrubbed, message_history=message_history or None
@@ -353,6 +357,19 @@ class AskService:
         if self._chat_session is not None:
             payload["session_id"] = self._chat_session.session_id
         audit_event("mode.ask", payload=payload)
+        ttft_str = f" ttft={latency.ttft_ms}ms" if latency.ttft_ms is not None else ""
+        tok_str = (
+            f" tokens={usage.total_tokens}"
+            if usage is not None and getattr(usage, "total_tokens", None)
+            else ""
+        )
+        get_access_logger().info(
+            "llm.call.done total=%dms%s%s model=%s",
+            latency.total_ms,
+            ttft_str,
+            tok_str,
+            self._model_name,
+        )
         yield Done(final=final_text)
 
     # --- retrieval seam ------------------------------------------------
@@ -412,6 +429,9 @@ class AskService:
             query_lang = detect_language(scrubbed_query)
             target_lang = self._collection_target_language(query_lang=query_lang)
             if target_lang:
+                get_access_logger().info(
+                    "translate.query %s→%s", query_lang or "?", target_lang
+                )
                 yield ToolStarted(
                     tool_name="translate.query",
                     args_preview=f"translate/{target_lang}",
@@ -494,6 +514,14 @@ class AskService:
             parent_expand_ms=bundle.trace.parent_expand_ms,
         )
 
+        get_access_logger().info(
+            "rag.retrieval collections=%s chunks=%d embed=%dms search=%dms rerank=%dms",
+            ",".join(bundle.trace.active_collections),
+            len(safe_chunks),
+            bundle.trace.embed_ms or 0,
+            bundle.trace.search_ms or 0,
+            bundle.trace.rerank_ms or 0,
+        )
         audit_event(
             "rag.retrieval",
             payload={

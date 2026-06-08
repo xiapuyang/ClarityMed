@@ -56,12 +56,16 @@ def inject_context(
     user_id: str | None = None,
     language: str | None = None,
     request_id: str | None = None,
+    command: str | None = None,
 ) -> Iterator[tuple[str, str, str]]:
     """Set request / user / language ContextVars for the with-block.
 
     Emits ``request_start`` and ``request_end`` audit events. Warns once when
     the user_id falls through to ``"default"`` so the operator notices a
     missing ``--user`` flag.
+
+    ``command`` is a short human-readable label written to access.log so each
+    line identifies what CLI operation ran (e.g. ``"ask"``, ``"ingest.profile"``).
     """
     rid = request_id or new_request_id()
     uid, used_default = _resolve_user_id(user_id)
@@ -77,15 +81,16 @@ def inject_context(
 
     tokens = apply_context(rid, uid, lang)
     access = get_access_logger()
+    cmd_label = command or "unknown"
     try:
-        audit_event("request_start", payload={"entry": "cli"})
-        access.info("cli_start")
+        audit_event("request_start", payload={"entry": "cli", "command": cmd_label})
+        access.info("cli.start cmd=%s", cmd_label)
         yield rid, uid, lang
         audit_event("request_end", payload={"status": "ok"})
-        access.info("cli_end status=ok")
+        access.info("cli.end cmd=%s status=ok", cmd_label)
     except BaseException:
         audit_event("request_end", payload={"status": "exception"})
-        access.info("cli_end status=exception")
+        access.info("cli.end cmd=%s status=exception", cmd_label)
         raise
     finally:
         reset_context(tokens)
