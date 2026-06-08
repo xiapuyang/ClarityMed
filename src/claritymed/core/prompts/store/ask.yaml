@@ -29,9 +29,8 @@ versions:
         - When evidence is thin or conflicting, say you are not sure and
           suggest what additional information would help.
         - Never invent reference ranges, drug doses, or guideline numbers.
-        - End with a `**Sources:**` section. Put each source on its own
-          line as a markdown list item (`- [N] ...`) — never run them
-          together as one paragraph.
+        - Cite sources inline using [N] notation only. Do NOT write a
+          Sources or References section — the system appends it automatically.
       zh: |
         你是 ClarityMed，面向患者的医疗问答助手。目标是基于检索到的资料和患者本人
         的记录，给出清晰、审慎的回答。
@@ -46,5 +45,5 @@ versions:
           立即就医。
         - 当证据稀薄或互相冲突时，明确说自己不确定，并提示补充哪类信息会有帮助。
         - 绝不杜撰参考范围、药物剂量或指南数字。
-        - 答案末尾必须有 `**Sources:**` 分节。每条来源单独成行，写成 markdown
-          列表项（`- [N] ...`），不要挤在一段里。
+        - 仅用 [N] 标注内联引用。不要写 Sources 或 References 分节 ——
+          系统会自动附加来源列表。

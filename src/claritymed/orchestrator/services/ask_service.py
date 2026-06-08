@@ -236,18 +236,15 @@ class AskService:
             async for event in self._run_with_agent(
                 prompt, message_history, user_id, output_lang=output_lang
             ):
-                # Inject the debug collections block just before Done so the
-                # TUI's event loop processes it while the stream is still open.
-                # Yielding it after Done would be dropped — the TUI returns on
-                # Done immediately.
-                if (
-                    isinstance(event, Done)
-                    and os.environ.get("CLARITYMED_DEBUG")
-                    and evidence_chunks
-                ):
-                    yield TokenChunk(
-                        text=self._format_debug_collections(evidence_chunks)
-                    )
+                # Inject source and debug blocks just before Done so the TUI's
+                # event loop processes them while the stream is still open.
+                # Yielding after Done would be dropped — the TUI returns on Done.
+                if isinstance(event, Done) and evidence_chunks:
+                    yield TokenChunk(text=self._format_sources(evidence_chunks))
+                    if os.environ.get("CLARITYMED_DEBUG"):
+                        yield TokenChunk(
+                            text=self._format_debug_collections(evidence_chunks)
+                        )
                 yield event
         finally:
             detach_session_baggage(session_token)
@@ -405,15 +402,16 @@ class AskService:
 
         only_cloud_safe = self._is_cloud_provider()
 
-        # CLARITYMED_TRANSLATE_QUERIES=1: translate the query to the
-        # collection's native language before embedding.  BGE-M3 similarity
-        # is significantly lower for cross-lingual pairs; translating closes
-        # that gap. Direction is derived from the configured system collections
-        # (e.g. statpearls_en has language="en" → zh session → translate zh→en;
+        # Translate the query to the collection's native language before embedding.
+        # BGE-M3 similarity is significantly lower for cross-lingual pairs;
+        # translating closes that gap. Direction is derived from system collections
+        # (e.g. statpearls_en language="en" + zh session → translate zh→en;
         # a hypothetical statpearls_zh would trigger the reverse). ctx.language
         # stays as the session language so CollectionRouter routing is unchanged.
+        # Fires automatically when a TranslationService is configured and the
+        # session language differs from any cross_lingual collection — no env var needed.
         embedding_query = scrubbed_query
-        if self._translation_service and os.environ.get("CLARITYMED_TRANSLATE_QUERIES"):
+        if self._translation_service:
             target_lang = self._collection_target_language()
             if target_lang:
                 from claritymed.core.observability.steps import capture_steps
@@ -542,6 +540,23 @@ class AskService:
             body = c.parent_text or c.text
             src = c.source_uri or c.collection_name or c.source
             lines.append(f"[{i}] ({src}) {body}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_sources(chunks: "list[RetrievedChunk]") -> str:
+        """Build an authoritative Sources section from chunk metadata.
+
+        Uses source_uri when available so the user gets real URLs instead of
+        LLM-invented descriptions. Falls back to collection_name then source type.
+        The list mirrors the [N] numbering in the injected evidence block, so
+        the LLM's inline citations resolve correctly.
+        """
+        if not chunks:
+            return ""
+        lines = ["\n\n**Sources:**"]
+        for i, c in enumerate(chunks, start=1):
+            src = c.source_uri or c.collection_name or c.source
+            lines.append(f"- [{i}] {src}")
         return "\n".join(lines)
 
     @staticmethod

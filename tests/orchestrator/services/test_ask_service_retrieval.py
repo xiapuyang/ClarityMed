@@ -262,6 +262,54 @@ def test_compose_prompt_no_evidence_returns_scrubbed_unchanged():
     assert AskService._compose_prompt("plain query", "") == "plain query"
 
 
+def test_format_sources_uses_source_uri_when_available():
+    chunk = _chunk(text="body", parent_text=None)
+    chunk2 = RetrievedChunk(
+        text="body",
+        source="system_rag",
+        score=0.9,
+        doc_id="d2",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="statpearls_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.9,
+        source_uri="https://ncbi.nlm.nih.gov/books/NBK123",
+    )
+    block = AskService._format_sources([chunk, chunk2])
+    assert "**Sources:**" in block
+    assert "[1]" in block
+    assert "[2]" in block
+    # source_uri takes priority over collection_name
+    assert "https://ncbi.nlm.nih.gov/books/NBK123" in block
+
+
+def test_format_sources_empty_returns_empty():
+    assert AskService._format_sources([]) == ""
+
+
+async def test_sources_block_always_injected_before_done():
+    """Sources section is emitted as a TokenChunk before Done when chunks exist."""
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=StubStrategy(bundle),
+        provider_config=_provider("local"),
+    )
+    events = [ev async for ev in service.run("q", user_id="alice")]
+    types = [type(e).__name__ for e in events]
+    # Sources token appears before Done
+    token_texts = [e.text for e in events if isinstance(e, TokenChunk)]
+    assert any("**Sources:**" in t for t in token_texts)
+    last_token_idx = max(i for i, t in enumerate(types) if t == "TokenChunk")
+    done_idx = types.index("Done")
+    assert last_token_idx < done_idx
+
+
 async def test_debug_mode_emits_collections_token_before_done(monkeypatch):
     """CLARITYMED_DEBUG=1 injects a TokenChunk with collection names just
     before Done so the TUI renders it in the final markdown response."""
@@ -289,7 +337,12 @@ async def test_debug_mode_emits_collections_token_before_done(monkeypatch):
 
 
 async def test_debug_mode_off_no_collections_block(monkeypatch):
-    """Without CLARITYMED_DEBUG the collections block is not emitted."""
+    """Without CLARITYMED_DEBUG the debug collections block is not emitted.
+
+    Note: the Sources section IS emitted unconditionally (it may contain the
+    collection name). The debug block is distinguished by its 'Debug — RAG
+    Collections:' header and score annotations.
+    """
     monkeypatch.delenv("CLARITYMED_DEBUG", raising=False)
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")],
@@ -302,7 +355,7 @@ async def test_debug_mode_off_no_collections_block(monkeypatch):
     )
     events = [ev async for ev in service.run("q", user_id="alice")]
     token_texts = [e.text for e in events if isinstance(e, TokenChunk)]
-    assert not any("statpearls_en" in t for t in token_texts)
+    assert not any("Debug" in t for t in token_texts)
 
 
 # --- retrieval failure ----------------------------------------------
@@ -353,29 +406,8 @@ def _translation_svc(output: str = "hemoglobin 105") -> "TranslationProvider":
     return LLMTranslationProvider(TestModel(custom_output_text=output))
 
 
-async def test_translate_queries_off_by_default(monkeypatch):
-    """Without CLARITYMED_TRANSLATE_QUERIES the strategy receives the original
-    Chinese query even when a TranslationProvider is wired in."""
-    monkeypatch.delenv("CLARITYMED_TRANSLATE_QUERIES", raising=False)
-    bundle = EvidenceBundle(
-        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
-    )
-    strategy = StubStrategy(bundle)
-    service = AskService(
-        model=TestModel(custom_output_text="answer"),
-        strategy=strategy,
-        provider_config=_provider("local"),
-        language="zh",
-        translation_service=_translation_svc(),
-    )
-    [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
-    assert strategy.calls[0].query == "我血红蛋白105"
-
-
-async def test_translate_queries_env_on_sends_english_query_to_strategy(monkeypatch):
-    """CLARITYMED_TRANSLATE_QUERIES=1 replaces the embedding query with the
-    TranslationProvider output. ctx.language stays 'zh' so routing is unchanged."""
-    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+async def test_translate_queries_auto_fires_for_cross_lingual():
+    """zh session + en collection triggers translation automatically — no env var."""
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
@@ -390,13 +422,11 @@ async def test_translate_queries_env_on_sends_english_query_to_strategy(monkeypa
     [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
     ctx = strategy.calls[0]
     assert ctx.query == "hemoglobin 105"
-    assert ctx.language == "zh"
+    assert ctx.language == "zh"  # routing language stays zh
 
 
-async def test_translate_queries_skipped_when_no_service(monkeypatch):
-    """Without a TranslationProvider, CLARITYMED_TRANSLATE_QUERIES is silently
-    ignored — the original query reaches the strategy unchanged."""
-    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+async def test_translate_queries_skipped_when_no_service():
+    """Without a TranslationProvider the original query reaches the strategy."""
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
@@ -412,10 +442,8 @@ async def test_translate_queries_skipped_when_no_service(monkeypatch):
     assert strategy.calls[0].query == "我血红蛋白105"
 
 
-async def test_translate_queries_only_fires_for_collection_mismatch(monkeypatch):
-    """Translation is skipped for English sessions (collection lang == session
-    lang) even when the env var is set and a service is provided."""
-    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+async def test_translate_queries_only_fires_for_collection_mismatch():
+    """en session (collection lang == session lang) → no translation even with service."""
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
@@ -431,17 +459,14 @@ async def test_translate_queries_only_fires_for_collection_mismatch(monkeypatch)
     assert strategy.calls[0].query == "hemoglobin 105"
 
 
-async def test_translate_queries_fallback_on_failure(monkeypatch):
-    """When TranslationProvider.translate_query raises, the original query is
-    used and retrieval proceeds — no event is dropped."""
-    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+async def test_translate_queries_fallback_on_failure():
+    """When translate_query raises, the original query is used and retrieval proceeds."""
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
     strategy = StubStrategy(bundle)
     svc = _translation_svc()
 
-    # Patch _call so the TranslationProvider fallback mechanism is exercised.
     async def _boom(text, *, target_lang, context="general"):  # noqa: ANN001
         raise RuntimeError("simulated translation failure")
 
@@ -459,9 +484,8 @@ async def test_translate_queries_fallback_on_failure(monkeypatch):
     assert any(isinstance(e, Done) for e in events)
 
 
-async def test_translate_queries_emits_tool_events(monkeypatch):
-    """ToolStarted/ToolCompleted are yielded for each translation step."""
-    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+async def test_translate_queries_emits_tool_events():
+    """ToolStarted/ToolCompleted appear for the translation step, before retrieval."""
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
@@ -483,7 +507,6 @@ async def test_translate_queries_emits_tool_events(monkeypatch):
     assert started.tool_name == "translate.query"
     assert completed.tool_name == "translate.query"
     assert completed.summary == "done"
-    # Tool events precede the retrieval pipeline
     assert types.index("ToolStarted") < types.index("RetrievalPending")
 
 
