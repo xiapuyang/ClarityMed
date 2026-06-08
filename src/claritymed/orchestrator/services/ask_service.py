@@ -364,23 +364,24 @@ class AskService:
 
     # --- retrieval seam ------------------------------------------------
 
-    def _collection_target_language(self) -> str | None:
+    def _collection_target_language(self, query_lang: str | None = None) -> str | None:
         """Return the language to translate the query INTO for embedding.
 
-        Looks at all cross-lingual system collections. When their language
-        differs from the session language, embedding quality suffers —
-        translating the query to the collection's language before embed
-        closes most of that gap. Returns None when no mismatch exists
-        (no translation needed) or when the config cannot be read.
+        Uses ``query_lang`` (the detected language of the actual query text)
+        rather than the session language so cross-lingual users who type Chinese
+        in an English session still get their query translated to the collection's
+        native language. Falls back to the session language when query_lang is None.
+        Returns None when no mismatch exists or when the config cannot be read.
         """
         try:
             from claritymed.core.rag.schemas import load_retrieval_config
 
             cfg = load_retrieval_config()
+            effective_lang = query_lang or self._language
             mismatched = [
                 c.language
                 for c in cfg.system_rag.collections
-                if c.cross_lingual and c.language != self._language
+                if c.cross_lingual and c.language != effective_lang
             ]
             if not mismatched:
                 return None
@@ -412,22 +413,26 @@ class AskService:
         # session language differs from any cross_lingual collection — no env var needed.
         embedding_query = scrubbed_query
         if self._translation_service:
-            target_lang = self._collection_target_language()
-            if target_lang:
-                from claritymed.core.observability.steps import capture_steps
+            from claritymed.core.translation import detect_language
 
-                with capture_steps() as translation_steps:
-                    embedding_query = await self._translation_service.translate_query(
-                        scrubbed_query,
-                        target_lang=target_lang,  # type: ignore[arg-type]
-                    )
-                for rec in translation_steps:
-                    yield ToolStarted(tool_name=rec.name, args_preview=rec.details)
-                    yield ToolCompleted(
-                        tool_name=rec.name,
-                        duration_ms=rec.duration_ms,
-                        summary=rec.summary if not rec.failed else "failed",
-                    )
+            query_lang = detect_language(scrubbed_query)
+            target_lang = self._collection_target_language(query_lang=query_lang)
+            if target_lang:
+                yield ToolStarted(
+                    tool_name="translate.query",
+                    args_preview=f"translate/{target_lang}",
+                )
+                t0 = time.perf_counter()
+                embedding_query = await self._translation_service.translate_query(
+                    scrubbed_query,
+                    target_lang=target_lang,  # type: ignore[arg-type]
+                )
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                yield ToolCompleted(
+                    tool_name="translate.query",
+                    duration_ms=duration_ms,
+                    summary="done",
+                )
 
         ctx = RetrievalContext(
             query=embedding_query,
