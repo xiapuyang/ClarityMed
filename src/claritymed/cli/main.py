@@ -402,60 +402,79 @@ def corpora_migrate_payload(
 
         async def _run() -> None:
             from qdrant_client.models import PointIdsList
+            from rich.progress import (
+                BarColumn,
+                MofNCompleteColumn,
+                Progress,
+                SpinnerColumn,
+                TaskProgressColumn,
+                TextColumn,
+                TimeElapsedColumn,
+            )
+
+            # Count total points upfront for a determinate bar.
+            count_result = await aclient.count(
+                collection_name=COLLECTION_NAME, exact=True
+            )
+            total = count_result.count
 
             patched = 0
+            scanned = 0
             offset = None
-            while True:
-                results, next_offset = await aclient.scroll(
-                    collection_name=COLLECTION_NAME,
-                    with_payload=True,
-                    with_vectors=False,
-                    limit=256,
-                    offset=offset,
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TextColumn("[cyan]{task.fields[patched]} patched"),
+                console=console,
+                transient=False,
+            ) as bar:
+                task_id = bar.add_task(
+                    f"migrate {COLLECTION_NAME}",
+                    total=total,
+                    patched=0,
                 )
-                if not results:
-                    break
+                while True:
+                    results, next_offset = await aclient.scroll(
+                        collection_name=COLLECTION_NAME,
+                        with_payload=True,
+                        with_vectors=False,
+                        limit=256,
+                        offset=offset,
+                    )
+                    if not results:
+                        break
 
-                ids_to_patch: list = []
-                for point in results:
-                    payload = dict(point.payload or {})
-                    src_uri = payload.get("source_uri")
-                    doc_id = payload.get("doc_id", "")
-                    needs_patch = False
-                    # source_uri: clear fake article-XXXXX URLs
-                    if src_uri and "/article-" in src_uri:
-                        needs_patch = True
-                    # doc_title: backfill from legacy "title" key
-                    if "doc_title" not in payload and payload.get("title"):
-                        needs_patch = True
-                    if needs_patch:
-                        ids_to_patch.append(point.id)
+                    for point in results:
+                        payload = dict(point.payload or {})
+                        doc_id = payload.get("doc_id", "")
+                        src_uri = payload.get("source_uri")
+                        new_payload: dict = {}
+                        if src_uri and "/article-" in src_uri:
+                            new_payload["source_uri"] = _nbk_uri(doc_id)
+                        if "doc_title" not in payload and payload.get("title"):
+                            new_payload["doc_title"] = payload["title"]
+                        if new_payload:
+                            await aclient.set_payload(
+                                collection_name=COLLECTION_NAME,
+                                payload=new_payload,
+                                points=PointIdsList(points=[point.id]),
+                            )
+                            patched += 1
 
-                for point in results:
-                    if point.id not in ids_to_patch:
-                        continue
-                    payload = dict(point.payload or {})
-                    doc_id = payload.get("doc_id", "")
-                    new_payload: dict = {}
-                    src_uri = payload.get("source_uri")
-                    if src_uri and "/article-" in src_uri:
-                        new_payload["source_uri"] = _nbk_uri(doc_id)
-                    if "doc_title" not in payload and payload.get("title"):
-                        new_payload["doc_title"] = payload["title"]
-                    if new_payload:
-                        await aclient.set_payload(
-                            collection_name=COLLECTION_NAME,
-                            payload=new_payload,
-                            points=PointIdsList(points=[point.id]),
-                        )
-                        patched += 1
+                    scanned += len(results)
+                    bar.update(task_id, completed=scanned, patched=patched)
 
-                if next_offset is None:
-                    break
-                offset = next_offset
+                    if next_offset is None:
+                        break
+                    offset = next_offset
 
             console.print(
-                f"[green]Patched {patched} points in '{COLLECTION_NAME}'.[/green]"
+                f"[green]Done — scanned {scanned} points, patched {patched}.[/green]"
             )
 
         asyncio.run(_run())
