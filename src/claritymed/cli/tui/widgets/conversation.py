@@ -51,8 +51,18 @@ class TurnBubble(Static):
     cancelled: reactive[bool] = reactive(False)
     is_error: reactive[bool] = reactive(False)
 
-    def __init__(self, role: Role, text: str = "", *, error: bool = False) -> None:
+    def __init__(
+        self,
+        role: Role,
+        text: str = "",
+        *,
+        error: bool = False,
+        prefix_override: str | None = None,
+    ) -> None:
         super().__init__()
+        # Assigned before ``streaming_text`` so the reactive watcher (which
+        # fires during the assignment below) can already read it.
+        self._prefix_override = prefix_override
         self._role: Role = role
         self.streaming_text = text
         self.is_error = error
@@ -85,7 +95,10 @@ class TurnBubble(Static):
         self._refresh_content()
 
     def _refresh_content(self) -> None:
-        prefix = {"user": "› ", "assistant": "‹ ", "system": "ⓘ "}[self._role]
+        if self._prefix_override is not None:
+            prefix = self._prefix_override
+        else:
+            prefix = {"user": "› ", "assistant": "‹ ", "system": "ⓘ "}[self._role]
         suffix = "  ⊘ cancelled" if self.cancelled else ""
         self.update(f"{prefix}{self.streaming_text}{suffix}")
 
@@ -145,6 +158,18 @@ class Conversation(VerticalScroll):
         bubble = TurnBubble("assistant", text, error=True)
         self.mount(bubble)
         self._active_assistant = None
+        self.scroll_end(animate=False)
+        return bubble
+
+    def add_command_error_turn(self, text: str) -> TurnBubble:
+        """Render a slash-command error inline (e.g. ``⏺ Unknown command: /foo``).
+
+        Used when input validation rejects a typed command — we keep the
+        line in transcript history rather than a transient toast so the
+        user can see *what* they mistyped after the fact.
+        """
+        bubble = TurnBubble("system", text, error=True, prefix_override="⏺ ")
+        self.mount(bubble)
         self.scroll_end(animate=False)
         return bubble
 

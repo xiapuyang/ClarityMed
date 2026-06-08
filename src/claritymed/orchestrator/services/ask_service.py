@@ -32,6 +32,45 @@ logger = logging.getLogger(__name__)
 
 _UNKNOWN = "?"
 
+# Sliding-window history budget (bytes of serialized pydantic-ai messages).
+# ~80 KB is roughly 20–25 K tokens — generous for chat history while
+# leaving room for system prompt + tool schemas + completion in a 128 K
+# context model. When exceeded, oldest request/response pairs are dropped
+# from the front and a ``mode.ask.history_trimmed`` audit event records
+# how many messages went.
+HISTORY_BUDGET_BYTES = 80_000
+# Floor on how many messages we always keep, regardless of size. Two
+# pairs (4 messages) preserves enough recent context for the model to
+# stay coherent even with a pathologically long single turn.
+HISTORY_MIN_KEEP = 4
+
+
+def _trim_message_history(messages, budget: int):
+    """Drop oldest pairs until the serialized history fits the budget.
+
+    Returns ``(trimmed, dropped_count)``. Trim works on request/response
+    pairs (2 messages at a time) because dropping a lone request leaves
+    the next response unanchored, which pydantic-ai rejects.
+    """
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    if not messages:
+        return messages, 0
+    encoded = ModelMessagesTypeAdapter.dump_json(messages)
+    if len(encoded) <= budget:
+        return messages, 0
+    keep = list(messages)
+    dropped = 0
+    while len(keep) > HISTORY_MIN_KEEP:
+        candidate = keep[2:]
+        if not candidate:
+            break
+        keep = candidate
+        dropped += 2
+        if len(ModelMessagesTypeAdapter.dump_json(keep)) <= budget:
+            break
+    return keep, dropped
+
 
 class AskService:
     """Drive ask mode: scrub user input, stream LLM tokens, finalize.
@@ -122,6 +161,20 @@ class AskService:
         message_history = (
             self._chat_session.message_history() if self._chat_session else None
         )
+        if message_history:
+            message_history, dropped = _trim_message_history(
+                message_history, HISTORY_BUDGET_BYTES
+            )
+            if dropped:
+                audit_event(
+                    "mode.ask.history_trimmed",
+                    payload={
+                        "user_id": user_id,
+                        "dropped_messages": dropped,
+                        "kept_messages": len(message_history),
+                        "budget_bytes": HISTORY_BUDGET_BYTES,
+                    },
+                )
 
         # Stamp ``claritymed.session_id`` baggage onto every span the LLM
         # call produces so Phoenix can group traces by conversation, not

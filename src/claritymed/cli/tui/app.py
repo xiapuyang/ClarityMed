@@ -38,6 +38,8 @@ from claritymed.context import (
     reset_context,
 )
 from claritymed.core.i18n import t
+from claritymed.core.observability.audit import audit_event
+from claritymed.core.observability.logging import get_access_logger
 from claritymed.core.observability.tracing import setup_tracing
 from claritymed.orchestrator.services import (
     Cancelled,
@@ -63,6 +65,32 @@ logger = logging.getLogger(__name__)
 ModeName = Literal["ingest", "ask", "rag"]
 _MODE_CYCLE: tuple[ModeName, ...] = ("ask", "ingest", "rag")
 ROUTING_FLASH_SECONDS = 1.5
+
+# Substrings (lowercased) that mark an upstream context-window overflow.
+# Pulled from real Anthropic / OpenAI / Ollama error strings; matches are
+# OR'd so any one hit triggers the friendly hint.
+_OVERFLOW_MARKERS: tuple[str, ...] = (
+    "prompt is too long",
+    "context length",
+    "context_length_exceeded",
+    "maximum context",
+    "context window",
+    "too many tokens",
+    "input is too long",
+    "exceeds the maximum",
+    "max_tokens",
+)
+_OVERFLOW_HINT = (
+    "Conversation is too long for the model's context window. "
+    "Run /clear to start a fresh session, or switch to a provider with a larger context."
+)
+
+
+def _is_context_overflow(message: str) -> bool:
+    if not message:
+        return False
+    lowered = message.lower()
+    return any(marker in lowered for marker in _OVERFLOW_MARKERS)
 
 
 class ClarityMedApp(App):
@@ -197,7 +225,9 @@ class ClarityMedApp(App):
             self._handle_command(parsed)
             return
         if parsed.name == "unknown":
-            self._toast(f"Unknown command: /{parsed.arg or '?'}", kind="error")
+            self.query_one(Conversation).add_command_error_turn(
+                f"Unknown command: /{parsed.arg or '?'}"
+            )
             return
         self._dispatch_to_service(value)
 
@@ -314,10 +344,18 @@ class ClarityMedApp(App):
 
         # Apply per-turn ContextVars (request_id flips, user / lang are stable).
         per_turn = apply_context(rid, status.user_id, status.language)
+        access = get_access_logger()
+        request_status = "ok"
         try:
+            audit_event(
+                "request_start",
+                payload={"entry": "tui", "mode": mode},
+            )
+            access.info("tui_turn_start mode=%s", mode)
             try:
                 events = self._make_service_stream(mode, text, status.user_id, public)
             except Exception as exc:  # noqa: BLE001
+                request_status = "init_error"
                 conv.add_error_turn(f"service init failed: {exc}")
                 return
 
@@ -348,16 +386,39 @@ class ClarityMedApp(App):
                                 cancelled=True,
                             )
                         )
+                        request_status = "cancelled"
                         return
                     elif isinstance(event, Error):
-                        conv.add_error_turn(f"{event.error_type}: {event.message}")
+                        if _is_context_overflow(event.message):
+                            conv.add_error_turn(_OVERFLOW_HINT)
+                            request_status = "context_overflow"
+                        else:
+                            conv.add_error_turn(f"{event.error_type}: {event.message}")
+                            request_status = "error"
                         return
                     elif isinstance(event, Done):
                         self._on_done(mode, event.final, "".join(final_text_parts))
                         return
             except Exception as exc:  # noqa: BLE001
-                conv.add_error_turn(f"stream failed: {exc}")
+                if _is_context_overflow(str(exc)):
+                    request_status = "context_overflow"
+                    conv.add_error_turn(_OVERFLOW_HINT)
+                else:
+                    request_status = "exception"
+                    conv.add_error_turn(f"stream failed: {exc}")
         finally:
+            try:
+                audit_event(
+                    "request_end",
+                    payload={"status": request_status, "mode": mode},
+                )
+                access.info(
+                    "tui_turn_end mode=%s status=%s",
+                    mode,
+                    request_status,
+                )
+            except Exception:  # noqa: BLE001 — never let observability bring down a turn
+                logger.exception("failed to emit request_end audit/access")
             reset_context(per_turn)
 
     def _on_done(self, mode: ModeName, final, streamed_text: str) -> None:

@@ -43,6 +43,7 @@ PRODUCTION_TAG = "production"
 PHOENIX_MODEL_NAME = "claritymed"  # placeholder — real model lives in models.yaml
 PHOENIX_TEMPLATE_FORMAT = "NONE"  # prompts are final strings, not templates
 SyncAction = Literal["pushed", "pulled", "skipped", "missing", "error"]
+DiffAction = Literal["same", "differs", "remote_missing", "error"]
 
 
 class SyncEntry(BaseModel):
@@ -73,6 +74,38 @@ class SyncReport(BaseModel):
     @property
     def changed(self) -> list[SyncEntry]:
         return [e for e in self.entries if e.action in ("pushed", "pulled")]
+
+
+class DiffEntry(BaseModel):
+    """One name/language diff outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    prompt_name: str
+    language: Language
+    phoenix_name: str
+    action: DiffAction
+    detail: str = ""
+    unified_diff: list[str] = Field(
+        default_factory=list,
+        description="Unified diff lines (local vs Phoenix). Empty when action != differs.",
+    )
+
+
+class DiffReport(BaseModel):
+    """Aggregate diff result."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    entries: list[DiffEntry] = Field(default_factory=list)
+
+    @property
+    def errors(self) -> list[DiffEntry]:
+        return [e for e in self.entries if e.action == "error"]
+
+    @property
+    def differs(self) -> list[DiffEntry]:
+        return [e for e in self.entries if e.action == "differs"]
 
 
 # --- public API ---------------------------------------------------------
@@ -451,11 +484,97 @@ def _next_version_name(versions: list[PromptVersion]) -> str:
     return f"phoenix-{date.today().isoformat()}"
 
 
+def diff(
+    name: Optional[str] = None,
+    *,
+    client: Optional["Client"] = None,
+    store_dir: Path = PROMPTS_STORE,
+) -> DiffReport:
+    """Diff local YAML latest-version prompt text against Phoenix production tag.
+
+    Compares string content (the template body) per ``(name, language)``.
+    Returns a ``DiffReport`` carrying unified-diff lines for each
+    diverging pair. Phoenix-missing entries are reported as
+    ``remote_missing`` so a follow-up ``push`` is the obvious next step.
+    """
+    import difflib
+
+    client = client or _default_client()
+    registry = PromptRegistry(store_dir=store_dir)
+    targets = _select_targets(registry, name)
+    entries: list[DiffEntry] = []
+    for prompt_name in targets:
+        latest = max(
+            registry._prompts[prompt_name].versions, key=lambda v: v.created_at
+        )
+        for lang in LANGUAGES:
+            phoenix_name = phoenix_prompt_name(prompt_name, lang)
+            local_text = latest.languages[lang]
+            try:
+                remote_text = _try_get_production(client, phoenix_name)
+            except Exception as exc:  # noqa: BLE001
+                entries.append(
+                    DiffEntry(
+                        prompt_name=prompt_name,
+                        language=lang,
+                        phoenix_name=phoenix_name,
+                        action="error",
+                        detail=f"phoenix fetch failed: {exc}",
+                    )
+                )
+                continue
+            if remote_text is None:
+                entries.append(
+                    DiffEntry(
+                        prompt_name=prompt_name,
+                        language=lang,
+                        phoenix_name=phoenix_name,
+                        action="remote_missing",
+                        detail="no production tag on Phoenix (push first)",
+                    )
+                )
+                continue
+            if local_text == remote_text:
+                entries.append(
+                    DiffEntry(
+                        prompt_name=prompt_name,
+                        language=lang,
+                        phoenix_name=phoenix_name,
+                        action="same",
+                        detail="identical",
+                    )
+                )
+                continue
+            unified = list(
+                difflib.unified_diff(
+                    local_text.splitlines(),
+                    remote_text.splitlines(),
+                    fromfile=f"local/{prompt_name}_{lang}",
+                    tofile=f"phoenix/{prompt_name}_{lang}",
+                    lineterm="",
+                )
+            )
+            entries.append(
+                DiffEntry(
+                    prompt_name=prompt_name,
+                    language=lang,
+                    phoenix_name=phoenix_name,
+                    action="differs",
+                    detail=f"{len(local_text)} → {len(remote_text)} chars",
+                    unified_diff=unified,
+                )
+            )
+    return DiffReport(entries=entries)
+
+
 __all__ = [
     "LANGUAGES",
     "PRODUCTION_TAG",
+    "DiffEntry",
+    "DiffReport",
     "SyncEntry",
     "SyncReport",
+    "diff",
     "phoenix_prompt_name",
     "pull",
     "push",

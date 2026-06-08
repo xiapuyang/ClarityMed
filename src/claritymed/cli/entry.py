@@ -79,7 +79,7 @@ def inject_context(
     access = get_access_logger()
     try:
         audit_event("request_start", payload={"entry": "cli"})
-        access.info("cli_start user=%s lang=%s", uid, lang)
+        access.info("cli_start")
         yield rid, uid, lang
         audit_event("request_end", payload={"status": "ok"})
         access.info("cli_end status=ok")

@@ -262,6 +262,62 @@ def prompts_push(
         raise typer.Exit(code=1)
 
 
+@prompts_app.command("diff")
+def prompts_diff(
+    name: str | None = typer.Argument(None, help="Filter to one prompt name."),
+    color: bool = typer.Option(
+        True, "--color/--no-color", help="Colorize diff output."
+    ),
+) -> None:
+    """Show a unified diff between local YAML and Phoenix production-tagged prompts.
+
+    Same content shape as ``push`` / ``pull`` reads — one entry per
+    ``(name, language)`` pair. Exit code is 0 when everything matches,
+    1 when at least one entry differs or errors so this can gate CI.
+    """
+    from claritymed.core.prompts.phoenix_sync import diff
+
+    try:
+        report = diff(name=name)
+    except Exception as exc:  # noqa: BLE001
+        _stderr(f"[error] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    for entry in report.entries:
+        marker = {
+            "same": "[dim]·[/dim]",
+            "differs": "[yellow]Δ[/yellow]",
+            "remote_missing": "[yellow]?[/yellow]",
+            "error": "[red]✗[/red]",
+        }.get(entry.action, "?")
+        console.print(
+            f"  {marker} {entry.prompt_name}({entry.language}) "
+            f"-> {entry.phoenix_name}  {entry.detail}"
+        )
+        if entry.action == "differs":
+            if color:
+                from rich.syntax import Syntax
+
+                console.print(
+                    Syntax(
+                        "\n".join(entry.unified_diff),
+                        "diff",
+                        theme="ansi_dark",
+                        background_color="default",
+                        word_wrap=True,
+                    )
+                )
+            else:
+                for line in entry.unified_diff:
+                    console.print(line)
+
+    differs = len(report.differs)
+    errors = len(report.errors)
+    console.print(f"\n[bold]diff[/bold] differs={differs} errors={errors}")
+    if differs or errors:
+        raise typer.Exit(code=1)
+
+
 @prompts_app.command("pull")
 def prompts_pull(
     name: str | None = typer.Argument(None, help="Filter to one prompt name."),
@@ -300,6 +356,100 @@ def prompts_pull(
         raise typer.Exit(code=1) from exc
     _print_sync_report(report)
     if report.errors:
+        raise typer.Exit(code=1)
+
+
+audit_app = typer.Typer(
+    name="audit",
+    help="Inspect the structured audit log.",
+    no_args_is_help=True,
+)
+app.add_typer(audit_app, name="audit")
+
+
+@audit_app.command("grep")
+def audit_grep(
+    trace_id: str | None = typer.Option(
+        None, "--trace-id", help="Filter by OTel trace id."
+    ),
+    request_id: str | None = typer.Option(
+        None, "--request-id", help="Filter by request id."
+    ),
+    user_id: str | None = typer.Option(None, "--user-id", help="Filter by user id."),
+    kind: str | None = typer.Option(
+        None, "--kind", help="Filter by audit kind, e.g. mode.ask."
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Lower bound on created_at (ISO 8601 prefix match)."
+    ),
+    until: str | None = typer.Option(
+        None, "--until", help="Upper bound on created_at (ISO 8601 prefix match)."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Stop after N matches."),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit one JSON object per line (drops the formatter prefix).",
+    ),
+) -> None:
+    """Grep audit.log* JSONL by trace / request / user / kind / time window.
+
+    Reads every rotated ``audit.log*`` under ``CLARITYMED_LOG_DIR``, parses
+    the JSON payload from each line, and prints lines whose payload matches
+    every supplied filter. Files are walked in modification order so output
+    is roughly chronological even across rotations.
+    """
+    import json
+    from pathlib import Path
+
+    log_dir = Path(_cfg.LOG_DIR)
+    if not log_dir.exists():
+        _stderr(f"[error] log dir does not exist: {log_dir}")
+        raise typer.Exit(code=1)
+    files = sorted(log_dir.glob("audit.log*"), key=lambda p: p.stat().st_mtime)
+    if not files:
+        _stderr(f"[error] no audit.log* files in {log_dir}")
+        raise typer.Exit(code=1)
+
+    matched = 0
+    for fp in files:
+        try:
+            fh = fp.open(encoding="utf-8")
+        except OSError as exc:
+            _stderr(f"[warn] cannot open {fp}: {exc}")
+            continue
+        with fh:
+            for raw in fh:
+                line = raw.rstrip("\n")
+                idx = line.find("{")
+                if idx < 0:
+                    continue
+                try:
+                    event = json.loads(line[idx:])
+                except json.JSONDecodeError:
+                    continue
+                if trace_id and event.get("trace_id") != trace_id:
+                    continue
+                if request_id and event.get("request_id") != request_id:
+                    continue
+                if user_id and event.get("user_id") != user_id:
+                    continue
+                if kind and event.get("kind") != kind:
+                    continue
+                created = event.get("created_at", "")
+                if since and created < since:
+                    continue
+                if until and created > until:
+                    continue
+                if json_out:
+                    print(json.dumps(event, ensure_ascii=False))
+                else:
+                    print(line)
+                matched += 1
+                if limit is not None and matched >= limit:
+                    return
+    if matched == 0:
+        _stderr("[info] no matches")
         raise typer.Exit(code=1)
 
 

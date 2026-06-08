@@ -54,6 +54,7 @@ AuditKind = Literal[
     "mode.rag",
     "mode.routed",
     "mode.cancelled",
+    "mode.ask.history_trimmed",
 ]
 
 

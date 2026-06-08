@@ -29,7 +29,7 @@ APP_FMT = (
     "%(asctime)s [%(levelname)s] [%(request_id)s][%(user_id)s] "
     "%(relpath)s:%(lineno)d - %(message)s"
 )
-ACCESS_FMT = "%(asctime)s [%(request_id)s][%(user_id)s] %(message)s"
+ACCESS_FMT = "%(asctime)s [%(request_id)s][%(user_id)s][%(language)s] %(message)s"
 AUDIT_FMT = "%(asctime)s [%(request_id)s][%(user_id)s] [%(language)s] %(message)s"
 
 NOISY_LOGGERS = (

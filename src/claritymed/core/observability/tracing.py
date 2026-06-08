@@ -33,6 +33,27 @@ _ENDPOINT_ENV = "PHOENIX_COLLECTOR_ENDPOINT"
 _API_KEY_ENV = "PHOENIX_API_KEY"
 _SERVICE_NAME_ENV = "OTEL_SERVICE_NAME"
 _DEFAULT_SERVICE_NAME = "claritymed"
+_SCRUB_DISABLE_ENV = "CLARITYMED_TRACE_PHI_SCRUB_DISABLE"
+
+# Attribute keys (or key prefixes) OpenInference writes that may carry
+# PHI in their values. We pin to OI's documented attribute names rather
+# than wildcards so a future OI release cannot silently slip new keys
+# past the scrubber — if it adds one, the test catches the gap.
+PHI_SCRUB_ATTR_KEYS: tuple[str, ...] = (
+    "input.value",
+    "output.value",
+)
+PHI_SCRUB_ATTR_PREFIXES: tuple[str, ...] = (
+    "llm.input_messages.",
+    "llm.output_messages.",
+    "llm.prompts.",
+    "llm.prompt.",
+    "llm.completion.",
+    "llm.tool_call.",
+    "tool.parameters.",
+    "retrieval.documents.",
+    "embedding.embeddings.",
+)
 
 _lock = threading.Lock()
 _configured: bool = False
@@ -99,6 +120,13 @@ def _install(endpoint: str) -> None:
     # attributes that Phoenix UI knows how to render. It does not export.
     provider.add_span_processor(OpenInferenceSpanProcessor())
 
+    # Scrub PHI from OI-written attributes *before* the exporter sees the
+    # batch. on_end runs in span-finish order, after OI's instrumentation
+    # has populated input/output attributes, but before the
+    # BatchSpanProcessor below picks the span up for export.
+    if os.environ.get(_SCRUB_DISABLE_ENV, "").lower() not in ("1", "true", "yes"):
+        provider.add_span_processor(PhiScrubSpanProcessor())
+
     # OTLP HTTP is what self-hosted Phoenix accepts on /v1/traces. Batch
     # processor so streaming latency isn't taxed by export.
     headers: dict[str, str] = {}
@@ -163,8 +191,87 @@ def BaggageSpanProcessor():  # noqa: N802 — factory mimics a class name on pur
     return _baggage_span_processor_class()()
 
 
+def _phi_scrub_processor_class():
+    """Return the PhiScrubSpanProcessor class, importing OTel + PhiGuard lazily.
+
+    The class scrubs attributes OpenInference set during span lifetime
+    by mutating ``span._attributes`` on ``on_end``. The mutation is safe
+    because OTel's SDK only freezes the attribute mapping on export, and
+    BatchSpanProcessor (the exporter we feed) runs after us.
+    """
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    from claritymed.orchestrator import PhiGuard
+
+    class _PhiScrubSpanProcessor(SpanProcessor):
+        """Strip / redact PHI from OI-written attributes pre-export."""
+
+        def __init__(self) -> None:
+            # PhiGuard reads safety.yaml; if config is missing or broken,
+            # we must still emit *something* (better redacted than raw).
+            # Fall back to a guard with no rules — it still no-ops PHI
+            # but at least the processor doesn't crash the tracer.
+            try:
+                self._guard = PhiGuard.from_config()
+            except Exception:  # noqa: BLE001
+                logger.exception("PhiGuard.from_config failed; scrubber inert")
+                self._guard = None
+
+        def on_start(self, span, parent_context=None):  # noqa: D401, ARG002
+            return
+
+        def on_end(self, span):  # noqa: D401
+            guard = self._guard
+            if guard is None:
+                return
+            attrs = getattr(span, "_attributes", None)
+            if not attrs:
+                return
+            try:
+                for key in list(attrs.keys()):
+                    if not _is_phi_attr_key(key):
+                        continue
+                    value = attrs[key]
+                    if not isinstance(value, str) or not value:
+                        continue
+                    scrubbed, report = guard.scrub_free_text(value)
+                    if report.rule_hits:
+                        attrs[key] = scrubbed
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "PHI scrub failed on span %s", getattr(span, "name", "?")
+                )
+
+        def shutdown(self):  # noqa: D401
+            return
+
+        def force_flush(self, timeout_millis: int = 30000):  # noqa: ARG002, D401
+            return True
+
+    return _PhiScrubSpanProcessor
+
+
+def _is_phi_attr_key(key: str) -> bool:
+    """Match attribute keys against the static allow-list of PHI-bearing names."""
+    if key in PHI_SCRUB_ATTR_KEYS:
+        return True
+    return any(key.startswith(prefix) for prefix in PHI_SCRUB_ATTR_PREFIXES)
+
+
+def PhiScrubSpanProcessor():  # noqa: N802 — factory mimics a class name on purpose
+    """Construct a PHI scrub span processor.
+
+    Hidden behind a factory for the same reason as ``BaggageSpanProcessor``
+    — OTel SDK import is deferred to install time.
+    """
+    return _phi_scrub_processor_class()()
+
+
 __all__ = [
     "BaggageSpanProcessor",
+    "PHI_SCRUB_ATTR_KEYS",
+    "PHI_SCRUB_ATTR_PREFIXES",
+    "PhiScrubSpanProcessor",
     "is_configured",
     "reset_for_testing",
     "setup_tracing",

@@ -253,7 +253,7 @@ async def test_slash_mode_invalid_arg_toasts():
 
 
 @pytest.mark.asyncio
-async def test_unknown_slash_command_toasts():
+async def test_unknown_slash_command_shows_inline_error():
     app = ClarityMedApp(
         user_id="alice",
         language="en",
@@ -263,10 +263,15 @@ async def test_unknown_slash_command_toasts():
         await pilot.pause()
         app.query_one(InputBar).post_message(InputBar.Submitted("/sproingify"))
         await pilot.pause()
-        # The conversation stays empty (no user turn for unknown commands).
         conv = app.query_one(Conversation)
-        # only the empty-state placeholder
-        assert all("empty" in child.classes for child in conv.children)
+        # An inline `⏺ Unknown command: /sproingify` bubble replaces the
+        # earlier toast so the user can still see the typo after the fact.
+        bubbles = [c for c in conv.children if c.__class__.__name__ == "TurnBubble"]
+        assert len(bubbles) == 1
+        rendered = str(bubbles[0].renderable)
+        assert "⏺" in rendered
+        assert "Unknown command: /sproingify" in rendered
+        assert "error" in bubbles[0].classes
 
 
 @pytest.mark.asyncio
