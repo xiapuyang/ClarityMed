@@ -350,6 +350,40 @@ class AskService:
 
     # --- retrieval seam ------------------------------------------------
 
+    async def _translate_query_to_en(self, query: str) -> str:
+        """Translate a Chinese medical query to English for embedding.
+
+        BGE-M3's cross-lingual cosine similarity is notably lower for
+        zh→en pairs than for en→en pairs, especially in the sparse SPLADE
+        component where token overlap is near-zero. Translating before
+        embedding closes most of that gap without changing the user-facing
+        language or the collection-routing logic.
+
+        Falls back to the original query on any error so the retrieval
+        path is never blocked by a translation failure.
+        """
+        from pydantic_ai import Agent
+
+        try:
+            agent: Agent[None, str] = Agent(
+                self._model,
+                system_prompt=(
+                    "You are a medical translator. "
+                    "Translate the Chinese medical query to English. "
+                    "Output only the translated query — no explanation, "
+                    "no punctuation changes beyond what the translation requires."
+                ),
+                output_type=str,
+            )
+            result = await agent.run(query)
+            translated = result.output.strip()
+            if translated:
+                logger.debug("zh→en query translation: %r → %r", query, translated)
+                return translated
+        except Exception:  # noqa: BLE001
+            logger.warning("zh→en query translation failed; using original query")
+        return query
+
     async def _maybe_retrieve(
         self, scrubbed_query: str, user_id: str
     ) -> AsyncIterator[Event]:
@@ -362,8 +396,24 @@ class AskService:
         from claritymed.core.rag.strategies.base import RetrievalContext
 
         only_cloud_safe = self._is_cloud_provider()
+
+        # When CLARITYMED_TRANSLATE_QUERIES=1 and the session language is
+        # Chinese, translate to English before embedding.  BGE-M3 cross-lingual
+        # similarity for zh→en pairs is significantly lower than en→en due to
+        # sparse-component token mismatch; translating closes that gap.
+        # We keep ctx.language="zh" so the CollectionRouter still selects the
+        # right collections — translation is purely an embedding optimisation.
+        embedding_query = scrubbed_query
+        if self._language == "zh" and os.environ.get("CLARITYMED_TRANSLATE_QUERIES"):
+            try:
+                embedding_query = await self._translate_query_to_en(scrubbed_query)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "zh→en query translation raised; using original query for retrieval"
+                )
+
         ctx = RetrievalContext(
-            query=scrubbed_query,
+            query=embedding_query,
             user_id=user_id,
             language=self._language,  # type: ignore[arg-type]
             user_whitelist=self._user_whitelist,

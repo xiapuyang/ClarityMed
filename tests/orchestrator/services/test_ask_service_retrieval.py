@@ -335,3 +335,105 @@ async def test_user_whitelist_threads_through_to_strategy(whitelist):
     )
     [ev async for ev in service.run("q", user_id="alice")]
     assert strategy.calls[0].user_whitelist == whitelist
+
+
+# --- zh→en query translation ----------------------------------------
+
+
+async def test_translate_queries_off_by_default(monkeypatch):
+    """Without CLARITYMED_TRANSLATE_QUERIES the strategy receives the original
+    Chinese query even for zh-language sessions."""
+    monkeypatch.delenv("CLARITYMED_TRANSLATE_QUERIES", raising=False)
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    strategy = StubStrategy(bundle)
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=strategy,
+        provider_config=_provider("local"),
+        language="zh",
+    )
+    [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
+    assert strategy.calls[0].query == "我血红蛋白105"
+
+
+async def test_translate_queries_env_on_sends_english_query_to_strategy(monkeypatch):
+    """CLARITYMED_TRANSLATE_QUERIES=1 on a zh session replaces the embedding
+    query with the translated English text before calling the strategy.
+    ctx.language stays 'zh' so collection routing is unchanged."""
+    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    strategy = StubStrategy(bundle)
+    # TestModel echoes the custom_output_text; translation call returns it too.
+    service = AskService(
+        model=TestModel(custom_output_text="hemoglobin 105"),
+        strategy=strategy,
+        provider_config=_provider("local"),
+        language="zh",
+    )
+    [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
+    ctx = strategy.calls[0]
+    # Translated query was forwarded to the strategy.
+    assert ctx.query == "hemoglobin 105"
+    # Language is still zh — collection routing must not be affected.
+    assert ctx.language == "zh"
+
+
+async def test_translate_queries_only_fires_for_zh(monkeypatch):
+    """Translation is skipped for English sessions even when the env var is set."""
+    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    strategy = StubStrategy(bundle)
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=strategy,
+        provider_config=_provider("local"),
+        language="en",
+    )
+    [ev async for ev in service.run("hemoglobin 105", user_id="alice")]
+    assert strategy.calls[0].query == "hemoglobin 105"
+
+
+async def test_translate_queries_fallback_on_failure(monkeypatch):
+    """When translation raises, the original query is used and no event is
+    dropped — retrieval proceeds normally."""
+    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    strategy = StubStrategy(bundle)
+
+    class _BrokenModel:
+        """Minimal Model stub that always raises on run."""
+
+        async def request(self, *args, **kwargs):  # noqa: ANN001
+            raise RuntimeError("model unavailable")
+
+        async def request_stream(self, *args, **kwargs):  # noqa: ANN001
+            raise RuntimeError("model unavailable")
+
+    from pydantic_ai.models.test import TestModel as _TM
+
+    service = AskService(
+        model=_TM(custom_output_text="answer"),
+        strategy=strategy,
+        provider_config=_provider("local"),
+        language="zh",
+    )
+
+    # Monkey-patch the translation method to raise.
+    async def _boom(q):  # noqa: ANN001
+        raise RuntimeError("simulated translation failure")
+
+    service._translate_query_to_en = _boom  # type: ignore[method-assign]
+
+    events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
+    # Original query reaches the strategy.
+    assert strategy.calls[0].query == "我血红蛋白105"
+    # Stream still completes normally.
+    assert any(isinstance(e, Done) for e in events)
