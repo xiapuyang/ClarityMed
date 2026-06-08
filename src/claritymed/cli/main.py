@@ -229,6 +229,7 @@ def corpora_list() -> None:
 @corpora_app.command("ingest")
 def corpora_ingest(
     name: str = typer.Argument(..., help="Corpus name (e.g. statpearls)"),
+    user: str | None = typer.Option(None, "--user", "-u"),
     limit: int | None = typer.Option(None, "--limit", help="Max docs to ingest"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse + chunk only"),
     raw_dir: str | None = typer.Option(
@@ -256,40 +257,94 @@ def corpora_ingest(
         shared_qdrant_dir,
     )
 
-    require_admin()
-    if name != "statpearls":
-        console.print(f"[red]Unknown corpus: {name}[/red]")
-        raise typer.Exit(code=2)
+    with inject_context(user_id=user) as (_, _uid, _):
+        require_admin()
+        if name != "statpearls":
+            console.print(f"[red]Unknown corpus: {name}[/red]")
+            raise typer.Exit(code=2)
 
-    root = Path(raw_dir) if raw_dir else shared_knowledge_raw_dir() / name
-    source = StatPearlsSource(root)
-    chunker = build_chunker()
-    embedder = build_embedder() if not dry_run else _NoOpEmbedder()
-    aclient = AsyncQdrantClient(path=str(shared_qdrant_dir()))
-    store = RagCollectionStore(
-        aclient=aclient,
-        collection_name=source.name,
-        dense_dim=embedder.dimension,
-    )
-    parent_store = ParentStore(shared_parent_docstore_path())
-
-    async def _run() -> None:
-        stats = await ingest_corpus(
-            source,
-            chunker=chunker,
-            embedder=embedder,
-            store=store,
-            parent_store=parent_store,
-            limit=limit,
-            dry_run=dry_run,
+        root = Path(raw_dir) if raw_dir else shared_knowledge_raw_dir() / name
+        source = StatPearlsSource(root)
+        chunker = build_chunker()
+        embedder = build_embedder() if not dry_run else _NoOpEmbedder()
+        aclient = AsyncQdrantClient(path=str(shared_qdrant_dir()))
+        store = RagCollectionStore(
+            aclient=aclient,
+            collection_name=source.name,
+            dense_dim=embedder.dimension,
         )
-        console.print(
-            f"[green]{stats.source}: {stats.docs_processed} docs / "
-            f"{stats.parents_written} parents / {stats.children_written} "
-            f"children (skipped {stats.docs_skipped})[/green]"
-        )
+        parent_store = ParentStore(shared_parent_docstore_path())
 
-    _run_async(_run())
+        async def _run() -> None:
+            from rich.progress import (
+                BarColumn,
+                MofNCompleteColumn,
+                Progress,
+                TextColumn,
+                TimeElapsedColumn,
+                TimeRemainingColumn,
+            )
+
+            # Try to size the bar. StatPearls source is filesystem-backed;
+            # counting jsonl files is cheap. Falls back to indeterminate
+            # mode (no ETA) when source can't be sized in advance.
+            try:
+                total = sum(1 for _ in source.iter_raw_docs())
+            except Exception:  # noqa: BLE001 — best-effort sizing only
+                total = None
+            if limit is not None:
+                total = min(total, limit) if total else limit
+
+            columns = [
+                TextColumn("[bold]{task.fields[name]}[/bold]"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn(
+                    "[dim]{task.fields[parents]}p / {task.fields[children]}c[/dim]"
+                ),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ]
+            with Progress(*columns, console=console, transient=False) as bar:
+                task_id = bar.add_task(
+                    "ingest",
+                    total=total,
+                    name=source.name,
+                    parents=0,
+                    children=0,
+                )
+
+                def _on_doc(s) -> None:
+                    # Bar advances on both new + resumed docs so it
+                    # tracks "docs reached" not just "docs embedded";
+                    # otherwise a fully-resumed run shows the bar
+                    # frozen at 0 even though work is happening.
+                    bar.update(
+                        task_id,
+                        completed=s.docs_processed + s.docs_resumed,
+                        parents=s.parents_written,
+                        children=s.children_written,
+                    )
+
+                stats = await ingest_corpus(
+                    source,
+                    chunker=chunker,
+                    embedder=embedder,
+                    store=store,
+                    parent_store=parent_store,
+                    limit=limit,
+                    dry_run=dry_run,
+                    on_doc=_on_doc,
+                )
+
+            console.print(
+                f"[green]{stats.source}: {stats.docs_processed} docs / "
+                f"{stats.parents_written} parents / {stats.children_written} "
+                f"children (skipped {stats.docs_skipped}, "
+                f"resumed {stats.docs_resumed})[/green]"
+            )
+
+        _run_async(_run())
 
 
 class _NoOpEmbedder:

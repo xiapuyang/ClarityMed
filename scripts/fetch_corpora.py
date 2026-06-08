@@ -34,6 +34,7 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -172,6 +173,53 @@ def build_statpearls(dest: Path) -> None:
         shutil.rmtree(final)
     shutil.copytree(sp / "chunk", final)
     print(f"  done -> {final}  ({len(list(final.glob('*.jsonl')))} files)")
+    normalize_statpearls(dest)
+
+
+def normalize_statpearls(dest: Path) -> None:
+    """Rewrite MedRAG StatPearls chunks into our ingest schema.
+
+    MedRAG ships ``{id, title, content, contents}`` with one chunk per line;
+    our ``StatPearlsSource`` reads ``{doc_id, title, text}`` with one
+    RawDocument per line. We aggregate all chunk-lines in a file into one
+    article-level doc so our parent_child chunker (Unit 3) controls chunk
+    sizing instead of MedRAG's pre-split. Output goes to a sibling
+    ``normalized/`` dir; the original ``chunk/`` is left untouched for
+    debugging or re-runs.
+    """
+    src = dest / "statpearls" / "chunk"
+    out = dest / "statpearls" / "normalized"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    n_articles = 0
+    for path in sorted(src.glob("*.jsonl")):
+        title = ""
+        parts: list[str] = []
+        with path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                obj = json.loads(raw)
+                if not title:
+                    title = obj.get("title", "")
+                content = obj.get("content") or obj.get("contents") or ""
+                if content:
+                    parts.append(content)
+        if not parts:
+            continue
+        doc_id = path.stem
+        (out / f"{doc_id}.jsonl").write_text(
+            json.dumps(
+                {"doc_id": doc_id, "title": title, "text": "\n\n".join(parts)},
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        n_articles += 1
+    print(f"  normalized {n_articles} articles -> {out}")
 
 
 def fetch_embeddings(name: str, dest: Path) -> None:

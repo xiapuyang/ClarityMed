@@ -71,7 +71,18 @@ class RagCollectionStore:
     # --- collection lifecycle -----------------------------------------
 
     async def ensure_collection(self) -> None:
-        """Create the collection if missing (named dense + sparse layout)."""
+        """Create the collection if missing (named dense + sparse layout).
+
+        We deliberately do **not** create a ``doc_id`` payload index here:
+        qdrant local mode emits ``UserWarning: payload indexes have no
+        effect in the local Qdrant`` because the local store ignores
+        them. ``ingest_corpus`` instead pre-loads existing ``doc_id``s
+        into an in-memory set for O(1) resume lookups. When this project
+        moves to a real qdrant server, add a
+        ``create_payload_index(field_name="doc_id",
+        field_schema=PayloadSchemaType.KEYWORD)`` call here to keep
+        ``has_doc`` / ``delete_by_doc_id`` fast there too.
+        """
         if await self._aclient.collection_exists(self._collection):
             return
         await self._aclient.create_collection(
@@ -96,6 +107,54 @@ class RagCollectionStore:
             return 0
         info = await self._aclient.count(self._collection, exact=True)
         return info.count
+
+    async def list_doc_ids(self) -> set[str]:
+        """Scroll the whole collection and collect every unique ``doc_id``.
+
+        Used at ingest startup to pre-build an in-memory resume set when
+        the backing Qdrant has no usable payload index. Qdrant local mode
+        ignores ``create_payload_index`` (it emits ``UserWarning: payload
+        indexes have no effect in the local Qdrant``), so per-doc
+        ``has_doc`` calls degrade to ~300 ms full-scan filtered counts;
+        a single sweep ahead of the loop is O(N) once instead.
+        """
+        if not await self._aclient.collection_exists(self._collection):
+            return set()
+        ids: set[str] = set()
+        offset: Any | None = None
+        while True:
+            batch, offset = await self._aclient.scroll(
+                collection_name=self._collection,
+                limit=2048,
+                offset=offset,
+                with_payload=["doc_id"],
+                with_vectors=False,
+            )
+            for point in batch:
+                if point.payload and (did := point.payload.get("doc_id")):
+                    ids.add(did)
+            if offset is None:
+                break
+        return ids
+
+    async def has_doc(self, doc_id: str) -> bool:
+        """Return True iff at least one child with this ``doc_id`` is indexed.
+
+        Cheap existence probe for ingest resume — ``exact=False`` lets
+        Qdrant short-circuit instead of counting every match.
+        """
+        if not await self._aclient.collection_exists(self._collection):
+            return False
+        info = await self._aclient.count(
+            self._collection,
+            count_filter=qm.Filter(
+                must=[
+                    qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id))
+                ]
+            ),
+            exact=False,
+        )
+        return info.count > 0
 
     # --- writes -------------------------------------------------------
 
