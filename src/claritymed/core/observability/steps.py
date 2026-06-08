@@ -2,14 +2,15 @@
 
 Any ``core/`` service that makes an LLM call (translation, reranking,
 grading…) wraps it in ``step(name, details)`` to record timing and
-metadata.  Caller sets up a ``capture_steps()`` scope; collected steps
-are converted to ``ToolStarted``/``ToolCompleted`` events by the
-orchestrator boundary (AskService) which knows about those event types.
+metadata.  The orchestrator layer owns event emission: it yields
+``ToolStarted`` before the call, opens a ``capture_steps()`` scope
+around the call, then converts collected ``StepRecord``\\s to
+``ToolCompleted`` events after the call returns.
 
-This keeps the dependency arrow clean:
-  core/observability/steps  ←  any core service
-  orchestrator/ask_service  →  core/observability/steps  (reads sink)
-  orchestrator/ask_service  →  orchestrator/services/events (ToolStarted…)
+Dependency arrows stay clean:
+  core/observability/steps  ←  any core service (writes)
+  orchestrator/ask_service  →  core/observability/steps  (reads)
+  orchestrator/ask_service  →  orchestrator/services/events (emits)
 
 Pattern inside a core service::
 
@@ -19,6 +20,15 @@ Pattern inside a core service::
         result = await agent.run(text)
         s.summary = "done"
     return result.output
+
+Pattern in the orchestrator::
+
+    yield ToolStarted(tool_name="translate.query", args_preview="translate/en")
+    with capture_steps() as steps:
+        result = await svc.translate_query(query, target_lang="en")
+    for rec in steps:
+        yield ToolCompleted(tool_name=rec.name, duration_ms=rec.duration_ms,
+                            summary=rec.summary or "done")
 """
 
 from __future__ import annotations

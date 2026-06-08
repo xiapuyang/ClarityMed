@@ -413,6 +413,7 @@ class AskService:
         # session language differs from any cross_lingual collection — no env var needed.
         embedding_query = scrubbed_query
         if self._translation_service:
+            from claritymed.core.observability.steps import capture_steps
             from claritymed.core.translation import detect_language
 
             query_lang = detect_language(scrubbed_query)
@@ -422,17 +423,19 @@ class AskService:
                     tool_name="translate.query",
                     args_preview=f"translate/{target_lang}",
                 )
-                t0 = time.perf_counter()
-                embedding_query = await self._translation_service.translate_query(
-                    scrubbed_query,
-                    target_lang=target_lang,  # type: ignore[arg-type]
-                )
-                duration_ms = int((time.perf_counter() - t0) * 1000)
-                yield ToolCompleted(
-                    tool_name="translate.query",
-                    duration_ms=duration_ms,
-                    summary="done",
-                )
+                with capture_steps() as translation_steps:
+                    embedding_query = await self._translation_service.translate_query(
+                        scrubbed_query,
+                        target_lang=target_lang,  # type: ignore[arg-type]
+                    )
+                for rec in translation_steps:
+                    yield ToolCompleted(
+                        tool_name=rec.name,
+                        duration_ms=rec.duration_ms,
+                        summary=rec.summary or ("done" if not rec.failed else "failed"),
+                    )
+                if not translation_steps:
+                    yield ToolCompleted(tool_name="translate.query", summary="done")
 
         ctx = RetrievalContext(
             query=embedding_query,
