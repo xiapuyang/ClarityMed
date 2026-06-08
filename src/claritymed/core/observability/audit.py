@@ -59,6 +59,11 @@ AuditKind = Literal[
     "rag.retrieval",
     "rag.retrieval.failed",
     "rag.rerank.fallback",
+    # LLM call lifecycle — paired with mode.ask. ``llm.call.start`` marks
+    # the boundary between RAG retrieval done and the LLM call begun, so
+    # post-mortem latency analysis can separate retrieval cost from
+    # model TTFT without inferring from timestamps.
+    "llm.call.start",
 ]
 
 

@@ -17,6 +17,8 @@ from claritymed.core.schemas.retrieval import RetrievedChunk
 from claritymed.orchestrator.services import AskService
 from claritymed.orchestrator.services.events import (
     Done,
+    LlmCallStarted,
+    LlmFirstToken,
     RetrievalCompleted,
     RetrievalFiltered,
     RetrievalStarted,
@@ -87,6 +89,16 @@ async def test_run_with_strategy_emits_retrieval_then_tokens_then_done():
     assert types.index("RetrievalStarted") < types.index("TokenChunk")
     assert types.index("RetrievalCompleted") < types.index("TokenChunk")
     assert types.index("TokenChunk") < types.index("Done")
+    # Pending fires first — that's the whole point of having a separate
+    # event: the UI needs a signal *before* the slow embed+search+rerank
+    # await, not after it returns with bundle metadata.
+    assert types.index("RetrievalPending") < types.index("RetrievalStarted")
+    # LlmCallStarted fires between retrieval ending and the first token —
+    # large local models can sit silent for minutes on TTFT and this is
+    # the only pre-token signal the UI gets.
+    assert types.index("RetrievalCompleted") < types.index("LlmCallStarted")
+    assert types.index("LlmCallStarted") < types.index("LlmFirstToken")
+    assert types.index("LlmFirstToken") <= types.index("TokenChunk")
 
 
 async def test_retrieval_started_carries_strategy_and_collections():
@@ -162,12 +174,41 @@ async def test_local_provider_skips_phi_filter():
 
 async def test_no_strategy_skips_retrieval_path():
     """AskService.strategy=None preserves legacy behavior — no retrieval
-    events, no evidence in the prompt."""
+    events (pending/started/completed/filtered), no evidence in the prompt.
+    LlmCallStarted/LlmFirstToken still fire because they're not RAG-gated."""
+    from claritymed.orchestrator.services import RetrievalPending
+
     service = AskService(model=TestModel(custom_output_text="answer"))
     events = [ev async for ev in service.run("q", user_id="alice")]
+    assert not any(isinstance(e, RetrievalPending) for e in events)
     assert not any(isinstance(e, RetrievalStarted) for e in events)
     assert not any(isinstance(e, RetrievalCompleted) for e in events)
+    # LLM lifecycle events fire regardless — they're about the model
+    # call, not retrieval.
+    assert any(isinstance(e, LlmCallStarted) for e in events)
+    assert any(isinstance(e, LlmFirstToken) for e in events)
     assert next(e for e in events if isinstance(e, Done))
+
+
+async def test_llm_call_started_carries_model_and_provider():
+    """LlmCallStarted payload feeds the TUI panel — must include the
+    model name + provider id so the user sees *which* model they're
+    waiting on, not just that *a* model is generating."""
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")],
+        trace=RetrievalTrace(strategy="naive_hybrid"),
+    )
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=StubStrategy(bundle),
+        provider_config=_provider("local"),
+        provider_id="omlx",
+        model_name="Qwen3.6-35B-A3B-oQ4-mtp",
+    )
+    events = [ev async for ev in service.run("q", user_id="alice")]
+    started = next(e for e in events if isinstance(e, LlmCallStarted))
+    assert started.model_name == "Qwen3.6-35B-A3B-oQ4-mtp"
+    assert started.provider_id == "omlx"
 
 
 # --- evidence content -----------------------------------------------

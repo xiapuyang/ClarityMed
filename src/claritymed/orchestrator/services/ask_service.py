@@ -19,8 +19,11 @@ from claritymed.orchestrator.services.events import (
     Done,
     Error,
     Event,
+    LlmCallStarted,
+    LlmFirstToken,
     RetrievalCompleted,
     RetrievalFiltered,
+    RetrievalPending,
     RetrievalStarted,
     TokenChunk,
 )
@@ -231,6 +234,23 @@ class AskService:
         final_text: str = ""
         t_start = time.perf_counter()
         t_first_token: float | None = None
+        # Emit before agent.run_stream so the UI shows 'generating…' during
+        # the LLM's TTFT window. On large local models (Qwen 35B on MLX) TTFT
+        # can hit 3 minutes — without this event the assistant bubble looks
+        # frozen since RAG completes in <1s and tokens don't start until much
+        # later.
+        yield LlmCallStarted(
+            model_name=self._model_name,
+            provider_id=self._provider_id,
+        )
+        audit_event(
+            "llm.call.start",
+            payload={
+                "user_id": user_id,
+                "provider_id": self._provider_id,
+                "model": self._model_name,
+            },
+        )
         try:
             async with agent.run_stream(
                 scrubbed, message_history=message_history or None
@@ -239,6 +259,8 @@ class AskService:
                     if chunk:
                         if t_first_token is None:
                             t_first_token = time.perf_counter()
+                            ttft_ms = int((t_first_token - t_start) * 1000)
+                            yield LlmFirstToken(ttft_ms=ttft_ms)
                         yield TokenChunk(text=chunk)
                 final_text = await stream.get_output()
                 # Capture inside the ``with`` block — the stream goes out of
@@ -332,6 +354,11 @@ class AskService:
             user_whitelist=self._user_whitelist,
             only_cloud_safe=only_cloud_safe,
         )
+        # Emit the pending event *before* the await — the embed + search +
+        # rerank pipeline is the longest stretch of any RAG turn (typically
+        # 1-5s on local Qdrant). Without this signal the UI just sits on an
+        # empty assistant bubble for the duration.
+        yield RetrievalPending()
         try:
             bundle = await self._strategy.retrieve(ctx)
         except Exception as exc:  # noqa: BLE001 — surface as audit + event
@@ -393,6 +420,13 @@ class AskService:
                 "num_chunks": len(safe_chunks),
                 "filtered_phi": filtered,
                 "fallback_triggered": bundle.trace.fallback_triggered,
+                "rerank_fallback": bundle.trace.rerank_fallback,
+                # Timing breakdown — without this you can see num_chunks=0
+                # but not whether embed, search, or rerank ate the budget.
+                "embed_ms": bundle.trace.embed_ms,
+                "search_ms": bundle.trace.search_ms,
+                "rerank_ms": bundle.trace.rerank_ms,
+                "parent_expand_ms": bundle.trace.parent_expand_ms,
             },
         )
 

@@ -14,6 +14,7 @@ in real time.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Literal
 
 from textual import work
@@ -48,9 +49,13 @@ from claritymed.orchestrator.services import (
     Done,
     Error,
     IngestService,
+    LlmCallStarted,
+    LlmFirstToken,
     ModeRouted,
     RagService,
+    RetrievalCompleted,
     RetrievalFiltered,
+    RetrievalPending,
     TokenChunk,
     ToolCompleted,
     ToolStarted,
@@ -125,8 +130,12 @@ class ClarityMedApp(App):
         self._chat_session: ChatSession | None = chat_session
         # Cached per-session RagStrategy when rag.enabled=true. Owns the
         # two AsyncQdrantClient handles inside HybridRetriever; rebuilding
-        # per turn would churn the qdrant file lock.
+        # per turn would churn the qdrant file lock. The lock serializes
+        # the startup warm worker against a first-turn message — without it
+        # both would race to build a second Qdrant client and hit the file
+        # lock for the same path.
         self._cached_strategy = None
+        self._strategy_lock = threading.Lock()
 
         self._session_turns: list[ChatTurn] = []
         self._stream_worker: Worker | None = None
@@ -188,6 +197,36 @@ class ClarityMedApp(App):
 
         self.query_one(InputBar).focus_input()
         self._refresh_input_placeholder()
+
+        # Eagerly warm the RAG strategy on a worker thread so (a) Qdrant lock
+        # conflicts surface at startup rather than 10s into the first turn,
+        # and (b) the first message doesn't pay the embedder/qdrant/parent
+        # docstore load latency. Skip when RAG is disabled — no spinner, no
+        # work. Cheap probe (load yaml only) stays on the main thread.
+        from claritymed.core.rag import load_retrieval_config
+
+        if load_retrieval_config().rag.enabled:
+            self._warm_rag_strategy()
+
+    @work(thread=True, exclusive=True)
+    def _warm_rag_strategy(self) -> None:
+        """Build the RAG strategy off the UI thread and report status.
+
+        Runs as a Textual thread worker so the embedder/reranker/Qdrant
+        client init doesn't block the first paint. Uses ``call_from_thread``
+        for every UI mutation — Textual widgets aren't thread-safe.
+        """
+        conv = self.query_one(Conversation)
+        loading = self.call_from_thread(
+            conv.add_system_turn, "⏳ Initializing RAG (embedder, reranker, qdrant)…"
+        )
+        try:
+            self._strategy_for_session()
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(loading.remove)
+            self.call_from_thread(conv.add_error_turn, f"service init failed: {exc}")
+            return
+        self.call_from_thread(loading.remove)
 
     def on_unmount(self) -> None:
         # No-op: ask-mode turns are persisted in real time by AskService
@@ -376,8 +415,32 @@ class ClarityMedApp(App):
                         steps.push_complete(
                             event.tool_name, event.duration_ms, event.summary
                         )
+                    elif isinstance(event, RetrievalPending):
+                        steps.push_start("retrieval", "embed + qdrant + rerank")
+                    elif isinstance(event, RetrievalCompleted):
+                        total_ms = (
+                            event.embed_ms
+                            + event.search_ms
+                            + event.rerank_ms
+                            + event.parent_expand_ms
+                        )
+                        summary = (
+                            f"{event.num_chunks} chunks "
+                            f"(embed {event.embed_ms} / search {event.search_ms} "
+                            f"/ rerank {event.rerank_ms}ms)"
+                        )
+                        if event.rerank_fallback:
+                            summary += " — rerank fallback"
+                        steps.push_complete("retrieval", total_ms, summary)
                     elif isinstance(event, RetrievalFiltered):
                         steps.push_filtered(event.total, event.kept, event.filtered_phi)
+                    elif isinstance(event, LlmCallStarted):
+                        label = event.model_name or event.provider_id or "model"
+                        steps.push_start("llm", f"{label}, awaiting first token…")
+                    elif isinstance(event, LlmFirstToken):
+                        steps.push_complete(
+                            "llm first token", event.ttft_ms, "streaming…"
+                        )
                     elif isinstance(event, TokenChunk):
                         conv.append_to_active(event.text)
                         final_text_parts.append(event.text)
@@ -481,7 +544,7 @@ class ClarityMedApp(App):
         service = (
             self._rag_service_factory()
             if self._rag_service_factory
-            else self._default_rag_service()
+            else self._default_rag_service(user_id)
         )
         return service.run(text, user_id=user_id, public=public)
 
@@ -515,30 +578,35 @@ class ClarityMedApp(App):
         a single turn; rebuilding per ``send`` would re-open the qdrant
         file lock and re-create HTTP clients. Returns ``None`` when
         ``rag.enabled=false`` (no caching needed — fast path stays fast).
+
+        Thread-safe: the warm worker (thread) and the first message turn
+        (asyncio task) can both reach this; the lock serializes them so
+        only one builds the retriever.
         """
-        if self._cached_strategy is not None:
+        with self._strategy_lock:
+            if self._cached_strategy is not None:
+                return self._cached_strategy
+            from claritymed.core.rag import load_retrieval_config
+
+            cfg = load_retrieval_config()
+            if not cfg.rag.enabled:
+                return None
+            from claritymed.core.rag import build_hybrid_retriever
+            from claritymed.core.rag.strategies import build_strategy
+
+            retriever = build_hybrid_retriever(cfg)
+            self._cached_strategy = build_strategy(
+                retriever,
+                config=cfg.strategies,
+                max_evidence=cfg.rag.max_evidence,
+            )
             return self._cached_strategy
-        from claritymed.core.rag import load_retrieval_config
-
-        cfg = load_retrieval_config()
-        if not cfg.rag.enabled:
-            return None
-        from claritymed.core.rag import build_hybrid_retriever
-        from claritymed.core.rag.strategies import build_strategy
-
-        retriever = build_hybrid_retriever(cfg)
-        self._cached_strategy = build_strategy(
-            retriever,
-            config=cfg.strategies,
-            max_evidence=cfg.rag.max_evidence,
-        )
-        return self._cached_strategy
 
     @staticmethod
-    def _default_rag_service() -> RagService:
-        from claritymed.stores.user_rag import UserRagStore
+    def _default_rag_service(user_id: str) -> RagService:
+        from claritymed.stores.user_rag import make_user_rag_store
 
-        return RagService(store=UserRagStore.from_defaults())
+        return RagService(store=make_user_rag_store(user_id))
 
     def _resolve_provider_id(self) -> str:
         """Resolve the active provider id from catalog + account default.

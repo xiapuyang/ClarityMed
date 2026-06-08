@@ -58,12 +58,52 @@ class RetrievalFiltered(_EventBase):
     reason: str = ""
 
 
+class RetrievalPending(_EventBase):
+    """RAG retrieval kicked off — the embed + search + rerank pipeline has
+    started but bundle.trace metadata isn't available yet. Drives an
+    immediate 'Retrieving…' hint in the UI so the user has feedback
+    during the slow path (typically 1-5s on local Qdrant + reranker).
+    Distinct from ``RetrievalStarted`` which fires *after* retrieve()
+    returns and carries the actual collection list.
+    """
+
+    type: Literal["retrieval_pending"] = "retrieval_pending"
+
+
 class RetrievalStarted(_EventBase):
-    """RAG retrieval begun. Drives the 'searching N collections' UI hint."""
+    """RAG retrieval completed at the strategy layer; reports which
+    collections were searched. Despite the name, this fires *after*
+    ``await strategy.retrieve(ctx)`` returns — ``active_collections`` is
+    populated from the router decision inside the bundle trace.
+    Consumers wanting a pre-retrieve signal should watch
+    ``RetrievalPending`` instead.
+    """
 
     type: Literal["retrieval_started"] = "retrieval_started"
     active_collections: list[str] = []
     strategy: str = "naive_hybrid"
+
+
+class LlmCallStarted(_EventBase):
+    """LLM streaming call begun. Drives a 'generating response…' UI hint
+    so the user knows the slow path is the model, not a stuck pipeline.
+    Local 30B+ models on Apple Silicon can take 30-180s to first token —
+    without this event the assistant bubble sits empty for that whole
+    stretch and looks frozen.
+    """
+
+    type: Literal["llm_call_started"] = "llm_call_started"
+    model_name: str = ""
+    provider_id: str = ""
+
+
+class LlmFirstToken(_EventBase):
+    """First token arrived. Carries TTFT in ms so the UI can mark the
+    LlmCallStarted step complete and report wall-clock time-to-first-token.
+    """
+
+    type: Literal["llm_first_token"] = "llm_first_token"
+    ttft_ms: int = 0
 
 
 class RetrievalCompleted(_EventBase):
@@ -113,9 +153,12 @@ Event = Union[
     ToolStarted,
     ToolCompleted,
     TokenChunk,
+    RetrievalPending,
     RetrievalStarted,
     RetrievalCompleted,
     RetrievalFiltered,
+    LlmCallStarted,
+    LlmFirstToken,
     ModeRouted,
     Cancelled,
     Done,

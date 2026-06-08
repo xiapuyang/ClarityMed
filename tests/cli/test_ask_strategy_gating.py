@@ -18,8 +18,16 @@ from claritymed.core.rag.strategies.naive_hybrid import NaiveHybridStrategy
 
 
 def test_maybe_build_strategy_returns_none_when_disabled():
-    """Default config ships with ``rag.enabled=false`` — no strategy built."""
-    assert cli_main._maybe_build_strategy() is None
+    """``rag.enabled=false`` — no strategy built."""
+    real = load_retrieval_config()
+    disabled = real.model_copy(
+        update={"rag": real.rag.model_copy(update={"enabled": False})}
+    )
+    with patch(
+        "claritymed.core.rag.load_retrieval_config",
+        return_value=disabled,
+    ):
+        assert cli_main._maybe_build_strategy() is None
 
 
 def test_maybe_build_strategy_builds_when_enabled():
