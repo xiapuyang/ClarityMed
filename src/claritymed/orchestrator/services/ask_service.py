@@ -173,14 +173,7 @@ class AskService:
             },
         )
 
-        # CLARITYMED_AUTO_LANGUAGE=1: detect output language from the input
-        # rather than from the --lang setting. Useful when users mix languages
-        # in a single session. Default: output follows the configured language.
         output_lang = self._language
-        if os.environ.get("CLARITYMED_AUTO_LANGUAGE"):
-            from claritymed.core.translation import detect_language
-
-            output_lang = detect_language(scrubbed)
 
         # RAG retrieval (Unit 8): if a strategy is configured, fetch evidence
         # before calling the LLM. Cloud providers filter PHI chunks at the
@@ -554,8 +547,8 @@ class AskService:
     def _format_sources(chunks: "list[RetrievedChunk]") -> str:
         """Build an authoritative Sources section from chunk metadata.
 
-        Uses source_uri when available so the user gets real URLs instead of
-        LLM-invented descriptions. Falls back to collection_name then source type.
+        Uses source_uri (a real URL) when available. Falls back to doc_title
+        (article title stored during ingest), then collection_name, then source type.
         The list mirrors the [N] numbering in the injected evidence block, so
         the LLM's inline citations resolve correctly.
         """
@@ -563,7 +556,7 @@ class AskService:
             return ""
         lines = ["\n\n**Sources:**"]
         for i, c in enumerate(chunks, start=1):
-            src = c.source_uri or c.collection_name or c.source
+            src = c.source_uri or c.doc_title or c.collection_name or c.source
             lines.append(f"- [{i}] {src}")
         return "\n".join(lines)
 

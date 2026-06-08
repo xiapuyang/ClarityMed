@@ -90,6 +90,21 @@ def test_source_iterates_jsonl(tmp_path):
     assert docs[0].doc_id == "NBK1"
     assert "Aspirin" in docs[0].text
     assert docs[0].metadata["source_uri"].startswith("https://")
+    assert docs[0].metadata["doc_title"] == "Aspirin"
+
+
+def test_source_jsonl_article_prefix_has_no_source_uri(tmp_path):
+    """MedRAG article-XXXXX IDs don't produce fake NCBI URLs."""
+    f = tmp_path / "norm.jsonl"
+    f.write_text(
+        json.dumps({"doc_id": "article-145922", "title": "Anemia", "text": "body"})
+        + "\n",
+        encoding="utf-8",
+    )
+    docs = list(StatPearlsSource(tmp_path).iter_raw_docs())
+    assert len(docs) == 1
+    assert docs[0].metadata["source_uri"] is None
+    assert docs[0].metadata["doc_title"] == "Anemia"
 
 
 def test_source_skips_doc_without_text(tmp_path):

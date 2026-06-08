@@ -55,6 +55,9 @@ class RetrievedChunk(BaseModel):
     source_uri: str | None = Field(
         None, description="Optional pointer to the original source for citation."
     )
+    doc_title: str | None = Field(
+        None, description="Human-readable document title for citation display."
+    )
     ingested_at: datetime | None = Field(None)
 
     # --- hybrid-retrieval fields (Unit 1 of RAG plan) -------------------

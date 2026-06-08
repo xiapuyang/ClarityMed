@@ -204,6 +204,7 @@ class HybridRetriever:
             can_cloud=can_cloud,
             user_id=None,
             source_uri=payload.get("source_uri"),
+            doc_title=payload.get("doc_title"),
             ingested_at=None,
             collection_name=collection,
             parent_id=payload.get("parent_id"),
