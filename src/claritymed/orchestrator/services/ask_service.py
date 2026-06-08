@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
     from claritymed.core.schemas.retrieval import RetrievedChunk
+    from claritymed.core.translation import TranslationService
     from claritymed.orchestrator.services.chat_session import ChatSession
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ class AskService:
         strategy: "RagStrategy | None" = None,
         provider_config: "ProviderConfig | None" = None,
         user_whitelist: list[str] | None = None,
+        translation_service: "TranslationService | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or PhiGuard.from_config()
@@ -119,6 +121,7 @@ class AskService:
         self._strategy = strategy
         self._provider_config = provider_config
         self._user_whitelist = user_whitelist
+        self._translation_service = translation_service
 
     async def run(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import (
@@ -173,7 +176,9 @@ class AskService:
         # in a single session. Default: output follows the configured language.
         output_lang = self._language
         if os.environ.get("CLARITYMED_AUTO_LANGUAGE"):
-            output_lang = self._detect_query_language(scrubbed)
+            from claritymed.core.translation import TranslationService
+
+            output_lang = TranslationService.detect_language(scrubbed)
 
         # RAG retrieval (Unit 8): if a strategy is configured, fetch evidence
         # before calling the LLM. Cloud providers filter PHI chunks at the
@@ -360,14 +365,6 @@ class AskService:
 
     # --- retrieval seam ------------------------------------------------
 
-    @staticmethod
-    def _detect_query_language(text: str) -> str:
-        """Return 'zh' if >20 % of characters are CJK, else 'en'."""
-        if not text:
-            return "en"
-        cjk = sum(1 for c in text if "一" <= c <= "鿿")
-        return "zh" if cjk / len(text) > 0.2 else "en"
-
     def _collection_target_language(self) -> str | None:
         """Return the language to translate the query INTO for embedding.
 
@@ -393,46 +390,6 @@ class AskService:
             logger.warning("could not determine collection target language")
             return None
 
-    async def _translate_query(self, query: str, *, target_lang: str) -> str:
-        """Translate query to target_lang for better embedding alignment.
-
-        Falls back to the original query on any error so the retrieval
-        path is never blocked by a translation failure. The registry key
-        for translate_query is the TARGET language, not the session language.
-        """
-        from pydantic_ai import Agent
-
-        from claritymed.core.prompts.registry import PromptRegistry
-
-        try:
-            system_prompt = PromptRegistry().get(
-                "translate_query",
-                language=target_lang,  # type: ignore[arg-type]
-            )
-            agent: Agent[None, str] = Agent(
-                self._model,
-                system_prompt=system_prompt,
-                output_type=str,
-            )
-            result = await agent.run(query)
-            translated = result.output.strip()
-            if translated:
-                logger.debug(
-                    "query translation (%s→%s): %r → %r",
-                    self._language,
-                    target_lang,
-                    query,
-                    translated,
-                )
-                return translated
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "query translation (%s→%s) failed; using original",
-                self._language,
-                target_lang,
-            )
-        return query
-
     async def _maybe_retrieve(
         self, scrubbed_query: str, user_id: str
     ) -> AsyncIterator[Event]:
@@ -454,17 +411,13 @@ class AskService:
         # a hypothetical statpearls_zh would trigger the reverse). ctx.language
         # stays as the session language so CollectionRouter routing is unchanged.
         embedding_query = scrubbed_query
-        if os.environ.get("CLARITYMED_TRANSLATE_QUERIES"):
+        if self._translation_service and os.environ.get("CLARITYMED_TRANSLATE_QUERIES"):
             target_lang = self._collection_target_language()
             if target_lang:
-                try:
-                    embedding_query = await self._translate_query(
-                        scrubbed_query, target_lang=target_lang
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "query translation raised; using original query for retrieval"
-                    )
+                embedding_query = await self._translation_service.translate_query(
+                    scrubbed_query,
+                    target_lang=target_lang,  # type: ignore[arg-type]
+                )
 
         ctx = RetrievalContext(
             query=embedding_query,

@@ -7,6 +7,8 @@ that evidence is spliced into the agent prompt (via TestModel echoing).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from pydantic_ai.models.test import TestModel
 
@@ -24,6 +26,9 @@ from claritymed.orchestrator.services.events import (
     RetrievalStarted,
     TokenChunk,
 )
+
+if TYPE_CHECKING:
+    from claritymed.core.translation import TranslationService
 
 
 def _chunk(
@@ -337,12 +342,18 @@ async def test_user_whitelist_threads_through_to_strategy(whitelist):
     assert strategy.calls[0].user_whitelist == whitelist
 
 
-# --- zh→en query translation ----------------------------------------
+# --- query translation via TranslationService -----------------------
+
+
+def _translation_svc(output: str = "hemoglobin 105") -> "TranslationService":
+    from claritymed.core.translation import TranslationService
+
+    return TranslationService(TestModel(custom_output_text=output))
 
 
 async def test_translate_queries_off_by_default(monkeypatch):
     """Without CLARITYMED_TRANSLATE_QUERIES the strategy receives the original
-    Chinese query even for zh-language sessions."""
+    Chinese query even when a TranslationService is wired in."""
     monkeypatch.delenv("CLARITYMED_TRANSLATE_QUERIES", raising=False)
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
@@ -353,37 +364,55 @@ async def test_translate_queries_off_by_default(monkeypatch):
         strategy=strategy,
         provider_config=_provider("local"),
         language="zh",
+        translation_service=_translation_svc(),
     )
     [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
     assert strategy.calls[0].query == "我血红蛋白105"
 
 
 async def test_translate_queries_env_on_sends_english_query_to_strategy(monkeypatch):
-    """CLARITYMED_TRANSLATE_QUERIES=1 on a zh session replaces the embedding
-    query with the translated English text before calling the strategy.
-    ctx.language stays 'zh' so collection routing is unchanged."""
+    """CLARITYMED_TRANSLATE_QUERIES=1 replaces the embedding query with the
+    TranslationService output. ctx.language stays 'zh' so routing is unchanged."""
     monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
     strategy = StubStrategy(bundle)
-    # TestModel echoes the custom_output_text; translation call returns it too.
     service = AskService(
-        model=TestModel(custom_output_text="hemoglobin 105"),
+        model=TestModel(custom_output_text="answer"),
         strategy=strategy,
         provider_config=_provider("local"),
         language="zh",
+        translation_service=_translation_svc("hemoglobin 105"),
     )
     [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
     ctx = strategy.calls[0]
-    # Translated query was forwarded to the strategy.
     assert ctx.query == "hemoglobin 105"
-    # Language is still zh — collection routing must not be affected.
     assert ctx.language == "zh"
 
 
-async def test_translate_queries_only_fires_for_zh(monkeypatch):
-    """Translation is skipped for English sessions even when the env var is set."""
+async def test_translate_queries_skipped_when_no_service(monkeypatch):
+    """Without a TranslationService, CLARITYMED_TRANSLATE_QUERIES is silently
+    ignored — the original query reaches the strategy unchanged."""
+    monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    strategy = StubStrategy(bundle)
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=strategy,
+        provider_config=_provider("local"),
+        language="zh",
+        # no translation_service
+    )
+    [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
+    assert strategy.calls[0].query == "我血红蛋白105"
+
+
+async def test_translate_queries_only_fires_for_collection_mismatch(monkeypatch):
+    """Translation is skipped for English sessions (collection lang == session
+    lang) even when the env var is set and a service is provided."""
     monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
@@ -394,54 +423,45 @@ async def test_translate_queries_only_fires_for_zh(monkeypatch):
         strategy=strategy,
         provider_config=_provider("local"),
         language="en",
+        translation_service=_translation_svc(),
     )
     [ev async for ev in service.run("hemoglobin 105", user_id="alice")]
     assert strategy.calls[0].query == "hemoglobin 105"
 
 
 async def test_translate_queries_fallback_on_failure(monkeypatch):
-    """When translation raises, the original query is used and no event is
-    dropped — retrieval proceeds normally."""
+    """When TranslationService.translate_query raises, the original query is
+    used and retrieval proceeds — no event is dropped."""
     monkeypatch.setenv("CLARITYMED_TRANSLATE_QUERIES", "1")
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
     strategy = StubStrategy(bundle)
+    svc = _translation_svc()
+
+    # Patch _call so the TranslationService fallback mechanism is exercised.
+    async def _boom(text, *, target_lang, context="general"):  # noqa: ANN001
+        raise RuntimeError("simulated translation failure")
+
+    svc._call = _boom  # type: ignore[method-assign]
+
     service = AskService(
         model=TestModel(custom_output_text="answer"),
         strategy=strategy,
         provider_config=_provider("local"),
         language="zh",
+        translation_service=svc,
     )
-
-    # Monkey-patch the translation method to raise.
-    async def _boom(q, *, target_lang):  # noqa: ANN001
-        raise RuntimeError("simulated translation failure")
-
-    service._translate_query = _boom  # type: ignore[method-assign]
-
     events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
-    # Original query reaches the strategy.
     assert strategy.calls[0].query == "我血红蛋白105"
-    # Stream still completes normally.
     assert any(isinstance(e, Done) for e in events)
 
 
 # --- auto output language -------------------------------------------
 
 
-def test_detect_query_language_cjk():
-    """CJK-dominant text returns 'zh'; Latin-dominant returns 'en'."""
-    detect = AskService._detect_query_language
-    assert detect("我血红蛋白105，需要担心吗") == "zh"
-    assert detect("hemoglobin 105, should I worry?") == "en"
-    assert detect("我的hemoglobin值很低") == "zh"
-    assert detect("") == "en"
-
-
 async def test_auto_language_off_uses_session_lang(monkeypatch):
-    """Without CLARITYMED_AUTO_LANGUAGE the output language follows --lang,
-    even when the user types in a different language."""
+    """Without CLARITYMED_AUTO_LANGUAGE the output language follows --lang."""
     monkeypatch.delenv("CLARITYMED_AUTO_LANGUAGE", raising=False)
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
@@ -452,6 +472,5 @@ async def test_auto_language_off_uses_session_lang(monkeypatch):
         provider_config=_provider("local"),
         language="en",
     )
-    # Chinese input but env var not set — stream still completes without error.
     events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
     assert any(isinstance(e, Done) for e in events)

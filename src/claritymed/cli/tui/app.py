@@ -568,6 +568,8 @@ class ClarityMedApp(App):
         strategy = self._strategy_for_session()
         if self._chat_session is None:
             self._chat_session = ChatSession.new(self._current_user_id)
+        from claritymed.core.translation import TranslationService
+
         return AskService(
             model=model,
             language=self.query_one(StatusBar).language,
@@ -576,6 +578,7 @@ class ClarityMedApp(App):
             model_name=provider.model,
             strategy=strategy,
             provider_config=provider,
+            translation_service=TranslationService(model),
         )
 
     def _strategy_for_session(self):
