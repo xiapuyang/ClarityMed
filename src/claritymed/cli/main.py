@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -39,6 +40,19 @@ app = typer.Typer(
 console = Console()
 
 _BOOTSTRAPPED = False
+
+# File extensions that require OCR conversion before ingestion.
+_OCR_EXTENSIONS = {
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".tiff",
+    ".tif",
+}
 
 
 def _bootstrap_once() -> None:
@@ -109,7 +123,10 @@ def ask(
         from claritymed.orchestrator.services import ChatSession
 
         with inject_context(
-            user_id=user, language=language, command=f"ask q={question[:60]!r}"
+            user_id=user,
+            language=language,
+            command=f"ask q={question[:60]!r}",
+            check_user_exists=True,
         ) as (_, uid, lang):
             provider = resolve_provider(override=provider_id)
             model = build_model(provider)
@@ -156,7 +173,10 @@ def ingest_profile(
 
     async def _run() -> None:
         with inject_context(
-            user_id=user, language=language, command=f"ingest.profile {field!r}"
+            user_id=user,
+            language=language,
+            command=f"ingest.profile {field!r}",
+            check_user_exists=True,
         ) as (_, uid, _):
             service = IngestService()
             async for event in service.run(field, user_id=uid):
@@ -195,10 +215,20 @@ def rag_add(
 
     async def _run() -> None:
         with inject_context(
-            user_id=user, language=language, command=f"rag.add path={path!r}"
+            user_id=user,
+            language=language,
+            command=f"rag.add path={path!r}",
+            check_user_exists=True,
         ) as (_, uid, _):
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
+            file_path = Path(path)
+            if file_path.suffix.lower() in _OCR_EXTENSIONS:
+                from claritymed.core.ocr.factory import make_ocr_provider
+
+                ocr = make_ocr_provider()
+                text = await ocr.extract_text(file_path)
+            else:
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
             store = make_user_rag_store(uid)
             service = RagService(store=store)
             async for event in service.run(text, user_id=uid, public=public):
@@ -264,7 +294,9 @@ def corpora_ingest(
         shared_parent_docstore_path,
     )
 
-    with inject_context(user_id=user, command=f"corpora.ingest name={name!r}") as (
+    with inject_context(
+        user_id=user, command=f"corpora.ingest name={name!r}", check_user_exists=True
+    ) as (
         _,
         _uid,
         _,
@@ -394,7 +426,9 @@ def corpora_migrate_payload(
     from claritymed.stores.account import require_admin
 
     with inject_context(
-        user_id=user, command=f"corpora.migrate-payload name={name!r}"
+        user_id=user,
+        command=f"corpora.migrate-payload name={name!r}",
+        check_user_exists=True,
     ) as (_, _uid, _):
         require_admin()
         if name != "statpearls":
@@ -514,7 +548,9 @@ def rag_migrate(
             raise typer.Exit(code=1)
 
     async def _run() -> None:
-        with inject_context(user_id=user, command=f"rag.migrate user={user!r}") as (
+        with inject_context(
+            user_id=user, command=f"rag.migrate user={user!r}", check_user_exists=True
+        ) as (
             _,
             uid,
             _,
@@ -830,6 +866,32 @@ def audit_grep(
     if matched == 0:
         _stderr("[info] no matches")
         raise typer.Exit(code=1)
+
+
+@app.command("init-user")
+def init_user_cmd(
+    user_id: str = typer.Argument(
+        ..., help="User ID to create (alphanumeric, hyphens, underscores)."
+    ),
+    display_name: str | None = typer.Option(
+        None, "--name", "-n", help="Display name (defaults to user_id)."
+    ),
+) -> None:
+    """Create a user account and initialise their data directory.
+
+    The first user created on a fresh install is automatically promoted to
+    admin.  Subsequent users receive the ``user`` role.
+
+    Idempotent — safe to run more than once for the same user_id.
+    """
+    from claritymed.stores.account import init_user
+
+    _bootstrap_once()
+    account = init_user(user_id, display_name=display_name)
+    console.print(
+        f"[green]✓[/green] user=[bold]{account.user_id}[/bold]  "
+        f"role={account.role}  display_name={account.display_name!r}"
+    )
 
 
 # Convenience subcommand to list known modes — useful for shell completion.

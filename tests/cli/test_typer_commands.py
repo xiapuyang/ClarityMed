@@ -26,7 +26,10 @@ def test_modes_command_lists_registry():
 
 
 def test_ingest_profile_writes_field(tmp_path, monkeypatch):
+    from claritymed.stores.account import init_user
+
     monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
+    init_user("alice")
     result = runner.invoke(
         app,
         ["ingest", "profile", "allergy=penicillin", "--user", "alice"],
@@ -103,6 +106,9 @@ def test_rag_add_with_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_cli_main, "make_user_rag_store", _factory)
     monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
+    from claritymed.stores.account import init_user
+
+    init_user("alice")
     sample = tmp_path / "sample.txt"
     sample.write_text("para one\n\npara two", encoding="utf-8")
     result = runner.invoke(

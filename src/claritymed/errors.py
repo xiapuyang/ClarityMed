@@ -14,6 +14,15 @@ class InvalidUserIdError(ValueError):
     """``user_id`` did not match the path-safe regex."""
 
 
+class UserNotFoundError(LookupError):
+    """Requested ``user_id`` has no settings.yaml on disk.
+
+    Raised at the CLI boundary when ``--user`` names a user that has never
+    been initialised.  Callers should surface this as a plain error message
+    directing the operator to run ``claritymed init-user <id>``.
+    """
+
+
 class UserIdMismatch(ValueError):
     """An entity's ``user_id`` field did not match the store's ``user_id``."""
 

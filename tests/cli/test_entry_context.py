@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 from claritymed.cli import inject_context
 from claritymed.context import language_ctx, request_id_ctx, user_id_ctx
 from claritymed.core.observability.logging import setup_logging
@@ -82,3 +84,33 @@ def test_audit_event_on_exception(tmp_path):
         pass
     text = (tmp_path / "logs" / "audit.log").read_text(encoding="utf-8")
     assert '"status":"exception"' in text  # pydantic JSON has no space after colon
+
+
+# --- check_user_exists ----------------------------------------------------
+
+
+def test_check_user_exists_raises_when_user_missing():
+    """check_user_exists=True raises UserNotFoundError for unknown users."""
+    from claritymed.errors import UserNotFoundError
+
+    setup_logging("test", console_level=None)
+    with pytest.raises(UserNotFoundError, match="ghost"):
+        with inject_context(user_id="ghost", check_user_exists=True):
+            pass
+
+
+def test_check_user_exists_passes_when_user_present(tmp_path):
+    """check_user_exists=True does not raise when settings.yaml exists."""
+    from claritymed.stores.account import init_user
+
+    setup_logging("test", console_level=None)
+    init_user("alice")
+    with inject_context(user_id="alice", check_user_exists=True) as (_, uid, _):
+        assert uid == "alice"
+
+
+def test_check_user_exists_false_skips_check():
+    """Default (check_user_exists=False) never raises even for unknown users."""
+    setup_logging("test", console_level=None)
+    with inject_context(user_id="nobody") as (_, uid, _):
+        assert uid == "nobody"

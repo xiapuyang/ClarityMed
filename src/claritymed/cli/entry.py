@@ -57,6 +57,7 @@ def inject_context(
     language: str | None = None,
     request_id: str | None = None,
     command: str | None = None,
+    check_user_exists: bool = False,
 ) -> Iterator[tuple[str, str, str]]:
     """Set request / user / language ContextVars for the with-block.
 
@@ -66,10 +67,23 @@ def inject_context(
 
     ``command`` is a short human-readable label written to access.log so each
     line identifies what CLI operation ran (e.g. ``"ask"``, ``"ingest.profile"``).
+
+    ``check_user_exists=True`` raises ``UserNotFoundError`` when the resolved
+    user has no ``settings.yaml`` on disk.  All production CLI commands set this
+    so a typo in ``--user`` fails fast before any I/O.
     """
     rid = request_id or new_request_id()
     uid, used_default = _resolve_user_id(user_id)
     lang = _resolve_language(language)
+    if check_user_exists:
+        from claritymed.errors import UserNotFoundError
+        from claritymed.stores.account import AccountStore
+
+        if not AccountStore(uid).exists():
+            raise UserNotFoundError(
+                f"user {uid!r} not found — "
+                "run 'claritymed init-user' to create a user account first"
+            )
     if used_default:
         from claritymed.core.i18n import t
 

@@ -194,6 +194,17 @@ CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
 **写之前自查：** 在 `pydantic_ai` 包里 grep 想写的类型或函数名。如果你打算
 写 50 行 adapter 干 pydantic-ai 用 10 行就能干的事，回头看是不是漏了这一步。
 
+## Prompts — No Hardcoded Strings
+
+所有 system prompt 和 user-facing prompt 必须放在 `core/prompts/store/<name>.yaml`，
+通过 `PromptRegistry().get(name)` 读取。**不允许**在 Python 源码里硬编码提示词字符串。
+
+规则：
+- 新增 LLM 调用必须先建对应的 YAML，再在 Python 里引用 `_PROMPT_NAME = "..."` 常量。
+- 已有 YAML 不满足需求时，追加新 `version` 而不是修改现有 version（版本不可变）。
+- 中英双语均为必填（validator 强制校验），缺任一语言会在启动时 fail-fast。
+- Phoenix 同步走 `prompts push/pull`，不要手动编辑 Phoenix 侧再回写 YAML。
+
 ## Development Workflow
 
 ```

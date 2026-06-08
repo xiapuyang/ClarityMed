@@ -1,9 +1,25 @@
-# OCR adapter declarations. Adapter implementations are added in the
-# lab_pipeline plan; this file freezes the selection contract.
-adapters:
-  - id: paddleocr-vl
-    kind: local
-  - id: mineru
-    kind: local
+# OCR service configuration.
+#
+# provider: which OCR backend to use.
+#   llm    — sends the file to a vision-capable LLM via pydantic-ai
+#             BinaryContent.  Works with GPT-4o, Claude, Qwen-VL, etc.
+#
+# Supported file types: PDF, JPEG, PNG, GIF, WebP, BMP, TIFF.
 
-default_adapter: paddleocr-vl
+provider: llm
+
+# LLM-based OCR settings — two ways to specify the model:
+#
+# Option A: reference an existing models.yaml provider by id (recommended).
+#   provider_id: <id>
+#   No other fields needed; connection details come from the catalog.
+#
+# Option B: inline connection details (same convention as models.yaml).
+#   model: "<prefix>:<model>"   # e.g. "openai:gpt-4o"  (no base_url)
+#   model: "bare-name"          # e.g. "qwen-vl:7b"     (with base_url)
+#   base_url: "http://..."      # optional — self-hosted endpoint
+#   api_key_env: ENV_VAR_NAME   # optional — only honored when base_url is set
+#
+# Exactly one of provider_id or model must be set.
+llm:
+  provider_id: omlx
