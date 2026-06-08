@@ -173,9 +173,11 @@ class AskService:
         # Qdrant query layer (only_cloud_safe=True); local providers keep
         # everything so user-uploaded PHI can ground the answer.
         evidence_block = ""
+        evidence_chunks: list = []
         async for ev in self._maybe_retrieve(scrubbed, user_id):
             if isinstance(ev, _EvidenceReady):
                 evidence_block = ev.text
+                evidence_chunks = ev.chunks
             else:
                 yield ev
         prompt = self._compose_prompt(scrubbed, evidence_block)
@@ -218,6 +220,18 @@ class AskService:
         )
         try:
             async for event in self._run_with_agent(prompt, message_history, user_id):
+                # Inject the debug collections block just before Done so the
+                # TUI's event loop processes it while the stream is still open.
+                # Yielding it after Done would be dropped — the TUI returns on
+                # Done immediately.
+                if (
+                    isinstance(event, Done)
+                    and os.environ.get("CLARITYMED_DEBUG")
+                    and evidence_chunks
+                ):
+                    yield TokenChunk(
+                        text=self._format_debug_collections(evidence_chunks)
+                    )
                 yield event
         finally:
             detach_session_baggage(session_token)
@@ -431,7 +445,9 @@ class AskService:
             },
         )
 
-        yield _EvidenceReady(text=self._format_evidence(safe_chunks))
+        yield _EvidenceReady(
+            text=self._format_evidence(safe_chunks), chunks=safe_chunks
+        )
 
     def _is_cloud_provider(self) -> bool:
         if self._provider_config is None:
@@ -452,16 +468,24 @@ class AskService:
     def _format_evidence(chunks: "list[RetrievedChunk]") -> str:
         if not chunks:
             return ""
-        debug = bool(os.environ.get("CLARITYMED_DEBUG"))
         lines = ["", "Evidence (cite by [n]):"]
         for i, c in enumerate(chunks, start=1):
             body = c.parent_text or c.text
-            if debug and c.collection_name:
-                src = f"[{c.collection_name}] {c.source_uri or c.source}"
-            else:
-                src = c.source_uri or c.collection_name or c.source
+            src = c.source_uri or c.collection_name or c.source
             lines.append(f"[{i}] ({src}) {body}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_debug_collections(chunks: "list[RetrievedChunk]") -> str:
+        """Append-only markdown block naming the RAG collection for each
+        cited chunk. Emitted as a trailing TokenChunk only when
+        CLARITYMED_DEBUG=1, so it never appears in production responses."""
+        lines = ["\n\n---\n**Debug — RAG Collections:**"]
+        for i, c in enumerate(chunks, start=1):
+            col = c.collection_name or "unknown"
+            score = f"{c.score:.3f}" if c.score else "—"
+            lines.append(f"- [{i}] `{col}` (score {score})")
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _compose_prompt(scrubbed: str, evidence_block: str) -> str:
@@ -472,9 +496,16 @@ class AskService:
 
 class _EvidenceReady:
     """Private sentinel: carries the formatted evidence_block out of
-    ``_maybe_retrieve`` without polluting the public ``Event`` union."""
+    ``_maybe_retrieve`` without polluting the public ``Event`` union.
 
-    __slots__ = ("text",)
+    ``chunks`` is also forwarded so the caller can emit a debug
+    collections block when ``CLARITYMED_DEBUG`` is set — the LLM does
+    not include collection metadata in its Sources section, so this
+    must be appended by code after the stream finishes.
+    """
 
-    def __init__(self, text: str) -> None:
+    __slots__ = ("text", "chunks")
+
+    def __init__(self, text: str, chunks: "list") -> None:
         self.text = text
+        self.chunks = chunks

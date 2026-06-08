@@ -22,6 +22,7 @@ from claritymed.orchestrator.services.events import (
     RetrievalCompleted,
     RetrievalFiltered,
     RetrievalStarted,
+    TokenChunk,
 )
 
 
@@ -234,21 +235,14 @@ def test_evidence_format_empty_returns_empty_string():
     assert AskService._format_evidence([]) == ""
 
 
-def test_evidence_format_debug_includes_collection_name(monkeypatch):
-    """CLARITYMED_DEBUG=1 prepends [collection_name] to each source label so
-    developers can see which RAG collection each cited chunk came from."""
-    monkeypatch.setenv("CLARITYMED_DEBUG", "1")
-    # Default _chunk() has collection_name="statpearls_en" (source=system_rag)
-    formatted = AskService._format_evidence([_chunk(text="body text")])
-    assert "[statpearls_en]" in formatted
-
-
-def test_evidence_format_no_debug_omits_collection_name(monkeypatch):
-    """Without CLARITYMED_DEBUG, collection name is NOT wrapped in brackets."""
-    monkeypatch.delenv("CLARITYMED_DEBUG", raising=False)
-    formatted = AskService._format_evidence([_chunk(text="body text")])
-    # collection_name may surface as src fallback but NOT as [bracketed] label
-    assert "[statpearls_en]" not in formatted
+def test_format_debug_collections_lists_collection_and_score():
+    """_format_debug_collections builds a markdown table the LLM cannot produce
+    itself — it uses the raw chunk metadata, not LLM-generated source text."""
+    chunk = _chunk(text="body")
+    block = AskService._format_debug_collections([chunk])
+    assert "statpearls_en" in block
+    assert "[1]" in block
+    assert "score" in block
 
 
 def test_compose_prompt_appends_evidence_with_question_label():
@@ -259,6 +253,49 @@ def test_compose_prompt_appends_evidence_with_question_label():
 
 def test_compose_prompt_no_evidence_returns_scrubbed_unchanged():
     assert AskService._compose_prompt("plain query", "") == "plain query"
+
+
+async def test_debug_mode_emits_collections_token_before_done(monkeypatch):
+    """CLARITYMED_DEBUG=1 injects a TokenChunk with collection names just
+    before Done so the TUI renders it in the final markdown response."""
+    monkeypatch.setenv("CLARITYMED_DEBUG", "1")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")],
+        trace=RetrievalTrace(strategy="naive_hybrid"),
+    )
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=StubStrategy(bundle),
+        provider_config=_provider("local"),
+    )
+    events = [ev async for ev in service.run("q", user_id="alice")]
+    types = [type(e).__name__ for e in events]
+    # A debug TokenChunk must appear between the last regular TokenChunk and Done.
+    assert "TokenChunk" in types
+    assert types.index("TokenChunk") < types.index("Done")
+    # The debug block comes right before Done — find the last TokenChunk.
+    last_token_idx = max(i for i, t in enumerate(types) if t == "TokenChunk")
+    done_idx = types.index("Done")
+    assert last_token_idx < done_idx
+    last_token = events[last_token_idx]
+    assert "statpearls_en" in last_token.text
+
+
+async def test_debug_mode_off_no_collections_block(monkeypatch):
+    """Without CLARITYMED_DEBUG the collections block is not emitted."""
+    monkeypatch.delenv("CLARITYMED_DEBUG", raising=False)
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")],
+        trace=RetrievalTrace(strategy="naive_hybrid"),
+    )
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=StubStrategy(bundle),
+        provider_config=_provider("local"),
+    )
+    events = [ev async for ev in service.run("q", user_id="alice")]
+    token_texts = [e.text for e in events if isinstance(e, TokenChunk)]
+    assert not any("statpearls_en" in t for t in token_texts)
 
 
 # --- retrieval failure ----------------------------------------------
