@@ -16,6 +16,8 @@ Slash autocomplete:
 
 from __future__ import annotations
 
+import time
+
 from textual import events
 from textual.containers import Container
 from textual.message import Message
@@ -56,6 +58,19 @@ class InputBar(Container):
     InputBar Input {
         background: $boost;
     }
+    InputBar #streaming-indicator {
+        display: none;
+        color: $warning;
+        padding: 0 1;
+        height: 1;
+    }
+    InputBar.streaming #streaming-indicator {
+        display: block;
+    }
+    InputBar.streaming Input {
+        border: tall $warning;
+        opacity: 0.7;
+    }
     """
 
     class Submitted(Message):
@@ -76,12 +91,41 @@ class InputBar(Container):
         # it would re-open the popup we just dismissed. Mark the expected
         # value here so ``on_input_changed`` can ignore exactly one event.
         self._suppress_next_value: str | None = None
+        self._stream_start: float | None = None
+        self._stream_timer = None
 
     def compose(self):
+        yield Static("⟳  Responding…  (0s · Esc to cancel)", id="streaming-indicator")
         yield Static("", id="slash-popup")
         yield _SlashInput(placeholder="What would you like to know?", id="input")
 
     # ----- public API the App calls --------------------------------------
+
+    def set_streaming(self, active: bool) -> None:
+        if active:
+            self._stream_start = time.monotonic()
+            self.add_class("streaming")
+            self._tick_streaming_label()
+            self._stream_timer = self.set_interval(1.0, self._tick_streaming_label)
+        else:
+            if self._stream_timer is not None:
+                self._stream_timer.stop()
+                self._stream_timer = None
+            self._stream_start = None
+            self.remove_class("streaming")
+
+    def _tick_streaming_label(self) -> None:
+        if self._stream_start is None:
+            return
+        elapsed = int(time.monotonic() - self._stream_start)
+        if elapsed < 60:
+            elapsed_str = f"{elapsed}s"
+        else:
+            m, s = divmod(elapsed, 60)
+            elapsed_str = f"{m}m {s}s"
+        self.query_one("#streaming-indicator", Static).update(
+            f"⟳  Responding…  ({elapsed_str} · Esc to cancel)"
+        )
 
     def set_placeholder(self, text: str) -> None:
         self.query_one("#input", Input).placeholder = text

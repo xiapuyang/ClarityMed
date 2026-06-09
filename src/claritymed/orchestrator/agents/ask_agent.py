@@ -83,13 +83,6 @@ def make_ask_agent(
         clearly non-medical topics.
         """
         deps = ctx.deps
-        if deps.strategy is None:
-            return ""
-
-        from claritymed.core.observability.audit import audit_event
-        from claritymed.core.observability.logging import get_access_logger
-        from claritymed.core.rag.schemas import load_retrieval_config
-        from claritymed.core.rag.strategies.base import RetrievalContext
         from claritymed.orchestrator.services.events import (
             Error,
             RetrievalCompleted,
@@ -101,6 +94,27 @@ def make_ask_agent(
         )
 
         eq = deps.event_queue
+        # Always emit ToolStarted so the Steps panel reflects the LLM's call
+        # even when RAG is disabled — makes "RAG not configured" visible vs
+        # the tool silently not being called at all.
+        await eq.put(
+            ToolStarted(
+                tool_name="retrieve_medical_literature", args_preview=query[:60]
+            )
+        )
+
+        if deps.strategy is None:
+            await eq.put(
+                ToolCompleted(
+                    tool_name="retrieve_medical_literature", summary="RAG disabled"
+                )
+            )
+            return ""
+
+        from claritymed.core.observability.audit import audit_event
+        from claritymed.core.observability.logging import get_access_logger
+        from claritymed.core.rag.schemas import load_retrieval_config
+        from claritymed.core.rag.strategies.base import RetrievalContext
 
         # Translate the query to the collection's native language when the
         # session language differs from any cross-lingual collection.  Uses

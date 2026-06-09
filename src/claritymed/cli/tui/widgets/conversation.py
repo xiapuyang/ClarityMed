@@ -99,7 +99,7 @@ class TurnBubble(Static):
             prefix = self._prefix_override
         else:
             prefix = {"user": "› ", "assistant": "‹ ", "system": "ⓘ "}[self._role]
-        suffix = "  ⊘ cancelled" if self.cancelled else ""
+        suffix = "\n⊘ cancelled" if self.cancelled else ""
         self.update(f"{prefix}{self.streaming_text}{suffix}")
 
 

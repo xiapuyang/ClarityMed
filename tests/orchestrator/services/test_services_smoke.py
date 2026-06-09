@@ -320,12 +320,19 @@ async def test_ask_service_audit_picks_up_trace_id_when_tracing_active(monkeypat
         lambda name: provider.get_tracer(name),
     )
 
+    from claritymed.core.schemas.models import ProviderConfig
+
     session = ChatSession.new("alice")
     service = AskService(
         model=TestModel(custom_output_text="ok"),
         chat_session=session,
         provider_id="test_provider",
         model_name="test:model",
+        # Cloud provider so PHI scrub (mode.ask.scrub) is emitted — the test
+        # verifies that scrub and ask share the same trace_id.
+        provider_config=ProviderConfig(
+            id="test_provider", kind="cloud", model="openai:gpt-4o"
+        ),
     )
 
     audit_records: list[dict] = []
@@ -356,9 +363,13 @@ async def test_ask_service_audit_picks_up_trace_id_when_tracing_active(monkeypat
 
 
 async def test_ask_service_phi_scrub_before_llm(monkeypatch):
-    """Verify scrub_free_text is called with the original input before
-    anything is handed to the LLM. We intercept the guard directly because
-    that is the single chokepoint between user input and Agent.run_stream."""
+    """Verify scrub_free_text is called for cloud providers before the LLM.
+
+    Local providers skip the scrub (data stays on device); cloud providers
+    must scrub PHI before any data leaves the machine.
+    """
+    from claritymed.core.schemas.models import ProviderConfig
+
     guard = PhiGuard.from_config()
     captured: list[str] = []
     original = guard.scrub_free_text
@@ -372,6 +383,9 @@ async def test_ask_service_phi_scrub_before_llm(monkeypatch):
     service = AskService(
         model=TestModel(custom_output_text="ok"),
         guard=guard,
+        provider_config=ProviderConfig(
+            id="cloud_test", kind="cloud", model="openai:gpt-4o"
+        ),
     )
     events = []
     async for ev in service.run(
@@ -380,5 +394,28 @@ async def test_ask_service_phi_scrub_before_llm(monkeypatch):
     ):
         events.append(ev)
 
-    assert captured, "scrub_free_text was not called before the LLM run"
+    assert captured, "scrub_free_text was not called for cloud provider"
     assert "13800138000" in captured[0], "scrub must see the raw input"
+
+
+async def test_ask_service_local_skips_phi_scrub(monkeypatch):
+    """Local providers must NOT call scrub_free_text — data never leaves device."""
+    guard = PhiGuard.from_config()
+    captured: list[str] = []
+    original = guard.scrub_free_text
+
+    def spy(text: str):
+        captured.append(text)
+        return original(text)
+
+    monkeypatch.setattr(guard, "scrub_free_text", spy)
+
+    service = AskService(
+        model=TestModel(custom_output_text="ok"),
+        guard=guard,
+        # No provider_config → kind defaults to None → treated as local
+    )
+    async for _ in service.run("My phone is 13800138000.", user_id="alice"):
+        pass
+
+    assert not captured, "scrub_free_text must not be called for local provider"

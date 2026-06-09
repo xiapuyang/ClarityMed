@@ -16,9 +16,29 @@ falling through to the default (which would mask the misconfiguration).
 
 from __future__ import annotations
 
+import os
+
 from claritymed import config as _cfg
 from claritymed.core.schemas import Account, ModelsConfig, ProviderConfig
 from claritymed.errors import UnknownProviderError
+
+# pydantic-ai reads these env vars for each model prefix (no base_url path).
+# Derived from pydantic-ai's provider source; update when new providers land.
+_PREFIX_ENV: dict[str, str | list[str]] = {
+    "openai": "OPENAI_API_KEY",
+    "openai-chat": "OPENAI_API_KEY",
+    "openai-responses": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "google-gla": "GEMINI_API_KEY",
+    "google-vertex": "GOOGLE_APPLICATION_CREDENTIALS",
+    "alibaba": ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
+    "moonshotai": "MOONSHOTAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "cohere": "CO_API_KEY",
+    "groq": "GROQ_API_KEY",
+}
 
 
 def load_models() -> ModelsConfig:
@@ -62,3 +82,29 @@ def resolve_provider(
 
     # Unreachable: ModelsConfig requires default_provider to be set.
     raise UnknownProviderError("no provider could be resolved")
+
+
+def is_provider_available(provider: ProviderConfig) -> bool:
+    """Return True if the required credentials are present in the environment.
+
+    Self-hosted (base_url set): available when api_key_env is absent or its
+    env var is non-empty.  Stock cloud (no base_url): available when the env
+    var pydantic-ai would read for the model prefix is non-empty.
+    """
+    if provider.base_url is not None:
+        if provider.api_key_env is None:
+            return True
+        return bool(os.environ.get(provider.api_key_env))
+
+    prefix = provider.model.split(":")[0]
+    keys = _PREFIX_ENV.get(prefix)
+    if keys is None:
+        return True  # unknown prefix — optimistic, let pydantic-ai decide
+    if isinstance(keys, str):
+        keys = [keys]
+    return any(bool(os.environ.get(k)) for k in keys)
+
+
+def list_available_providers() -> list[ProviderConfig]:
+    """Return catalog providers whose credentials are present in the environment."""
+    return [p for p in load_models().providers if is_provider_available(p)]

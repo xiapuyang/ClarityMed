@@ -30,7 +30,6 @@ from claritymed.orchestrator.services.events import (
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
-    from pydantic_ai.usage import RunUsage
 
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
@@ -158,17 +157,23 @@ class AskService:
     async def _run_scoped(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import attach_session_baggage, detach_session_baggage
 
-        # R18: scrub PHI from the prompt before any LLM call.
-        scrubbed, report = self._guard.scrub_free_text(user_input)
-        audit_event(
-            "mode.ask.scrub",
-            payload={
-                "user_id": user_id,
-                "rule_hits": report.rule_hits,
-                "text_len_before": report.text_len_before,
-                "text_len_after": report.text_len_after,
-            },
-        )
+        # Scrub PHI from the prompt only when the request will leave the local
+        # machine.  Local providers run on-device and never transmit data, so
+        # scrubbing degrades answer quality for no privacy gain.
+        is_cloud = getattr(self._provider_config, "kind", None) == "cloud"
+        if is_cloud:
+            scrubbed, report = self._guard.scrub_free_text(user_input)
+            audit_event(
+                "mode.ask.scrub",
+                payload={
+                    "user_id": user_id,
+                    "rule_hits": report.rule_hits,
+                    "text_len_before": report.text_len_before,
+                    "text_len_after": report.text_len_after,
+                },
+            )
+        else:
+            scrubbed = user_input
 
         output_lang = self._language
 
@@ -249,84 +254,138 @@ class AskService:
         from pydantic_ai import UsageLimits
 
         agent = make_ask_agent(self._model, language=output_lang or self._language)
-        messages_json: bytes | None = None
-        usage: RunUsage | None = None
-        steps: list[dict] = []
-        final_text: str = ""
-        t_start = time.perf_counter()
-        t_first_token: float | None = None
-        # Emit before agent.run_stream so the UI shows 'generating…' during
-        # the LLM's TTFT window. On large local models (Qwen 35B on MLX) TTFT
-        # can hit 3 minutes — without this event the assistant bubble looks
-        # frozen since the first token doesn't appear until much later.
-        yield LlmCallStarted(
-            model_name=self._model_name,
-            provider_id=self._provider_id,
-        )
-        audit_event(
-            "llm.call.start",
-            payload={
-                "user_id": user_id,
-                "provider_id": self._provider_id,
-                "model": self._model_name,
-            },
-        )
-        get_access_logger().info(
-            "llm.call.start model=%s provider=%s", self._model_name, self._provider_id
-        )
-        try:
-            async with agent.run_stream(
-                scrubbed,
-                deps=deps,
-                message_history=message_history or None,
-                usage_limits=UsageLimits(request_limit=5),
-            ) as stream:
-                async for chunk in stream.stream_text(delta=True):
-                    # Drain events queued by tools (translation, retrieval)
-                    # before yielding text.  Tool calls complete before the LLM
-                    # generates its final text response, so anything in the
-                    # queue belongs to the tool phase and should precede tokens.
-                    while True:
-                        try:
-                            yield deps.event_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                    if chunk:
-                        if t_first_token is None:
-                            t_first_token = time.perf_counter()
-                            ttft_ms = int((t_first_token - t_start) * 1000)
-                            yield LlmFirstToken(ttft_ms=ttft_ms)
-                        yield TokenChunk(text=chunk)
-                # Drain any events that arrived if the LLM called a tool
-                # but generated no text (edge case).
-                while True:
-                    try:
-                        yield deps.event_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                final_text = await stream.get_output()
-                # Capture inside the ``with`` block — the stream goes out of
-                # scope once it exits and the messages disappear with it.
-                try:
-                    messages_json = stream.all_messages_json()
-                except Exception:  # noqa: BLE001
-                    logger.exception("failed to capture pydantic-ai messages")
-                try:
-                    usage = stream.usage
-                except Exception:  # noqa: BLE001
-                    logger.exception("failed to capture pydantic-ai usage")
-                try:
-                    steps = build_step_records(list(stream.new_messages()))
-                except Exception:  # noqa: BLE001
-                    logger.exception("failed to build per-step records")
-        except Exception as exc:  # noqa: BLE001 — surface as event
-            yield Error(
-                error_type="llm_error",
-                message=str(exc),
-                retryable=True,
+
+        # Merged output queue: both the stream producer and the concurrent tool
+        # event drainer write here.  This lets RetrievalPending / ToolStarted /
+        # etc. appear in the TUI immediately while stream_text is blocked
+        # waiting for the tool to complete — without it, those events only
+        # surface after the LLM emits its next text chunk.
+        out: asyncio.Queue[Event | None] = asyncio.Queue()
+
+        # Mutable state captured by the inner producer coroutine.
+        _st: dict = {
+            "messages_json": None,
+            "usage": None,
+            "steps": [],
+            "final_text": "",
+            "t_start": time.perf_counter(),
+            "t_first_token": None,
+            "t_end": 0.0,
+            "had_error": False,
+        }
+
+        async def _producer() -> None:
+            await out.put(
+                LlmCallStarted(
+                    model_name=self._model_name,
+                    provider_id=self._provider_id,
+                )
             )
+            audit_event(
+                "llm.call.start",
+                payload={
+                    "user_id": user_id,
+                    "provider_id": self._provider_id,
+                    "model": self._model_name,
+                },
+            )
+            get_access_logger().info(
+                "llm.call.start model=%s provider=%s",
+                self._model_name,
+                self._provider_id,
+            )
+            try:
+                async with agent.run_stream(
+                    scrubbed,
+                    deps=deps,
+                    message_history=message_history or None,
+                    usage_limits=UsageLimits(request_limit=5),
+                ) as stream:
+                    async for chunk in stream.stream_text(delta=True):
+                        if chunk:
+                            if _st["t_first_token"] is None:
+                                _st["t_first_token"] = time.perf_counter()
+                                ttft_ms = int(
+                                    (_st["t_first_token"] - _st["t_start"]) * 1000
+                                )
+                                await out.put(LlmFirstToken(ttft_ms=ttft_ms))
+                            await out.put(TokenChunk(text=chunk))
+                    _st["final_text"] = await stream.get_output()
+                    try:
+                        _st["messages_json"] = stream.all_messages_json()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("failed to capture pydantic-ai messages")
+                    try:
+                        _st["usage"] = stream.usage
+                    except Exception:  # noqa: BLE001
+                        logger.exception("failed to capture pydantic-ai usage")
+                    try:
+                        _st["steps"] = build_step_records(list(stream.new_messages()))
+                    except Exception:  # noqa: BLE001
+                        logger.exception("failed to build per-step records")
+            except Exception as exc:  # noqa: BLE001 — surface as event
+                _st["had_error"] = True
+                await out.put(
+                    Error(
+                        error_type="llm_error",
+                        message=str(exc),
+                        retryable=True,
+                    )
+                )
+            finally:
+                _st["t_end"] = time.perf_counter()
+                await out.put(None)  # sentinel: producer done
+
+        async def _drain_tools() -> None:
+            # Forward tool events from deps.event_queue to out concurrently
+            # with the text stream so they appear immediately in the TUI
+            # rather than piling up until the next text chunk arrives.
+            while True:
+                try:
+                    ev = await asyncio.wait_for(deps.event_queue.get(), timeout=0.1)
+                    await out.put(ev)
+                except asyncio.TimeoutError:
+                    pass
+
+        producer_task = asyncio.create_task(_producer())
+        drain_task = asyncio.create_task(_drain_tools())
+
+        try:
+            while True:
+                ev = await out.get()
+                if ev is None:
+                    break
+                yield ev
+        finally:
+            producer_task.cancel()
+            drain_task.cancel()
+            await asyncio.gather(producer_task, drain_task, return_exceptions=True)
+            # Flush events that drain_task put into out after the sentinel,
+            # and any events still sitting in deps.event_queue.
+            while not out.empty():
+                try:
+                    ev = out.get_nowait()
+                    if ev is not None:
+                        yield ev
+                except asyncio.QueueEmpty:
+                    break
+            while not deps.event_queue.empty():
+                try:
+                    yield deps.event_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+        if _st["had_error"]:
             return
-        t_end = time.perf_counter()
+
+        t_start = _st["t_start"]
+        t_first_token = _st["t_first_token"]
+        t_end = _st["t_end"]
+        final_text = _st["final_text"]
+        messages_json = _st["messages_json"]
+        usage = _st["usage"]
+        steps = _st["steps"]
+
         latency = LatencyTrace(
             total_ms=int((t_end - t_start) * 1000),
             ttft_ms=(

@@ -108,6 +108,7 @@ class ClarityMedApp(App):
         Binding("escape", "cancel_stream", "Cancel", show=False),
         Binding("ctrl+c", "quit", "Quit", show=True),
         Binding("f2", "toggle_steps", "Steps", show=True),
+        Binding("f3", "pick_provider", "Provider", show=True),
     ]
 
     def __init__(
@@ -125,6 +126,8 @@ class ClarityMedApp(App):
         self._initial_user_id = user_id or DEFAULT_USER_ID
         self._initial_language = (language or _cfg.default_lang()).lower()
         self._initial_provider_id = provider_id
+        # Mutable — updated by /provider <id> at runtime.
+        self._current_provider_id: str | None = provider_id
         self._ask_service_factory = ask_service_factory
         self._ingest_service_factory = ingest_service_factory
         self._rag_service_factory = rag_service_factory
@@ -140,6 +143,11 @@ class ClarityMedApp(App):
 
         self._session_turns: list[ChatTurn] = []
         self._stream_worker: Worker | None = None
+        # Cached AskService — rebuilt only when provider or user changes.
+        # Avoids re-running resolve_provider / build_model / make_translation_provider
+        # on every turn (the first build pays the cost; subsequent turns update
+        # the session reference in-place and return immediately).
+        self._cached_ask_service: "AskService | None" = None
         # Track the active user_id at App level (not via StatusBar query) so
         # on_unmount runs after Textual has already torn down child widgets.
         self._current_user_id: str = self._initial_user_id
@@ -248,6 +256,21 @@ class ClarityMedApp(App):
         """Toggle the right-side steps panel open/closed (F2)."""
         self.query_one(ToolSteps).toggle_collapse()
 
+    def action_pick_provider(self) -> None:
+        """Open the provider picker modal (F3)."""
+        self._open_provider_modal()
+
+    def _open_provider_modal(self) -> None:
+        from claritymed.cli.tui.modals.provider_modal import ProviderModal
+
+        current = self.query_one(StatusBar).provider_id
+
+        def _handle(result: str | None) -> None:
+            if result:
+                self._switch_provider(result)
+
+        self.push_screen(ProviderModal(current_provider_id=current), _handle)
+
     def set_mode(self, mode: ModeName) -> None:
         status = self.query_one(StatusBar)
         status.mode = mode
@@ -267,8 +290,13 @@ class ClarityMedApp(App):
     def on_input_bar_submitted(self, message: InputBar.Submitted) -> None:
         value = message.value
         input_bar = self.query_one(InputBar)
-        input_bar.clear()
         parsed = parse(value)
+        # Block plain-text messages while a stream is in progress — commands
+        # (/clear, /provider, etc.) still go through so the user isn't locked out.
+        worker = self._stream_worker
+        if worker is not None and not worker.is_finished and not parsed.is_command:
+            return
+        input_bar.clear()
         if parsed.is_command:
             self._handle_command(parsed)
             return
@@ -301,6 +329,13 @@ class ClarityMedApp(App):
                 return
             self._switch_user(new_uid)
             return
+        if parsed.name == "provider":
+            arg = parsed.arg.strip()
+            if arg:
+                self._switch_provider(arg)
+            else:
+                self._open_provider_modal()
+            return
         if parsed.name == "clear":
             self._clear_session()
             return
@@ -317,6 +352,7 @@ class ClarityMedApp(App):
         # AskService has already persisted the outgoing user's turns to
         # their chat session file. Flip the tracked id, start that user a
         # fresh session, reset the display.
+        self._cached_ask_service = None
         self._current_user_id = user_id
         self._chat_session = ChatSession.new(user_id)
         status = self.query_one(StatusBar)
@@ -328,6 +364,37 @@ class ClarityMedApp(App):
             child.remove()
         conv.show_empty_state(self._empty_hint(status.mode, status.language))
         self.query_one(ToolSteps).reset()
+
+    def _switch_provider(self, provider_id: str) -> None:
+        if not provider_id:
+            self._toast("Usage: /provider <id>", kind="error")
+            return
+        try:
+            from claritymed.stores.models import resolve_provider
+
+            provider = resolve_provider(override=provider_id)
+        except Exception as exc:  # noqa: BLE001
+            self._toast(f"Unknown provider: {provider_id}", kind="error")
+            logger.warning("provider switch failed: %s", exc)
+            return
+        self._cached_ask_service = None
+        self._current_provider_id = provider.id
+        status = self.query_one(StatusBar)
+        status.provider_id = provider.id
+        status.provider_kind = provider.kind
+        # Persist to settings.yaml so the choice survives restarts.
+        try:
+            from claritymed.stores.account import AccountStore
+
+            store = AccountStore(self._current_user_id)
+            if store.exists():
+                account = store.load()
+                store.save(account.model_copy(update={"provider_id": provider.id}))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to persist provider switch: %s", exc)
+        self.query_one(Conversation).add_system_turn(
+            f"Provider → {provider.id}  ({provider.model})"
+        )
 
     def _clear_session(self) -> None:
         # /clear starts a new session_id and a new on-disk file. The old
@@ -378,8 +445,7 @@ class ClarityMedApp(App):
         self._refresh_context_chars()
 
         mode: ModeName = force_mode or status.mode  # type: ignore[assignment]
-        # Stream the chosen service in a Textual worker so the UI stays
-        # responsive and ESC can cancel via Worker.cancel().
+        self.query_one(InputBar).set_streaming(True)
         self._stream_worker = self._run_stream(text, mode, public)
 
     @work(exclusive=True)
@@ -445,7 +511,7 @@ class ClarityMedApp(App):
                         steps.push_start("llm", f"{label}, awaiting first token…")
                     elif isinstance(event, LlmFirstToken):
                         llm_step = steps.push_complete(
-                            "llm first token", event.ttft_ms, "streaming…"
+                            "llm", event.ttft_ms, "streaming…"
                         )
                     elif isinstance(event, TokenChunk):
                         conv.append_to_active(event.text)
@@ -494,6 +560,8 @@ class ClarityMedApp(App):
             except Exception:  # noqa: BLE001 — never let observability bring down a turn
                 logger.exception("failed to emit request_end audit/access")
             reset_context(per_turn)
+            self.query_one(InputBar).set_streaming(False)
+            self._refresh_input_placeholder()
 
     def _on_done(self, mode: ModeName, final, streamed_text: str) -> None:
         conv = self.query_one(Conversation)
@@ -558,19 +626,29 @@ class ClarityMedApp(App):
     def _build_ask_service(self) -> "AskService":
         if self._ask_service_factory is not None:
             return self._ask_service_factory()
-        # Production path: resolve provider, build the pydantic-ai model.
+        # Return the cached service when the provider hasn't changed, updating
+        # only the mutable turn-to-turn state (session ref + language). This
+        # avoids re-running resolve_provider / build_model / threading.Lock on
+        # every Enter press, which was causing the noticeable submit lag.
+        if self._cached_ask_service is not None:
+            if self._chat_session is None:
+                self._chat_session = ChatSession.new(self._current_user_id)
+            self._cached_ask_service._chat_session = self._chat_session
+            self._cached_ask_service._language = self.query_one(StatusBar).language
+            return self._cached_ask_service
+        # First turn or after a provider/user switch — build from scratch.
         from claritymed.core.llm.model import build_model
         from claritymed.orchestrator.services import AskService
         from claritymed.stores.models import resolve_provider
 
-        provider = resolve_provider(override=self._initial_provider_id)
+        provider = resolve_provider(override=self._current_provider_id)
         model = build_model(provider)
         strategy = self._strategy_for_session()
         if self._chat_session is None:
             self._chat_session = ChatSession.new(self._current_user_id)
         from claritymed.core.translation import make_translation_provider
 
-        return AskService(
+        service = AskService(
             model=model,
             language=self.query_one(StatusBar).language,
             chat_session=self._chat_session,
@@ -580,6 +658,8 @@ class ClarityMedApp(App):
             provider_config=provider,
             translation_service=make_translation_provider(model),
         )
+        self._cached_ask_service = service
+        return service
 
     def _strategy_for_session(self):
         """Build the RAG strategy once per session and cache it.

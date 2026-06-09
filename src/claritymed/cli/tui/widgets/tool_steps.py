@@ -1,10 +1,11 @@
-"""Right side panel — shows the tool start / complete log for the current turn.
+"""Right side panel — shows tool call lifecycle (start → in-progress → done).
 
-Auto-hides when empty (the common case for ask in Phase 1 since retrieval is
-still stubbed). Becomes visible on the first event from the service and
-collapses again on ``reset()``.
+Each tool name maps to a single row that updates in place:
+  ⟳ tool_name  args…    ← start / in-progress (accent)
+  ✓ tool_name — Nms — summary   ← done (success)
 
-Press F2 to toggle the panel open/closed without resetting its content.
+Auto-hides when empty. Visible on first event, collapses on reset().
+Press F2 to toggle open/closed without clearing content.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from textual.widgets import Static
 
 
 class ToolSteps(VerticalScroll):
-    """Append-only log of tool start / completed events."""
+    """Per-turn tool call log with in-place start → complete updates."""
 
     DEFAULT_CSS = """
     ToolSteps {
@@ -46,9 +47,17 @@ class ToolSteps(VerticalScroll):
     }
     """
 
+    # Keyed by tool_name; holds the Static that was mounted by push_start so
+    # push_complete can update it in place rather than appending a new row.
+    _active: dict[str, Static]
+
+    def on_mount(self) -> None:
+        self._active = {}
+
     def reset(self) -> None:
         for child in list(self.children):
             child.remove()
+        self._active = {}
         self.remove_class("has_events")
 
     def toggle_collapse(self) -> None:
@@ -59,31 +68,47 @@ class ToolSteps(VerticalScroll):
         self.add_class("has_events")
 
     def push_start(self, tool_name: str, args_preview: str = "") -> Static:
-        line = f"→ {tool_name}"
+        """Add a ⟳ in-progress row for tool_name; returns the widget."""
+        line = f"⟳ {tool_name}"
         if args_preview:
-            line += f" ({args_preview})"
+            line += f"  {args_preview}"
         self._ensure_visible()
         item = Static(line, classes="start")
         self.mount(item)
+        self._active[tool_name] = item
         self.scroll_end(animate=False)
         return item
 
     def push_complete(
         self, tool_name: str, duration_ms: int = 0, summary: str = ""
     ) -> Static:
+        """Mark tool_name done.
+
+        If push_start was called for the same tool_name this turn, updates
+        that row in place (⟳ → ✓) instead of appending a new row.
+        """
         bits = [f"✓ {tool_name}"]
         if duration_ms:
             bits.append(f"{duration_ms}ms")
         if summary:
             bits.append(summary)
+        text = " — ".join(bits)
+
+        existing = self._active.pop(tool_name, None)
+        if existing is not None:
+            existing.update(text)
+            existing.remove_class("start")
+            existing.add_class("complete")
+            return existing
+
         self._ensure_visible()
-        item = Static(" — ".join(bits), classes="complete")
+        item = Static(text, classes="complete")
         self.mount(item)
         self.scroll_end(animate=False)
         return item
 
     def clear_streaming(self, item: Static | None) -> None:
-        """Replace 'streaming…' with 'done' on an llm-first-token step.
+        """Replace 'streaming…' with 'done' on the llm step when the turn ends.
 
         Called from the stream worker's finally block so the label always
         resolves regardless of whether the turn ended via Done, Cancelled,

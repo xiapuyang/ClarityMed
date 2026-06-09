@@ -504,11 +504,18 @@ async def test_translate_queries_emits_tool_events():
 
     assert "ToolStarted" in types
     assert "ToolCompleted" in types
-    started = next(e for e in events if isinstance(e, ToolStarted))
-    completed = next(e for e in events if isinstance(e, ToolCompleted))
-    assert started.tool_name == "translate.query"
-    assert completed.tool_name == "translate.query"
-    assert completed.summary == "done"
+    # retrieve_medical_literature emits its own ToolStarted first; verify the
+    # translate.query step is also present somewhere in the event stream.
+    tool_names_started = [e.tool_name for e in events if isinstance(e, ToolStarted)]
+    tool_names_completed = [e.tool_name for e in events if isinstance(e, ToolCompleted)]
+    assert "translate.query" in tool_names_started
+    assert "translate.query" in tool_names_completed
+    translate_completed = next(
+        e
+        for e in events
+        if isinstance(e, ToolCompleted) and e.tool_name == "translate.query"
+    )
+    assert translate_completed.summary == "done"
     assert types.index("ToolStarted") < types.index("RetrievalPending")
 
 
