@@ -39,7 +39,7 @@ phi:
   # ``uv sync --extra privacy-filter``).
   privacy_filter:
     enabled: true
-    device: auto   # auto: mps → cuda → cpu; override with "cpu"/"cuda"/"mps"
+    device: cpu   # auto: mps → cuda → cpu; override with "cpu"/"cuda"/"mps"
     model_name: openai/privacy-filter
     # ONNX quantized variant (~809 MB). Set to null to use PyTorch safetensors (~2.8 GB).
     onnx_file: onnx/model_q4f16.onnx

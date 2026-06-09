@@ -27,8 +27,10 @@ is not solely a cloud-egress concern.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -42,6 +44,33 @@ from claritymed.core.device import resolve_device
 logger = logging.getLogger(__name__)
 
 REDACTED = "[REDACTED]"
+
+
+@contextlib.contextmanager
+def _silence_fd2():
+    """Redirect C-level stderr (fd 2) to /dev/null.
+
+    onnxruntime's CoreML execution provider writes diagnostic messages
+    directly to fd 2, bypassing Python's sys.stderr entirely. In a TUI
+    (Textual) session sys.stderr is replaced with a pseudo-file that has
+    no real fileno(), so using sys.stderr.fileno() fails silently and
+    leaves fd 2 open. We use the literal fd number 2 instead, which is
+    always the OS-level stderr regardless of Python's sys.stderr state.
+    """
+    try:
+        saved = os.dup(2)
+    except OSError:
+        # fd 2 not open (unusual test environments) — nothing to redirect
+        yield
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
 
 
 def _emit_scrub_audit(payload: dict) -> None:
@@ -117,12 +146,22 @@ class _OnnxNerPipeline:
         )
         offset_mapping = enc.pop("offset_mapping")[0]  # (seq_len, 2)
         feed = {k: v for k, v in enc.items() if k in self._input_names}
-        logits = self._session.run(None, feed)[0][0]  # (seq_len, num_labels)
+        # Silence CoreML per-inference diagnostics written directly to fd 2.
+        with _silence_fd2():
+            logits = self._session.run(None, feed)[0][0]  # (seq_len, num_labels)
         predictions = logits.argmax(axis=-1)
         return self._aggregate(predictions, offset_mapping)
 
     def _aggregate(self, predictions: Any, offset_mapping: Any) -> list[dict]:
-        """Merge consecutive same-label subword tokens into char-offset spans."""
+        """Merge subword tokens into char-offset spans using BIOES decoding.
+
+        The model uses BIOES tagging (Begin/Inside/Outside/End/Single):
+        - B-X: opens a new span of type X
+        - I-X: extends the current B-X span
+        - E-X: extends and closes the current span
+        - S-X: single-token span (open + close immediately)
+        - O:   closes any open span
+        """
         spans: list[dict] = []
         current: dict | None = None
 
@@ -135,16 +174,10 @@ class _OnnxNerPipeline:
                 continue
 
             raw_label = self._id2label.get(int(pred), "O")
-            # Strip BIO prefix if present (B-private_person → private_person)
-            label = raw_label[2:] if raw_label[:2] in ("B-", "I-") else raw_label
+            prefix = raw_label[:2]
 
-            if label == "O":
-                if current:
-                    spans.append(current)
-                    current = None
-            elif current and current["entity_group"] == label:
-                current["end"] = int(char_end)
-            else:
+            if prefix == "B-":
+                label = raw_label[2:]
                 if current:
                     spans.append(current)
                 current = {
@@ -152,6 +185,57 @@ class _OnnxNerPipeline:
                     "start": int(char_start),
                     "end": int(char_end),
                 }
+
+            elif prefix == "I-":
+                label = raw_label[2:]
+                if current and current["entity_group"] == label:
+                    current["end"] = int(char_end)
+                else:
+                    # I- without a matching open span — treat as span start
+                    if current:
+                        spans.append(current)
+                    current = {
+                        "entity_group": label,
+                        "start": int(char_start),
+                        "end": int(char_end),
+                    }
+
+            elif prefix == "E-":
+                label = raw_label[2:]
+                if current and current["entity_group"] == label:
+                    current["end"] = int(char_end)
+                    spans.append(current)
+                    current = None
+                else:
+                    # E- without matching open span — close anything open, emit this token
+                    if current:
+                        spans.append(current)
+                    spans.append(
+                        {
+                            "entity_group": label,
+                            "start": int(char_start),
+                            "end": int(char_end),
+                        }
+                    )
+                    current = None
+
+            elif prefix == "S-":
+                label = raw_label[2:]
+                if current:
+                    spans.append(current)
+                    current = None
+                spans.append(
+                    {
+                        "entity_group": label,
+                        "start": int(char_start),
+                        "end": int(char_end),
+                    }
+                )
+
+            else:  # "O" or anything unrecognised
+                if current:
+                    spans.append(current)
+                    current = None
 
         if current:
             spans.append(current)
@@ -308,12 +392,9 @@ class ScrubService:
                 snapshot_download(
                     repo_id=repo_id,
                     allow_patterns=[
-                        # Custom Python code required by trust_remote_code=True
-                        "*.py",
                         "config.json",
                         "tokenizer*.json",
                         "special_tokens_map.json",
-                        "vocab.txt",
                         onnx_file,
                         f"{onnx_file}_data",
                     ],
@@ -413,7 +494,7 @@ class ScrubService:
         try:
             import onnxruntime as ort
             from huggingface_hub import hf_hub_download
-            from transformers import AutoTokenizer
+            from transformers import PreTrainedTokenizerFast
 
             model_name = self._config.privacy_filter.model_name
 
@@ -427,12 +508,18 @@ class ScrubService:
                     int(k): v for k, v in json.load(fh).get("id2label", {}).items()
                 }
 
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name, trust_remote_code=True
-            )
+            # tokenizer_config.json specifies "tokenizer_class": "TokenizersBackend"
+            # which is not registered in transformers and has no .py in the repo.
+            # Load tokenizer.json directly via the fast tokenizer constructor —
+            # this bypasses the class dispatch entirely and avoids the warning.
+            tok_path = hf_hub_download(repo_id=model_name, filename="tokenizer.json")
+            tokenizer = PreTrainedTokenizerFast(tokenizer_file=tok_path)
 
             providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
-            session = ort.InferenceSession(onnx_path, providers=providers)
+            # Suppress CoreML's C-level stderr diagnostics — they write directly
+            # to fd 2 and corrupt TUI display if not redirected.
+            with _silence_fd2():
+                session = ort.InferenceSession(onnx_path, providers=providers)
             used = session.get_providers()
             logger.info("privacy-filter ONNX session ready (providers: %s)", used)
 

@@ -7,6 +7,8 @@ are not required.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from claritymed.core.scrub.service import (
@@ -102,6 +104,99 @@ def test_report_has_no_string_fields():
     for field_name, value in report.model_dump().items():
         if isinstance(value, str):
             pytest.fail(f"ScrubReport.{field_name} is str — possible PII leak")
+
+
+# ---------------------------------------------------------------------------
+# Model layer — _OnnxNerPipeline._aggregate (BIOES decoding, no real model)
+# ---------------------------------------------------------------------------
+
+
+def _make_pipeline() -> Any:
+    """Return a minimal _OnnxNerPipeline stand-in exposing only _aggregate."""
+    from claritymed.core.scrub.service import _OnnxNerPipeline
+
+    # We only need _aggregate, so session/tokenizer are left as None.
+    p = object.__new__(_OnnxNerPipeline)
+    p._id2label = {
+        0: "O",
+        1: "B-private_person",
+        2: "I-private_person",
+        3: "E-private_person",
+        4: "S-private_person",
+        5: "B-private_email",
+        6: "E-private_email",
+    }
+    return p
+
+
+# "Alice" encoded as two subword tokens spanning chars 0-3 and 3-5
+_ALICE_OFFSETS = [(0, 0), (0, 3), (3, 5), (5, 0)]  # CLS, Al, ice, SEP
+
+
+def test_aggregate_bioes_single_token():
+    """S- tag produces one span without opening a current span."""
+    p = _make_pipeline()
+    # "Hi" at 0-2, "Alice" single token at 3-8
+    preds = [0, 0, 4]  # O, O, S-private_person
+    offsets = [(0, 2), (3, 8), (9, 14)]  # not special
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 1
+    assert spans[0] == {"entity_group": "private_person", "start": 9, "end": 14}
+
+
+def test_aggregate_bioes_b_e_pair():
+    """B- then E- with same label produces one merged span."""
+    p = _make_pipeline()
+    preds = [1, 3]  # B-private_person, E-private_person
+    offsets = [(0, 2), (3, 5)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 1
+    assert spans[0] == {"entity_group": "private_person", "start": 0, "end": 5}
+
+
+def test_aggregate_bioes_b_i_e_sequence():
+    """B- I- E- produces a single span covering all three tokens."""
+    p = _make_pipeline()
+    preds = [1, 2, 3]  # B, I, E
+    offsets = [(0, 2), (2, 4), (4, 6)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 1
+    assert spans[0] == {"entity_group": "private_person", "start": 0, "end": 6}
+
+
+def test_aggregate_bioes_e_without_b_creates_span():
+    """E- with no open span still emits a span (graceful degradation)."""
+    p = _make_pipeline()
+    preds = [3]  # E-private_person, no preceding B-
+    offsets = [(5, 10)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 1
+    assert spans[0]["start"] == 5
+    assert spans[0]["end"] == 10
+
+
+def test_aggregate_bioes_special_tokens_skipped():
+    """Zero-length offset tokens (CLS/SEP) do not generate spans."""
+    p = _make_pipeline()
+    preds = [1, 4, 0]  # B- (CLS-like), S-, O
+    offsets = [(0, 0), (1, 6), (7, 10)]  # first is special
+    spans = p._aggregate(preds, offsets)
+    # CLS B- should be ignored; only S- at (1,6) produces a span
+    assert len(spans) == 1
+    assert spans[0]["start"] == 1
+
+
+def test_aggregate_bioes_multiple_spans():
+    """Two separate entities produce two spans."""
+    p = _make_pipeline()
+    preds = [4, 0, 5, 6]  # S-person, O, B-email, E-email
+    offsets = [(0, 5), (6, 8), (9, 15), (15, 20)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 2
+    assert spans[0]["entity_group"] == "private_person"
+    assert spans[1]["entity_group"] == "private_email"
+    assert spans[1]["start"] == 9
+    assert spans[1]["end"] == 20
 
 
 # ---------------------------------------------------------------------------
