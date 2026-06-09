@@ -211,3 +211,4 @@ def test_from_config_loads_rules():
     svc = ScrubService.from_config()
     assert len(svc._config.free_text_patterns) > 0
     assert svc._config.privacy_filter.enabled is True
+    assert svc._config.privacy_filter.onnx_file == "onnx/model_q4f16.onnx"

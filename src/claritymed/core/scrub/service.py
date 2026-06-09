@@ -7,9 +7,16 @@ Two-layer pipeline:
    ``phi.free_text_patterns``.
 
 2. Model pass — OpenAI Privacy Filter (1.5B-param bidirectional token
-   classifier via ``transformers`` pipeline). Catches unstructured PII the
-   regex layer misses: names, addresses, dates, secrets, URLs, account
-   numbers. Opt-in via ``phi.privacy_filter.enabled``.
+   classifier). Catches unstructured PII the regex layer misses: names,
+   addresses, dates, secrets, URLs, account numbers. Two sub-paths:
+
+   a. ONNX path (default, ~809 MB): ``onnx_file`` set in config →
+      ``ORTModelForTokenClassification`` via ``optimum[onnxruntime]``.
+      CPU-only; avoids MPS/CUDA compatibility issues and loads ~3× faster.
+   b. PyTorch path (``onnx_file: null``): ``transformers`` pipeline on
+      the device chosen by ``resolve_device``. ~2.8 GB safetensors.
+
+   Opt-in via ``phi.privacy_filter.enabled``.
 
 Both layers run regardless of provider kind (local or cloud) — user privacy
 is not solely a cloud-egress concern.
@@ -83,6 +90,9 @@ class PrivacyFilterConfig(BaseModel):
     enabled: bool = False
     device: str = "auto"  # "auto" → mps → cuda → cpu; or explicit "cpu"/"mps"/"cuda"
     model_name: str = "openai/privacy-filter"
+    # ONNX quantized file path relative to the HF repo root (~809 MB total
+    # including the _data companion). Set to null to use PyTorch safetensors.
+    onnx_file: str | None = "onnx/model_q4f16.onnx"
 
 
 class ScrubConfig(BaseModel):
@@ -158,20 +168,41 @@ class ScrubService:
     def ensure_downloaded(self) -> bool:
         """Pre-download model weights to the HuggingFace cache.
 
-        Fetches only the PyTorch safetensors weights (skips TF/Flax files).
-        The model is NOT loaded into memory here — that still happens lazily
-        on the first call to ``scrub()``. Returns True if the cache is ready,
-        False if the download failed or the extra is not installed.
+        ONNX path (``onnx_file`` set): fetches only the specified ONNX file
+        + its ``_data`` companion + tokenizer files — roughly 809 MB total
+        for ``model_q4f16``.
+
+        PyTorch path (``onnx_file`` unset): fetches the safetensors weights,
+        skipping TF/Flax/ONNX variants — roughly 2.8 GB.
+
+        The model is NOT loaded into memory here; that still happens lazily
+        on the first ``scrub()`` call. Returns True if the cache is ready,
+        False on failure or missing extras.
         """
         if not self._config.privacy_filter.enabled:
             return True
         try:
             from huggingface_hub import snapshot_download
 
-            snapshot_download(
-                repo_id=self._config.privacy_filter.model_name,
-                ignore_patterns=["*.msgpack", "*.h5", "flax_*", "tf_*"],
-            )
+            onnx_file = self._config.privacy_filter.onnx_file
+            repo_id = self._config.privacy_filter.model_name
+            if onnx_file:
+                snapshot_download(
+                    repo_id=repo_id,
+                    allow_patterns=[
+                        "config.json",
+                        "tokenizer*.json",
+                        "special_tokens_map.json",
+                        "vocab.txt",
+                        onnx_file,
+                        f"{onnx_file}_data",
+                    ],
+                )
+            else:
+                snapshot_download(
+                    repo_id=repo_id,
+                    ignore_patterns=["*.msgpack", "*.h5", "flax_*", "tf_*", "onnx/*"],
+                )
             return True
         except ImportError:
             logger.warning("huggingface_hub not installed; skipping pre-download")
@@ -206,55 +237,94 @@ class ScrubService:
             return text, 0
 
     def _get_pipeline(self) -> Any:
-        """Return the cached transformers pipeline, or None if unavailable."""
+        """Return the cached pipeline (ONNX or PyTorch), or None if unavailable."""
         if self._pipeline_tried:
             return self._pipeline
         with self._lock:
             if self._pipeline_tried:
                 return self._pipeline
             self._pipeline_tried = True
-            try:
-                from transformers import pipeline
-
-                # tqdm's default lock is a multiprocessing.RLock whose init
-                # spawns a resource_tracker subprocess via spawnv_passfds —
-                # that spawn fails with uv's Python 3.12 on macOS. Pre-set
-                # tqdm's class-level lock to a threading.RLock so the mp path
-                # is never taken, regardless of what transformers does internally.
-                _patch_tqdm_lock()
-
-                device = resolve_device(self._config.privacy_filter.device)
-                try:
-                    self._pipeline = pipeline(
-                        task="token-classification",
-                        model=self._config.privacy_filter.model_name,
-                        aggregation_strategy="simple",
-                        device=device,
-                    )
-                    logger.info("privacy-filter pipeline loaded on %s", device)
-                except Exception:
-                    if device == "cpu":
-                        raise
-                    # Non-CPU backends (MPS, CUDA) may not support all ops in
-                    # this model. Fall back to CPU rather than disabling the layer.
-                    logger.warning(
-                        "privacy-filter failed on %s, retrying on cpu", device
-                    )
-                    self._pipeline = pipeline(
-                        task="token-classification",
-                        model=self._config.privacy_filter.model_name,
-                        aggregation_strategy="simple",
-                        device="cpu",
-                    )
-                    logger.info("privacy-filter pipeline loaded on cpu (fallback)")
-            except ImportError:
-                logger.warning(
-                    "transformers not installed; privacy-filter layer disabled. "
-                    "Install with: uv sync --extra privacy-filter"
-                )
-            except Exception:
-                logger.exception("privacy-filter pipeline load failed; layer disabled")
+            onnx_file = self._config.privacy_filter.onnx_file
+            if onnx_file:
+                self._pipeline = self._load_onnx_pipeline(onnx_file)
+            else:
+                self._pipeline = self._load_torch_pipeline()
         return self._pipeline
+
+    def _load_onnx_pipeline(self, onnx_file: str) -> Any:
+        """Load pipeline via ONNX Runtime (CPU; avoids MPS/CUDA op gaps)."""
+        try:
+            from optimum.onnxruntime import ORTModelForTokenClassification
+            from transformers import AutoTokenizer, pipeline
+
+            model_name = self._config.privacy_filter.model_name
+            model = ORTModelForTokenClassification.from_pretrained(
+                model_name, file_name=onnx_file
+            )
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            pipe = pipeline(
+                task="token-classification",
+                model=model,
+                tokenizer=tokenizer,
+                aggregation_strategy="simple",
+            )
+            logger.info("privacy-filter ONNX pipeline loaded (%s)", onnx_file)
+            return pipe
+        except ImportError:
+            logger.warning(
+                "optimum[onnxruntime] not installed; privacy-filter layer disabled. "
+                "Install with: uv sync --extra privacy-filter"
+            )
+            return None
+        except Exception:
+            logger.exception("privacy-filter ONNX pipeline load failed; layer disabled")
+            return None
+
+    def _load_torch_pipeline(self) -> Any:
+        """Load pipeline via PyTorch transformers (GPU-capable, larger footprint)."""
+        try:
+            from transformers import pipeline
+
+            # tqdm's default lock is a multiprocessing.RLock whose init
+            # spawns a resource_tracker subprocess via spawnv_passfds —
+            # that spawn fails with uv's Python 3.12 on macOS. Pre-set
+            # tqdm's class-level lock to a threading.RLock so the mp path
+            # is never taken, regardless of what transformers does internally.
+            _patch_tqdm_lock()
+
+            device = resolve_device(self._config.privacy_filter.device)
+            try:
+                pipe = pipeline(
+                    task="token-classification",
+                    model=self._config.privacy_filter.model_name,
+                    aggregation_strategy="simple",
+                    device=device,
+                )
+                logger.info("privacy-filter pipeline loaded on %s", device)
+                return pipe
+            except Exception:
+                if device == "cpu":
+                    raise
+                # Non-CPU backends (MPS, CUDA) may not support all ops in
+                # this model. Fall back to CPU rather than disabling the layer.
+                logger.warning("privacy-filter failed on %s, retrying on cpu", device)
+                pipe = pipeline(
+                    task="token-classification",
+                    model=self._config.privacy_filter.model_name,
+                    aggregation_strategy="simple",
+                    device="cpu",
+                )
+                logger.info("privacy-filter pipeline loaded on cpu (fallback)")
+                return pipe
+        except ImportError:
+            logger.warning(
+                "transformers not installed; privacy-filter layer disabled. "
+                "Install with: uv sync --extra privacy-filter"
+            )
+            return None
+        except Exception:
+            logger.exception("privacy-filter pipeline load failed; layer disabled")
+            return None
 
     @staticmethod
     def _apply_spans(text: str, spans: list[dict]) -> str:
