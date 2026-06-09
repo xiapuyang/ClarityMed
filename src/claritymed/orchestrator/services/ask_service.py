@@ -120,6 +120,12 @@ class AskService:
         self._provider_config = provider_config
         self._user_whitelist = user_whitelist
         self._translation_service = translation_service
+        self._last_chunks: list = []
+
+    @property
+    def last_chunks(self) -> list:
+        """Retrieved chunks from the most recent run() call (for testing)."""
+        return self._last_chunks
 
     async def run(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import (
@@ -234,6 +240,7 @@ class AskService:
                 # event loop processes them while the stream is still open.
                 # Yielding after Done would be dropped — the TUI returns on Done.
                 if isinstance(event, Done) and deps.retrieved_chunks:
+                    self._last_chunks = list(deps.retrieved_chunks)
                     yield TokenChunk(text=self._format_sources(deps.retrieved_chunks))
                     if os.environ.get("CLARITYMED_DEBUG"):
                         yield TokenChunk(

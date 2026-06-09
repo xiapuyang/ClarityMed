@@ -7,12 +7,19 @@ Services required:
     claritymed-embedder  (port 8082)
     claritymed-reranker  (port 8083)
     Qdrant               (url from configs/retrieval.yaml)
+    LLM server           (omlx on :8000 or ollama on :11434)
 """
 
 from __future__ import annotations
 
 import httpx
 import pytest
+
+# Load provider API keys and overrides from ~/.claritymed/.env before any
+# fixture or test runs — mirrors what the CLI does in _bootstrap_once().
+from claritymed.config import load_env_file
+
+load_env_file()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -44,3 +51,36 @@ def require_local_services() -> None:
             "    uv run --extra rag-server claritymed-embedder &\n"
             "    uv run --extra rag-server claritymed-reranker &"
         )
+
+
+@pytest.fixture(scope="session")
+def e2e_provider_id() -> str:
+    """Return the first usable LLM provider id; skip the test if none found.
+
+    Checks both server reachability and credential availability.
+    Local providers are checked by their health/version endpoints; credentials
+    are validated via the project's is_provider_available() helper.
+    """
+    from claritymed.stores.models import is_provider_available, load_models
+
+    # Endpoint that returns 200 without auth — one per local provider id.
+    health_urls: dict[str, str] = {
+        "omlx": "http://127.0.0.1:8000/health",
+        "ollama": "http://127.0.0.1:11434/api/version",
+    }
+
+    catalog = {p.id: p for p in load_models().providers}
+    for pid, url in health_urls.items():
+        provider = catalog.get(pid)
+        if provider is None:
+            continue
+        if not is_provider_available(provider):
+            continue  # missing credentials
+        if _service_up(url):
+            return pid
+
+    pytest.skip(
+        "No LLM provider reachable with valid credentials.\n"
+        "  Checked: " + ", ".join(health_urls) + "\n"
+        "  Start a server and set any required API key env vars."
+    )
