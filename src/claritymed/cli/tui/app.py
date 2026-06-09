@@ -643,7 +643,7 @@ class ClarityMedApp(App):
 
         provider = resolve_provider(override=self._current_provider_id)
         model = build_model(provider)
-        strategy = self._strategy_for_session()
+        strategy = self._strategy_for_session(model=model)
         if self._chat_session is None:
             self._chat_session = ChatSession.new(self._current_user_id)
         from claritymed.core.translation import make_translation_provider
@@ -661,7 +661,7 @@ class ClarityMedApp(App):
         self._cached_ask_service = service
         return service
 
-    def _strategy_for_session(self):
+    def _strategy_for_session(self, model=None):
         """Build the RAG strategy once per session and cache it.
 
         The retriever owns AsyncQdrantClient instances that should outlive
@@ -672,6 +672,10 @@ class ClarityMedApp(App):
         Thread-safe: the warm worker (thread) and the first message turn
         (asyncio task) can both reach this; the lock serializes them so
         only one builds the retriever.
+
+        ``model`` is forwarded to ``build_strategy`` so HyDE can issue
+        its LLM call against the same provider the rest of the turn
+        uses; other strategies ignore it.
         """
         with self._strategy_lock:
             if self._cached_strategy is not None:
@@ -689,6 +693,7 @@ class ClarityMedApp(App):
                 retriever,
                 config=cfg.strategies,
                 max_evidence=cfg.rag.max_evidence,
+                model=model,
             )
             return self._cached_strategy
 

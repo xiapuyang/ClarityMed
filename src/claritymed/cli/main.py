@@ -111,12 +111,16 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-def _maybe_build_strategy():
+def _maybe_build_strategy(model=None):
     """Return a RagStrategy when ``rag.enabled=true``, else ``None``.
 
     Lazy-imports the retrieval factory so a disabled-RAG ``ask`` does not
     pay the import cost of qdrant / llama-index. Fail-loud once enabled —
     a missing dependency raises rather than silently degrading to LLM-only.
+
+    ``model`` is forwarded to strategies that issue LLM calls during
+    retrieval (HyDE). Strategies that don't need it (naive_hybrid,
+    agentic) ignore the argument.
     """
     from claritymed.core.rag import load_retrieval_config
 
@@ -131,6 +135,7 @@ def _maybe_build_strategy():
         retriever,
         config=cfg.strategies,
         max_evidence=cfg.rag.max_evidence,
+        model=model,
     )
 
 
@@ -159,7 +164,7 @@ def ask(
             model = build_model(provider)
             from claritymed.core.translation import make_translation_provider
 
-            strategy = _maybe_build_strategy()
+            strategy = _maybe_build_strategy(model=model)
             service = AskService(
                 model=model,
                 language=lang,

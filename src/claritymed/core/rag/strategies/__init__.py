@@ -20,9 +20,11 @@ is one-shot; AgenticRagStrategy adds a reflection loop.
 
 from claritymed.core.rag.strategies.base import RagStrategy, RetrievalContext
 from claritymed.core.rag.strategies.factory import build_strategy
+from claritymed.core.rag.strategies.hyde import HydeStrategy
 from claritymed.core.rag.strategies.naive_hybrid import NaiveHybridStrategy
 
 __all__ = [
+    "HydeStrategy",
     "NaiveHybridStrategy",
     "RagStrategy",
     "RetrievalContext",

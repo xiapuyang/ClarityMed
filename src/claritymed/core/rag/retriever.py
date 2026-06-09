@@ -86,9 +86,15 @@ class HybridRetriever:
         user_id: str,
         user_whitelist: list[str] | None = None,
         only_cloud_safe: bool = False,
+        embedding_query_override: str | None = None,
     ) -> EvidenceBundle:
-        # 1. term expansion
-        expanded = expand_query(query, language, self._term_service)
+        # 1. term expansion (skipped when the caller supplies its own
+        # embedding query — e.g. HydeStrategy passes a hypothetical
+        # passage that already replaces synonym expansion).
+        if embedding_query_override is not None:
+            expanded = embedding_query_override
+        else:
+            expanded = expand_query(query, language, self._term_service)
         # 2. routing
         router_trace = await self._router.select_with_trace(
             query, language, user_whitelist

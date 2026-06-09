@@ -23,7 +23,7 @@ the router treats 0 as "not yet ingested" and may skip it.
 from __future__ import annotations
 
 import os
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -101,13 +101,24 @@ class RetrievalTrace(BaseModel):
             "side effects."
         ),
     )
+    hyde_fallback: bool = Field(
+        default=False,
+        description=(
+            "True when the HyDE LLM call failed and the strategy fell back to "
+            "embedding the original query unchanged. Surfaced for audit."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_fallback_requires_grader(self) -> "RetrievalTrace":
+        # CRAG-lite is still the only thing that sets fallback_triggered;
+        # HyDE uses its own ``hyde_fallback`` flag so the audit can tell
+        # the two apart.
         if self.fallback_triggered and self.grader is None:
             raise ValueError(
                 "fallback_triggered=True requires a GraderReport (CRAG-lite "
-                "is the only thing that raises the flag in v1)"
+                "is the only path that raises this flag; HyDE failures set "
+                "hyde_fallback instead)"
             )
         return self
 
@@ -138,14 +149,44 @@ class NaiveHybridStrategyConfig(BaseModel):
     grader: GraderConfig = Field(default_factory=GraderConfig)
 
 
-# Open union for future strategies; v1 only validates naive_hybrid.
-StrategyConfig = NaiveHybridStrategyConfig
+class HydeStrategyConfig(BaseModel):
+    """HyDE: LLM drafts a hypothetical answer, embed *that*, retrieve."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: Literal["hyde"]
+    # Concatenate the hypothetical doc with the original query when
+    # forming the embedding text. Default True follows the LlamaIndex /
+    # original-paper recommendation — including the original query
+    # degrades gracefully when the LLM's draft is off-topic.
+    include_original: bool = True
+
+
+class AgenticStrategyConfig(BaseModel):
+    """Agentic mode: LLM drives retrieval via the tool loop.
+
+    No retrieval-side parameters here — Agentic mode is selected via the
+    ``id`` and consumes the same underlying NaiveHybridStrategy; the
+    behavioural switch lives in ``AskService`` (skip pre-retrieval, let
+    the agent call ``retrieve_medical_literature`` 1..N times).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: Literal["agentic"]
+    grader: GraderConfig = Field(default_factory=GraderConfig)
+
+
+# Discriminated union on ``id`` so YAML validation routes to the right
+# variant. Add new entries here when introducing a new strategy.
+StrategyConfig = NaiveHybridStrategyConfig | HydeStrategyConfig | AgenticStrategyConfig
 
 
 class StrategiesConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     active: str
-    catalog: list[StrategyConfig]
+    # Discriminated on ``id`` so a typo in the YAML routes a malformed
+    # entry to the right error message rather than complaining about an
+    # unrelated variant's required fields.
+    catalog: list[Annotated[StrategyConfig, Field(discriminator="id")]]
 
     @model_validator(mode="after")
     def _resolve_active(self) -> "StrategiesConfig":
