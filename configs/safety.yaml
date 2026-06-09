@@ -35,8 +35,7 @@ phi:
       replacement: '[REDACTED:MRN]'
   # OpenAI Privacy Filter — bidirectional token classifier for unstructured
   # PII the regex layer misses: names, addresses, dates, secrets, URLs.
-  # Off by default (requires transformers+torch; install with
-  # ``uv sync --extra privacy-filter``).
+  # On by default; transformers + onnxruntime are base dependencies.
   privacy_filter:
     enabled: true
     device: cpu   # auto: mps → cuda → cpu; override with "cpu"/"cuda"/"mps"
