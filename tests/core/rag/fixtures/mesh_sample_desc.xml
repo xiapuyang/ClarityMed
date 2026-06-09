@@ -1,0 +1,167 @@
+<?xml version="1.0"?>
+<!DOCTYPE DescriptorRecordSet SYSTEM "https://www.nlm.nih.gov/databases/dtd/nlmdescriptorrecordset_20260101.dtd">
+<DescriptorRecordSet LanguageCode="eng">
+
+  <!-- Drug (D02 chemical) with multi-concept multi-term + permuted noise -->
+  <DescriptorRecord DescriptorClass="1">
+    <DescriptorUI>D000001</DescriptorUI>
+    <DescriptorName><String>Calcimycin</String></DescriptorName>
+    <TreeNumberList>
+      <TreeNumber>D02.241.081.114</TreeNumber>
+    </TreeNumberList>
+    <ConceptList>
+      <Concept PreferredConceptYN="Y">
+        <ConceptUI>M0000001</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="Y">
+            <String>Calcimycin</String>
+          </Term>
+          <Term ConceptPreferredTermYN="N" IsPermutedTermYN="N" RecordPreferredTermYN="N">
+            <String>4-Benzoxazolecarboxylic acid</String>
+          </Term>
+        </TermList>
+      </Concept>
+      <Concept PreferredConceptYN="N">
+        <ConceptUI>M0353609</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="N">
+            <String>A-23187</String>
+          </Term>
+          <Term ConceptPreferredTermYN="N" IsPermutedTermYN="Y" RecordPreferredTermYN="N">
+            <String>A 23187</String>
+          </Term>
+          <Term ConceptPreferredTermYN="N" IsPermutedTermYN="N" RecordPreferredTermYN="N">
+            <String>Antibiotic A23187</String>
+          </Term>
+          <Term ConceptPreferredTermYN="N" IsPermutedTermYN="Y" RecordPreferredTermYN="N">
+            <String>A23187, Antibiotic</String>
+          </Term>
+        </TermList>
+      </Concept>
+    </ConceptList>
+  </DescriptorRecord>
+
+  <!-- Disease (C tree, NOT C23.888) -->
+  <DescriptorRecord DescriptorClass="1">
+    <DescriptorUI>D003920</DescriptorUI>
+    <DescriptorName><String>Diabetes Mellitus</String></DescriptorName>
+    <TreeNumberList>
+      <TreeNumber>C18.452.394.750</TreeNumber>
+      <TreeNumber>C19.246</TreeNumber>
+    </TreeNumberList>
+    <ConceptList>
+      <Concept PreferredConceptYN="Y">
+        <ConceptUI>M0006011</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="Y">
+            <String>Diabetes Mellitus</String>
+          </Term>
+          <Term ConceptPreferredTermYN="N" IsPermutedTermYN="N" RecordPreferredTermYN="N">
+            <String>Diabetes</String>
+          </Term>
+        </TermList>
+      </Concept>
+    </ConceptList>
+  </DescriptorRecord>
+
+  <!-- Symptom (C23.888.* subtree) -->
+  <DescriptorRecord DescriptorClass="1">
+    <DescriptorUI>D006470</DescriptorUI>
+    <DescriptorName><String>Hemorrhage</String></DescriptorName>
+    <TreeNumberList>
+      <TreeNumber>C23.550.414</TreeNumber>
+      <TreeNumber>C23.888.852</TreeNumber>
+    </TreeNumberList>
+    <ConceptList>
+      <Concept PreferredConceptYN="Y">
+        <ConceptUI>M0010348</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="Y">
+            <String>Hemorrhage</String>
+          </Term>
+          <Term ConceptPreferredTermYN="N" IsPermutedTermYN="N" RecordPreferredTermYN="N">
+            <String>Bleeding</String>
+          </Term>
+        </TermList>
+      </Concept>
+    </ConceptList>
+  </DescriptorRecord>
+
+  <!-- Symptom (C23.888 is also the FIRST tree number; the override kicks in) -->
+  <DescriptorRecord DescriptorClass="1">
+    <DescriptorUI>D006261</DescriptorUI>
+    <DescriptorName><String>Headache</String></DescriptorName>
+    <TreeNumberList>
+      <TreeNumber>C23.888.592.612.441</TreeNumber>
+      <TreeNumber>G11.561.796.444</TreeNumber>
+    </TreeNumberList>
+    <ConceptList>
+      <Concept PreferredConceptYN="Y">
+        <ConceptUI>M0009947</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="Y">
+            <String>Headache</String>
+          </Term>
+          <Term ConceptPreferredTermYN="N" IsPermutedTermYN="N" RecordPreferredTermYN="N">
+            <String>Cephalalgia</String>
+          </Term>
+        </TermList>
+      </Concept>
+    </ConceptList>
+  </DescriptorRecord>
+
+  <!-- Procedure (E tree) -->
+  <DescriptorRecord DescriptorClass="1">
+    <DescriptorUI>D003711</DescriptorUI>
+    <DescriptorName><String>Dental Caries</String></DescriptorName>
+    <TreeNumberList>
+      <TreeNumber>E06.323.243</TreeNumber>
+    </TreeNumberList>
+    <ConceptList>
+      <Concept PreferredConceptYN="Y">
+        <ConceptUI>M0005835</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="Y">
+            <String>Dental Caries</String>
+          </Term>
+        </TermList>
+      </Concept>
+    </ConceptList>
+  </DescriptorRecord>
+
+  <!-- 'Other' bucket: anatomy A tree, no clinical relevance -->
+  <DescriptorRecord DescriptorClass="1">
+    <DescriptorUI>D000715</DescriptorUI>
+    <DescriptorName><String>Anatomy</String></DescriptorName>
+    <TreeNumberList>
+      <TreeNumber>H01.158.100</TreeNumber>
+    </TreeNumberList>
+    <ConceptList>
+      <Concept PreferredConceptYN="Y">
+        <ConceptUI>M0001098</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="Y">
+            <String>Anatomy</String>
+          </Term>
+        </TermList>
+      </Concept>
+    </ConceptList>
+  </DescriptorRecord>
+
+  <!-- Edge: no TreeNumberList at all → 'other' -->
+  <DescriptorRecord DescriptorClass="2">
+    <DescriptorUI>D099999</DescriptorUI>
+    <DescriptorName><String>Some Geographical Place</String></DescriptorName>
+    <ConceptList>
+      <Concept PreferredConceptYN="Y">
+        <ConceptUI>M0099999</ConceptUI>
+        <TermList>
+          <Term ConceptPreferredTermYN="Y" IsPermutedTermYN="N" RecordPreferredTermYN="Y">
+            <String>Some Geographical Place</String>
+          </Term>
+        </TermList>
+      </Concept>
+    </ConceptList>
+  </DescriptorRecord>
+
+</DescriptorRecordSet>

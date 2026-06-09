@@ -7,7 +7,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 ConceptType = Literal["drug", "disease", "symptom", "procedure", "other"]
 ConceptLanguage = Literal["en", "zh"]
-AliasSource = Literal["umls", "cmekg", "rxnorm", "snomed", "user"]
+AliasSource = Literal["umls", "cmekg", "rxnorm", "snomed", "mesh", "seed", "user"]
 
 
 @dataclass(frozen=True)

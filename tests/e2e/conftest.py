@@ -36,6 +36,34 @@ def _service_up(url: str) -> bool:
         return False
 
 
+@pytest.fixture(autouse=True)
+def _seed_terminology() -> None:
+    """Write the seed concepts.jsonl into the per-test SHARED_DIR.
+
+    ``configs/retrieval.yaml`` has ``term_service.active: umls_cmekg_local``;
+    without a seeded file, ``build_hybrid_retriever()`` raises
+    ``FileNotFoundError`` before any live service is reached. The seed
+    script's built-in dataset is identical to what an operator would
+    write with ``init_terminology.py --seed``, so e2e tests exercise the
+    real production code path.
+    """
+    import sys
+    from pathlib import Path
+
+    from claritymed.stores.paths import shared_terminology_jsonl
+
+    repo_root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(repo_root / "scripts"))
+    try:
+        from init_terminology import cmd_seed  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+
+    target = shared_terminology_jsonl()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cmd_seed(target, force=True, dry_run=False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def require_local_services() -> None:
     """Skip all e2e tests when required local services aren't reachable."""

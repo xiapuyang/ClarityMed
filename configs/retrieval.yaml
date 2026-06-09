@@ -113,12 +113,18 @@ rerankers:
       api_key_env: null
 
 # --- term service (query expansion only in v1) --------------------------
+# `umls_cmekg_local` reads `<SHARED_DIR>/terminology/concepts.jsonl`
+# (default `~/.claritymed/shared/terminology/`). Bootstrap with:
+#   uv run python scripts/init_terminology.py --seed
+# `data_dir` is an optional override — point it at an NAS export or any
+# directory containing a `concepts.jsonl`. Missing file → fail-loud at
+# startup with a message that names the seed script (see factory.py).
 term_service:
-  active: none
+  active: umls_cmekg_local
   catalog:
     - id: umls_cmekg_local
       kind: local
-      data_dir: "data/terminology"
+      # data_dir omitted → resolves to SHARED_DIR/terminology/concepts.jsonl
     - id: none
       kind: noop
 

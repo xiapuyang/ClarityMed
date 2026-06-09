@@ -121,6 +121,21 @@ def shared_parent_docstore_path() -> Path:
     return _cfg.SHARED_DIR / "parent_docstore.json"
 
 
+def shared_terminology_dir() -> Path:
+    """Directory holding the UMLS+CMeKG terminology export.
+
+    ``concepts.jsonl`` lives here. Admin-managed, cross-user, non-PHI —
+    same category as ``shared_knowledge_*_dir()``. Operators populate it
+    via ``scripts/init_terminology.py``.
+    """
+    return _cfg.SHARED_DIR / "terminology"
+
+
+def shared_terminology_jsonl() -> Path:
+    """Canonical ``concepts.jsonl`` location under ``shared/terminology/``."""
+    return shared_terminology_dir() / "concepts.jsonl"
+
+
 def shared_vision_models_dir(
     disease: str | None = None, version: str | None = None
 ) -> Path:
