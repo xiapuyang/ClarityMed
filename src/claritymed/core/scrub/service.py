@@ -44,6 +44,27 @@ _LABEL_MAP: dict[str, str] = {
 }
 
 
+def _patch_tqdm_lock() -> None:
+    """Replace tqdm's class-level lock with a threading.RLock.
+
+    tqdm's default TqdmDefaultWriteLock creates a multiprocessing.RLock
+    which spawns a resource_tracker subprocess (spawnv_passfds). That spawn
+    fails on macOS with uv's Python 3.12, crashing any code that uses tqdm —
+    including transformers weight-loading progress bars. A threading.RLock is
+    sufficient for single-process use and avoids the subprocess entirely.
+
+    Idempotent: calling multiple times is safe.
+    """
+    import threading
+
+    try:
+        import tqdm
+
+        tqdm.tqdm.set_lock(threading.RLock())
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class FreeTextRule(BaseModel):
     """One regex rule for free-text PII scrubbing."""
 
@@ -134,6 +155,33 @@ class ScrubService:
             text_len_after=len(scrubbed),
         )
 
+    def ensure_downloaded(self) -> bool:
+        """Pre-download model weights to the HuggingFace cache.
+
+        Fetches only the PyTorch safetensors weights (skips TF/Flax files).
+        The model is NOT loaded into memory here — that still happens lazily
+        on the first call to ``scrub()``. Returns True if the cache is ready,
+        False if the download failed or the extra is not installed.
+        """
+        if not self._config.privacy_filter.enabled:
+            return True
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id=self._config.privacy_filter.model_name,
+                ignore_patterns=["*.msgpack", "*.h5", "flax_*", "tf_*"],
+            )
+            return True
+        except ImportError:
+            logger.warning("huggingface_hub not installed; skipping pre-download")
+            return False
+        except Exception:
+            logger.exception(
+                "could not pre-download %s", self._config.privacy_filter.model_name
+            )
+            return False
+
     def _layer_regex(self, text: str) -> tuple[str, dict[str, int]]:
         rule_hits: dict[str, int] = {}
         for rule in self._config.free_text_patterns:
@@ -168,17 +216,37 @@ class ScrubService:
             try:
                 from transformers import pipeline
 
+                # tqdm's default lock is a multiprocessing.RLock whose init
+                # spawns a resource_tracker subprocess via spawnv_passfds —
+                # that spawn fails with uv's Python 3.12 on macOS. Pre-set
+                # tqdm's class-level lock to a threading.RLock so the mp path
+                # is never taken, regardless of what transformers does internally.
+                _patch_tqdm_lock()
+
                 device = resolve_device(self._config.privacy_filter.device)
-                self._pipeline = pipeline(
-                    task="token-classification",
-                    model=self._config.privacy_filter.model_name,
-                    aggregation_strategy="simple",
-                    device=device,
-                )
-                logger.info(
-                    "privacy-filter pipeline loaded on %s",
-                    device,
-                )
+                try:
+                    self._pipeline = pipeline(
+                        task="token-classification",
+                        model=self._config.privacy_filter.model_name,
+                        aggregation_strategy="simple",
+                        device=device,
+                    )
+                    logger.info("privacy-filter pipeline loaded on %s", device)
+                except Exception:
+                    if device == "cpu":
+                        raise
+                    # Non-CPU backends (MPS, CUDA) may not support all ops in
+                    # this model. Fall back to CPU rather than disabling the layer.
+                    logger.warning(
+                        "privacy-filter failed on %s, retrying on cpu", device
+                    )
+                    self._pipeline = pipeline(
+                        task="token-classification",
+                        model=self._config.privacy_filter.model_name,
+                        aggregation_strategy="simple",
+                        device="cpu",
+                    )
+                    logger.info("privacy-filter pipeline loaded on cpu (fallback)")
             except ImportError:
                 logger.warning(
                     "transformers not installed; privacy-filter layer disabled. "

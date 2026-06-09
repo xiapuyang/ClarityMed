@@ -80,6 +80,27 @@ def _stderr(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _prefetch_models() -> None:
+    """Download in-process model weights to HF cache before the TUI starts.
+
+    Runs before ``ClarityMedApp.run()`` so the terminal is still available
+    for HuggingFace's progress bars. Failures are non-fatal — the TUI starts
+    regardless and the model layer falls back to regex-only if unavailable.
+    """
+    from claritymed.core.scrub.service import ScrubService
+
+    svc = ScrubService.from_config()
+    if not svc._config.privacy_filter.enabled:
+        return
+    model = svc._config.privacy_filter.model_name
+    print(f"Checking model cache: {model}")
+    ok = svc.ensure_downloaded()
+    if ok:
+        print(f"  ✓ {model} ready")
+    else:
+        print(f"  ⚠ {model} unavailable — scrub falls back to regex-only")
+
+
 def _run_async(coro):
     return asyncio.run(coro)
 
@@ -706,6 +727,12 @@ def tui(
 
     resolved_lang = _resolve_language(language)
     resolved_user, _ = _resolve_user_id(user)
+
+    # Pre-download in-process models before the TUI takes over the terminal.
+    # Currently only openai/privacy-filter (BGE embedder/reranker are served
+    # separately and must be downloaded via `uv run hf download`).
+    _prefetch_models()
+
     ClarityMedApp(
         user_id=resolved_user,
         language=resolved_lang,
