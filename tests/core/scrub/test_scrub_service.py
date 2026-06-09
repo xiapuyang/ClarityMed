@@ -277,6 +277,25 @@ def test_model_layer_audit_skips_when_no_context():
     assert scrubbed == "safe text"
 
 
+def test_model_layer_emits_skipped_when_pipeline_unavailable(monkeypatch):
+    """pipeline=None (model not installed) still emits status=skipped audit."""
+    captured = _patch_audit(monkeypatch)
+
+    config = ScrubConfig(
+        free_text_patterns=[],
+        privacy_filter=PrivacyFilterConfig(enabled=True),
+    )
+    svc = ScrubService(config)
+    svc._pipeline = None
+    svc._pipeline_tried = True
+
+    svc.scrub("some text")
+
+    assert len(captured) == 1
+    assert captured[0]["kind"] == "scrub.privacy_filter"
+    assert captured[0]["payload"]["status"] == "skipped"
+
+
 # ---------------------------------------------------------------------------
 # from_config round-trip
 # ---------------------------------------------------------------------------

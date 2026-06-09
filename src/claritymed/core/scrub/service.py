@@ -238,9 +238,10 @@ class ScrubService:
     def _layer_model(self, text: str) -> tuple[str, int]:
         """Run privacy-filter pipeline. Returns input unchanged on failure."""
         pipe = self._get_pipeline()
-        if pipe is None:
-            return text, 0
         backend = "onnx" if self._config.privacy_filter.onnx_file else "torch"
+        if pipe is None:
+            _emit_scrub_audit({"status": "skipped", "backend": backend})
+            return text, 0
         t0 = time.perf_counter()
         try:
             spans = pipe(text)
