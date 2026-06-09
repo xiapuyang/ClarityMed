@@ -495,6 +495,13 @@ class AskService:
                 reason="cloud_provider_phi_guard",
             )
 
+        # Score threshold — drop chunks that are below the configured minimum.
+        # Prefers rerank_score (cross-encoder) when available; falls back to
+        # the initial retrieval score. This prevents low-relevance chunks from
+        # contaminating the prompt and from appearing in the Sources block for
+        # off-topic queries (e.g. greetings).
+        safe_chunks = self._filter_by_score(safe_chunks)
+
         if bundle.trace.rerank_fallback:
             audit_event(
                 "rag.rerank.fallback",
@@ -557,6 +564,22 @@ class AskService:
         if self._provider_config is None:
             return False
         return getattr(self._provider_config, "kind", None) == "cloud"
+
+    def _filter_by_score(
+        self, chunks: "list[RetrievedChunk]"
+    ) -> "list[RetrievedChunk]":
+        """Drop chunks whose best available score is below the configured threshold."""
+        try:
+            from claritymed.core.rag.schemas import load_retrieval_config
+
+            threshold = load_retrieval_config().system_rag.score_threshold
+        except Exception:  # noqa: BLE001
+            return chunks
+        return [
+            c
+            for c in chunks
+            if (c.rerank_score if c.rerank_score is not None else c.score) >= threshold
+        ]
 
     def _filter_for_provider(
         self, chunks: "list[RetrievedChunk]"

@@ -333,6 +333,7 @@ class SystemRagConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     default_active: list[str] = Field(default_factory=list)
     collections: list[CollectionMetadata] = Field(default_factory=list)
+    score_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _default_active_must_be_known(self) -> "SystemRagConfig":

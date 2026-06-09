@@ -106,6 +106,12 @@ router:
 # AND no per-request override is given.
 system_rag:
   default_active: []
+  # Minimum score to keep a retrieved chunk. Prefers rerank_score when the
+  # reranker ran; falls back to the initial retrieval score. Chunks below
+  # this value are dropped before prompt injection and Sources display.
+  # 0.4 filters out conversational queries ("hi", "thanks") that land far
+  # from any medical content.
+  score_threshold: 0.4
   collections:
     - name: statpearls_en
       language: en
