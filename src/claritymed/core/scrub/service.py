@@ -227,6 +227,8 @@ class ScrubService:
                 snapshot_download(
                     repo_id=repo_id,
                     allow_patterns=[
+                        # Custom model code — required for trust_remote_code=True
+                        "*.py",
                         "config.json",
                         "tokenizer*.json",
                         "special_tokens_map.json",
@@ -311,16 +313,26 @@ class ScrubService:
         return self._pipeline
 
     def _load_onnx_pipeline(self, onnx_file: str) -> Any:
-        """Load pipeline via ONNX Runtime (CPU; avoids MPS/CUDA op gaps)."""
+        """Load pipeline via ONNX Runtime (CPU; avoids MPS/CUDA op gaps).
+
+        ``openai/privacy-filter`` uses a custom model type not registered in
+        the standard transformers library, so ``trust_remote_code=True`` is
+        required for both ``AutoConfig`` and ``AutoTokenizer``. The config is
+        pre-loaded and passed explicitly to ``ORTModelForTokenClassification``
+        because optimum's internal ``_load_config`` does not forward that flag.
+        """
         try:
             from optimum.onnxruntime import ORTModelForTokenClassification
-            from transformers import AutoTokenizer, pipeline
+            from transformers import AutoConfig, AutoTokenizer, pipeline
 
             model_name = self._config.privacy_filter.model_name
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
             model = ORTModelForTokenClassification.from_pretrained(
-                model_name, file_name=onnx_file
+                model_name, config=config, file_name=onnx_file
             )
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name, trust_remote_code=True
+            )
             pipe = pipeline(
                 task="token-classification",
                 model=model,
