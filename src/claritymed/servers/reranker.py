@@ -28,6 +28,7 @@ Defaults: ``MODEL_PATH=~/.claritymed/models/bge-reranker-v2-m3``,
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -111,6 +112,13 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 app = FastAPI(title="claritymed-reranker", lifespan=lifespan)
 
 
+def _flush_mps_cache() -> None:
+    # Same MPS allocator leak as embedder.py — see that file for details.
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    gc.collect()
+
+
 def _require_loaded() -> tuple[Any, Any, str]:
     model = _state.get("model")
     tokenizer = _state.get("tokenizer")
@@ -154,7 +162,9 @@ def rerank(req: RerankRequest) -> list[RerankHit]:
     scores = scores_tensor.cpu().tolist()
     indexed = list(enumerate(float(s) for s in scores))
     indexed.sort(key=lambda x: x[1], reverse=True)
-    return [RerankHit(index=i, score=s) for i, s in indexed]
+    result = [RerankHit(index=i, score=s) for i, s in indexed]
+    _flush_mps_cache()
+    return result
 
 
 def main() -> None:

@@ -27,6 +27,7 @@ FlagEmbedding release exhibits MPS kernel instability for XLMRoberta ops.
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -106,6 +107,22 @@ def health() -> dict[str, str]:
     return {"status": "ok" if _state.get("model") is not None else "loading"}
 
 
+def _flush_mps_cache() -> None:
+    # PyTorch's MPS allocator caches freed tensors in-process and never
+    # returns them to the OS unprompted. On Apple Silicon this shows up as
+    # ever-growing phys_footprint (seen: 28 GB after two days of idle
+    # requests). Calling empty_cache() + gc.collect() after each encode
+    # releases the cached pages back to macOS immediately.
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    gc.collect()
+
+
 @app.post("/embed")
 def embed(req: EmbedRequest) -> list[list[float]]:
     """Dense embeddings only. Returns ``list[list[float]]`` (1024-dim each)."""
@@ -118,7 +135,9 @@ def embed(req: EmbedRequest) -> list[list[float]]:
         return_colbert_vecs=False,
     )
     # FlagEmbedding returns numpy arrays; convert to plain lists for JSON.
-    return [vec.tolist() for vec in out["dense_vecs"]]
+    result = [vec.tolist() for vec in out["dense_vecs"]]
+    _flush_mps_cache()
+    return result
 
 
 @app.post("/embed_sparse")
@@ -138,10 +157,12 @@ def embed_sparse(req: EmbedRequest) -> list[dict[str, float]]:
         return_colbert_vecs=False,
     )
     # ``lexical_weights`` is already a list of ``{str(token_id): float}`` dicts.
-    return [
+    result = [
         {str(tok): float(w) for tok, w in entry.items()}
         for entry in out["lexical_weights"]
     ]
+    _flush_mps_cache()
+    return result
 
 
 def main() -> None:
