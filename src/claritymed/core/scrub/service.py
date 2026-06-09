@@ -308,6 +308,8 @@ class ScrubService:
                 snapshot_download(
                     repo_id=repo_id,
                     allow_patterns=[
+                        # Custom Python code required by trust_remote_code=True
+                        "*.py",
                         "config.json",
                         "tokenizer*.json",
                         "special_tokens_map.json",
@@ -425,7 +427,9 @@ class ScrubService:
                     int(k): v for k, v in json.load(fh).get("id2label", {}).items()
                 }
 
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name, trust_remote_code=True
+            )
 
             providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
             session = ort.InferenceSession(onnx_path, providers=providers)
