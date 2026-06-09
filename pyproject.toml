@@ -46,6 +46,12 @@ privacy-filter = [
 e2e = [
     "deepeval>=4.0",
     "httpx>=0.28.1",
+    # Re-run failed e2e tests up to N times before reporting failure.
+    # Required for the @pytest.mark.flaky(reruns=2, reruns_delay=5)
+    # decorators in tests/e2e — without this plugin those marks are
+    # silently no-ops and local-LLM variance (translation rewrites,
+    # HyDE hypotheticals) shows up as spurious test failures.
+    "pytest-rerunfailures>=15.0",
 ]
 
 [project.scripts]

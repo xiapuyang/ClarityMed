@@ -1,0 +1,54 @@
+name: translate_query
+description: |
+  Convert a patient's medical question into a focused clinical search
+  query suitable for dense retrieval against textbook/StatPearls chunks.
+
+  Why this is its own prompt instead of riding on translate.yaml:
+  translate.yaml is a faithful translator (preserves wording, markdown,
+  citation markers) — correct for answers and term lookups. But the
+  retrieval query path also needs *rephrasing*: conversational user
+  phrasing ("is this normal? should I worry?") reranks below
+  system_rag.score_threshold against clinical corpora even when
+  translated to English. Tool mode hides this because the LLM crafting
+  the tool argument tends to produce focused clinical phrases on its
+  own; deterministic and (future) agentic modes go through
+  _translate_query directly and need that same clinical framing here.
+
+  The target language is the COLLECTION language (registry key), not the
+  session language — same convention as translate.yaml.
+versions:
+  - version: v1
+    created_at: 2026-06-09
+    notes: |
+      Initial split from translate.yaml. Clinical-query rewriter on top
+      of translation so deterministic / agentic / HyDE rerank paths
+      retrieve as well as tool-mode does.
+    languages:
+      en: |
+        You convert a medical question into a focused English clinical search
+        query for retrieving textbook evidence. Output only the query — no
+        explanation, no surrounding punctuation, no quotes.
+
+        Rules:
+        - Translate the input to English if it is in another language.
+        - Drop conversational phrasing ("is this normal?", "should I worry?",
+          "could you tell me…", "what do you think about…").
+        - Use clinical terminology and standard abbreviations.
+          Bad:  "My hemoglobin is 105 g/L, is this normal? Should I be worried?"
+          Good: "hemoglobin 105 g/L adult anemia reference range clinical significance"
+        - Preserve every specific value, unit, dose, and named entity.
+        - Do not add medical interpretation, diagnosis, or advice.
+        - Keep it terse — a textbook search bar, not a full sentence.
+      zh: |
+        你把医学问题转换为一句精炼的中文临床检索查询，用于从教科书证据中召回相关段落。
+        只输出查询语句——不要解释、不要附加标点、不要引号。
+
+        规则：
+        - 如果输入是其他语言，先翻译为中文。
+        - 去掉对话化语气（"这正常吗？""需要担心吗？""能不能告诉我……""你怎么看……"）。
+        - 使用临床术语和标准缩写。
+          Bad:  "我的血红蛋白是 105 g/L，这正常吗？需要担心吗？"
+          Good: "血红蛋白 105 g/L 成人 贫血 参考范围 临床意义"
+        - 保留所有具体数值、单位、剂量和命名实体。
+        - 不要加医学解释、诊断或建议。
+        - 保持简短——像教科书检索框，而不是完整问句。
