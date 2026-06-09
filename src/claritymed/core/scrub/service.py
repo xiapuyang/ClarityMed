@@ -11,8 +11,11 @@ Two-layer pipeline:
    addresses, dates, secrets, URLs, account numbers. Two sub-paths:
 
    a. ONNX path (default, ~809 MB): ``onnx_file`` set in config →
-      ``ORTModelForTokenClassification`` via ``optimum[onnxruntime]``.
-      CPU-only; avoids MPS/CUDA compatibility issues and loads ~3× faster.
+      raw ``onnxruntime.InferenceSession``. Bypasses ``AutoConfig`` entirely
+      (which fails for the non-standard ``openai_privacy_filter`` model type).
+      Label mapping is read from ``config.json`` as plain JSON.
+      CoreMLExecutionProvider used on Apple Silicon when available; falls
+      back to CPUExecutionProvider.
    b. PyTorch path (``onnx_file: null``): ``transformers`` pipeline on
       the device chosen by ``resolve_device``. ~2.8 GB safetensors.
 
@@ -24,6 +27,7 @@ is not solely a cloud-egress concern.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -84,6 +88,76 @@ def _patch_tqdm_lock() -> None:
         pass
 
 
+class _OnnxNerPipeline:
+    """Minimal NER pipeline backed by an ``onnxruntime.InferenceSession``.
+
+    Replicates the output contract of ``transformers.pipeline(
+    "token-classification", aggregation_strategy="simple")``:
+    a list of dicts with ``entity_group``, ``start``, ``end``.
+
+    Aggregates consecutive subword tokens with the same label (BIO or flat)
+    into a single span, skipping special tokens (offset start == end).
+    """
+
+    def __init__(self, session: Any, tokenizer: Any, id2label: dict[int, str]) -> None:
+        self._session = session
+        self._tokenizer = tokenizer
+        self._id2label = id2label
+        self._input_names: frozenset[str] = frozenset(
+            i.name for i in session.get_inputs()
+        )
+
+    def __call__(self, text: str) -> list[dict]:
+        enc = self._tokenizer(
+            text,
+            return_tensors="np",
+            return_offsets_mapping=True,
+            truncation=True,
+            max_length=512,
+        )
+        offset_mapping = enc.pop("offset_mapping")[0]  # (seq_len, 2)
+        feed = {k: v for k, v in enc.items() if k in self._input_names}
+        logits = self._session.run(None, feed)[0][0]  # (seq_len, num_labels)
+        predictions = logits.argmax(axis=-1)
+        return self._aggregate(predictions, offset_mapping)
+
+    def _aggregate(self, predictions: Any, offset_mapping: Any) -> list[dict]:
+        """Merge consecutive same-label subword tokens into char-offset spans."""
+        spans: list[dict] = []
+        current: dict | None = None
+
+        for pred, (char_start, char_end) in zip(predictions, offset_mapping):
+            # Special tokens ([CLS], [SEP], padding) have zero-length offsets
+            if int(char_start) == int(char_end):
+                if current:
+                    spans.append(current)
+                    current = None
+                continue
+
+            raw_label = self._id2label.get(int(pred), "O")
+            # Strip BIO prefix if present (B-private_person → private_person)
+            label = raw_label[2:] if raw_label[:2] in ("B-", "I-") else raw_label
+
+            if label == "O":
+                if current:
+                    spans.append(current)
+                    current = None
+            elif current and current["entity_group"] == label:
+                current["end"] = int(char_end)
+            else:
+                if current:
+                    spans.append(current)
+                current = {
+                    "entity_group": label,
+                    "start": int(char_start),
+                    "end": int(char_end),
+                }
+
+        if current:
+            spans.append(current)
+        return spans
+
+
 class FreeTextRule(BaseModel):
     """One regex rule for free-text PII scrubbing."""
 
@@ -134,8 +208,7 @@ class ScrubReport(BaseModel):
 class ScrubService:
     """Two-layer free-text PII scrubber: regex + optional privacy-filter model.
 
-    Thread-safe: the transformers pipeline is loaded at most once per instance
-    under a lock.
+    Thread-safe: the pipeline is loaded at most once per instance under a lock.
     """
 
     def __init__(self, config: ScrubConfig) -> None:
@@ -163,7 +236,6 @@ class ScrubService:
             return text, ScrubReport(text_len_before=0, text_len_after=0)
 
         original_len = len(text)
-
         scrubbed, rule_hits = self._layer_regex(text)
 
         model_hits = 0
@@ -188,11 +260,19 @@ class ScrubService:
             return
         if self._config.privacy_filter.onnx_file:
             try:
-                import optimum.onnxruntime  # noqa: F401
+                import onnxruntime  # noqa: F401
             except ImportError:
                 raise ImportError(
-                    "privacy_filter.enabled=true with onnx_file requires "
-                    "optimum[onnxruntime]. Install with: uv sync --extra privacy-filter"
+                    "privacy_filter with onnx_file requires onnxruntime. "
+                    "Install with: uv sync --extra privacy-filter"
+                ) from None
+        else:
+            try:
+                import torch  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "privacy_filter with onnx_file=null requires torch. "
+                    "Install with: uv sync --extra privacy-filter"
                 ) from None
         try:
             import transformers  # noqa: F401
@@ -206,11 +286,12 @@ class ScrubService:
         """Pre-download model weights to the HuggingFace cache.
 
         ONNX path (``onnx_file`` set): fetches only the specified ONNX file
-        + its ``_data`` companion + tokenizer files — roughly 809 MB total
-        for ``model_q4f16``.
+        + its ``_data`` companion + tokenizer + ``config.json`` (~809 MB total
+        for ``model_q4f16``). No custom Python code needed — we read
+        ``config.json`` directly as JSON.
 
         PyTorch path (``onnx_file`` unset): fetches the safetensors weights,
-        skipping TF/Flax/ONNX variants — roughly 2.8 GB.
+        skipping TF/Flax/ONNX variants (~2.8 GB).
 
         The model is NOT loaded into memory here; that still happens lazily
         on the first ``scrub()`` call. Returns True if the cache is ready,
@@ -227,8 +308,6 @@ class ScrubService:
                 snapshot_download(
                     repo_id=repo_id,
                     allow_patterns=[
-                        # Custom model code — required for trust_remote_code=True
-                        "*.py",
                         "config.json",
                         "tokenizer*.json",
                         "special_tokens_map.json",
@@ -313,37 +392,51 @@ class ScrubService:
         return self._pipeline
 
     def _load_onnx_pipeline(self, onnx_file: str) -> Any:
-        """Load pipeline via ONNX Runtime (CPU; avoids MPS/CUDA op gaps).
+        """Load pipeline via raw onnxruntime, bypassing AutoConfig entirely.
 
-        ``openai/privacy-filter`` uses a custom model type not registered in
-        the standard transformers library, so ``trust_remote_code=True`` is
-        required for both ``AutoConfig`` and ``AutoTokenizer``. The config is
-        pre-loaded and passed explicitly to ``ORTModelForTokenClassification``
-        because optimum's internal ``_load_config`` does not forward that flag.
+        ``openai/privacy-filter`` has a non-standard model type
+        (``openai_privacy_filter``) that is not registered in the transformers
+        library. Calling ``AutoConfig.from_pretrained`` (which both the
+        transformers pipeline and ``optimum.ORTModelForTokenClassification``
+        do internally) raises ``ValueError`` / ``KeyError``. This method
+        avoids that by:
+
+        - Using ``ort.InferenceSession`` directly on the local ONNX file.
+        - Reading ``config.json`` as plain JSON to get ``id2label``.
+        - Using ``AutoTokenizer`` only (tokenizers are not model-type-gated).
+
+        Providers: tries CoreMLExecutionProvider first (Apple Silicon), then
+        falls back to CPUExecutionProvider.
         """
         try:
-            from optimum.onnxruntime import ORTModelForTokenClassification
-            from transformers import AutoConfig, AutoTokenizer, pipeline
+            import onnxruntime as ort
+            from huggingface_hub import hf_hub_download
+            from transformers import AutoTokenizer
 
             model_name = self._config.privacy_filter.model_name
-            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-            model = ORTModelForTokenClassification.from_pretrained(
-                model_name, config=config, file_name=onnx_file
-            )
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name, trust_remote_code=True
-            )
-            pipe = pipeline(
-                task="token-classification",
-                model=model,
-                tokenizer=tokenizer,
-                aggregation_strategy="simple",
-            )
-            logger.info("privacy-filter ONNX pipeline loaded (%s)", onnx_file)
-            return pipe
+
+            # Resolve cached file paths (downloads only if not already cached)
+            onnx_path = hf_hub_download(repo_id=model_name, filename=onnx_file)
+            config_path = hf_hub_download(repo_id=model_name, filename="config.json")
+
+            # Read id2label from plain JSON — no AutoConfig needed
+            with open(config_path) as fh:
+                id2label = {
+                    int(k): v for k, v in json.load(fh).get("id2label", {}).items()
+                }
+
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+            providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            session = ort.InferenceSession(onnx_path, providers=providers)
+            used = session.get_providers()
+            logger.info("privacy-filter ONNX session ready (providers: %s)", used)
+
+            return _OnnxNerPipeline(session, tokenizer, id2label)
+
         except ImportError:
             logger.warning(
-                "optimum[onnxruntime] not installed; privacy-filter layer disabled. "
+                "onnxruntime not installed; privacy-filter layer disabled. "
                 "Install with: uv sync --extra privacy-filter"
             )
             return None
