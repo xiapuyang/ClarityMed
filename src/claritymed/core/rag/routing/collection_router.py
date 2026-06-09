@@ -54,16 +54,22 @@ class RouterTrace:
 
 @runtime_checkable
 class Router(Protocol):
-    """Per-query active-collection selector."""
+    """Per-query active-collection selector.
 
-    def select(
+    Async because the ``centroid_classifier`` router embeds the query at
+    selection time via ``Embedder.embed_dense``. Rule-based routers are
+    sync internally but expose the same async surface so the retriever
+    only has one path.
+    """
+
+    async def select(
         self,
         query: str,
         language: QueryLanguage,
         user_whitelist: list[str] | None,
     ) -> list[str]: ...
 
-    def select_with_trace(
+    async def select_with_trace(
         self,
         query: str,
         language: QueryLanguage,
@@ -101,15 +107,16 @@ class CollectionRouter(Router):
 
     # --- Router protocol -----------------------------------------------
 
-    def select(
+    async def select(
         self,
         query: str,
         language: QueryLanguage,
         user_whitelist: list[str] | None,
     ) -> list[str]:
-        return self.select_with_trace(query, language, user_whitelist).selected
+        trace = await self.select_with_trace(query, language, user_whitelist)
+        return trace.selected
 
-    def select_with_trace(
+    async def select_with_trace(
         self,
         query: str,
         language: QueryLanguage,

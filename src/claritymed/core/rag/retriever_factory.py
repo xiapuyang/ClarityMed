@@ -88,7 +88,14 @@ def build_hybrid_retriever(
     embedder = build_embedder(cfg.embedders)
     reranker = build_reranker(cfg.rerankers)
     term_service = build_term_service(cfg.term_service)
-    router = build_router(router_config=cfg.router, system_rag=cfg.system_rag)
+    # Pass the embedder unconditionally — the rule-based branch ignores
+    # it; the centroid-based branch needs it to embed queries at routing
+    # time.
+    router = build_router(
+        router_config=cfg.router,
+        system_rag=cfg.system_rag,
+        embedder=embedder,
+    )
 
     aclient = build_qdrant_client(
         url=cfg.qdrant.url,

@@ -444,6 +444,79 @@ def corpora_ingest(
                 f"resumed {stats.docs_resumed})[/green]"
             )
 
+            if not dry_run and stats.children_written > 0:
+                await _refresh_centroid_for(aclient, source.name, console)
+
+        _run_async(_run())
+
+
+async def _refresh_centroid_for(aclient, collection_name: str, con) -> None:
+    """Compute/refresh the centroid for one system collection."""
+    from claritymed.core.rag.routing.centroid_store import CentroidStore, maybe_refresh
+    from claritymed.stores.paths import shared_root
+
+    store = CentroidStore(shared_root() / "centroids")
+    try:
+        refreshed = await maybe_refresh(aclient, collection_name, store)
+        if refreshed:
+            con.print(f"[dim]centroid refreshed: {collection_name}[/dim]")
+        else:
+            con.print(f"[dim]centroid up-to-date: {collection_name}[/dim]")
+    except Exception as exc:
+        con.print(f"[yellow]centroid refresh failed ({exc}); continuing[/yellow]")
+
+
+@corpora_app.command("refresh-centroid")
+def corpora_refresh_centroid(
+    name: str = typer.Argument(..., help="Corpus name (e.g. statpearls)"),
+    user: str | None = typer.Option(None, "--user", "-u"),
+) -> None:
+    """Recompute the routing centroid for an existing system collection.
+
+    Run this after bulk ingests or when adding a new collection to ensure
+    the embedding-based router has an up-to-date centroid. Safe to re-run
+    at any time — always forces a recompute regardless of delta.
+    """
+    from claritymed.core.rag import load_retrieval_config
+    from claritymed.core.rag.qdrant_store import build_qdrant_client
+    from claritymed.core.rag.routing.centroid_store import CentroidStore, maybe_refresh
+    from claritymed.ingest.corpus.statpearls import StatPearlsSource
+    from claritymed.ingest.corpus.textbooks import TextbooksSource
+    from claritymed.stores.paths import shared_knowledge_raw_dir, shared_root
+
+    _CORPUS_SOURCES = {
+        "statpearls": lambda: StatPearlsSource(
+            shared_knowledge_raw_dir() / "statpearls"
+        ),
+        "textbooks": lambda: TextbooksSource(shared_knowledge_raw_dir() / "textbooks"),
+    }
+
+    with inject_context(
+        user_id=user,
+        command=f"corpora.refresh-centroid name={name!r}",
+        check_user_exists=True,
+    ):
+        if name not in _CORPUS_SOURCES:
+            console.print(f"[red]Unknown corpus: {name!r}[/red]")
+            console.print(f"[dim]Available: {', '.join(sorted(_CORPUS_SOURCES))}[/dim]")
+            raise typer.Exit(code=2)
+
+        collection_name = _CORPUS_SOURCES[name]().name
+        cfg = load_retrieval_config()
+        aclient = build_qdrant_client(
+            url=cfg.qdrant.url,
+            api_key_env=cfg.qdrant.api_key_env,
+        )
+        store = CentroidStore(shared_root() / "centroids")
+
+        async def _run() -> None:
+            try:
+                await maybe_refresh(aclient, collection_name, store, force=True)
+                console.print(f"[green]centroid refreshed: {collection_name}[/green]")
+            except Exception as exc:
+                console.print(f"[red]failed: {exc}[/red]")
+                raise typer.Exit(code=1) from exc
+
         _run_async(_run())
 
 

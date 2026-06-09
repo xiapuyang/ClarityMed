@@ -23,6 +23,7 @@ End-to-end async path for one query:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -89,7 +90,9 @@ class HybridRetriever:
         # 1. term expansion
         expanded = expand_query(query, language, self._term_service)
         # 2. routing
-        router_trace = self._router.select_with_trace(query, language, user_whitelist)
+        router_trace = await self._router.select_with_trace(
+            query, language, user_whitelist
+        )
         active_collections = router_trace.selected
         # 3. embedding
         t_embed = time.monotonic()
@@ -99,28 +102,27 @@ class HybridRetriever:
         if not dense_vecs or not sparse_vecs:
             return self._empty_bundle(active_collections, expanded, embed_ms)
         dense_q, sparse_q = dense_vecs[0], sparse_vecs[0]
-        # 4. fan-out: system collections + user_rag
+        # 4. fan-out: system collections + user_rag (concurrent)
         t_search = time.monotonic()
-        all_hits: list[tuple[str, QdrantHit]] = []
-        for col in active_collections:
-            store = self._system_store(col)
-            hits = await store.search_hybrid(
-                dense_q,
-                sparse_q,
-                PER_COLLECTION_TOP_K,
-                only_cloud_safe=only_cloud_safe,
-            )
-            all_hits.extend((col, h) for h in hits)
         user_store = await self._user_store(user_id)
-        if user_store is not None:
-            user_hits = await user_store.search_hybrid(
-                dense_q,
-                sparse_q,
-                PER_COLLECTION_TOP_K,
-                only_cloud_safe=only_cloud_safe,
+
+        async def _search(
+            col: str, store: RagCollectionStore
+        ) -> list[tuple[str, QdrantHit]]:
+            hits = await store.search_hybrid(
+                dense_q, sparse_q, PER_COLLECTION_TOP_K, only_cloud_safe=only_cloud_safe
             )
-            user_col = f"user_rag_{user_id}"
-            all_hits.extend((user_col, h) for h in user_hits)
+            return [(col, h) for h in hits]
+
+        coroutines = [
+            _search(col, self._system_store(col)) for col in active_collections
+        ]
+        if user_store is not None:
+            coroutines.append(_search(f"user_rag_{user_id}", user_store))
+        batches = await asyncio.gather(*coroutines)
+        all_hits: list[tuple[str, QdrantHit]] = [
+            hit for batch in batches for hit in batch
+        ]
         search_ms = int((time.monotonic() - t_search) * 1000)
         # 5. rerank (fail-soft)
         t_rerank = time.monotonic()

@@ -68,18 +68,18 @@ def test_router_implements_protocol():
     assert isinstance(r, Router)
 
 
-def test_language_only_match_en_query():
+async def test_language_only_match_en_query():
     r = _router(
         [
             _meta("medcorp_en", language="en"),
             _meta("cmb_zh", language="zh"),
         ]
     )
-    out = r.select("aspirin side effects", "en", user_whitelist=None)
+    out = await r.select("aspirin side effects", "en", user_whitelist=None)
     assert out == ["medcorp_en"]
 
 
-def test_cross_lingual_collection_is_picked_for_other_language():
+async def test_cross_lingual_collection_is_picked_for_other_language():
     r = _router(
         [
             _meta("statpearls_en", language="en", cross_lingual=True),
@@ -87,36 +87,36 @@ def test_cross_lingual_collection_is_picked_for_other_language():
             _meta("cmb_zh", language="zh"),
         ]
     )
-    out = r.select("头痛 怎么办", "zh", user_whitelist=None)
+    out = await r.select("头痛 怎么办", "zh", user_whitelist=None)
     assert "cmb_zh" in out
     assert "statpearls_en" in out  # cross_lingual saves it
     assert "medcorp_en" not in out
 
 
-def test_empty_whitelist_returns_empty():
+async def test_empty_whitelist_returns_empty():
     r = _router([_meta("statpearls_en")])
-    assert r.select("q", "en", user_whitelist=[]) == []
+    assert await r.select("q", "en", user_whitelist=[]) == []
 
 
-def test_whitelist_restricts_candidates():
+async def test_whitelist_restricts_candidates():
     r = _router(
         [
             _meta("statpearls_en", language="en"),
             _meta("medcorp_en", language="en"),
         ]
     )
-    out = r.select("q", "en", user_whitelist=["statpearls_en"])
+    out = await r.select("q", "en", user_whitelist=["statpearls_en"])
     assert out == ["statpearls_en"]
 
 
-def test_max_active_caps_output():
+async def test_max_active_caps_output():
     catalog = [_meta(f"col_en_{i}", language="en", tier=1) for i in range(5)]
     r = _router(catalog, max_active=2)
-    out = r.select("q", "en", user_whitelist=None)
+    out = await r.select("q", "en", user_whitelist=None)
     assert len(out) == 2
 
 
-def test_default_whitelist_used_when_user_whitelist_is_none():
+async def test_default_whitelist_used_when_user_whitelist_is_none():
     r = _router(
         [
             _meta("a_en", language="en"),
@@ -124,14 +124,14 @@ def test_default_whitelist_used_when_user_whitelist_is_none():
         ],
         default_whitelist=["a_en"],
     )
-    out = r.select("q", "en", user_whitelist=None)
+    out = await r.select("q", "en", user_whitelist=None)
     assert out == ["a_en"]
 
 
 # --- authority bias & topic overlap ---------------------------------
 
 
-def test_higher_tier_requires_topic_overlap():
+async def test_higher_tier_requires_topic_overlap():
     r = _router(
         [
             _meta(
@@ -144,10 +144,10 @@ def test_higher_tier_requires_topic_overlap():
         authority_bias={1: 0.0, 2: 0.5, 3: 1.0},
     )
     # Query doesn't contain "uniquetopicword" → score 0.0 < threshold 1.0 → out.
-    assert r.select("q with nothing matching", "en", user_whitelist=None) == []
+    assert await r.select("q with nothing matching", "en", user_whitelist=None) == []
 
 
-def test_topic_overlap_admits_high_tier_when_match():
+async def test_topic_overlap_admits_high_tier_when_match():
     r = _router(
         [
             _meta(
@@ -159,12 +159,12 @@ def test_topic_overlap_admits_high_tier_when_match():
         ],
         authority_bias={1: 0.0, 2: 0.5, 3: 1.0},
     )
-    assert r.select("headache pain relief", "en", user_whitelist=None) == [
+    assert await r.select("headache pain relief", "en", user_whitelist=None) == [
         "low_quality_en"
     ]
 
 
-def test_chinese_substring_topic_match():
+async def test_chinese_substring_topic_match():
     # Topic words don't tokenize in CJK; substring path must match.
     r = _router(
         [
@@ -177,15 +177,15 @@ def test_chinese_substring_topic_match():
         ],
         authority_bias={1: 0.0, 2: 0.5, 3: 1.0},
     )
-    assert r.select("我患有糖尿病应该怎么办", "zh", user_whitelist=None) == [
+    assert await r.select("我患有糖尿病应该怎么办", "zh", user_whitelist=None) == [
         "diabetes_zh"
     ]
 
 
-def test_tier_one_admitted_without_topic_match():
+async def test_tier_one_admitted_without_topic_match():
     # tier=1, authority_bias[1]=0.0 → always passes language gate.
     r = _router([_meta("statpearls_en", language="en", tier=1, topics=["general"])])
-    assert r.select("anything goes here", "en", user_whitelist=None) == [
+    assert await r.select("anything goes here", "en", user_whitelist=None) == [
         "statpearls_en"
     ]
 
@@ -193,7 +193,7 @@ def test_tier_one_admitted_without_topic_match():
 # --- trace ----------------------------------------------------------
 
 
-def test_select_with_trace_returns_per_collection_decisions():
+async def test_select_with_trace_returns_per_collection_decisions():
     r = _router(
         [
             _meta("medcorp_en", language="en"),
@@ -201,7 +201,7 @@ def test_select_with_trace_returns_per_collection_decisions():
             _meta("statpearls_en", language="en", cross_lingual=True),
         ]
     )
-    trace = r.select_with_trace("aspirin", "en", user_whitelist=None)
+    trace = await r.select_with_trace("aspirin", "en", user_whitelist=None)
     assert isinstance(trace, RouterTrace)
     decisions_by_name = {d.name: d for d in trace.considered}
     assert decisions_by_name["medcorp_en"].selected is True
@@ -209,10 +209,10 @@ def test_select_with_trace_returns_per_collection_decisions():
     assert "language" in decisions_by_name["cmb_zh"].reason
 
 
-def test_capped_collections_appear_in_trace_with_reason():
+async def test_capped_collections_appear_in_trace_with_reason():
     catalog = [_meta(f"c_en_{i}", language="en", tier=1) for i in range(4)]
     r = _router(catalog, max_active=2)
-    trace = r.select_with_trace("q", "en", user_whitelist=None)
+    trace = await r.select_with_trace("q", "en", user_whitelist=None)
     capped = [d for d in trace.considered if not d.selected and "capped" in d.reason]
     assert len(capped) == 2
 
@@ -220,21 +220,21 @@ def test_capped_collections_appear_in_trace_with_reason():
 # --- edge cases -----------------------------------------------------
 
 
-def test_empty_catalog_returns_empty():
+async def test_empty_catalog_returns_empty():
     r = _router([])
-    assert r.select("q", "en", user_whitelist=None) == []
+    assert await r.select("q", "en", user_whitelist=None) == []
 
 
-def test_whitelist_with_unknown_collection_is_ignored():
+async def test_whitelist_with_unknown_collection_is_ignored():
     r = _router([_meta("statpearls_en", language="en")])
-    out = r.select("q", "en", user_whitelist=["statpearls_en", "does_not_exist"])
+    out = await r.select("q", "en", user_whitelist=["statpearls_en", "does_not_exist"])
     assert out == ["statpearls_en"]
 
 
 # --- factory --------------------------------------------------------
 
 
-def test_build_router_factory_happy_path():
+async def test_build_router_factory_happy_path():
     cfg_router = RouterConfig(
         active="rule_based",
         catalog=[
@@ -253,7 +253,7 @@ def test_build_router_factory_happy_path():
     )
     r = build_router(router_config=cfg_router, system_rag=cfg_system)
     assert isinstance(r, CollectionRouter)
-    assert r.select("any", "en", user_whitelist=None) == ["statpearls_en"]
+    assert await r.select("any", "en", user_whitelist=None) == ["statpearls_en"]
 
 
 def test_build_router_unknown_id_raises():

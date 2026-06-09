@@ -98,7 +98,12 @@ term_service:
     - id: none
       kind: noop
 
-# --- collection router (rule-based v1) ----------------------------------
+# --- collection router --------------------------------------------------
+# `rule_based` uses language gate + topic-overlap + authority bias.
+# `centroid_classifier` embeds the query and ranks collections by cosine
+# similarity against their precomputed centroids; falls back per-
+# collection to `rule_based` when a centroid file is absent (e.g. a new
+# collection added without a `rag corpora refresh-centroid` run yet).
 router:
   active: rule_based
   catalog:
@@ -106,6 +111,18 @@ router:
       max_active: 3
       # Topic-overlap threshold per authority tier — lower tiers need
       # stronger topic match to survive routing.
+      authority_bias:
+        "1": 0.0
+        "2": 0.2
+        "3": 0.5
+    - id: centroid_classifier
+      max_active: 3
+      # Cosine similarity floor. 0.1 is conservative for BGE-M3 dense
+      # vectors — typical query→on-topic centroid similarity sits in the
+      # 0.4–0.7 range; cross-topic queries land near 0.0.
+      min_similarity: 0.1
+      # Inherited authority_bias still applies inside the rule-based
+      # fallback when a collection has no centroid yet.
       authority_bias:
         "1": 0.0
         "2": 0.2

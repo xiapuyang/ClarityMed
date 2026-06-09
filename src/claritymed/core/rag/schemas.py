@@ -289,11 +289,18 @@ class TermServiceConfig(BaseModel):
 
 class RouterEntry(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-    id: Literal["rule_based"]
+    # ``id`` is an open string so adding a router (e.g. ``centroid_classifier``)
+    # only requires a catalog entry + a factory branch — no schema change.
+    # Unknown ids fail loud at ``build_router`` (UnknownRouterError), not here.
+    id: str = Field(min_length=1)
     max_active: int = Field(default=3, ge=1)
     # Keys are stringified tier numbers in YAML for stable YAML int-key
-    # behavior; convert to int-keyed dict here.
+    # behavior; convert to int-keyed dict here. Only consulted by the
+    # ``rule_based`` router; ignored by ``centroid_classifier``.
     authority_bias: dict[int, float] = Field(default_factory=dict)
+    # Cosine-similarity threshold for the embedding-based router. Ignored
+    # by ``rule_based``; tunable per environment for ``centroid_classifier``.
+    min_similarity: float = Field(default=0.1, ge=0.0, le=1.0)
 
     @model_validator(mode="before")
     @classmethod
