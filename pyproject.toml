@@ -31,6 +31,14 @@ rag-server = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
 ]
+# OpenAI Privacy Filter — model-based PII scrub layer (names, addresses,
+# dates, secrets) that runs after the regex pass. ~1.5B params, CPU-only
+# by default. Enable in configs/safety.yaml: phi.privacy_filter.enabled.
+# Install with ``uv sync --extra privacy-filter``.
+privacy-filter = [
+    "torch>=2.0",
+    "transformers>=4.40",
+]
 
 [project.scripts]
 claritymed = "claritymed.cli.main:main"

@@ -33,12 +33,14 @@ phi:
     - name: mrn
       regex: '\bMRN[:\s-]*\d{6,}\b'
       replacement: '[REDACTED:MRN]'
-  # NER (Named Entity Recognition) for PERSON / ADDRESS spans. Off by
-  # default — enabling requires a local NER model (e.g. GLiNER) on the
-  # path. When off, only the regex rules above run.
-  ner:
-    enabled: false
-    entities: [PERSON, GPE, LOC]
+  # OpenAI Privacy Filter — bidirectional token classifier for unstructured
+  # PII the regex layer misses: names, addresses, dates, secrets, URLs.
+  # Off by default (requires transformers+torch; install with
+  # ``uv sync --extra privacy-filter``).
+  privacy_filter:
+    enabled: true
+    device: auto   # auto: mps → cuda → cpu; override with "cpu"/"cuda"/"mps"
+    model_name: openai/privacy-filter
 
 red_flags: []
 

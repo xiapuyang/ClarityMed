@@ -13,18 +13,21 @@ the simple matcher cannot handle.
 Per-user opt-in: when ``Account.cloud_provider_opt_in`` is True, ``deny``
 becomes ``warn`` (the field still gets redacted, but the call proceeds).
 This is the patient's "I know what I'm doing" knob.
+
+Free-text PII scrubbing is handled by ``core.scrub.ScrubService`` —
+``PhiGuard.scrub_free_text`` delegates there.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
-import re
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from claritymed import config as _cfg
+from claritymed.core.scrub.service import ScrubConfig, ScrubReport, ScrubService
 
 if TYPE_CHECKING:
     from claritymed.core.schemas.retrieval import RetrievedChunk
@@ -35,38 +38,6 @@ REDACTED = "[REDACTED]"
 
 Provider = Literal["local", "cloud"]
 Action = Literal["allowed", "redacted", "blocked"]
-
-
-class FreeTextRule(BaseModel):
-    """One regex rule for free-text PII scrubbing."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    name: str
-    regex: str
-    replacement: str
-
-
-class NerConfig(BaseModel):
-    """Optional NER pass over free text. Off by default."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    enabled: bool = False
-    entities: list[str] = Field(default_factory=list)
-
-
-class ScrubReport(BaseModel):
-    """Per-call summary of what ``scrub_free_text`` did. Counts only — no
-    original spans are recorded, so the report is safe to emit as audit log.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    rule_hits: dict[str, int] = Field(default_factory=dict)
-    ner_hits: int = 0
-    text_len_before: int = 0
-    text_len_after: int = 0
 
 
 class ChunkFilterReport(BaseModel):
@@ -88,8 +59,6 @@ class PhiRules(BaseModel):
     fields: list[str] = Field(default_factory=list)
     providers: dict[Provider, Literal["allow", "deny"]] = Field(default_factory=dict)
     on_deny: Literal["redact", "raise"] = "redact"
-    free_text_patterns: list[FreeTextRule] = Field(default_factory=list)
-    ner: NerConfig = Field(default_factory=NerConfig)
 
 
 class PhiHit(BaseModel):
@@ -105,14 +74,26 @@ class PhiHit(BaseModel):
 class PhiGuard:
     """PHI policy. Construct from rules; call ``check_outbound`` per request."""
 
-    def __init__(self, rules: PhiRules) -> None:
+    def __init__(
+        self,
+        rules: PhiRules,
+        scrub_service: ScrubService | None = None,
+    ) -> None:
         self.rules = rules
+        self._scrub = scrub_service or ScrubService(ScrubConfig())
 
     @classmethod
     def from_config(cls) -> "PhiGuard":
         _cfg.reload_configs()
         phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
-        return cls(PhiRules.model_validate(phi_raw))
+        rules = PhiRules.model_validate(
+            {
+                k: v
+                for k, v in phi_raw.items()
+                if k in {"fields", "providers", "on_deny"}
+            }
+        )
+        return cls(rules, ScrubService.from_config())
 
     def check_outbound(
         self,
@@ -145,9 +126,6 @@ class PhiGuard:
                 )
                 if action == "redacted":
                     self._set_in(redacted, resolved_path, REDACTED)
-                else:
-                    # raise mode: leave payload as-is; caller decides
-                    pass
         return redacted, hits
 
     def filter_chunks_for_provider(
@@ -195,44 +173,8 @@ class PhiGuard:
         return kept, report
 
     def scrub_free_text(self, text: str) -> tuple[str, ScrubReport]:
-        """Redact PII spans (phone, email, ID, MRN, etc.) in free text.
-
-        This is the second PHI defense layer (M10) alongside the structured
-        ``check_outbound`` (M6). It runs at two enforcement points: before
-        chunks land in ``user_rag``, and before any LLM prompt is assembled —
-        regardless of provider kind, because user privacy is not solely a
-        cloud-egress concern.
-
-        Returns the scrubbed text plus a counts-only report (safe for audit
-        logging — no original spans included).
-        """
-        if not text:
-            return text, ScrubReport(text_len_before=0, text_len_after=0)
-
-        original_len = len(text)
-        rule_hits: dict[str, int] = {}
-        scrubbed = text
-
-        for rule in self.rules.free_text_patterns:
-            pattern = re.compile(rule.regex)
-            new_text, count = pattern.subn(rule.replacement, scrubbed)
-            if count > 0:
-                rule_hits[rule.name] = count
-                scrubbed = new_text
-
-        ner_hits = 0
-        if self.rules.ner.enabled:
-            # NER pass is intentionally left as a hook — v1 ships with
-            # regex-only. Wiring a local NER model (GLiNER, spaCy, etc.)
-            # is a follow-up task gated on real free-text traffic.
-            logger.debug("NER enabled but no model wired yet — skipping.")
-
-        return scrubbed, ScrubReport(
-            rule_hits=rule_hits,
-            ner_hits=ner_hits,
-            text_len_before=original_len,
-            text_len_after=len(scrubbed),
-        )
+        """Scrub PII from free text. Delegates to ``ScrubService``."""
+        return self._scrub.scrub(text)
 
     @staticmethod
     def _iter_field(payload: dict, path: str):

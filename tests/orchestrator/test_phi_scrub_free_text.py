@@ -76,12 +76,30 @@ def test_empty_string(guard):
     assert report.text_len_after == 0
 
 
-def test_phone_in_middle_of_digits_not_scrubbed(guard):
-    # A 16-digit number is not a phone (11 digits) and not a Chinese ID
-    # (18 digits). It should pass through untouched. This guards against
-    # the phone regex over-matching when its lookbehind/lookahead were missing.
+def test_phone_regex_no_over_match():
+    # Guard against the phone regex over-matching inside longer digit strings.
+    # Uses regex-only service so the model layer (which correctly tags 16-digit
+    # numbers as account_number) doesn't interfere with this boundary check.
+    from claritymed.core.scrub.service import (
+        FreeTextRule,
+        PrivacyFilterConfig,
+        ScrubConfig,
+        ScrubService,
+    )
+
+    config = ScrubConfig(
+        free_text_patterns=[
+            FreeTextRule(
+                name="phone_cn",
+                regex=r"(?<!\d)1[3-9]\d{9}(?!\d)",
+                replacement="[REDACTED:PHONE]",
+            )
+        ],
+        privacy_filter=PrivacyFilterConfig(enabled=False),
+    )
+    svc = ScrubService(config)
     text = "Reference number 1234567890123456 should stay intact."
-    scrubbed, _ = guard.scrub_free_text(text)
+    scrubbed, _ = svc.scrub(text)
     assert "1234567890123456" in scrubbed
 
 
@@ -113,10 +131,8 @@ def test_scrub_then_outbound_double_pass(guard):
     assert hits == []
 
 
-def test_ner_disabled_path_no_error(guard):
-    """When ``ner.enabled`` is False (the v1 default), scrub still works."""
-    assert guard.rules.ner.enabled is False
-    scrubbed, _ = guard.scrub_free_text("张三 联系 13800138000")
-    # Name not scrubbed (no NER), but phone is.
+def test_model_enabled_regex_always_runs(guard):
+    """Regex pass always runs; phone must be scrubbed regardless of model state."""
+    scrubbed, report = guard.scrub_free_text("联系 13800138000")
     assert "13800138000" not in scrubbed
-    assert "张三" in scrubbed
+    assert "[REDACTED:PHONE]" in scrubbed

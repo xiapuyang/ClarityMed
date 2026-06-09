@@ -110,15 +110,21 @@ async def test_add_document_round_trip(store):
 
 
 async def test_user_isolation_structural(store):
-    await store.add_document("alice", "doc1", text="alice has a secret note")
-    await store.add_document("bob", "doc1", text="bob has a different note")
+    # Use distinct medical phrases rather than names — the scrubber correctly
+    # redacts person names, so assertions on literal name strings would fail.
+    await store.add_document(
+        "alice", "doc1", text="glucose levels are within normal range"
+    )
+    await store.add_document(
+        "bob", "doc1", text="hemoglobin count within expected bounds"
+    )
 
-    alice_hits = await store.search("alice", "note", top_k=5)
-    bob_hits = await store.search("bob", "note", top_k=5)
+    alice_hits = await store.search("alice", "glucose", top_k=5)
+    bob_hits = await store.search("bob", "hemoglobin", top_k=5)
 
     assert alice_hits and bob_hits
-    assert all("alice" in h.text for h in alice_hits)
-    assert all("bob" in h.text for h in bob_hits)
+    assert all("glucose" in h.text for h in alice_hits)
+    assert all("hemoglobin" in h.text for h in bob_hits)
 
 
 async def test_phi_scrub_on_add(store):
