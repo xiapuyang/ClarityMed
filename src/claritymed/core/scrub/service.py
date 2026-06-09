@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,6 +38,17 @@ from claritymed.core.device import resolve_device
 logger = logging.getLogger(__name__)
 
 REDACTED = "[REDACTED]"
+
+
+def _emit_scrub_audit(payload: dict) -> None:
+    """Emit scrub.privacy_filter audit event; silently skips if context is unset."""
+    try:
+        from claritymed.core.observability.audit import audit_event
+
+        audit_event("scrub.privacy_filter", payload)
+    except Exception:  # MissingContextError or anything else  # noqa: BLE001
+        logger.debug("scrub.privacy_filter audit skipped (no request context)")
+
 
 # HF entity_group label → our [REDACTED:X] placeholder
 _LABEL_MAP: dict[str, str] = {
@@ -228,11 +240,32 @@ class ScrubService:
         pipe = self._get_pipeline()
         if pipe is None:
             return text, 0
+        backend = "onnx" if self._config.privacy_filter.onnx_file else "torch"
+        t0 = time.perf_counter()
         try:
             spans = pipe(text)
+            duration_ms = int((time.perf_counter() - t0) * 1000)
             scrubbed = self._apply_spans(text, spans)
+            _emit_scrub_audit(
+                {
+                    "status": "ok",
+                    "backend": backend,
+                    "duration_ms": duration_ms,
+                    "hits": len(spans),
+                    "chars_in": len(text),
+                    "chars_out": len(scrubbed),
+                }
+            )
             return scrubbed, len(spans)
         except Exception:
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            _emit_scrub_audit(
+                {
+                    "status": "error",
+                    "backend": backend,
+                    "duration_ms": duration_ms,
+                }
+            )
             logger.exception("privacy-filter scrub failed; using regex-only output")
             return text, 0
 

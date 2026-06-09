@@ -203,6 +203,81 @@ def test_model_layer_disabled_no_pipeline_call():
 
 
 # ---------------------------------------------------------------------------
+# Audit emission
+# ---------------------------------------------------------------------------
+
+
+def _patch_audit(monkeypatch) -> list:
+    """Patch audit_event on the audit module (lazy-import target) and return capture list."""
+    import claritymed.core.observability.audit as _audit_mod
+
+    captured: list = []
+    monkeypatch.setattr(
+        _audit_mod,
+        "audit_event",
+        lambda kind, payload=None: captured.append(
+            {"kind": kind, "payload": payload or {}}
+        ),
+    )
+    return captured
+
+
+def test_model_layer_emits_audit_on_success(monkeypatch):
+    """_layer_model emits scrub.privacy_filter with status=ok."""
+    captured = _patch_audit(monkeypatch)
+
+    class _MockPipeline:
+        def __call__(self, text):
+            return [{"entity_group": "private_person", "start": 0, "end": 5}]
+
+    svc = _service_model_enabled(_MockPipeline())
+    svc.scrub("Alice was seen today.")
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev["kind"] == "scrub.privacy_filter"
+    assert ev["payload"]["status"] == "ok"
+    assert ev["payload"]["hits"] == 1
+    assert "duration_ms" in ev["payload"]
+    assert "chars_in" in ev["payload"]
+    assert "chars_out" in ev["payload"]
+
+
+def test_model_layer_emits_audit_on_failure(monkeypatch):
+    """_layer_model emits status=error audit when the pipeline crashes."""
+    captured = _patch_audit(monkeypatch)
+
+    class _BrokenPipeline:
+        def __call__(self, text):
+            raise RuntimeError("inference failed")
+
+    config = ScrubConfig(
+        free_text_patterns=[],
+        privacy_filter=PrivacyFilterConfig(enabled=True),
+    )
+    svc = ScrubService(config)
+    svc._pipeline = _BrokenPipeline()
+    svc._pipeline_tried = True
+    svc.scrub("some text")
+
+    assert len(captured) == 1
+    assert captured[0]["payload"]["status"] == "error"
+    assert "duration_ms" in captured[0]["payload"]
+
+
+def test_model_layer_audit_skips_when_no_context():
+    """No request context → audit is silently skipped, scrub still works."""
+
+    class _MockPipeline:
+        def __call__(self, text):
+            return []
+
+    svc = _service_model_enabled(_MockPipeline())
+    scrubbed, report = svc.scrub("safe text")
+    assert scrubbed == "safe text"
+
+
+# ---------------------------------------------------------------------------
 # from_config round-trip
 # ---------------------------------------------------------------------------
 

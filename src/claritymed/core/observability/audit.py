@@ -69,6 +69,11 @@ AuditKind = Literal[
     #          chars (on success), error (on failure),
     #          fallback (bool, true when image default failed).
     "ocr.extract",
+    # Privacy-filter model inference — one event per _layer_model call.
+    # payload: backend ("onnx"|"torch"), status ("ok"|"error"), duration_ms,
+    #          hits (entity count), chars_in, chars_out (on success),
+    #          error (on failure).
+    "scrub.privacy_filter",
 ]
 
 
