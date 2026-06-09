@@ -66,6 +66,12 @@ embedders:
       api_key_env: null
 
 # --- rerankers (catalog + active) ---------------------------------------
+# Both entries share the TEI /rerank wire format and the same default
+# port — only one reranker server runs at a time, and the operator swaps
+# which model the server loads via BGE_RERANKER_MODEL_PATH (+ the
+# instruction-prefix env var for Gemma). Flip `active` to switch.
+# Tradeoff: v2-gemma scores ~2 MTEB points higher but is ~2× slower per
+# batch and uses ~3× the memory, so its batch_size is smaller.
 rerankers:
   active: bge_v2_m3_http
   catalog:
@@ -73,6 +79,12 @@ rerankers:
       kind: http
       base_url: "http://127.0.0.1:8083"
       batch_size: 32
+      timeout_s: 30
+      api_key_env: null
+    - id: bge_v2_gemma_http
+      kind: http
+      base_url: "http://127.0.0.1:8083"
+      batch_size: 8
       timeout_s: 30
       api_key_env: null
 

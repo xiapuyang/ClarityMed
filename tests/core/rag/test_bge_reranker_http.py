@@ -184,6 +184,25 @@ def test_build_reranker_factory_happy_path():
     assert isinstance(rr, BgeRerankerV2M3HttpReranker)
 
 
+def test_build_reranker_factory_v2_gemma_uses_same_client():
+    """v2-gemma shares the TEI /rerank wire format with v2-m3, so the
+    same async HTTP client serves it — only the server-side model and
+    optional query instruction prefix differ."""
+    cfg = RerankerConfig(
+        active="bge_v2_gemma_http",
+        catalog=[
+            {  # type: ignore[list-item]
+                "id": "bge_v2_gemma_http",
+                "kind": "http",
+                "base_url": "http://rerank.test",
+                "batch_size": 8,
+            }
+        ],
+    )
+    rr = build_reranker(cfg)
+    assert isinstance(rr, BgeRerankerV2M3HttpReranker)
+
+
 def test_build_reranker_unknown_id_raises():
     from claritymed.core.rag.schemas import RerankerConfig, RerankerEntry
 

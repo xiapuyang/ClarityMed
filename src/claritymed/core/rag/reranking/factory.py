@@ -23,7 +23,11 @@ def build_reranker(config: RerankerConfig | None = None) -> Reranker:
     """
     cfg = config or load_retrieval_config().rerankers
     entry = cfg.resolved()
-    if entry.id == "bge_v2_m3_http":
+    # Both v2-m3 and v2-gemma share the TEI ``/rerank`` wire format, so
+    # the same async HTTP client serves both — the operator decides which
+    # model the server actually loads via BGE_RERANKER_MODEL_PATH and
+    # BGE_RERANKER_QUERY_INSTRUCTION (see servers/reranker.py).
+    if entry.id in ("bge_v2_m3_http", "bge_v2_gemma_http"):
         return BgeRerankerV2M3HttpReranker(
             base_url=entry.base_url,
             batch_size=entry.batch_size,
