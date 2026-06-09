@@ -177,6 +177,31 @@ class ScrubService:
             text_len_after=len(scrubbed),
         )
 
+    def check_runtime_deps(self) -> None:
+        """Raise ImportError if required packages for the model layer are missing.
+
+        Call at startup to fast-fail with a clear remediation hint rather
+        than silently degrading to regex-only at the first scrub call.
+        Does nothing when ``privacy_filter.enabled`` is False.
+        """
+        if not self._config.privacy_filter.enabled:
+            return
+        if self._config.privacy_filter.onnx_file:
+            try:
+                import optimum.onnxruntime  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "privacy_filter.enabled=true with onnx_file requires "
+                    "optimum[onnxruntime]. Install with: uv sync --extra privacy-filter"
+                ) from None
+        try:
+            import transformers  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "privacy_filter.enabled=true requires transformers. "
+                "Install with: uv sync --extra privacy-filter"
+            ) from None
+
     def ensure_downloaded(self) -> bool:
         """Pre-download model weights to the HuggingFace cache.
 

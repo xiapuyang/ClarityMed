@@ -83,22 +83,28 @@ def _stderr(msg: str) -> None:
 def _prefetch_models() -> None:
     """Download in-process model weights to HF cache before the TUI starts.
 
-    Runs before ``ClarityMedApp.run()`` so the terminal is still available
-    for HuggingFace's progress bars. Failures are non-fatal — the TUI starts
-    regardless and the model layer falls back to regex-only if unavailable.
+    Fails fast if ``privacy_filter.enabled=true`` but the required packages
+    are not installed — a missing package is a misconfiguration, not a
+    recoverable runtime condition.
     """
     from claritymed.core.scrub.service import ScrubService
 
     svc = ScrubService.from_config()
     if not svc._config.privacy_filter.enabled:
         return
+    try:
+        svc.check_runtime_deps()
+    except ImportError as exc:
+        print(f"startup error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     model = svc._config.privacy_filter.model_name
     print(f"Checking model cache: {model}")
     ok = svc.ensure_downloaded()
     if ok:
         print(f"  ✓ {model} ready")
     else:
-        print(f"  ⚠ {model} unavailable — scrub falls back to regex-only")
+        print(f"  ✗ {model} download failed", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def _run_async(coro):
