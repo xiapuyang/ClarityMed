@@ -15,6 +15,7 @@ from claritymed.core.schemas.answer import (
     GroundedAnswer,
     RedFlag,
 )
+from claritymed.core.schemas.evals import EvalsConfig
 from claritymed.core.schemas.lab import LabFlag, LabPanel, LabValue, ReferenceRange
 from claritymed.core.schemas.models import (
     ModelsConfig,
@@ -50,6 +51,7 @@ __all__ = [
     "Condition",
     "Disclaimer",
     "DiseaseVisionModel",
+    "EvalsConfig",
     "GroundedAnswer",
     "LabFlag",
     "LabPanel",

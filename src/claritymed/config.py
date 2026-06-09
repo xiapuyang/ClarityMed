@@ -103,6 +103,28 @@ def load_modes_config() -> "ModesConfig":
     return ModesConfig.model_validate(raw)
 
 
+def load_evals_config() -> "EvalsConfig":
+    """Load and validate ``configs/evals.yaml``.
+
+    Single source of truth for which benchmark tasks the runner executes by
+    default, where per-run JSONL lands, and which provider (if any) acts as
+    a judge. Wraps :func:`load_yaml` (cached) and validates with Pydantic so
+    a typo fails fast at load time, not in the middle of a 20-minute run.
+
+    Raises:
+        FileNotFoundError: If ``configs/evals.yaml`` does not exist.
+        pydantic.ValidationError: If the YAML is structurally wrong.
+    """
+    from claritymed.core.schemas.evals import EvalsConfig
+
+    raw = load_yaml("evals.yaml")
+    if not raw:
+        raise FileNotFoundError(
+            "configs/evals.yaml missing or empty — required for `claritymed eval`."
+        )
+    return EvalsConfig.model_validate(raw)
+
+
 def load_env_file(path: Path | None = None) -> dict[str, str]:
     """Load ``KEY=VALUE`` lines from ``CLARITYMED_HOME/.env`` into ``os.environ``.
 
@@ -139,4 +161,5 @@ def reload_configs() -> None:
 
 
 if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
+    from claritymed.core.schemas.evals import EvalsConfig  # noqa: F401
     from claritymed.core.schemas.modes import ModesConfig  # noqa: F401

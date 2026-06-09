@@ -51,6 +51,16 @@ e2e = [
     # HyDE hypotheticals) shows up as spurious test failures.
     "pytest-rerunfailures>=15.0",
 ]
+# MCQA evaluation — runs MedQA-USMLE (and follow-on CMB/MedMCQA/PubMedQA YAML
+# tasks) through lm-evaluation-harness against any provider in models.yaml.
+# Heavy: lm-eval transitively pulls in torch (~2 GB) plus datasets. TUI/ask/
+# ingest users never need it. Run with:
+#   uv sync --extra evals
+#   uv run claritymed eval medqa --provider <id> --limit 50
+evals = [
+    "lm-eval>=0.4.5,<0.5",
+    "datasets>=2.20",
+]
 
 [project.scripts]
 claritymed = "claritymed.cli.main:main"
