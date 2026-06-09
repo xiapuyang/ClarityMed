@@ -51,3 +51,33 @@ repos:
           if [ -z "${line// }" ]; then echo "❌ Empty commit message"; exit 1; fi;
           if [ "$len" -gt 72 ]; then echo "❌ Subject too long ($len chars, max 72)"; exit 1; fi' --
         stages: [commit-msg]
+
+      # Run unit tests when framework files change — catches regressions
+      # before they land in a commit. Only fires when orchestrator / core /
+      # stores / cli files are staged, so pure-doc or config changes stay fast.
+      - id: pytest-framework
+        name: Unit tests (framework change)
+        language: system
+        entry: uv run pytest --ignore=tests/e2e -q --no-cov --tb=short
+        pass_filenames: false
+        files: '^src/claritymed/(orchestrator|core|stores|cli)/'
+        stages: [pre-commit]
+
+      # Full unit tests on every push — last line of defence before the
+      # branch is shared. Install with:
+      #   uv run pre-commit install --hook-type pre-push
+      - id: pytest-pre-push
+        name: Full unit tests
+        language: system
+        entry: uv run pytest --ignore=tests/e2e -q --no-cov --tb=short
+        pass_filenames: false
+        stages: [pre-push]
+
+      # E2E tests on push — skips gracefully when local services aren't
+      # running (embedder / reranker / LLM). Same install as above.
+      - id: pytest-e2e-pre-push
+        name: E2E tests
+        language: system
+        entry: uv run pytest tests/e2e -q --no-cov --tb=short
+        pass_filenames: false
+        stages: [pre-push]
