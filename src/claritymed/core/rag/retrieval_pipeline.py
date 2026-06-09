@@ -237,8 +237,24 @@ async def perform_retrieval(deps: "TurnState", query: str) -> list["RetrievedChu
     return safe_chunks
 
 
+def deduplicate_chunks(chunks: list) -> list:
+    """Return chunks with at most one entry per doc_id (first = highest score)."""
+    seen: dict[str, None] = {}
+    result = []
+    for c in chunks:
+        if c.doc_id not in seen:
+            seen[c.doc_id] = None
+            result.append(c)
+    return result
+
+
 def format_evidence(chunks: list) -> str:
-    """Format retrieved chunks as a numbered evidence block for the LLM."""
+    """Format retrieved chunks as a numbered evidence block for the LLM.
+
+    Deduplicates by doc_id before numbering so citation indices in the
+    LLM response match the Sources section shown to the user.
+    """
+    chunks = deduplicate_chunks(chunks)
     if not chunks:
         return ""
     lines = ["", "Evidence (cite by [n]):"]

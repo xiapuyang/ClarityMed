@@ -243,22 +243,27 @@ class AskService:
             async for event in self._stream_turn(
                 scrubbed, deps, message_history, user_id, result
             ):
-                # Inject sources just before Done so the TUI's event loop
-                # processes them while the stream is still open.
-                if isinstance(event, Done) and deps.retrieved_chunks:
-                    self._last_chunks = list(deps.retrieved_chunks)
-                    yield TokenChunk(text=self._format_sources(deps.retrieved_chunks))
-                    if os.environ.get("CLARITYMED_DEBUG"):
+                if isinstance(event, Done):
+                    # Finalize while still inside the generator so _finalize_turn
+                    # runs before the consumer closes us on Done.  Moving this
+                    # after `yield event` would make it dead code because the TUI
+                    # returns immediately when it receives Done.
+                    if not result["had_error"]:
+                        self._finalize_turn(user_id, result, deps)
+                    if deps.retrieved_chunks:
+                        self._last_chunks = list(deps.retrieved_chunks)
                         yield TokenChunk(
-                            text=self._format_debug_collections(deps.retrieved_chunks)
+                            text=self._format_sources(deps.retrieved_chunks)
                         )
+                        if os.environ.get("CLARITYMED_DEBUG"):
+                            yield TokenChunk(
+                                text=self._format_debug_collections(
+                                    deps.retrieved_chunks
+                                )
+                            )
                 yield event
         finally:
             detach_session_baggage(session_token)
-
-        if result["had_error"]:
-            return
-        self._finalize_turn(user_id, result, deps)
 
     async def _stream_turn(
         self,
@@ -547,8 +552,11 @@ class AskService:
         """
         if not chunks:
             return ""
+        from claritymed.core.rag.retrieval_pipeline import deduplicate_chunks
+
+        unique = deduplicate_chunks(chunks)
         lines = ["\n\n**Sources:**"]
-        for i, c in enumerate(chunks, start=1):
+        for i, c in enumerate(unique, start=1):
             src = c.source_uri or c.doc_title or c.collection_name or c.source
             lines.append(f"- [{i}] {src}")
         return "\n".join(lines)

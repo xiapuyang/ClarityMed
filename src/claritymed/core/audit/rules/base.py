@@ -30,6 +30,7 @@ class RuleReport:
     description: str
     total_relevant: int = 0
     counts: dict[str, int] = field(default_factory=dict)
+    rates: dict[str, str] = field(default_factory=dict)
     findings: list[str] = field(default_factory=list)
     samples: list[dict] = field(default_factory=list)
 

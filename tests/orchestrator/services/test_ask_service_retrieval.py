@@ -40,17 +40,18 @@ def _chunk(
     can_cloud: bool = True,
     source: str = "system_rag",
     parent_text: str | None = None,
+    doc_id: str = "d1",
 ) -> RetrievedChunk:
     return RetrievedChunk(
         text=text,
         source=source,  # type: ignore[arg-type]
         score=0.9,
-        doc_id="d1",
+        doc_id=doc_id,
         chunk_index=0,
         is_phi=is_phi,
         can_cloud=can_cloud,
         collection_name="statpearls_en" if source == "system_rag" else "user_rag_alice",
-        parent_id="d1#p0",
+        parent_id=f"{doc_id}#p0",
         parent_text=parent_text,
         rerank_score=0.9,
     )
@@ -226,8 +227,8 @@ def test_evidence_format_prefers_parent_text_when_present():
     falling back to the child chunk text otherwise."""
     formatted = AskService._format_evidence(
         [
-            _chunk(text="child A", parent_text="PARENT_A_FULL"),
-            _chunk(text="child B with no parent"),
+            _chunk(text="child A", parent_text="PARENT_A_FULL", doc_id="d1"),
+            _chunk(text="child B with no parent", doc_id="d2"),
         ]
     )
     assert "PARENT_A_FULL" in formatted

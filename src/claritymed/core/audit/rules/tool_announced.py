@@ -62,6 +62,7 @@ class ToolAnnouncedButSkippedRule:
 
     def report(self) -> RuleReport:
         counts: dict[str, int] = {}
+        rates: dict[str, str] = {}
         findings: list[str] = []
         total_relevant = sum(self._totals.values())
 
@@ -73,6 +74,7 @@ class ToolAnnouncedButSkippedRule:
             label = f"{key[0]}/{key[1]}"
             counts[label] = skipped
             rate = (skipped / total * 100.0) if total else 0.0
+            rates[label] = f"{skipped}/{total} ({rate:.1f}%)"
             rated.append((label, skipped, total, rate))
         rated.sort(key=lambda row: row[3], reverse=True)
 
@@ -98,6 +100,7 @@ class ToolAnnouncedButSkippedRule:
             description=self.description,
             total_relevant=total_relevant,
             counts=counts,
+            rates=rates,
             findings=findings,
             samples=self._samples,
         )

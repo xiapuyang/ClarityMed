@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal
 
 from textual import work
 from textual.app import App, ComposeResult
+from textual.css.query import NoMatches
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.worker import Worker
@@ -560,8 +561,11 @@ class ClarityMedApp(App):
             except Exception:  # noqa: BLE001 — never let observability bring down a turn
                 logger.exception("failed to emit request_end audit/access")
             reset_context(per_turn)
-            self.query_one(InputBar).set_streaming(False)
-            self._refresh_input_placeholder()
+            try:
+                self.query_one(InputBar).set_streaming(False)
+                self._refresh_input_placeholder()
+            except NoMatches:
+                pass  # App is tearing down; widgets already unmounted.
 
     def _on_done(self, mode: ModeName, final, streamed_text: str) -> None:
         conv = self.query_one(Conversation)

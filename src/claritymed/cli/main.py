@@ -97,12 +97,9 @@ def _prefetch_models() -> None:
     except ImportError as exc:
         print(f"startup error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    model = svc._config.privacy_filter.model_name
-    print(f"Checking model cache: {model}")
     ok = svc.ensure_downloaded()
-    if ok:
-        print(f"  ✓ {model} ready")
-    else:
+    if not ok:
+        model = svc._config.privacy_filter.model_name
         print(f"  ✗ {model} download failed", file=sys.stderr)
         raise SystemExit(1)
 
@@ -1171,7 +1168,8 @@ def audit_scan(
         if rep.counts:
             console.print("  counts:")
             for label, n in sorted(rep.counts.items(), key=lambda kv: -kv[1]):
-                console.print(f"    {label}: {n}")
+                display = rep.rates.get(label, str(n))
+                console.print(f"    {label}: {display}")
         if rep.findings:
             console.print("  findings:")
             for line in rep.findings:

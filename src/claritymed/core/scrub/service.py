@@ -359,7 +359,20 @@ class ScrubService:
                     "Install with: uv sync --extra privacy-filter"
                 ) from None
         try:
+            # transformers._configure_library_root_logger() resets the Python
+            # log level on import, overwriting any pre-set we do.  The only
+            # reliable hook is TRANSFORMERS_VERBOSITY, which it reads as its
+            # initial level.  We use setdefault so a user-set env var wins.
+            import os
+
+            os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
             import transformers  # noqa: F401
+
+            transformers.logging.set_verbosity_error()
+            logger.debug(
+                "transformers imported (ONNX path); PyTorch/TF/Flax "
+                "backend warning suppressed via TRANSFORMERS_VERBOSITY"
+            )
         except ImportError:
             raise ImportError(
                 "privacy_filter.enabled=true requires transformers. "
@@ -385,25 +398,39 @@ class ScrubService:
             return True
         try:
             from huggingface_hub import snapshot_download
+            from huggingface_hub.errors import LocalEntryNotFoundError
 
             onnx_file = self._config.privacy_filter.onnx_file
             repo_id = self._config.privacy_filter.model_name
-            if onnx_file:
-                snapshot_download(
-                    repo_id=repo_id,
-                    allow_patterns=[
+            kwargs: dict = (
+                {
+                    "allow_patterns": [
                         "config.json",
                         "tokenizer*.json",
                         "special_tokens_map.json",
                         onnx_file,
                         f"{onnx_file}_data",
-                    ],
-                )
-            else:
-                snapshot_download(
-                    repo_id=repo_id,
-                    ignore_patterns=["*.msgpack", "*.h5", "flax_*", "tf_*", "onnx/*"],
-                )
+                    ]
+                }
+                if onnx_file
+                else {
+                    "ignore_patterns": [
+                        "*.msgpack",
+                        "*.h5",
+                        "flax_*",
+                        "tf_*",
+                        "onnx/*",
+                    ]
+                }
+            )
+            try:
+                # Fast path: all files already in local cache — skip ETag check.
+                snapshot_download(repo_id=repo_id, local_files_only=True, **kwargs)
+                logger.debug("privacy-filter cache hit; skipping network check")
+            except LocalEntryNotFoundError:
+                # First run or cache evicted: download from HuggingFace Hub.
+                logger.info("downloading privacy-filter model weights: %s", repo_id)
+                snapshot_download(repo_id=repo_id, **kwargs)
             return True
         except ImportError:
             logger.warning("huggingface_hub not installed; skipping pre-download")

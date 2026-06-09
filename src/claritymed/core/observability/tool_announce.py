@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import re
 
-# Chinese announce patterns. ``我(将|会|要|来|去)?(先|首先)?(检索|查询|...)``
-# covers "我将检索 / 我会先查询 / 我去查 / 我来检索一下" etc. Add
+# Chinese announce patterns. ``我(将|会|要|来|去|需要|想要|打算)?(先|首先)?(检索|查询|...)``
+# covers "我将检索 / 我需要先检索 / 我去查 / 我来检索一下" etc. Add
 # observed misses here rather than guessing.
 _ANNOUNCE_ZH = re.compile(
-    r"我(将|会|要|来|去)?(先|首先|马上|稍后)?(检索|查询|查找|查阅|查一下|查看|了解|搜索)"
+    r"我(将|会|要|来|去|需要|想要|打算)?(先|首先|马上|稍后)?(检索|查询|查找|查阅|查一下|查看|了解|搜索)"
     r"|让我(先|首先)?(查|检索|查询|搜索|了解)"
     r"|稍等[,，].*?(查|检索|查询)"
 )
