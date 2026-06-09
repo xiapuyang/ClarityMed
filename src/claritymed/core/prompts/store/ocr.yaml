@@ -9,9 +9,19 @@ versions:
     notes: Initial OCR extraction prompt.
     languages:
       en: |
-        Extract all text from this document exactly as written.
-        Return only the text content with no commentary, formatting notes,
-        or descriptions of non-text elements.
+        You will receive a document attachment. Extract all text exactly as written.
+
+        Set success=true and populate text with the extracted content.
+        If you cannot see any attached document (no file received, unsupported
+        format, or blank content), set success=false, leave text empty, and
+        briefly describe why in failure_reason.
+
+        Do not add commentary, formatting notes, or descriptions of visual elements.
       zh: |
-        原文提取此文档中的全部文字内容。
-        只返回文字内容，不要添加任何说明、格式注释或对非文字元素的描述。
+        你会收到一个文档附件。原文提取其中的全部文字内容。
+
+        如果能看到文档内容，设置 success=true，将提取的文字填入 text。
+        如果没有收到任何附件、格式不支持或内容为空，设置 success=false，
+        text 留空，在 failure_reason 中简短说明原因。
+
+        不要添加任何说明、格式注释或对非文字元素的描述。

@@ -38,11 +38,13 @@ class LLMOcrProvider(OcrProvider):
         """Send *path* to the LLM and return extracted text.
 
         Raises:
-            OcrError: On any failure (file unreadable, model error, etc.).
+            OcrError: On any failure (file unreadable, model error, or when
+                the LLM reports it could not see the document content).
         """
         from pydantic_ai import Agent, BinaryContent
 
         from claritymed.core.prompts.registry import PromptRegistry
+        from claritymed.core.schemas.ocr import OcrExtraction
 
         try:
             binary = BinaryContent.from_path(path)
@@ -50,14 +52,21 @@ class LLMOcrProvider(OcrProvider):
             raise OcrError(f"Cannot read {path}: {exc}") from exc
 
         prompt = PromptRegistry().get(_PROMPT_NAME)
-        agent: Agent[None, str] = Agent(
-            self._model, system_prompt=prompt, output_type=str
+        agent: Agent[None, OcrExtraction] = Agent(
+            self._model, system_prompt=prompt, output_type=OcrExtraction
         )
         try:
             result = await agent.run([binary])
         except Exception as exc:
             raise OcrError(f"LLM OCR failed for {path.name}: {exc}") from exc
 
-        text = result.output.strip()
+        extraction = result.output
+        if not extraction.success:
+            raise OcrError(
+                f"LLM could not extract text from {path.name}: "
+                f"{extraction.failure_reason or 'no reason given'}"
+            )
+
+        text = extraction.text.strip()
         logger.debug("ocr: extracted %d chars from %s", len(text), path.name)
         return text

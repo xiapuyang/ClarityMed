@@ -25,7 +25,7 @@ leak from.
 
 Migration note: the previous fastembed BGE-small (384-dim) implementation
 was retired in Unit 8 of the RAG plan. Existing collections created with
-the old embedder are dimension-incompatible; use ``rag migrate <user_id>``
+the old embedder are dimension-incompatible; use ``rag rm`` to remove stale docs
 to drop + recreate (no automatic re-embed in v1 since user_rag is
 expected to be empty during the alpha window).
 """
@@ -104,6 +104,18 @@ class UserRagStore:
         if not text or not text.strip():
             return 0
 
+        # 0. dedup by source_uri (indexed — single lookup, not full scan)
+        source_uri = (metadata or {}).get("source_uri")
+        if source_uri:
+            col_store = self._collection_store(user_id)
+            existing = await col_store.find_doc_id_by_source_uri(source_uri)
+            if existing:
+                from claritymed.errors import DuplicateDocumentError
+
+                raise DuplicateDocumentError(
+                    source_uri=source_uri, existing_doc_id=existing
+                )
+
         # 1. PHI scrub
         scrubbed = text if public else self._guard.scrub_free_text(text)[0]
 
@@ -169,6 +181,92 @@ class UserRagStore:
         parent_store = self._parent_store(user_id)
         return [self._to_retrieved_chunk(user_id, hit, parent_store) for hit in hits]
 
+    # --- list / inspect ------------------------------------------------
+
+    async def list_documents(self, user_id: str) -> list[dict]:
+        """Return one summary dict per unique doc_id in the user's collection.
+
+        Each dict has: doc_id, chunk_count, ingested_at, is_phi, can_cloud,
+        source_uri, preview (first 120 chars of chunk 0 text).
+        """
+        coll = collection_name(user_id)
+        if not await self._aclient.collection_exists(coll):
+            return []
+
+        docs: dict[str, dict] = {}
+        offset = None
+        while True:
+            batch, offset = await self._aclient.scroll(
+                collection_name=coll,
+                limit=512,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in batch:
+                p = point.payload or {}
+                doc_id = p.get("doc_id", "")
+                if not doc_id:
+                    continue
+                if doc_id not in docs:
+                    docs[doc_id] = {
+                        "doc_id": doc_id,
+                        "chunk_count": 0,
+                        "ingested_at": p.get("ingested_at", ""),
+                        "is_phi": p.get("is_phi", True),
+                        "can_cloud": p.get("can_cloud", False),
+                        "source_uri": p.get("source_uri"),
+                        "preview": "",
+                    }
+                docs[doc_id]["chunk_count"] += 1
+                if p.get("chunk_index", 999) == 0:
+                    docs[doc_id]["preview"] = (p.get("text") or "")[:120]
+            if offset is None:
+                break
+
+        return sorted(docs.values(), key=lambda d: d["ingested_at"])
+
+    async def get_chunks(self, user_id: str, doc_id: str) -> list[dict]:
+        """Return all chunks for *doc_id*, ordered by chunk_index.
+
+        Each dict has: chunk_index, text, parent_id, is_phi, can_cloud.
+        """
+        coll = collection_name(user_id)
+        if not await self._aclient.collection_exists(coll):
+            return []
+
+        from qdrant_client.http import models as qm
+
+        doc_filter = qm.Filter(
+            must=[qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id))]
+        )
+        chunks = []
+        offset = None
+        while True:
+            batch, offset = await self._aclient.scroll(
+                collection_name=coll,
+                limit=512,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+                scroll_filter=doc_filter,
+            )
+            for point in batch:
+                p = point.payload or {}
+                chunks.append(
+                    {
+                        "chunk_index": p.get("chunk_index", 0),
+                        "text": p.get("text", ""),
+                        "parent_id": p.get("parent_id"),
+                        "is_phi": p.get("is_phi", True),
+                        "can_cloud": p.get("can_cloud", False),
+                    }
+                )
+            if offset is None:
+                break
+
+        return sorted(chunks, key=lambda c: c["chunk_index"])
+
     # --- delete / drop -------------------------------------------------
 
     async def delete_document(self, user_id: str, doc_id: str) -> None:
@@ -191,20 +289,6 @@ class UserRagStore:
         if dropped_parent:
             path.unlink()
         return dropped_qdrant or dropped_parent
-
-    # --- migration helper ---------------------------------------------
-
-    async def migrate_user(self, user_id: str) -> None:
-        """Drop the user's collection + docstore so the next ``add_document``
-        rebuilds at the current embedder dimension.
-
-        v1 does **not** auto-reembed: pre-Unit-8 vectors (384-dim fastembed)
-        cannot be re-encoded without the original text, which lived only in
-        the scrubbed payload. Users in the alpha window have effectively
-        no real data; ``rag migrate`` is documented as destructive in the
-        CLI help.
-        """
-        await self.drop_user(user_id)
 
     # --- internals -----------------------------------------------------
 

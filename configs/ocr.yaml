@@ -1,25 +1,36 @@
 # OCR service configuration.
 #
-# provider: which OCR backend to use.
-#   llm    — sends the file to a vision-capable LLM via pydantic-ai
-#             BinaryContent.  Works with GPT-4o, Claude, Qwen-VL, etc.
+# Routing rules:
+#   document_provider — used for PDF, doc, docx, ppt, pptx, xls, xlsx
+#   image.default     — first choice for image files (PNG, JPG, etc.)
+#   image.fallback    — used when image.default raises OcrError (set to null to disable)
 #
-# Supported file types: PDF, JPEG, PNG, GIF, WebP, BMP, TIFF.
+# Supported providers:
+#   mineru — MineRU standard API (requires MINERU_API_TOKEN in env)
+#   llm    — vision-capable LLM via pydantic-ai BinaryContent
 
-provider: llm
+document_provider: mineru
+
+image:
+  default: llm
+  fallback: mineru
+
+# MineRU API settings
+mineru:
+  api_key_env: MINERU_API_TOKEN
+  model_version: vlm     # pipeline | vlm
+  poll_interval: 3.0     # seconds between status polls
+  poll_timeout: 300.0    # max seconds to wait before giving up
 
 # LLM-based OCR settings — two ways to specify the model:
 #
 # Option A: reference an existing models.yaml provider by id (recommended).
 #   provider_id: <id>
-#   No other fields needed; connection details come from the catalog.
 #
-# Option B: inline connection details (same convention as models.yaml).
+# Option B: inline connection details.
 #   model: "<prefix>:<model>"   # e.g. "openai:gpt-4o"  (no base_url)
 #   model: "bare-name"          # e.g. "qwen-vl:7b"     (with base_url)
-#   base_url: "http://..."      # optional — self-hosted endpoint
-#   api_key_env: ENV_VAR_NAME   # optional — only honored when base_url is set
-#
-# Exactly one of provider_id or model must be set.
+#   base_url: "http://..."
+#   api_key_env: ENV_VAR_NAME   # only honored when base_url is set
 llm:
   provider_id: omlx

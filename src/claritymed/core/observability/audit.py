@@ -64,6 +64,11 @@ AuditKind = Literal[
     # post-mortem latency analysis can separate retrieval cost from
     # model TTFT without inferring from timestamps.
     "llm.call.start",
+    # OCR extraction — one event per extract_text call.
+    # payload: provider, file, size_bytes, status, duration_ms,
+    #          chars (on success), error (on failure),
+    #          fallback (bool, true when image default failed).
+    "ocr.extract",
 ]
 
 

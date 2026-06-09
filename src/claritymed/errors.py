@@ -81,6 +81,22 @@ class UnknownRouterError(KeyError):
     """``router.active`` does not appear in the catalog."""
 
 
+class DuplicateDocumentError(ValueError):
+    """``source_uri`` is already indexed under an existing ``doc_id``.
+
+    Raised by ``UserRagStore.add_document`` when the caller supplies a
+    ``source_uri`` that matches a point already in the collection.
+    ``existing_doc_id`` names the duplicate so callers can surface it.
+    """
+
+    def __init__(self, source_uri: str, existing_doc_id: str) -> None:
+        super().__init__(
+            f"source_uri already indexed as {existing_doc_id!r}: {source_uri!r}"
+        )
+        self.source_uri = source_uri
+        self.existing_doc_id = existing_doc_id
+
+
 # --- RAG runtime errors -------------------------------------------------
 #
 # Embedder is fail-loud (a silently substituted CPU embedder would write

@@ -127,6 +127,11 @@ class RagCollectionStore:
             field_name="doc_id",
             field_schema=qm.PayloadSchemaType.KEYWORD,
         )
+        await self._aclient.create_payload_index(
+            collection_name=self._collection,
+            field_name="source_uri",
+            field_schema=qm.PayloadSchemaType.KEYWORD,
+        )
 
     async def drop_collection(self) -> bool:
         if not await self._aclient.collection_exists(self._collection):
@@ -186,6 +191,31 @@ class RagCollectionStore:
             exact=False,
         )
         return info.count > 0
+
+    async def find_doc_id_by_source_uri(self, source_uri: str) -> str | None:
+        """Return the ``doc_id`` of the first chunk matching *source_uri*, or None.
+
+        Uses the ``source_uri`` payload index, so this is a single indexed
+        lookup rather than a full scan.
+        """
+        if not await self._aclient.collection_exists(self._collection):
+            return None
+        batch, _ = await self._aclient.scroll(
+            collection_name=self._collection,
+            scroll_filter=qm.Filter(
+                must=[
+                    qm.FieldCondition(
+                        key="source_uri", match=qm.MatchValue(value=source_uri)
+                    )
+                ]
+            ),
+            limit=1,
+            with_payload=["doc_id"],
+            with_vectors=False,
+        )
+        if not batch:
+            return None
+        return (batch[0].payload or {}).get("doc_id")
 
     # --- writes -------------------------------------------------------
 

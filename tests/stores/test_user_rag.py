@@ -210,10 +210,49 @@ async def test_delete_document_scrubs_qdrant_and_parents(store):
     assert any(h.doc_id == "d2" for h in remaining)
 
 
-# --- migration -----------------------------------------------------
+# --- deduplication --------------------------------------------------
 
 
-async def test_migrate_user_is_destructive_alias_of_drop(store):
-    await store.add_document("alice", "d1", text="some note")
-    await store.migrate_user("alice")
-    assert await store.search("alice", "note") == []
+async def test_add_document_rejects_duplicate_source_uri(store):
+    from claritymed.errors import DuplicateDocumentError
+
+    await store.add_document(
+        "alice",
+        "doc1",
+        text="blood pressure notes",
+        metadata={"source_uri": "/docs/bp.pdf"},
+    )
+    with pytest.raises(DuplicateDocumentError) as exc_info:
+        await store.add_document(
+            "alice",
+            "doc2",
+            text="blood pressure notes again",
+            metadata={"source_uri": "/docs/bp.pdf"},
+        )
+    assert exc_info.value.existing_doc_id == "doc1"
+    assert exc_info.value.source_uri == "/docs/bp.pdf"
+
+
+async def test_add_document_allows_same_uri_different_users(store):
+    """source_uri dedup is per-user — different users may share the same URI."""
+    await store.add_document(
+        "alice",
+        "doc1",
+        text="shared guideline",
+        metadata={"source_uri": "/docs/aha.pdf"},
+    )
+    # Must not raise for bob even though URI is the same
+    n = await store.add_document(
+        "bob",
+        "doc1",
+        text="shared guideline",
+        metadata={"source_uri": "/docs/aha.pdf"},
+    )
+    assert n == 1
+
+
+async def test_add_document_without_source_uri_allows_duplicates(store):
+    """No source_uri in metadata → dedup is skipped (backward compat)."""
+    await store.add_document("alice", "doc1", text="some clinical note")
+    n = await store.add_document("alice", "doc2", text="some clinical note")
+    assert n == 1

@@ -119,6 +119,30 @@ system_rag:
       disease_codes: []
       source_uri_prefix: "https://www.ncbi.nlm.nih.gov/books/"
       license: "Creative Commons (StatPearls)"
+    - name: textbooks_en
+      language: en
+      cross_lingual: true
+      authority_tier: 2
+      size_chunks: 0
+      topics:
+        - anatomy
+        - biochemistry
+        - pharmacology
+        - pathology
+        - physiology
+        - internal medicine
+        - surgery
+        - pediatrics
+        - obstetrics
+        - psychiatry
+        - immunology
+        - neurology
+        - histology
+        - cell biology
+        - general clinical
+      disease_codes: []
+      source_uri_prefix: null
+      license: "MedRAG textbooks (see individual book licenses)"
 
 # --- translation (query + answer translation) ---------------------------
 # provider: llm   — LLM call via the configured model (default, zero extra

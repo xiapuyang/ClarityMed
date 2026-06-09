@@ -1,17 +1,19 @@
 """OCR service configuration schema.
 
-``OcrConfig`` is parsed from ``configs/ocr.yaml``.  The only supported
-provider today is ``llm``, which sends the file to a vision-capable LLM
-using pydantic-ai ``BinaryContent``.
+``OcrConfig`` is parsed from ``configs/ocr.yaml``.
+
+Routing rules:
+- Document files (.pdf .doc .docx .ppt .pptx .xls .xlsx) always go to
+  ``document_provider`` (currently only ``"mineru"``).
+- Image files go to ``image.default``; on failure, to ``image.fallback``.
+
+Provider sections:
+- ``mineru`` — MineRU standard API (requires MINERU_API_TOKEN).
+- ``llm``    — vision-capable LLM via pydantic-ai BinaryContent.
 
 ``LLMOcrConfig`` supports two ways to specify the model:
-
 * ``provider_id`` — reference an existing entry in ``models.yaml`` by ID.
-  The factory resolves the full connection details (model, base_url,
-  api_key_env) from the catalog.  Use this to avoid duplicating config.
-* ``model`` (+optional ``base_url``, ``api_key_env``) — inline connection
-  details, following the same two-shape convention as ``ProviderConfig``.
-
+* ``model`` (+optional ``base_url``, ``api_key_env``) — inline connection.
 Exactly one of ``provider_id`` or ``model`` must be set.
 """
 
@@ -22,13 +24,25 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class LLMOcrConfig(BaseModel):
-    """Connection config for the LLM-based OCR backend.
+class OcrExtraction(BaseModel):
+    """Structured output returned by the LLM OCR agent."""
 
-    Set ``provider_id`` to reuse an existing ``models.yaml`` provider entry,
-    or set ``model`` (+ optional ``base_url`` / ``api_key_env``) for inline
-    connection details.
-    """
+    model_config = ConfigDict(frozen=True)
+
+    success: bool = Field(
+        description="True if document content was visible and extracted."
+    )
+    text: str = Field(
+        default="", description="Extracted plain text. Empty when success=False."
+    )
+    failure_reason: str | None = Field(
+        default=None,
+        description="Short reason string when success=False, else null.",
+    )
+
+
+class LLMOcrConfig(BaseModel):
+    """Connection config for the LLM-based OCR backend."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -53,12 +67,34 @@ class LLMOcrConfig(BaseModel):
         return self
 
 
+class MineRUOcrConfig(BaseModel):
+    """Connection config for the MineRU API backend."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    api_key_env: str = Field(default="MINERU_API_TOKEN", min_length=1, max_length=64)
+    model_version: Literal["pipeline", "vlm"] = "vlm"
+    poll_interval: float = Field(default=3.0, gt=0)
+    poll_timeout: float = Field(default=300.0, gt=0)
+
+
+class ImageOcrConfig(BaseModel):
+    """Provider routing config for image files."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    default: Literal["llm", "mineru"] = "llm"
+    fallback: Literal["mineru"] | None = "mineru"
+
+
 class OcrConfig(BaseModel):
     """Parsed ``configs/ocr.yaml``."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    provider: Literal["llm"] = "llm"
+    document_provider: Literal["mineru"] = "mineru"
+    image: ImageOcrConfig = Field(default_factory=ImageOcrConfig)
+    mineru: MineRUOcrConfig | None = None
     llm: LLMOcrConfig | None = None
 
 

@@ -33,6 +33,7 @@ class RagService:
         user_id: str,
         public: bool = False,
         language: str = "en",
+        source_uri: str | None = None,
     ) -> AsyncIterator[Event]:
         from claritymed.context import (
             apply_context,
@@ -44,7 +45,7 @@ class RagService:
         rid = request_id_ctx.get() or new_request_id()
         tokens = apply_context(rid, user_id, language)
         try:
-            async for ev in self._run_inner(user_input, user_id, public):
+            async for ev in self._run_inner(user_input, user_id, public, source_uri):
                 yield ev
         finally:
             reset_context(tokens)
@@ -54,14 +55,17 @@ class RagService:
         user_input: str,
         user_id: str,
         public: bool,
+        source_uri: str | None,
     ) -> AsyncIterator[Event]:
         yield ToolStarted(tool_name="embed_and_store", args_preview=user_id)
         t0 = time.monotonic()
+        metadata = {"source_uri": source_uri} if source_uri else None
         receipt = await embed_and_store(
             store=self._store,
             user_id=user_id,
             text=user_input,
             public=public,
+            metadata=metadata,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
         yield ToolCompleted(

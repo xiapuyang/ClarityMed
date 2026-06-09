@@ -222,28 +222,47 @@ def rag_add(
         ) as (_, uid, _):
             file_path = Path(path)
             if file_path.suffix.lower() in _OCR_EXTENSIONS:
+                from claritymed.core.ocr.base import OcrError
                 from claritymed.core.ocr.factory import make_ocr_provider
 
                 ocr = make_ocr_provider()
-                text = await ocr.extract_text(file_path)
+                try:
+                    text = await ocr.extract_text(file_path)
+                except OcrError as exc:
+                    _stderr(f"[error] OCR failed: {exc}")
+                    raise typer.Exit(code=1) from exc
             else:
                 with open(path, encoding="utf-8") as fh:
                     text = fh.read()
+            from claritymed.errors import DuplicateDocumentError
+
             store = make_user_rag_store(uid)
             service = RagService(store=store)
-            async for event in service.run(text, user_id=uid, public=public):
-                if isinstance(event, ToolStarted):
-                    console.print(f"[dim]→ {event.tool_name}[/dim]")
-                elif isinstance(event, ToolCompleted):
-                    console.print(f"[dim]✓ {event.tool_name}: {event.summary}[/dim]")
-                elif isinstance(event, Done):
-                    console.print(
-                        f"[green]doc_id={event.final.doc_id} "
-                        f"chunks={event.final.chunk_count}[/green]"
-                    )
-                elif isinstance(event, Error):
-                    _stderr(f"[error] {event.message}")
-                    raise typer.Exit(code=1)
+            try:
+                async for event in service.run(
+                    text,
+                    user_id=uid,
+                    public=public,
+                    source_uri=str(file_path.resolve()),
+                ):
+                    if isinstance(event, ToolStarted):
+                        console.print(f"[dim]→ {event.tool_name}[/dim]")
+                    elif isinstance(event, ToolCompleted):
+                        console.print(
+                            f"[dim]✓ {event.tool_name}: {event.summary}[/dim]"
+                        )
+                    elif isinstance(event, Done):
+                        console.print(
+                            f"[green]doc_id={event.final.doc_id} "
+                            f"chunks={event.final.chunk_count}[/green]"
+                        )
+                    elif isinstance(event, Error):
+                        _stderr(f"[error] {event.message}")
+                        raise typer.Exit(code=1)
+            except DuplicateDocumentError as exc:
+                console.print(
+                    f"[yellow]already indexed as {exc.existing_doc_id} — skipped[/yellow]"
+                )
 
     _run_async(_run())
 
@@ -288,11 +307,14 @@ def corpora_ingest(
     from claritymed.core.rag.qdrant_store import RagCollectionStore, build_qdrant_client
     from claritymed.ingest.corpus.base import ingest_corpus
     from claritymed.ingest.corpus.statpearls import StatPearlsSource
+    from claritymed.ingest.corpus.textbooks import TextbooksSource
     from claritymed.stores.account import require_admin
     from claritymed.stores.paths import (
         shared_knowledge_raw_dir,
         shared_parent_docstore_path,
     )
+
+    _KNOWN_CORPORA = {"statpearls", "textbooks"}
 
     with inject_context(
         user_id=user, command=f"corpora.ingest name={name!r}", check_user_exists=True
@@ -302,12 +324,16 @@ def corpora_ingest(
         _,
     ):
         require_admin()
-        if name != "statpearls":
+        if name not in _KNOWN_CORPORA:
             console.print(f"[red]Unknown corpus: {name}[/red]")
+            console.print(f"[dim]Available: {', '.join(sorted(_KNOWN_CORPORA))}[/dim]")
             raise typer.Exit(code=2)
 
         root = Path(raw_dir) if raw_dir else shared_knowledge_raw_dir() / name
-        source = StatPearlsSource(root)
+        if name == "statpearls":
+            source = StatPearlsSource(root)
+        else:
+            source = TextbooksSource(root)
         chunker = build_chunker()
         embedder = build_embedder() if not dry_run else _NoOpEmbedder()
         cfg = load_retrieval_config()
@@ -526,38 +552,94 @@ def corpora_migrate_payload(
         asyncio.run(_run())
 
 
-@rag_app.command("migrate")
-def rag_migrate(
-    user: str = typer.Argument(..., help="user_id to migrate"),
-    force: bool = typer.Option(False, "--force", help="Skip the confirmation prompt."),
+@rag_app.command("list")
+def rag_list(
+    user: str | None = typer.Option(None, "--user", "-u"),
 ) -> None:
-    """Drop the user's per-user RAG collection + parent docstore.
-
-    DESTRUCTIVE: v1 does not auto-reembed (pre-bge-m3 collections were
-    384-dim fastembed; the source text was scrubbed during ingest and is
-    no longer recoverable). Re-upload after migrating. Intended for the
-    alpha window where user_rag is expected to be empty.
-    """
-    if not force:
-        confirm = typer.confirm(
-            f"This will drop user '{user}' RAG data. Continue?",
-            default=False,
-        )
-        if not confirm:
-            console.print("[yellow]Migrate cancelled.[/yellow]")
-            raise typer.Exit(code=1)
+    """List documents in the user's personal RAG store."""
 
     async def _run() -> None:
         with inject_context(
-            user_id=user, command=f"rag.migrate user={user!r}", check_user_exists=True
-        ) as (
-            _,
-            uid,
-            _,
-        ):
+            user_id=user, command="rag.list", check_user_exists=True
+        ) as (_, uid, _):
             store = make_user_rag_store(uid)
-            await store.migrate_user(uid)
-            console.print(f"[green]Migrated user '{uid}': RAG data dropped.[/green]")
+            docs = await store.list_documents(uid)
+            if not docs:
+                console.print("[dim]No documents.[/dim]")
+                return
+            from rich.table import Table
+
+            table = Table(show_header=True, header_style="bold", box=None)
+            table.add_column("doc_id", style="cyan", no_wrap=True)
+            table.add_column("chunks", justify="right")
+            table.add_column("phi", justify="center")
+            table.add_column("ingested_at", style="dim", no_wrap=True)
+            table.add_column("source", style="dim")
+            table.add_column("preview")
+            for d in docs:
+                phi_mark = (
+                    "[yellow]PHI[/yellow]" if d["is_phi"] else "[green]pub[/green]"
+                )
+                src = d.get("source_uri") or "—"
+                table.add_row(
+                    d["doc_id"],
+                    str(d["chunk_count"]),
+                    phi_mark,
+                    (d["ingested_at"] or "")[:19],
+                    src,
+                    d["preview"].replace("\n", " "),
+                )
+            console.print(table)
+
+    _run_async(_run())
+
+
+@rag_app.command("show")
+def rag_show(
+    doc_id: str = typer.Argument(..., help="doc_id to inspect (from 'rag list')."),
+    user: str | None = typer.Option(None, "--user", "-u"),
+) -> None:
+    """Print all chunks for a document in the user's RAG store."""
+
+    async def _run() -> None:
+        with inject_context(
+            user_id=user, command=f"rag.show {doc_id}", check_user_exists=True
+        ) as (_, uid, _):
+            store = make_user_rag_store(uid)
+            chunks = await store.get_chunks(uid, doc_id)
+            if not chunks:
+                console.print(f"[yellow]No chunks found for doc_id={doc_id!r}[/yellow]")
+                return
+            phi_label = (
+                "[yellow]PHI[/yellow]"
+                if chunks[0]["is_phi"]
+                else "[green]public[/green]"
+            )
+            console.print(
+                f"[bold]{doc_id}[/bold]  {phi_label}  {len(chunks)} chunk(s)\n"
+            )
+            for c in chunks:
+                console.print(f"[dim]── chunk {c['chunk_index']} ──[/dim]")
+                console.print(c["text"])
+                console.print()
+
+    _run_async(_run())
+
+
+@rag_app.command("rm")
+def rag_rm(
+    doc_id: str = typer.Argument(..., help="doc_id to delete (from 'rag list')."),
+    user: str | None = typer.Option(None, "--user", "-u"),
+) -> None:
+    """Delete a document from the user's personal RAG store."""
+
+    async def _run() -> None:
+        with inject_context(
+            user_id=user, command=f"rag.rm {doc_id}", check_user_exists=True
+        ) as (_, uid, _):
+            store = make_user_rag_store(uid)
+            await store.delete_document(uid, doc_id)
+            console.print(f"[green]Deleted {doc_id}[/green]")
 
     _run_async(_run())
 
@@ -620,9 +702,13 @@ def tui(
         _stderr(f"  valid provider ids: {valid}")
         raise typer.Exit(code=1) from exc
 
+    from claritymed.cli.entry import _resolve_language, _resolve_user_id
+
+    resolved_lang = _resolve_language(language)
+    resolved_user, _ = _resolve_user_id(user)
     ClarityMedApp(
-        user_id=user,
-        language=language,
+        user_id=resolved_user,
+        language=resolved_lang,
         provider_id=provider.id,
     ).run()
 

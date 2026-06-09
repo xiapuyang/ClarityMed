@@ -1,14 +1,14 @@
 """Factory for OCR providers.
 
-Reads ``configs/ocr.yaml`` via ``load_ocr_config()`` and returns the
-appropriate ``OcrProvider``.  Callers never import a concrete provider
-directly — they call ``make_ocr_provider()`` and depend only on the
-``OcrProvider`` interface.
+Reads ``configs/ocr.yaml`` via ``load_ocr_config()`` and returns a
+``RoutingOcrProvider`` that dispatches to the right backend by file type:
+  - document files → MineRU
+  - image files    → LLM (default) with optional MineRU fallback
 
 Adding a new backend:
 1. Implement ``OcrProvider`` in a new module under this package.
-2. Add its id to the ``Literal`` in ``OcrConfig.provider``.
-3. Add a case in ``make_ocr_provider`` below.
+2. Add its id to the appropriate ``Literal`` in ``ocr.py`` schemas.
+3. Add a builder in ``_build_provider`` below.
 4. Update ``configs/ocr.yaml`` docs.
 """
 
@@ -21,27 +21,64 @@ from claritymed.errors import MissingApiKeyError
 
 
 def make_ocr_provider() -> OcrProvider:
-    """Build the configured OCR provider from ``configs/ocr.yaml``."""
+    """Build a ``RoutingOcrProvider`` from ``configs/ocr.yaml``."""
+    from claritymed.core.ocr.routing_provider import RoutingOcrProvider
     from claritymed.core.schemas.ocr import load_ocr_config
 
     cfg = load_ocr_config()
 
-    if cfg.provider == "llm":
-        return _make_llm_provider(cfg)
+    document_provider = _build_provider(cfg.document_provider, cfg)
+    image_default = _build_provider(cfg.image.default, cfg)
+    image_fallback = (
+        _build_provider(cfg.image.fallback, cfg) if cfg.image.fallback else None
+    )
 
-    raise ValueError(
-        f"Unknown OCR provider={cfg.provider!r} in ocr.yaml. Supported values: 'llm'."
+    return RoutingOcrProvider(
+        document_provider=document_provider,
+        image_default=image_default,
+        image_fallback=image_fallback,
+    )
+
+
+def _build_provider(name: str | None, cfg) -> OcrProvider:
+    if name == "mineru":
+        return _make_mineru_provider(cfg)
+    if name == "llm":
+        return _make_llm_provider(cfg)
+    raise ValueError(f"Unknown OCR provider={name!r} in ocr.yaml.")
+
+
+def _make_mineru_provider(cfg) -> OcrProvider:
+    from claritymed.core.ocr.mineru_provider import MineRUOcrProvider
+
+    mineru_cfg = cfg.mineru
+    if mineru_cfg is None:
+        from claritymed.core.schemas.ocr import MineRUOcrConfig
+
+        mineru_cfg = MineRUOcrConfig()
+
+    api_key = os.environ.get(mineru_cfg.api_key_env)
+    if not api_key:
+        raise MissingApiKeyError(
+            f"ocr.yaml mineru.api_key_env={mineru_cfg.api_key_env!r} is set "
+            "but the environment variable is missing or empty."
+        )
+
+    return MineRUOcrProvider(
+        api_key=api_key,
+        model_version=mineru_cfg.model_version,
+        poll_interval=mineru_cfg.poll_interval,
+        poll_timeout=mineru_cfg.poll_timeout,
     )
 
 
 def _make_llm_provider(cfg) -> OcrProvider:
-    """Construct an LLMOcrProvider from the ``llm`` section of ocr.yaml."""
     from claritymed.core.ocr.llm_provider import LLMOcrProvider
 
     llm_cfg = cfg.llm
     if llm_cfg is None:
         raise ValueError(
-            "ocr.yaml: provider='llm' requires an 'llm:' section with either "
+            "ocr.yaml: image.default='llm' requires an 'llm:' section with either "
             "provider_id or model."
         )
 
@@ -54,7 +91,6 @@ def _make_llm_provider(cfg) -> OcrProvider:
 
 
 def _model_from_catalog(provider_id: str):
-    """Resolve a pydantic-ai Model from an existing models.yaml entry."""
     from claritymed.core.llm.model import build_model
     from claritymed.stores.models import resolve_provider
 
@@ -63,7 +99,6 @@ def _model_from_catalog(provider_id: str):
 
 
 def _model_from_inline(llm_cfg):
-    """Build a pydantic-ai Model from inline ocr.yaml llm fields."""
     from pydantic_ai.models import infer_model
 
     if llm_cfg.base_url is None:
