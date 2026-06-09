@@ -1,7 +1,8 @@
-"""bge-reranker-v2-m3 server — TEI ``/rerank``-compatible wire format.
+"""Cross-encoder reranker server — TEI ``/rerank``-compatible wire format.
 
-Companion to ``servers/embedder.py``. ``BgeRerankerV2M3HttpReranker``
-(``core/rag/reranking/bge_v2_m3.py``) calls this server with::
+Hosts any ``AutoModelForSequenceClassification``-compatible reranker
+model behind the same wire shape the ``BgeRerankerV2M3HttpReranker``
+client expects::
 
     POST /rerank
     {"query": "...", "texts": ["d1", ...], "raw_scores": false}
@@ -21,9 +22,18 @@ Run::
     uv sync --extra rag-server
     uv run --extra rag-server claritymed-reranker
 
-Defaults: ``MODEL_PATH=~/.claritymed/models/bge-reranker-v2-m3``,
-``PORT=8083``. Override via ``BGE_RERANKER_MODEL_PATH`` /
-``BGE_RERANKER_PORT`` / ``BGE_RERANKER_DEVICE``.
+Env vars:
+
+* ``BGE_RERANKER_MODEL_PATH`` — local model directory. Defaults to
+  ``~/.claritymed/models/bge-reranker-v2-m3``; set this to point at a
+  different reranker (e.g. ``bge-reranker-v2-gemma``) without code change.
+* ``BGE_RERANKER_QUERY_INSTRUCTION`` — optional prefix prepended to the
+  query before forming the cross-encoder input. Empty by default, which
+  preserves bge-reranker-v2-m3 behaviour. Gemma-based rerankers expect a
+  short instruction prefix here.
+* ``BGE_RERANKER_PORT`` — listen port (default 8083).
+* ``BGE_RERANKER_DEVICE`` — ``cpu`` / ``cuda`` / ``mps``; auto-detects
+  when unset.
 """
 
 from __future__ import annotations
@@ -56,10 +66,30 @@ DEFAULT_MODEL_PATH = Path.home() / ".claritymed" / "models" / "bge-reranker-v2-m
 DEFAULT_PORT = 8083
 MAX_BATCH_TEXTS = 128
 # bge-reranker-v2-m3 was trained at this max length; truncating to it
-# matches the upstream serving recipe.
+# matches the upstream serving recipe and is safe for v2-gemma too
+# (which trains at 1024 but accepts shorter inputs).
 MAX_SEQ_LEN = 512
 
-_state: dict[str, Any] = {"model": None, "tokenizer": None, "device": None}
+_state: dict[str, Any] = {
+    "model": None,
+    "tokenizer": None,
+    "device": None,
+    "query_instruction": "",
+}
+
+
+def _apply_query_instruction(query: str, instruction: str) -> str:
+    """Prepend the optional instruction prefix to the query.
+
+    Empty instruction is a no-op — preserves the bge-reranker-v2-m3
+    contract where the model takes the raw query/passage pair. Gemma-
+    based rerankers (and other instruction-tuned cross-encoders) expect
+    a short prefix here so the operator can configure it without code
+    changes.
+    """
+    if not instruction:
+        return query
+    return f"{instruction}{query}"
 
 
 class RerankRequest(BaseModel):
@@ -88,13 +118,19 @@ class RerankHit(BaseModel):
 async def lifespan(app: FastAPI):  # noqa: ARG001
     model_path = Path(os.environ.get("BGE_RERANKER_MODEL_PATH", DEFAULT_MODEL_PATH))
     device = os.environ.get("BGE_RERANKER_DEVICE") or default_device()
+    query_instruction = os.environ.get("BGE_RERANKER_QUERY_INSTRUCTION", "")
     if not model_path.exists():
         raise RuntimeError(
-            f"bge-reranker model dir not found: {model_path}\n"
-            f"  Run: uv run hf download BAAI/bge-reranker-v2-m3 "
-            f"--local-dir {model_path}"
+            f"reranker model dir not found: {model_path}\n"
+            f"  Set BGE_RERANKER_MODEL_PATH to a downloaded model, or run:\n"
+            f"    uv run hf download BAAI/bge-reranker-v2-m3 --local-dir {model_path}"
         )
-    logger.info("loading bge-reranker-v2-m3 from %s on %s", model_path, device)
+    logger.info(
+        "loading reranker from %s on %s (query_instruction=%r)",
+        model_path,
+        device,
+        query_instruction,
+    )
     tokenizer = AutoTokenizer.from_pretrained(str(model_path))
     model = AutoModelForSequenceClassification.from_pretrained(str(model_path))
     model.eval()
@@ -103,7 +139,8 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     _state["tokenizer"] = tokenizer
     _state["model"] = model
     _state["device"] = device
-    logger.info("reranker ready")
+    _state["query_instruction"] = query_instruction
+    logger.info("reranker ready (model=%s)", model_path.name)
     yield
     _state["model"] = None
     _state["tokenizer"] = None
@@ -146,7 +183,10 @@ def rerank(req: RerankRequest) -> list[RerankHit]:
             detail=f"batch size {len(req.texts)} exceeds {MAX_BATCH_TEXTS}",
         )
     model, tokenizer, device = _require_loaded()
-    pairs = [[req.query, t] for t in req.texts]
+    effective_query = _apply_query_instruction(
+        req.query, _state.get("query_instruction", "")
+    )
+    pairs = [[effective_query, t] for t in req.texts]
     with torch.no_grad():
         encoded = tokenizer(
             pairs,
