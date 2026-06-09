@@ -25,3 +25,9 @@ class AskDeps:
     translation_service: "TranslationProvider | None" = None
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     retrieved_chunks: "list[RetrievedChunk]" = field(default_factory=list)
+    # Tagged True when the active strategy declares itself agentic via
+    # ``is_agentic``. The retrieval pipeline is already tool-driven for
+    # every mode, so this flag is observational rather than gating — it
+    # lands in the audit payload so operators can confirm an agentic
+    # rollout reached the tool loop instead of silently degrading.
+    agentic: bool = False

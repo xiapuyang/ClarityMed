@@ -187,6 +187,10 @@ class AskService:
         # the strategy, PHI state, and translation service, and so the
         # service can collect retrieved chunks for the Sources block after
         # the LLM finishes.
+        # ``is_agentic`` is set by ``build_strategy`` on the
+        # NaiveHybridStrategy returned for the agentic catalog entry; it
+        # rides along on the strategy instance rather than the config so
+        # the tool sees only the retrieval surface it needs.
         deps = AskDeps(
             strategy=self._strategy,
             user_id=user_id,
@@ -194,6 +198,7 @@ class AskService:
             provider_config=self._provider_config,
             language=output_lang,
             translation_service=self._translation_service,
+            agentic=bool(getattr(self._strategy, "is_agentic", False)),
         )
 
         # Record the user turn first so the JSONL timeline reflects send
@@ -427,6 +432,7 @@ class AskService:
             "model": self._model_name,
             "provider_id": self._provider_id,
             "latency_ms": latency.total_ms,
+            "agentic": deps.agentic,
         }
         if latency.ttft_ms is not None:
             payload["ttft_ms"] = latency.ttft_ms
@@ -487,7 +493,8 @@ class AskService:
         lines = ["\n\n---\n**Debug — RAG Collections:**"]
         for i, c in enumerate(chunks, start=1):
             col = c.collection_name or "unknown"
-            score = f"{c.score:.3f}" if c.score else "—"
+            effective_score = c.rerank_score if c.rerank_score is not None else c.score
+            score = f"{effective_score:.3f}" if effective_score is not None else "—"
             doc = c.doc_id or "—"
             lines.append(f"- [{i}] `{col}` · `{doc}` (score {score})")
         return "\n".join(lines) + "\n"
