@@ -154,6 +154,13 @@ CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
   默认值和 per-request 值合并后再传给 `Agent`，schema 不用动。
 - **No JOINs / no FKs**（全局规则的项目化复述）—— 跨表关联用 app 代码拼，
   引用永远用 `*_id` 整数而不是 name 字符串。
+- **`core/` 不许反向依赖 `core/orchestrator/`**。依赖方向是单向的：
+  `orchestrator` 站在 `llm` / `prompts` / `schemas` / `observability` / `i18n`
+  之上去编排 pipeline；底层 primitives 永远不 import orchestrator 里的东西
+  （包括 `FeaturePlugin`、`phi_guard`、`AskService` 等）。要把"某个能力"
+  下沉到 core 时，先把它抽成不依赖 orchestrator 的纯接口，再让 orchestrator
+  去 wire；不要让 `core/llm/*.py` 反过来 `from claritymed.core.orchestrator …`。
+  破坏这条会让 plugin 模型瓦解，编排层无处可下手。
 
 ## Use pydantic-ai's built-ins before writing your own
 
