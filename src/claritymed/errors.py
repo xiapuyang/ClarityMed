@@ -81,6 +81,10 @@ class UnknownRouterError(KeyError):
     """``router.active`` does not appear in the catalog."""
 
 
+class UnknownModeError(KeyError):
+    """``rag.mode`` does not appear in the mode registry."""
+
+
 class DuplicateDocumentError(ValueError):
     """``source_uri`` is already indexed under an existing ``doc_id``.
 

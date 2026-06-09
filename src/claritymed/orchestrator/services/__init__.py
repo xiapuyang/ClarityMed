@@ -7,15 +7,14 @@ scrubbing step before any LLM call, audit log writes, and the
 ``AsyncIterator[Event]`` protocol that streams progress to the caller.
 """
 
+from claritymed.core.observability.latency import LatencyTrace, build_step_records
 from claritymed.orchestrator.services.ask_service import AskService
 from claritymed.orchestrator.services.chat_session import (
     ChatSession,
     ChatTurn,
-    LatencyTrace,
     SessionMeta,
-    build_step_records,
 )
-from claritymed.orchestrator.services.events import (
+from claritymed.core.events import (
     Cancelled,
     Done,
     Error,

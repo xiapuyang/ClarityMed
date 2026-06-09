@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 
 from claritymed.core.observability.audit import audit_event
 from claritymed.orchestrator.agents.rag_agent import embed_and_store
-from claritymed.orchestrator.services.events import (
+from claritymed.core.events import (
     Done,
     Event,
     ToolCompleted,

@@ -1,17 +1,8 @@
-from claritymed.core.scrub.service import FreeTextRule, ScrubReport, ScrubService
-from claritymed.orchestrator.phi_guard import (
-    ChunkFilterReport,
-    PhiGuard,
-    PhiHit,
-    PhiRules,
-)
+"""Orchestrator package surface (services, agents, tools).
 
-__all__ = [
-    "ChunkFilterReport",
-    "FreeTextRule",
-    "PhiGuard",
-    "PhiHit",
-    "PhiRules",
-    "ScrubReport",
-    "ScrubService",
-]
+PhiGuard, scrub primitives and Event types now live under ``core/`` —
+import them from there directly. This package exposes the orchestration
+mechanics (services, agent factory, tools) only.
+"""
+
+__all__: list[str] = []

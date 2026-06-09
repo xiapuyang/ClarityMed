@@ -10,9 +10,22 @@
 # and the embedder/reranker/qdrant deps are never touched — ask works on
 # a bare laptop with no RAG stack running. When `enabled: true` CLI/TUI
 # build the HybridRetriever at startup; any missing dep fails loud.
+#
+# `mode` chooses how the LLM interacts with retrieval (orthogonal to
+# `strategies.active`, which decides *how* to retrieve):
+#   * deterministic — retrieve once before the LLM call; splice evidence
+#                     into the prompt; no tool registered. Predictable
+#                     cost, no multi-hop within one turn.
+#   * tool          — register `retrieve_medical_literature`; the LLM
+#                     decides per-turn whether and how often to retrieve
+#                     (multi-hop ok; bounded by UsageLimits). Default.
+#   * agentic       — reserved for a future state-graph workflow
+#                     (planner / CRAG-style evaluator / writer); raises
+#                     NotImplementedError at runtime in v1.
 rag:
   enabled: false
   max_evidence: 5
+  mode: tool
 
 # --- qdrant connection -------------------------------------------------
 # Required — server-only (local file-locked mode was removed; see
@@ -23,10 +36,15 @@ qdrant:
   url: "http://localhost:6333"
   api_key_env: null
 
-# --- strategies (top-level RAG approach; pluggable) ---------------------
-# v1 ships `naive_hybrid` only. Future ids: `agentic` (Self-RAG / CRAG /
-# FLARE family), `hyde`, `graph` (GraphRAG / MedGraphRAG), `raptor`,
-# `late_chunking`. See docs/plans/2026-06-07-002-feat-rag-module-plan.md.
+# --- strategies (how retrieval is done, pluggable) ----------------------
+# v1 ships `naive_hybrid` + `hyde`. Future ids: `graph` (GraphRAG /
+# MedGraphRAG), `raptor`, `late_chunking`. See
+# docs/plans/2026-06-07-002-feat-rag-module-plan.md.
+#
+# Strategy is orthogonal to `rag.mode` above (which decides how the LLM
+# interacts with retrieval). `agentic` used to live in this catalog as a
+# tagged naive_hybrid — that was a mode masquerading as a strategy and
+# now lives at `rag.mode` instead.
 strategies:
   active: naive_hybrid
   catalog:
@@ -45,15 +63,6 @@ strategies:
       # retrieval query. Rerank still scores against the original
       # question. Adds one LLM call per query (the configured model).
       include_original: true
-    - id: agentic
-      # Agentic mode: AskService skips pre-retrieval and lets the LLM
-      # call the retrieve_medical_literature tool 1..N times per turn.
-      # The underlying retrieval still uses NaiveHybridStrategy.
-      grader:
-        enabled: false
-        threshold: 0.5
-        top_n: 5
-        rewrite_mode: deterministic
 
 # --- chunker (parent-child default) -------------------------------------
 chunker:

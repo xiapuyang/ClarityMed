@@ -14,7 +14,7 @@ from claritymed.core.rag.chunking.base import (
     RawDocument,
 )
 from claritymed.core.rag.embedding.base import Embedder, SparseVector
-from claritymed.orchestrator import PhiGuard
+from claritymed.core.phi.guard import PhiGuard
 from claritymed.orchestrator.agents import (
     RAG_TOOL_NAMES,
     embed_and_store,

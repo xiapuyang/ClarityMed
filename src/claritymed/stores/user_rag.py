@@ -42,7 +42,7 @@ from claritymed.core.rag.embedding.base import Embedder
 from claritymed.core.rag.parent_store import ParentStore
 from claritymed.core.rag.qdrant_store import RagCollectionStore
 from claritymed.core.schemas.retrieval import RetrievedChunk
-from claritymed.orchestrator import PhiGuard
+from claritymed.core.phi.guard import PhiGuard
 from claritymed.stores.paths import user_parent_docstore_path
 
 logger = logging.getLogger(__name__)

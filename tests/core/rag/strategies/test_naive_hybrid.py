@@ -296,24 +296,3 @@ def test_build_strategy_unknown_id_raises():
     cfg = StrategiesConfig.model_construct(active="graph", catalog=[FakeFutureConfig()])
     with pytest.raises(UnknownStrategyError):
         build_strategy(_Dummy(), cfg)  # type: ignore[arg-type]
-
-
-def test_build_strategy_agentic_returns_naive_hybrid_with_flag():
-    """Agentic mode reuses NaiveHybridStrategy under the hood — the
-    factory just tags the instance so AskService can detect the rollout."""
-    from claritymed.core.rag.schemas import AgenticStrategyConfig
-
-    class _Dummy:
-        async def retrieve(self, *a, **k):
-            raise NotImplementedError
-
-    cfg = StrategiesConfig(
-        active="agentic",
-        catalog=[
-            AgenticStrategyConfig(id="agentic"),
-            NaiveHybridStrategyConfig(id="naive_hybrid"),
-        ],
-    )
-    s = build_strategy(_Dummy(), cfg)  # type: ignore[arg-type]
-    assert isinstance(s, NaiveHybridStrategy)
-    assert getattr(s, "is_agentic", False) is True

@@ -10,7 +10,8 @@ import importlib
 
 import pytest
 
-from claritymed.orchestrator import PhiGuard, ScrubReport
+from claritymed.core.phi.guard import PhiGuard
+from claritymed.core.scrub.service import ScrubReport
 
 
 @pytest.fixture

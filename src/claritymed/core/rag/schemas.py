@@ -161,23 +161,14 @@ class HydeStrategyConfig(BaseModel):
     include_original: bool = True
 
 
-class AgenticStrategyConfig(BaseModel):
-    """Agentic mode: LLM drives retrieval via the tool loop.
-
-    No retrieval-side parameters here — Agentic mode is selected via the
-    ``id`` and consumes the same underlying NaiveHybridStrategy; the
-    behavioural switch lives in ``AskService`` (skip pre-retrieval, let
-    the agent call ``retrieve_medical_literature`` 1..N times).
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    id: Literal["agentic"]
-    grader: GraderConfig = Field(default_factory=GraderConfig)
-
-
 # Discriminated union on ``id`` so YAML validation routes to the right
 # variant. Add new entries here when introducing a new strategy.
-StrategyConfig = NaiveHybridStrategyConfig | HydeStrategyConfig | AgenticStrategyConfig
+#
+# ``agentic`` used to appear here as a third strategy id; it was actually
+# a *mode* (how the LLM interacts with retrieval) masquerading as a
+# strategy. The mode axis now lives at ``RagBootstrapConfig.mode`` and
+# the catalog only carries genuine retrieval strategies.
+StrategyConfig = NaiveHybridStrategyConfig | HydeStrategyConfig
 
 
 class StrategiesConfig(BaseModel):
@@ -435,6 +426,18 @@ class RagBootstrapConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     enabled: bool = False
     max_evidence: int = Field(default=5, ge=1)
+    # How the LLM interacts with the retrieval layer (orthogonal to
+    # ``strategies.active``, which decides *how* to retrieve).
+    #
+    # * ``deterministic`` — retrieve once before the LLM call; splice
+    #   evidence into the prompt; no tool registered.
+    # * ``tool`` — register ``retrieve_medical_literature`` on the agent;
+    #   the LLM decides per-turn whether and how often to retrieve. v1
+    #   default — matches the shipped behaviour before the mode axis
+    #   existed.
+    # * ``agentic`` — reserved for a future state-graph workflow; the
+    #   factory builds a placeholder that raises NotImplementedError.
+    mode: Literal["deterministic", "tool", "agentic"] = "tool"
 
 
 class QdrantConfig(BaseModel):

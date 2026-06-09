@@ -55,6 +55,12 @@ AuditKind = Literal[
     "mode.routed",
     "mode.cancelled",
     "mode.ask.history_trimmed",
+    # Tool-mode compliance: LLM wrote "I will retrieve..." but never
+    # actually invoked retrieve_medical_literature this turn. Grep to
+    # quantify per-provider compliance with the prompt's tool protocol
+    # and decide whether to switch a misbehaving provider to
+    # deterministic mode.
+    "mode.ask.tool_announced_but_skipped",
     # RAG retrieval lifecycle
     "rag.retrieval",
     "rag.retrieval.failed",

@@ -14,7 +14,7 @@ from claritymed.context import (
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.schemas.receipts import IngestReceipt, IngestRecord
 from claritymed.orchestrator.agents import save_to_profile
-from claritymed.orchestrator.services.events import (
+from claritymed.core.events import (
     Done,
     Event,
     ToolCompleted,

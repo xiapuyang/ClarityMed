@@ -17,7 +17,7 @@ from claritymed.core.rag.strategies.base import RagStrategy, RetrievalContext
 from claritymed.core.schemas.models import ProviderConfig
 from claritymed.core.schemas.retrieval import RetrievedChunk
 from claritymed.orchestrator.services import AskService
-from claritymed.orchestrator.services.events import (
+from claritymed.core.events import (
     Done,
     LlmCallStarted,
     LlmFirstToken,
@@ -371,7 +371,7 @@ async def test_retrieval_failure_surfaces_error_event():
         provider_config=_provider("local"),
     )
     events = [ev async for ev in service.run("q", user_id="alice")]
-    from claritymed.orchestrator.services.events import Error
+    from claritymed.core.events import Error
 
     err = next(e for e in events if isinstance(e, Error))
     assert err.error_type == "retrieval_failed"

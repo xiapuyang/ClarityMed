@@ -25,9 +25,14 @@ class AskDeps:
     translation_service: "TranslationProvider | None" = None
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     retrieved_chunks: "list[RetrievedChunk]" = field(default_factory=list)
-    # Tagged True when the active strategy declares itself agentic via
-    # ``is_agentic``. The retrieval pipeline is already tool-driven for
-    # every mode, so this flag is observational rather than gating — it
-    # lands in the audit payload so operators can confirm an agentic
-    # rollout reached the tool loop instead of silently degrading.
-    agentic: bool = False
+    # Per-tool call counter. Each tool body increments its own slot on
+    # entry; AskService reads this at turn end to spot
+    # "announced-but-skipped" patterns (LLM says "I will retrieve…"
+    # then ends the turn without actually firing the tool call) and
+    # quantify how often each provider does it.
+    tool_calls: dict[str, int] = field(default_factory=dict)
+    # Name of the active RagMode (``deterministic`` / ``tool`` /
+    # ``agentic``). Observational — modes own their own behaviour; this
+    # rides on deps purely so the tool body and audit payload can name
+    # which mode invoked them.
+    mode: str = "tool"

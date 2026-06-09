@@ -201,7 +201,7 @@ def _phi_scrub_processor_class():
     """
     from opentelemetry.sdk.trace import SpanProcessor
 
-    from claritymed.orchestrator import PhiGuard
+    from claritymed.core.phi.guard import PhiGuard
 
     class _PhiScrubSpanProcessor(SpanProcessor):
         """Strip / redact PHI from OI-written attributes pre-export."""

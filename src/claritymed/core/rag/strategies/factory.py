@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from claritymed.core.rag.retriever import HybridRetriever
 from claritymed.core.rag.schemas import (
-    AgenticStrategyConfig,
     HydeStrategyConfig,
     NaiveHybridStrategyConfig,
     StrategiesConfig,
@@ -36,8 +35,8 @@ def build_strategy(
         config: Optional StrategiesConfig override.
         max_evidence: Final cap on chunks returned to the caller.
         model: pydantic-ai Model used by strategies that issue LLM calls
-            during retrieval (HyDE). Optional for naive_hybrid / agentic
-            because they do not call the LLM at the retrieval layer.
+            during retrieval (HyDE). Optional for naive_hybrid because
+            it does not call the LLM at the retrieval layer.
 
     Raises:
         UnknownStrategyError: Active id has no factory branch yet (e.g.
@@ -63,18 +62,6 @@ def build_strategy(
             model=model,
             max_evidence=max_evidence,
         )
-    if isinstance(entry, AgenticStrategyConfig):
-        # Agentic mode shares the retrieval layer with naive_hybrid; the
-        # behavioural switch (skip pre-retrieval, let the tool loop drive)
-        # lives in AskService. Attach ``is_agentic`` so the service can
-        # detect it without reaching back into the catalog.
-        strategy = NaiveHybridStrategy(
-            retriever=retriever,
-            grader=entry.grader,
-            max_evidence=max_evidence,
-        )
-        strategy.is_agentic = True  # type: ignore[attr-defined]
-        return strategy
     raise UnknownStrategyError(
         f"build_strategy has no factory branch for id={entry.id!r} "
         f"(see docs/plans/2026-06-07-002-feat-rag-module-plan.md "

@@ -646,8 +646,10 @@ class ClarityMedApp(App):
         strategy = self._strategy_for_session(model=model)
         if self._chat_session is None:
             self._chat_session = ChatSession.new(self._current_user_id)
+        from claritymed.core.rag import load_retrieval_config
         from claritymed.core.translation import make_translation_provider
 
+        mode_name = load_retrieval_config().rag.mode
         service = AskService(
             model=model,
             language=self.query_one(StatusBar).language,
@@ -657,6 +659,7 @@ class ClarityMedApp(App):
             strategy=strategy,
             provider_config=provider,
             translation_service=make_translation_provider(model),
+            rag_mode=mode_name,
         )
         self._cached_ask_service = service
         return service

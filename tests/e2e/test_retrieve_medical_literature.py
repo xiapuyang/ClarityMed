@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from claritymed.orchestrator.services.events import Event
+    from claritymed.core.events import Event
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +44,7 @@ async def _run_pipeline(
     from claritymed.core.rag.strategies.factory import build_strategy
     from claritymed.core.translation import make_translation_provider
     from claritymed.orchestrator.services import AskService
-    from claritymed.orchestrator.services.events import Done
+    from claritymed.core.events import Done
     from claritymed.stores.models import resolve_provider
 
     provider = resolve_provider(override=provider_id)
@@ -80,7 +80,7 @@ async def _run_pipeline(
 @pytest.mark.flaky(reruns=2, reruns_delay=5)
 def test_translation_fires_for_zh_session(e2e_provider_id):
     """TranslationProvider is called and the query reaching Qdrant is English."""
-    from claritymed.orchestrator.services.events import ToolStarted
+    from claritymed.core.events import ToolStarted
 
     final, events, _ = asyncio.run(
         _run_pipeline(INPUT_ZH, lang="zh", provider_id=e2e_provider_id)
@@ -96,7 +96,7 @@ def test_translation_fires_for_zh_session(e2e_provider_id):
 @pytest.mark.flaky(reruns=2, reruns_delay=5)
 def test_rag_retrieves_at_least_one_chunk(e2e_provider_id):
     """At least one chunk is retrieved for a valid haematology query."""
-    from claritymed.orchestrator.services.events import RetrievalCompleted
+    from claritymed.core.events import RetrievalCompleted
 
     _, events, _ = asyncio.run(
         _run_pipeline(INPUT_ZH, lang="zh", provider_id=e2e_provider_id)
@@ -117,7 +117,7 @@ def test_answer_contains_source_citations(e2e_provider_id):
     The Sources block is emitted as a TokenChunk just before Done — it is not
     included in Done.final (which holds only the raw LLM response).
     """
-    from claritymed.orchestrator.services.events import TokenChunk
+    from claritymed.core.events import TokenChunk
 
     _, events, _ = asyncio.run(
         _run_pipeline(INPUT_ZH, lang="zh", provider_id=e2e_provider_id)
@@ -134,7 +134,7 @@ def test_answer_contains_source_citations(e2e_provider_id):
 @pytest.mark.flaky(reruns=2, reruns_delay=5)
 def test_event_ordering_translation_before_retrieval(e2e_provider_id):
     """translate.query ToolCompleted must precede RetrievalPending."""
-    from claritymed.orchestrator.services.events import (
+    from claritymed.core.events import (
         RetrievalPending,
         ToolCompleted,
         ToolStarted,

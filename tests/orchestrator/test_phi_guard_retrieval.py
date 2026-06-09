@@ -8,7 +8,7 @@ from datetime import datetime
 import pytest
 
 from claritymed.core.schemas.retrieval import RetrievedChunk
-from claritymed.orchestrator import ChunkFilterReport, PhiGuard
+from claritymed.core.phi.guard import ChunkFilterReport, PhiGuard
 
 
 @pytest.fixture

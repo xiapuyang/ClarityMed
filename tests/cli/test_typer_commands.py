@@ -51,7 +51,7 @@ def test_rag_add_with_file(tmp_path, monkeypatch):
         RawDocument,
     )
     from claritymed.core.rag.embedding.base import Embedder, SparseVector
-    from claritymed.orchestrator import PhiGuard
+    from claritymed.core.phi.guard import PhiGuard
     from claritymed.stores import user_rag as _ur
 
     class _StubEmbedder(Embedder):

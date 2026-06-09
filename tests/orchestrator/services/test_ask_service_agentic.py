@@ -1,21 +1,27 @@
-"""Agentic mode: when the active strategy declares ``is_agentic=True``.
+"""Feature-plugin tests for AskService.
 
-Retrieval has always been tool-driven (``retrieve_medical_literature``);
-agentic mode is the configuration knob that surfaces this through the
-audit log + ``AskDeps.agentic`` so operators can confirm a rollout
-reached the tool loop rather than silently degrading.
+The "three modes" are now per-feature plugin attributes (not a single
+turn-level dispatch). These tests verify:
+
+* default ``rag_mode='tool'`` → tool gets registered, LLM calls it,
+  Sources accumulate;
+* ``rag_mode='deterministic'`` → retrieval runs *before* the LLM call,
+  no tool registered;
+* ``rag_mode='agentic'`` → ``build_features`` fails loud with
+  NotImplementedError (state-graph workflow reserved for v2).
 """
 
 from __future__ import annotations
 
+import pytest
 from pydantic_ai.models.test import TestModel
 
+from claritymed.core.events import Done, TokenChunk
 from claritymed.core.rag.schemas import EvidenceBundle, RetrievalTrace
 from claritymed.core.rag.strategies.base import RagStrategy, RetrievalContext
 from claritymed.core.schemas.models import ProviderConfig
 from claritymed.core.schemas.retrieval import RetrievedChunk
 from claritymed.orchestrator.services import AskService
-from claritymed.orchestrator.services.events import Done, TokenChunk
 
 
 def _chunk(*, text: str = "evidence") -> RetrievedChunk:
@@ -34,10 +40,7 @@ def _chunk(*, text: str = "evidence") -> RetrievedChunk:
 
 
 class _RecordingStrategy(RagStrategy):
-    """Records the contexts the tool invoked retrieve with."""
-
-    def __init__(self, *, is_agentic: bool, bundle: EvidenceBundle) -> None:
-        self.is_agentic = is_agentic
+    def __init__(self, *, bundle: EvidenceBundle) -> None:
         self._bundle = bundle
         self.calls: list[RetrievalContext] = []
 
@@ -57,68 +60,148 @@ def _bundle() -> EvidenceBundle:
     )
 
 
-# --- agentic flag propagation -----------------------------------------
-
-
-async def test_agentic_flag_propagates_to_deps_when_strategy_marks_itself():
-    """The strategy's ``is_agentic`` attribute lands on AskDeps so the tool
-    and audit layer can observe it."""
-    captured: dict[str, object] = {}
-
-    class _CapturingStrategy(_RecordingStrategy):
-        async def retrieve(self, ctx):
-            # Tool ran → it had access to deps.strategy which is this
-            # instance. We rely on retrieve being invoked at all, then
-            # assert downstream via the bundle path.
-            captured["called"] = True
-            return await super().retrieve(ctx)
-
-    capturing = _CapturingStrategy(is_agentic=True, bundle=_bundle())
+async def test_default_tool_mode_routes_through_retrieve_tool():
+    """``rag_mode='tool'`` registers the tool; TestModel calls every
+    registered tool once → strategy.retrieve runs."""
+    strategy = _RecordingStrategy(bundle=_bundle())
     service = AskService(
         model=TestModel(custom_output_text="answer"),
-        strategy=capturing,
+        strategy=strategy,
         provider_config=_provider(),
     )
     events = [ev async for ev in service.run("what is aspirin", user_id="alice")]
     assert any(isinstance(e, Done) for e in events)
-    assert captured.get("called") is True
+    assert len(strategy.calls) >= 1
 
 
-async def test_non_agentic_strategy_keeps_deps_agentic_false():
-    """A bare NaiveHybridStrategy (no ``is_agentic`` attribute) leaves the
-    flag at its default ``False`` so existing behaviour is preserved."""
-    strategy = _RecordingStrategy(is_agentic=False, bundle=_bundle())
-    # Remove the attribute entirely so the ``getattr`` default kicks in,
-    # mirroring what NaiveHybridStrategy looks like before the factory
-    # tags it.
-    delattr(strategy, "is_agentic")
+async def test_tool_mode_accumulates_sources_block():
+    strategy = _RecordingStrategy(bundle=_bundle())
     service = AskService(
         model=TestModel(custom_output_text="answer"),
         strategy=strategy,
         provider_config=_provider(),
     )
-    events = [ev async for ev in service.run("aspirin", user_id="alice")]
-    assert any(isinstance(e, Done) for e in events)
+    captured: list[str] = []
+    async for event in service.run("aspirin and ibuprofen", user_id="alice"):
+        if isinstance(event, TokenChunk):
+            captured.append(event.text)
+    joined = "".join(captured)
+    assert "Sources:" in joined
 
 
-async def test_agentic_strategy_supports_multiple_tool_invocations():
-    """The tool loop already accumulates chunks across calls; agentic mode
-    just rides on that — verify the sources block reflects the union."""
-    strategy = _RecordingStrategy(is_agentic=True, bundle=_bundle())
+async def test_deterministic_mode_retrieves_before_llm():
+    """Deterministic ``RagFeature.pre_invoke`` runs the retrieval
+    pipeline *before* agent.run_stream. A TestModel that ignores tools
+    proves it: the strategy is still hit."""
+    strategy = _RecordingStrategy(bundle=_bundle())
+    service = AskService(
+        model=TestModel(custom_output_text="aspirin is a salicylate."),
+        strategy=strategy,
+        provider_config=_provider(),
+        rag_mode="deterministic",
+    )
+    captured: list[str] = []
+    async for event in service.run("what is aspirin", user_id="alice"):
+        if isinstance(event, TokenChunk):
+            captured.append(event.text)
+    assert len(strategy.calls) == 1
+    assert "Sources:" in "".join(captured)
+
+
+async def test_agentic_mode_raises_at_construction():
+    """v1 has no state-graph runtime; opting any feature into agentic
+    fails at AskService() rather than mid-stream so operators see the
+    misconfig immediately."""
+    strategy = _RecordingStrategy(bundle=_bundle())
+    with pytest.raises(NotImplementedError):
+        AskService(
+            model=TestModel(custom_output_text="answer"),
+            strategy=strategy,
+            provider_config=_provider(),
+            rag_mode="agentic",
+        )
+
+
+async def test_announced_but_skipped_emits_audit_event(monkeypatch):
+    """LLM in tool mode that writes "I will search..." but never fires
+    the tool call should produce a ``mode.ask.tool_announced_but_skipped``
+    audit row so we can quantify per-provider compliance.
+    """
+    from claritymed.orchestrator.services import ask_service as ask_mod
+
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        ask_mod, "audit_event", lambda event, payload: captured.append((event, payload))
+    )
+
+    strategy = _RecordingStrategy(bundle=_bundle())
+    # TestModel that doesn't call any tool and emits an announce phrase.
     service = AskService(
         model=TestModel(
-            # TestModel can be configured to invoke the tool; default behaviour
-            # calls every tool once. That's enough to prove the path is wired.
-            custom_output_text="answer",
+            call_tools=[],  # no tool calls at all
+            custom_output_text="我将首先检索相关指南，请稍候。",
         ),
         strategy=strategy,
         provider_config=_provider(),
     )
-    captured_chunks: list[str] = []
-    async for event in service.run("aspirin and ibuprofen", user_id="alice"):
-        if isinstance(event, TokenChunk):
-            captured_chunks.append(event.text)
-    # The sources block lands as a TokenChunk just before Done.
-    joined = "".join(captured_chunks)
-    assert "Sources:" in joined
-    assert len(strategy.calls) >= 1
+    async for _ in service.run("我血红蛋白 105", user_id="alice"):
+        pass
+
+    events = [name for name, _ in captured]
+    assert "mode.ask.tool_announced_but_skipped" in events
+    payload = next(
+        p for name, p in captured if name == "mode.ask.tool_announced_but_skipped"
+    )
+    assert payload["tool"] == "retrieve_medical_literature"
+    assert "检索" in payload["snippet"]
+
+
+async def test_no_announce_no_audit(monkeypatch):
+    """Plain answer (no announce phrase) does NOT trigger the audit row
+    even when the tool wasn't called — false positives would drown out
+    real compliance signals."""
+    from claritymed.orchestrator.services import ask_service as ask_mod
+
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        ask_mod, "audit_event", lambda event, payload: captured.append((event, payload))
+    )
+
+    strategy = _RecordingStrategy(bundle=_bundle())
+    service = AskService(
+        model=TestModel(
+            call_tools=[],
+            custom_output_text="Your hemoglobin is in the mild anemia range.",
+        ),
+        strategy=strategy,
+        provider_config=_provider(),
+    )
+    async for _ in service.run("hb 105", user_id="alice"):
+        pass
+
+    events = [name for name, _ in captured]
+    assert "mode.ask.tool_announced_but_skipped" not in events
+
+
+async def test_tool_call_counted_when_invoked(monkeypatch):
+    """When the tool fires, ``deps.tool_calls['retrieve_medical_literature']``
+    reaches the ``mode.ask`` audit payload — operators can grep
+    per-turn tool usage from one audit row."""
+    from claritymed.orchestrator.services import ask_service as ask_mod
+
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        ask_mod, "audit_event", lambda event, payload: captured.append((event, payload))
+    )
+
+    strategy = _RecordingStrategy(bundle=_bundle())
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=strategy,
+        provider_config=_provider(),
+    )
+    async for _ in service.run("aspirin", user_id="alice"):
+        pass
+
+    mode_ask = next(p for name, p in captured if name == "mode.ask")
+    assert mode_ask.get("tool_calls", {}).get("retrieve_medical_literature", 0) >= 1

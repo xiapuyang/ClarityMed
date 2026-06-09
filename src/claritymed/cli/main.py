@@ -165,6 +165,9 @@ def ask(
             from claritymed.core.translation import make_translation_provider
 
             strategy = _maybe_build_strategy(model=model)
+            from claritymed.core.rag import load_retrieval_config
+
+            mode_name = load_retrieval_config().rag.mode
             service = AskService(
                 model=model,
                 language=lang,
@@ -174,6 +177,7 @@ def ask(
                 strategy=strategy,
                 provider_config=provider,
                 translation_service=make_translation_provider(model),
+                rag_mode=mode_name,
             )
 
             async for event in service.run(question, user_id=uid):
@@ -1063,6 +1067,121 @@ def audit_grep(
     if matched == 0:
         _stderr("[info] no matches")
         raise typer.Exit(code=1)
+
+
+@audit_app.command("list-rules")
+def audit_list_rules() -> None:
+    """List registered audit rules and their descriptions."""
+    from claritymed.core.audit import list_rules
+
+    for name, desc in list_rules():
+        console.print(f"[bold]{name}[/]")
+        console.print(f"  {desc}")
+
+
+@audit_app.command("scan")
+def audit_scan(
+    rules: list[str] | None = typer.Option(
+        None,
+        "--rule",
+        "-r",
+        help="Rule name(s) to run; pass repeatedly. Default: every registered rule.",
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Lower bound on created_at (ISO 8601 prefix match)."
+    ),
+    until: str | None = typer.Option(
+        None, "--until", help="Upper bound on created_at (ISO 8601 prefix match)."
+    ),
+    user_id: str | None = typer.Option(None, "--user-id", help="Filter by user id."),
+    json_out: bool = typer.Option(
+        False, "--json", help="Emit one JSON object per rule (machine-readable)."
+    ),
+) -> None:
+    """Run audit rules over ``audit.log*`` and print findings.
+
+    Designed for `cron`-style scheduled health checks. Each rule is a
+    streaming aggregator that consumes events once; adding a new rule
+    is one class + one factory entry — no CLI changes.
+
+    Examples::
+
+        # last 24h, all rules, human-readable
+        claritymed audit scan --since $(date -u -v-1d +%Y-%m-%d)
+
+        # one specific rule, machine-readable
+        claritymed audit scan --rule tool_announced_but_skipped --json
+    """
+    import json
+
+    from claritymed.core.audit import build_rules, read_audit_events
+
+    try:
+        rule_objs = build_rules(only=rules)
+    except KeyError as exc:
+        _stderr(f"[error] {exc}")
+        raise typer.Exit(code=2) from None
+
+    try:
+        event_iter = read_audit_events(since=since, until=until, user_id=user_id)
+    except FileNotFoundError as exc:
+        _stderr(f"[error] {exc}")
+        raise typer.Exit(code=1) from None
+
+    consumed = 0
+    for event in event_iter:
+        consumed += 1
+        for r in rule_objs:
+            r.accept(event)
+
+    reports = [r.report() for r in rule_objs]
+
+    if json_out:
+        # ``dataclasses.asdict`` would deep-copy; samples lists are
+        # already plain dicts so a shallow translation is cheaper.
+        out = [
+            {
+                "name": rep.name,
+                "description": rep.description,
+                "total_relevant": rep.total_relevant,
+                "counts": rep.counts,
+                "findings": rep.findings,
+                "samples": rep.samples,
+            }
+            for rep in reports
+        ]
+        print(
+            json.dumps(
+                {"events_consumed": consumed, "rules": out},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    if consumed == 0:
+        _stderr(f"[warn] no audit events in window since={since!r} until={until!r}")
+
+    for rep in reports:
+        console.print(f"\n[bold cyan]{rep.name}[/] — {rep.description}")
+        console.print(f"  considered: {rep.total_relevant} event(s)")
+        if not rep.counts and not rep.findings:
+            console.print("  [dim]no findings[/dim]")
+            continue
+        if rep.counts:
+            console.print("  counts:")
+            for label, n in sorted(rep.counts.items(), key=lambda kv: -kv[1]):
+                console.print(f"    {label}: {n}")
+        if rep.findings:
+            console.print("  findings:")
+            for line in rep.findings:
+                console.print(f"    • {line}")
+        if rep.samples:
+            console.print("  samples:")
+            for s in rep.samples[:3]:
+                snippet = s.get("snippet", "")
+                model = s.get("model", "?")
+                console.print(f"    [{model}] {snippet}")
 
 
 @app.command("init-user")

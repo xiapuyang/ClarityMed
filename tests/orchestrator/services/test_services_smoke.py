@@ -16,7 +16,7 @@ from claritymed.core.rag.chunking.base import (
 )
 from claritymed.core.rag.embedding.base import Embedder, SparseVector
 from claritymed.core.schemas.receipts import IngestionReceipt, IngestReceipt
-from claritymed.orchestrator import PhiGuard
+from claritymed.core.phi.guard import PhiGuard
 from claritymed.orchestrator.services import (
     AskService,
     Done,

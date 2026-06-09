@@ -9,7 +9,7 @@ purely by the LLM; clinical questions trigger a retrieval round-trip.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from claritymed.core.prompts.registry import PromptRegistry
 from claritymed.orchestrator.agents.ask_deps import AskDeps
@@ -32,13 +32,19 @@ def make_ask_agent(
     model: "Model",
     registry: PromptRegistry | None = None,
     language: str = "en",
+    *,
+    tools: "list[Callable] | None" = None,
 ) -> "Agent[AskDeps, str]":
-    """Build the Pydantic AI agent for ask mode."""
-    from pydantic_ai import Agent
+    """Build the Pydantic AI agent for ask mode.
 
-    from claritymed.orchestrator.tools.retrieve_medical_literature import (
-        retrieve_medical_literature,
-    )
+    Args:
+        tools: Pydantic-AI tool callables to register on the agent. The
+            caller (typically ``AskService`` after composing
+            ``FeaturePlugin.as_tool`` results) decides which tools the
+            LLM may invoke this turn. Pass ``None`` or ``[]`` for a
+            no-tool agent (deterministic-only turns).
+    """
+    from pydantic_ai import Agent
 
     reg = registry or PromptRegistry()
     system_prompt = reg.get("ask", language=language)  # type: ignore[arg-type]
@@ -49,5 +55,6 @@ def make_ask_agent(
         system_prompt=system_prompt,
         deps_type=AskDeps,
     )
-    agent.tool(retrieve_medical_literature)
+    for tool in tools or []:
+        agent.tool(tool)
     return agent
