@@ -39,6 +39,14 @@ privacy-filter = [
     "transformers>=4.40",
     "onnxruntime>=1.17",
 ]
+# E2E quality evaluation — requires live local services (embedder + reranker +
+# Qdrant) and the project's configured LLM. Run with:
+#   uv sync --extra e2e
+#   uv run pytest tests/e2e -v --no-cov
+e2e = [
+    "deepeval>=2.0",
+    "httpx>=0.28.1",
+]
 
 [project.scripts]
 claritymed = "claritymed.cli.main:main"
@@ -67,10 +75,15 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "--cov=src/claritymed --cov-report=term-missing --cov-fail-under=80"
+# --ignore=tests/e2e keeps e2e out of normal CI runs (they need live services).
+# Run e2e explicitly: uv run pytest tests/e2e -v --no-cov
+addopts = "--cov=src/claritymed --cov-report=term-missing --cov-fail-under=80 --ignore=tests/e2e"
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "local: tests that require live local services; excluded from CI",
+]
 
 [tool.coverage.run]
 source = ["src/claritymed"]
