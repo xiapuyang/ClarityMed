@@ -43,7 +43,7 @@ def test_mode_has_required_fields():
     ask = modes.get("ask")
     assert ask.prompt_key == "ask"
     assert ask.audit_event_type == "mode.ask"
-    assert "retrieve_system_rag_stub" in ask.tools
+    assert "retrieve_medical_literature" in ask.tools
 
 
 def test_router_thresholds_and_fallback():

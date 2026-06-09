@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -12,6 +13,7 @@ from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.logging import get_access_logger
 from claritymed.orchestrator import PhiGuard
 from claritymed.orchestrator.agents import make_ask_agent
+from claritymed.orchestrator.agents.ask_agent import AskDeps
 from claritymed.orchestrator.services.chat_session import (
     LatencyTrace,
     _usage_dict,
@@ -23,13 +25,7 @@ from claritymed.orchestrator.services.events import (
     Event,
     LlmCallStarted,
     LlmFirstToken,
-    RetrievalCompleted,
-    RetrievalFiltered,
-    RetrievalPending,
-    RetrievalStarted,
     TokenChunk,
-    ToolCompleted,
-    ToolStarted,
 )
 
 if TYPE_CHECKING:
@@ -176,19 +172,18 @@ class AskService:
 
         output_lang = self._language
 
-        # RAG retrieval (Unit 8): if a strategy is configured, fetch evidence
-        # before calling the LLM. Cloud providers filter PHI chunks at the
-        # Qdrant query layer (only_cloud_safe=True); local providers keep
-        # everything so user-uploaded PHI can ground the answer.
-        evidence_block = ""
-        evidence_chunks: list = []
-        async for ev in self._maybe_retrieve(scrubbed, user_id):
-            if isinstance(ev, _EvidenceReady):
-                evidence_block = ev.text
-                evidence_chunks = ev.chunks
-            else:
-                yield ev
-        prompt = self._compose_prompt(scrubbed, evidence_block)
+        # Build deps so the retrieve_medical_literature tool can access
+        # the strategy, PHI state, and translation service, and so the
+        # service can collect retrieved chunks for the Sources block after
+        # the LLM finishes.
+        deps = AskDeps(
+            strategy=self._strategy,
+            user_id=user_id,
+            user_whitelist=self._user_whitelist,
+            provider_config=self._provider_config,
+            language=output_lang,
+            translation_service=self._translation_service,
+        )
 
         # Record the user turn first so the JSONL timeline reflects send
         # order, then pull the prior history for the LLM call. The chat
@@ -228,16 +223,16 @@ class AskService:
         )
         try:
             async for event in self._run_with_agent(
-                prompt, message_history, user_id, output_lang=output_lang
+                scrubbed, message_history, user_id, deps, output_lang=output_lang
             ):
                 # Inject source and debug blocks just before Done so the TUI's
                 # event loop processes them while the stream is still open.
                 # Yielding after Done would be dropped — the TUI returns on Done.
-                if isinstance(event, Done) and evidence_chunks:
-                    yield TokenChunk(text=self._format_sources(evidence_chunks))
+                if isinstance(event, Done) and deps.retrieved_chunks:
+                    yield TokenChunk(text=self._format_sources(deps.retrieved_chunks))
                     if os.environ.get("CLARITYMED_DEBUG"):
                         yield TokenChunk(
-                            text=self._format_debug_collections(evidence_chunks)
+                            text=self._format_debug_collections(deps.retrieved_chunks)
                         )
                 yield event
         finally:
@@ -248,8 +243,11 @@ class AskService:
         scrubbed: str,
         message_history,
         user_id: str,
+        deps: AskDeps,
         output_lang: str | None = None,
     ) -> AsyncIterator[Event]:
+        from pydantic_ai import UsageLimits
+
         agent = make_ask_agent(self._model, language=output_lang or self._language)
         messages_json: bytes | None = None
         usage: RunUsage | None = None
@@ -260,8 +258,7 @@ class AskService:
         # Emit before agent.run_stream so the UI shows 'generating…' during
         # the LLM's TTFT window. On large local models (Qwen 35B on MLX) TTFT
         # can hit 3 minutes — without this event the assistant bubble looks
-        # frozen since RAG completes in <1s and tokens don't start until much
-        # later.
+        # frozen since the first token doesn't appear until much later.
         yield LlmCallStarted(
             model_name=self._model_name,
             provider_id=self._provider_id,
@@ -279,15 +276,34 @@ class AskService:
         )
         try:
             async with agent.run_stream(
-                scrubbed, message_history=message_history or None
+                scrubbed,
+                deps=deps,
+                message_history=message_history or None,
+                usage_limits=UsageLimits(request_limit=5),
             ) as stream:
                 async for chunk in stream.stream_text(delta=True):
+                    # Drain events queued by tools (translation, retrieval)
+                    # before yielding text.  Tool calls complete before the LLM
+                    # generates its final text response, so anything in the
+                    # queue belongs to the tool phase and should precede tokens.
+                    while True:
+                        try:
+                            yield deps.event_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
                     if chunk:
                         if t_first_token is None:
                             t_first_token = time.perf_counter()
                             ttft_ms = int((t_first_token - t_start) * 1000)
                             yield LlmFirstToken(ttft_ms=ttft_ms)
                         yield TokenChunk(text=chunk)
+                # Drain any events that arrived if the LLM called a tool
+                # but generated no text (edge case).
+                while True:
+                    try:
+                        yield deps.event_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
                 final_text = await stream.get_output()
                 # Capture inside the ``with`` block — the stream goes out of
                 # scope once it exits and the messages disappear with it.
@@ -372,235 +388,11 @@ class AskService:
         )
         yield Done(final=final_text)
 
-    # --- retrieval seam ------------------------------------------------
-
-    def _collection_target_language(self, query_lang: str | None = None) -> str | None:
-        """Return the language to translate the query INTO for embedding.
-
-        Uses ``query_lang`` (the detected language of the actual query text)
-        rather than the session language so cross-lingual users who type Chinese
-        in an English session still get their query translated to the collection's
-        native language. Falls back to the session language when query_lang is None.
-        Returns None when no mismatch exists or when the config cannot be read.
-        """
-        try:
-            from claritymed.core.rag.schemas import load_retrieval_config
-
-            cfg = load_retrieval_config()
-            effective_lang = query_lang or self._language
-            mismatched = [
-                c.language
-                for c in cfg.system_rag.collections
-                if c.cross_lingual and c.language != effective_lang
-            ]
-            if not mismatched:
-                return None
-            return max(set(mismatched), key=mismatched.count)
-        except Exception:  # noqa: BLE001
-            logger.warning("could not determine collection target language")
-            return None
-
-    async def _maybe_retrieve(
-        self, scrubbed_query: str, user_id: str
-    ) -> AsyncIterator[Event]:
-        """Stream RetrievalStarted/Filtered/Completed events and stash the
-        evidence_block on a private sentinel so the caller can splice it
-        into the prompt without losing event ordering.
-        """
-        if self._strategy is None:
-            return
-        from claritymed.core.rag.strategies.base import RetrievalContext
-
-        only_cloud_safe = self._is_cloud_provider()
-
-        # Translate the query to the collection's native language before embedding.
-        # BGE-M3 similarity is significantly lower for cross-lingual pairs;
-        # translating closes that gap. Direction is derived from system collections
-        # (e.g. statpearls_en language="en" + zh session → translate zh→en;
-        # a hypothetical statpearls_zh would trigger the reverse). ctx.language
-        # stays as the session language so CollectionRouter routing is unchanged.
-        # Fires automatically when a TranslationService is configured and the
-        # session language differs from any cross_lingual collection — no env var needed.
-        embedding_query = scrubbed_query
-        if self._translation_service:
-            from claritymed.core.observability.steps import capture_steps
-            from claritymed.core.translation import detect_language
-
-            query_lang = detect_language(scrubbed_query)
-            target_lang = self._collection_target_language(query_lang=query_lang)
-            if target_lang:
-                get_access_logger().info(
-                    "translate.query %s→%s", query_lang or "?", target_lang
-                )
-                yield ToolStarted(
-                    tool_name="translate.query",
-                    args_preview=f"translate/{target_lang}",
-                )
-                with capture_steps() as translation_steps:
-                    embedding_query = await self._translation_service.translate_query(
-                        scrubbed_query,
-                        target_lang=target_lang,  # type: ignore[arg-type]
-                    )
-                for rec in translation_steps:
-                    yield ToolCompleted(
-                        tool_name=rec.name,
-                        duration_ms=rec.duration_ms,
-                        summary=rec.summary or ("done" if not rec.failed else "failed"),
-                    )
-                if not translation_steps:
-                    yield ToolCompleted(tool_name="translate.query", summary="done")
-
-        ctx = RetrievalContext(
-            query=embedding_query,
-            user_id=user_id,
-            language=self._language,  # type: ignore[arg-type]
-            user_whitelist=self._user_whitelist,
-            only_cloud_safe=only_cloud_safe,
-        )
-        # Emit the pending event *before* the await — the embed + search +
-        # rerank pipeline is the longest stretch of any RAG turn (typically
-        # 1-5s on local Qdrant). Without this signal the UI just sits on an
-        # empty assistant bubble for the duration.
-        yield RetrievalPending()
-        try:
-            bundle = await self._strategy.retrieve(ctx)
-        except Exception as exc:  # noqa: BLE001 — surface as audit + event
-            logger.exception("retrieval failed")
-            audit_event(
-                "rag.retrieval.failed",
-                payload={"user_id": user_id, "error": str(exc)[:200]},
-            )
-            yield Error(
-                error_type="retrieval_failed",
-                message=str(exc),
-                retryable=True,
-            )
-            return
-        yield RetrievalStarted(
-            active_collections=bundle.trace.active_collections,
-            strategy=bundle.trace.strategy,
-        )
-
-        # Cloud-safe filter at the provider boundary. The Qdrant layer
-        # already pre-filters when only_cloud_safe=True, but PhiGuard's
-        # filter_chunks_for_provider is the canonical defense-in-depth check.
-        chunks_pre = list(bundle.chunks)
-        safe_chunks = self._filter_for_provider(chunks_pre)
-        filtered = len(chunks_pre) - len(safe_chunks)
-        if filtered > 0:
-            yield RetrievalFiltered(
-                total=len(chunks_pre),
-                kept=len(safe_chunks),
-                filtered_phi=filtered,
-                reason="cloud_provider_phi_guard",
-            )
-
-        # Score threshold — drop chunks that are below the configured minimum.
-        # Prefers rerank_score (cross-encoder) when available; falls back to
-        # the initial retrieval score. This prevents low-relevance chunks from
-        # contaminating the prompt and from appearing in the Sources block for
-        # off-topic queries (e.g. greetings).
-        safe_chunks = self._filter_by_score(safe_chunks)
-
-        if bundle.trace.rerank_fallback:
-            audit_event(
-                "rag.rerank.fallback",
-                payload={
-                    "user_id": user_id,
-                    "collections": bundle.trace.active_collections,
-                },
-            )
-
-        yield RetrievalCompleted(
-            num_chunks=len(safe_chunks),
-            fallback_triggered=bundle.trace.fallback_triggered,
-            rerank_fallback=bundle.trace.rerank_fallback,
-            embed_ms=bundle.trace.embed_ms,
-            search_ms=bundle.trace.search_ms,
-            rerank_ms=bundle.trace.rerank_ms,
-            parent_expand_ms=bundle.trace.parent_expand_ms,
-        )
-
-        get_access_logger().info(
-            "rag.retrieval collections=%s chunks=%d embed=%dms search=%dms rerank=%dms",
-            ",".join(bundle.trace.active_collections),
-            len(safe_chunks),
-            bundle.trace.embed_ms or 0,
-            bundle.trace.search_ms or 0,
-            bundle.trace.rerank_ms or 0,
-        )
-        audit_event(
-            "rag.retrieval",
-            payload={
-                "user_id": user_id,
-                "strategy": bundle.trace.strategy,
-                "active_collections": bundle.trace.active_collections,
-                "num_chunks": len(safe_chunks),
-                "chunks": [
-                    {
-                        "collection": c.collection_name,
-                        "doc_id": c.doc_id,
-                        "doc_title": c.doc_title,
-                    }
-                    for c in safe_chunks
-                ],
-                "filtered_phi": filtered,
-                "fallback_triggered": bundle.trace.fallback_triggered,
-                "rerank_fallback": bundle.trace.rerank_fallback,
-                # Timing breakdown — without this you can see num_chunks=0
-                # but not whether embed, search, or rerank ate the budget.
-                "embed_ms": bundle.trace.embed_ms,
-                "search_ms": bundle.trace.search_ms,
-                "rerank_ms": bundle.trace.rerank_ms,
-                "parent_expand_ms": bundle.trace.parent_expand_ms,
-            },
-        )
-
-        yield _EvidenceReady(
-            text=self._format_evidence(safe_chunks), chunks=safe_chunks
-        )
-
-    def _is_cloud_provider(self) -> bool:
-        if self._provider_config is None:
-            return False
-        return getattr(self._provider_config, "kind", None) == "cloud"
-
-    def _filter_by_score(
-        self, chunks: "list[RetrievedChunk]"
-    ) -> "list[RetrievedChunk]":
-        """Drop chunks whose best available score is below the configured threshold."""
-        try:
-            from claritymed.core.rag.schemas import load_retrieval_config
-
-            threshold = load_retrieval_config().system_rag.score_threshold
-        except Exception:  # noqa: BLE001
-            return chunks
-        return [
-            c
-            for c in chunks
-            if (c.rerank_score if c.rerank_score is not None else c.score) >= threshold
-        ]
-
-    def _filter_for_provider(
-        self, chunks: "list[RetrievedChunk]"
-    ) -> "list[RetrievedChunk]":
-        if not self._is_cloud_provider():
-            return chunks
-        safe, _report = self._guard.filter_chunks_for_provider(
-            chunks, provider_kind="cloud"
-        )
-        return safe
-
     @staticmethod
     def _format_evidence(chunks: "list[RetrievedChunk]") -> str:
-        if not chunks:
-            return ""
-        lines = ["", "Evidence (cite by [n]):"]
-        for i, c in enumerate(chunks, start=1):
-            body = c.parent_text or c.text
-            src = c.source_uri or c.collection_name or c.source
-            lines.append(f"[{i}] ({src}) {body}")
-        return "\n".join(lines)
+        from claritymed.orchestrator.agents.ask_agent import _format_evidence as _fe
+
+        return _fe(chunks)
 
     @staticmethod
     def _format_sources(chunks: "list[RetrievedChunk]") -> str:
@@ -637,20 +429,3 @@ class AskService:
         if not evidence_block:
             return scrubbed
         return f"{evidence_block}\n\nQuestion: {scrubbed}"
-
-
-class _EvidenceReady:
-    """Private sentinel: carries the formatted evidence_block out of
-    ``_maybe_retrieve`` without polluting the public ``Event`` union.
-
-    ``chunks`` is also forwarded so the caller can emit a debug
-    collections block when ``CLARITYMED_DEBUG`` is set — the LLM does
-    not include collection metadata in its Sources section, so this
-    must be appended by code after the stream finishes.
-    """
-
-    __slots__ = ("text", "chunks")
-
-    def __init__(self, text: str, chunks: "list") -> None:
-        self.text = text
-        self.chunks = chunks

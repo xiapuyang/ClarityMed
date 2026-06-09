@@ -27,8 +27,7 @@ modes:
     audit_event_type: mode.ask
     allow_llm_inference: true
     tools:
-      - retrieve_system_rag_stub
-      - retrieve_user_rag_stub
+      - retrieve_medical_literature
       - load_patient_facts
       - load_lab_timeline
       - cite_source

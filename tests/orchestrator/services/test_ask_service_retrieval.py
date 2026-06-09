@@ -101,10 +101,9 @@ async def test_run_with_strategy_emits_retrieval_then_tokens_then_done():
     # event: the UI needs a signal *before* the slow embed+search+rerank
     # await, not after it returns with bundle metadata.
     assert types.index("RetrievalPending") < types.index("RetrievalStarted")
-    # LlmCallStarted fires between retrieval ending and the first token —
-    # large local models can sit silent for minutes on TTFT and this is
-    # the only pre-token signal the UI gets.
-    assert types.index("RetrievalCompleted") < types.index("LlmCallStarted")
+    # LlmCallStarted fires before the tool call — the LLM decides to call
+    # the retrieval tool, so retrieval is always nested inside the LLM run.
+    assert types.index("LlmCallStarted") < types.index("RetrievalPending")
     assert types.index("LlmCallStarted") < types.index("LlmFirstToken")
     assert types.index("LlmFirstToken") <= types.index("TokenChunk")
 
@@ -426,7 +425,7 @@ async def test_translate_queries_auto_fires_for_cross_lingual():
 
 
 async def test_translate_queries_skipped_when_no_service():
-    """Without a TranslationProvider the original query reaches the strategy."""
+    """Without a TranslationProvider the tool-extracted query reaches the strategy."""
     bundle = EvidenceBundle(
         chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
     )
@@ -439,7 +438,8 @@ async def test_translate_queries_skipped_when_no_service():
         # no translation_service
     )
     [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
-    assert strategy.calls[0].query == "我血红蛋白105"
+    # TestModel generates query='a' for the tool — no translation, 'a' reaches strategy.
+    assert strategy.calls[0].query == "a"
 
 
 async def test_translate_queries_only_fires_for_collection_mismatch():
@@ -456,7 +456,8 @@ async def test_translate_queries_only_fires_for_collection_mismatch():
         translation_service=_translation_svc(),
     )
     [ev async for ev in service.run("hemoglobin 105", user_id="alice")]
-    assert strategy.calls[0].query == "hemoglobin 105"
+    # No language mismatch → no translation → TestModel's tool arg 'a' reaches strategy.
+    assert strategy.calls[0].query == "a"
 
 
 async def test_translate_queries_fallback_on_failure():
@@ -480,7 +481,8 @@ async def test_translate_queries_fallback_on_failure():
         translation_service=svc,
     )
     events = [ev async for ev in service.run("我血红蛋白105", user_id="alice")]
-    assert strategy.calls[0].query == "我血红蛋白105"
+    # Translation failed → fallback to tool-extracted query 'a' (TestModel arg).
+    assert strategy.calls[0].query == "a"
     assert any(isinstance(e, Done) for e in events)
 
 
