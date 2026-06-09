@@ -14,7 +14,7 @@ dependencies = [
     "pydantic-ai-slim[anthropic,openai]>=1.0",
     "pyyaml>=6.0.2",
     "qdrant-client>=1.18.0",
-    "rich>=15.0.0",
+    "rich>=13.6.0",
     "sqlmodel>=0.0.22",
     "starlette>=0.41.0",
     "textual>=0.85,<1.0",
@@ -44,7 +44,7 @@ privacy-filter = [
 #   uv sync --extra e2e
 #   uv run pytest tests/e2e -v --no-cov
 e2e = [
-    "deepeval>=2.0",
+    "deepeval>=4.0",
     "httpx>=0.28.1",
 ]
 
