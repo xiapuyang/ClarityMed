@@ -13,7 +13,7 @@ from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.logging import get_access_logger
 from claritymed.orchestrator import PhiGuard
 from claritymed.orchestrator.agents import make_ask_agent
-from claritymed.orchestrator.agents.ask_agent import AskDeps
+from claritymed.orchestrator.agents.ask_deps import AskDeps
 from claritymed.orchestrator.services.chat_session import (
     LatencyTrace,
     _usage_dict,
@@ -449,9 +449,11 @@ class AskService:
 
     @staticmethod
     def _format_evidence(chunks: "list[RetrievedChunk]") -> str:
-        from claritymed.orchestrator.agents.ask_agent import _format_evidence as _fe
+        from claritymed.orchestrator.tools.retrieve_medical_literature import (
+            format_evidence,
+        )
 
-        return _fe(chunks)
+        return format_evidence(chunks)
 
     @staticmethod
     def _format_sources(chunks: "list[RetrievedChunk]") -> str:

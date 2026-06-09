@@ -6,7 +6,8 @@ because ingest and rag modes default to ``allow_llm_inference=false`` and
 short-circuit to deterministic tool dispatch.
 """
 
-from claritymed.orchestrator.agents.ask_agent import AskDeps, make_ask_agent
+from claritymed.orchestrator.agents.ask_agent import make_ask_agent
+from claritymed.orchestrator.agents.ask_deps import AskDeps
 from claritymed.orchestrator.agents.ingest_agent import (
     INGEST_TOOL_NAMES,
     make_ingest_agent,
