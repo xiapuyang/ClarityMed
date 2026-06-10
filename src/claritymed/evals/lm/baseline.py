@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from lm_eval.api.model import LM
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
+from tqdm.auto import tqdm
 
 from claritymed.core.llm.model import build_model
 
@@ -93,9 +94,22 @@ class ClaritymedBaselineLM(LM):
         ``filter_list`` regex is responsible for pulling the answer out.
         Truncating client-side would lose the trailing "Answer: X" that
         the filter needs.
+
+        Progress is reported via tqdm because lm-eval-harness's own bar
+        only covers dataset preparation — once it hands off the full
+        batch of Instances to us, there's no visible signal until every
+        request comes back. For a 1273-question MedQA run at ~5s per
+        question that's ~100 minutes of apparent dead silence; the
+        per-request bar below gives a real-time q/s + ETA instead.
         """
         completions: list[str] = []
-        for req in requests:
+        iterable = tqdm(
+            requests,
+            desc=f"eval[{self.provider_id}]",
+            unit="q",
+            leave=False,
+        )
+        for req in iterable:
             context, gen_kwargs = self._unpack(req)
             settings = self._build_settings(gen_kwargs)
 
