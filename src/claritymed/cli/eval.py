@@ -39,14 +39,20 @@ from claritymed.stores.models import pick_reachable_provider, resolve_provider
 
 eval_app = typer.Typer(
     name="eval",
-    help="Run benchmarks (MedQA, ...) against any provider in models.yaml.",
+    help="Run benchmarks (medqa, cmb_exam, medmcqa, pubmedqa) against any "
+    "provider in models.yaml.",
     no_args_is_help=True,
 )
 _console = Console()
 
 
-@eval_app.command("medqa")
-def eval_medqa(
+@eval_app.command("run")
+def eval_run(
+    task_id: str = typer.Argument(
+        ...,
+        help="Task id matching a YAML under src/claritymed/evals/tasks/ "
+        "(e.g. medqa, cmb_exam, medmcqa, pubmedqa).",
+    ),
     provider_id: str | None = typer.Option(
         None,
         "--provider",
@@ -57,7 +63,7 @@ def eval_medqa(
         None,
         "--limit",
         min=0,
-        help="Cap questions for smoke tests. Default: full 1273-question test split.",
+        help="Cap questions for smoke tests. Default: full test split.",
     ),
     with_rag: bool = typer.Option(
         False,
@@ -80,7 +86,12 @@ def eval_medqa(
         ),
     ),
 ) -> None:
-    """Score the configured provider on MedQA-USMLE (4-option English MCQA)."""
+    """Score the configured provider on TASK_ID.
+
+    Adding a new benchmark is YAML-only: drop ``<task>.yaml`` (and an
+    optional sibling ``utils_<task>.py`` for dataset preprocessing) into
+    ``src/claritymed/evals/tasks/`` and invoke ``claritymed eval run <task>``.
+    """
     arm = "with-rag" if with_rag else "baseline"
     if with_rag and rag_mode not in {"deterministic", "tool"}:
         raise typer.Exit(
@@ -88,7 +99,7 @@ def eval_medqa(
                 f"--rag-mode must be 'deterministic' or 'tool', got {rag_mode!r}."
             )
         )
-    command_label = f"eval.medqa provider={provider_id or 'default'} arm={arm}" + (
+    command_label = f"eval.{task_id} provider={provider_id or 'default'} arm={arm}" + (
         f" rag_mode={rag_mode}" if with_rag else ""
     )
     with inject_context(
@@ -104,7 +115,7 @@ def eval_medqa(
             )
         else:
             runner = LmEvalRunner()
-        runner.run(provider, task_id="medqa", limit=limit)
+        runner.run(provider, task_id=task_id, limit=limit)
 
 
 @eval_app.command("delta")

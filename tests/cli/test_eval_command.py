@@ -1,4 +1,4 @@
-"""Tests for the ``claritymed eval medqa`` Typer command."""
+"""Tests for the ``claritymed eval run <task>`` Typer command."""
 
 from __future__ import annotations
 
@@ -18,16 +18,17 @@ runner = CliRunner()
 # ---------------------------------------------------------------------------
 
 
-def test_eval_help_lists_medqa_subcommand():
+def test_eval_help_lists_run_subcommand():
     result = runner.invoke(app, ["eval", "--help"])
     assert result.exit_code == 0
-    assert "medqa" in result.stdout
+    assert "run" in result.stdout
 
 
-def test_eval_medqa_help_documents_with_rag():
-    result = runner.invoke(app, ["eval", "medqa", "--help"])
+def test_eval_run_help_documents_with_rag():
+    result = runner.invoke(app, ["eval", "run", "--help"])
     assert result.exit_code == 0
     assert "--with-rag" in result.stdout
+    assert "TASK_ID" in result.stdout.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -35,14 +36,14 @@ def test_eval_medqa_help_documents_with_rag():
 # ---------------------------------------------------------------------------
 
 
-def _stub_run_result(tmp_path: Path) -> RunResult:
+def _stub_run_result(tmp_path: Path, task_id: str = "medqa") -> RunResult:
     from datetime import datetime, timezone
 
-    output = tmp_path / "ollama_medqa_x.jsonl"
+    output = tmp_path / f"ollama_{task_id}_x.jsonl"
     output.write_text("", encoding="utf-8")
     return RunResult(
         provider_id="ollama",
-        task_id="medqa",
+        task_id=task_id,
         n_questions=5,
         accuracy=0.6,
         output_path=output,
@@ -51,7 +52,9 @@ def _stub_run_result(tmp_path: Path) -> RunResult:
     )
 
 
-def test_eval_medqa_invokes_runner(tmp_path, monkeypatch):
+def test_eval_run_invokes_runner_with_task_id(tmp_path, monkeypatch):
+    """Positional ``task_id`` is forwarded verbatim to the runner — the
+    extensibility claim: new YAML + ``eval run <name>`` is enough."""
     captured: dict[str, Any] = {}
 
     class _StubRunner:
@@ -59,19 +62,39 @@ def test_eval_medqa_invokes_runner(tmp_path, monkeypatch):
             captured["provider_id"] = provider.id
             captured["task_id"] = task_id
             captured["limit"] = limit
-            return _stub_run_result(tmp_path)
+            return _stub_run_result(tmp_path, task_id)
 
     monkeypatch.setattr(
         "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
     result = runner.invoke(
-        app, ["eval", "medqa", "--provider", "ollama", "--limit", "5"]
+        app, ["eval", "run", "medqa", "--provider", "ollama", "--limit", "5"]
     )
     assert result.exit_code == 0, result.stdout
     assert captured == {"provider_id": "ollama", "task_id": "medqa", "limit": 5}
 
 
-def test_eval_medqa_omits_provider_auto_picks_reachable(tmp_path, monkeypatch):
+def test_eval_run_forwards_arbitrary_task_id(tmp_path, monkeypatch):
+    """Any string is a valid ``task_id`` from the CLI's perspective —
+    discoverability lives in the tasks/ directory, not in argparse."""
+    captured: dict[str, Any] = {}
+
+    class _StubRunner:
+        def run(self, provider, task_id, limit):
+            captured["task_id"] = task_id
+            return _stub_run_result(tmp_path, task_id)
+
+    monkeypatch.setattr(
+        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
+    )
+    result = runner.invoke(
+        app, ["eval", "run", "cmb_exam", "--provider", "ollama", "--limit", "1"]
+    )
+    assert result.exit_code == 0, result.stdout
+    assert captured["task_id"] == "cmb_exam"
+
+
+def test_eval_run_omits_provider_auto_picks_reachable(tmp_path, monkeypatch):
     """No --provider → auto-pick the first reachable local provider, same
     way the e2e fixture does. Mocked to return a specific provider for
     deterministic assertion."""
@@ -99,13 +122,13 @@ def test_eval_medqa_omits_provider_auto_picks_reachable(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
-    result = runner.invoke(app, ["eval", "medqa", "--limit", "1"])
+    result = runner.invoke(app, ["eval", "run", "medqa", "--limit", "1"])
     assert result.exit_code == 0, result.stdout
     assert captured["provider_id"] == "omlx"
     assert "auto-selected provider" in result.stdout
 
 
-def test_eval_medqa_omits_provider_falls_back_to_catalog_default(tmp_path, monkeypatch):
+def test_eval_run_omits_provider_falls_back_to_catalog_default(tmp_path, monkeypatch):
     """No --provider AND no reachable provider → fall back to the catalog
     default (the LLM call will then fail loud at the wire, which is the
     expected behavior — we don't pretend to succeed)."""
@@ -120,7 +143,7 @@ def test_eval_medqa_omits_provider_falls_back_to_catalog_default(tmp_path, monke
     monkeypatch.setattr(
         "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
-    result = runner.invoke(app, ["eval", "medqa", "--limit", "1"])
+    result = runner.invoke(app, ["eval", "run", "medqa", "--limit", "1"])
     assert result.exit_code == 0, result.stdout
     assert captured["provider_id"] == "ollama"  # repo catalog default
 
@@ -160,7 +183,7 @@ def test_with_rag_swaps_adapter_and_tags_output(tmp_path, monkeypatch):
     monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
     result = runner.invoke(
         app,
-        ["eval", "medqa", "--provider", "ollama", "--with-rag", "--limit", "1"],
+        ["eval", "run", "medqa", "--provider", "ollama", "--with-rag", "--limit", "1"],
     )
     assert result.exit_code == 0, result.stdout
     assert captured["run_tag"] == "with-rag"
@@ -209,6 +232,7 @@ def test_with_rag_rag_mode_tool_passed_through(tmp_path, monkeypatch):
         app,
         [
             "eval",
+            "run",
             "medqa",
             "--provider",
             "ollama",
@@ -250,6 +274,7 @@ def test_invalid_rag_mode_rejected(tmp_path, monkeypatch):
         app,
         [
             "eval",
+            "run",
             "medqa",
             "--provider",
             "ollama",
@@ -278,7 +303,8 @@ def test_unknown_provider_exits_two(monkeypatch):
         "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _Should_Not_Run()
     )
     result = runner.invoke(
-        app, ["eval", "medqa", "--provider", "does-not-exist", "--limit", "1"]
+        app,
+        ["eval", "run", "medqa", "--provider", "does-not-exist", "--limit", "1"],
     )
     assert result.exit_code == 2
     assert "does-not-exist" in result.stdout or "does-not-exist" in (
@@ -288,7 +314,7 @@ def test_unknown_provider_exits_two(monkeypatch):
 
 def test_negative_limit_rejected_by_typer():
     result = runner.invoke(
-        app, ["eval", "medqa", "--provider", "ollama", "--limit", "-5"]
+        app, ["eval", "run", "medqa", "--provider", "ollama", "--limit", "-5"]
     )
     assert result.exit_code != 0
     # Typer renders the range error as part of usage output.

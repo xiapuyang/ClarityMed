@@ -126,7 +126,7 @@ def find_latest_pair(
     if not root.exists():
         raise DeltaReportError(
             f"results directory {root} does not exist — "
-            f"run `claritymed eval medqa --provider {provider_id}` first."
+            f"run `claritymed eval run {task_id} --provider {provider_id}` first."
         )
 
     baseline_pattern = f"{provider_id}_{task_id}_*.jsonl"

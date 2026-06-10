@@ -135,7 +135,7 @@ def pick_reachable_provider() -> ProviderConfig | None:
     """Return the first local provider whose server responds + creds are set.
 
     Mirrors the resolution order in the e2e provider fixture so a
-    ``claritymed eval medqa`` run with no ``--provider`` flag lands on the
+    ``claritymed eval run medqa`` run with no ``--provider`` flag lands on the
     same backend the e2e suite would use. Returns ``None`` when no probed
     local provider is reachable — callers fall back to the catalog default
     (which may itself be unreachable; that's the caller's concern).
