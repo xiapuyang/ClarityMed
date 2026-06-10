@@ -151,9 +151,9 @@ async def perform_retrieval(deps: "TurnState", query: str) -> list["RetrievedChu
     chunks_pre = list(bundle.chunks)
     filtered = 0
     if only_cloud_safe:
-        from claritymed.core.phi.guard import PhiGuard
+        from claritymed.core.phi.guard import get_default_guard
 
-        guard = PhiGuard.from_config()
+        guard = get_default_guard()
         safe_chunks, _report = guard.filter_chunks_for_provider(
             chunks_pre, provider_kind="cloud"
         )
@@ -167,6 +167,20 @@ async def perform_retrieval(deps: "TurnState", query: str) -> list["RetrievedChu
                     reason="cloud_provider_phi_guard",
                 )
             )
+        # Defense-in-depth: the flag-based filter trusts ingest-time
+        # ``is_phi``/``can_cloud`` metadata, which means a chunk that
+        # got past ingest with stale flags can carry PHI into the
+        # cloud prompt. Run the regex layer over the surviving
+        # chunk text + parent_text so the Evidence block can never be
+        # the leak channel even if a can_cloud=True flag was wrong.
+        for chunk in safe_chunks:
+            new_text, _r = guard.scrub_free_text(chunk.text)
+            if new_text != chunk.text:
+                chunk.text = new_text
+            if chunk.parent_text:
+                new_parent, _rp = guard.scrub_free_text(chunk.parent_text)
+                if new_parent != chunk.parent_text:
+                    chunk.parent_text = new_parent
     else:
         safe_chunks = chunks_pre
 
@@ -248,7 +262,7 @@ def deduplicate_chunks(chunks: list) -> list:
     return result
 
 
-def format_evidence(chunks: list) -> str:
+def format_evidence(chunks: list, *, cumulative: list | None = None) -> str:
     """Format retrieved chunks as a numbered evidence block for the LLM.
 
     Deduplicates by doc_id before numbering so citation indices in the
@@ -261,14 +275,32 @@ def format_evidence(chunks: list) -> str:
     string as a "source" in later turns (observed hallucination).
     Chunks without any human-readable identifier emit an unlabeled
     ``[N] <body>`` line instead.
+
+    When the same turn calls the retrieval tool multiple times, pass
+    ``cumulative=deps.retrieved_chunks`` (the union across calls) and
+    ``chunks=safe_chunks`` (this call's slice). Numbering is then taken
+    from each chunk's position in the cumulative dedup, so ``[2]`` in
+    one tool result and ``[2]`` in another result refer to the same
+    document — matching what the user finally sees in ``Sources``.
+    Without the cumulative arg the function falls back to per-call
+    numbering, which is correct only for single-call turns.
     """
-    chunks = deduplicate_chunks(chunks)
-    if not chunks:
+    by_doc = deduplicate_chunks(chunks)
+    if not by_doc:
         return ""
+    indices: dict[str, int]
+    if cumulative is not None:
+        cumulative_unique = deduplicate_chunks(cumulative)
+        indices = {c.doc_id: i + 1 for i, c in enumerate(cumulative_unique)}
+    else:
+        indices = {c.doc_id: i + 1 for i, c in enumerate(by_doc)}
     lines = ["", "Evidence (cite by [n]):"]
-    for i, c in enumerate(chunks, start=1):
+    for c in by_doc:
+        n = indices.get(c.doc_id)
+        if n is None:
+            continue
         body = c.parent_text or c.text
         src = c.source_uri or c.doc_title
-        prefix = f"[{i}] ({src}) " if src else f"[{i}] "
+        prefix = f"[{n}] ({src}) " if src else f"[{n}] "
         lines.append(f"{prefix}{body}")
     return "\n".join(lines)

@@ -39,6 +39,16 @@ class UnknownProviderError(KeyError):
     """Resolver was asked for a provider id that is not in ``models.yaml``."""
 
 
+class CloudOptInRequiredError(PermissionError):
+    """Resolver picked a cloud provider for an account without cloud opt-in.
+
+    The third leg of the documented three-AND cloud invariant
+    (env key ∧ ``Account.cloud_provider_opt_in`` ∧ catalog ``kind=cloud``).
+    Raised by ``resolve_provider`` instead of silently downgrading — a
+    silent downgrade would mask user-visible misconfiguration.
+    """
+
+
 class MissingApiKeyError(RuntimeError):
     """A provider declared ``api_key_env`` but the env var is unset.
 

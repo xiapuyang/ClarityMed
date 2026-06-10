@@ -94,7 +94,7 @@ def _strip_evidence_block(text: str) -> str:
     return _EVIDENCE_BLOCK_RE.sub("", text, count=1)
 
 
-def _sanitize_history_for_llm(messages: list) -> list:
+def _sanitize_history_for_llm(messages: list, *, scrub=None) -> list:
     """Return a copy of message history with Evidence blocks removed.
 
     Only touches ``UserPromptPart`` content strings; multimodal content
@@ -102,6 +102,15 @@ def _sanitize_history_for_llm(messages: list) -> list:
     for them today). ``ModelRequest`` / ``UserPromptPart`` are
     dataclasses in pydantic-ai, so we ``dataclasses.replace`` rather
     than ``model_copy``.
+
+    When ``scrub`` is provided (callable ``str -> str``), every
+    ``UserPromptPart`` string is scrubbed in addition to the Evidence
+    strip. This is the cloud-turn defense against cross-turn PHI replay:
+    local-turn prompts persisted into ``messages_json`` carry raw user
+    input, and switching providers mid-session would otherwise leak that
+    history to the cloud LLM unscrubbed. The scrub callable is supplied
+    by the caller (typically ``PhiGuard.scrub_free_text`` lambda) so
+    this helper stays decoupled from the guard.
     """
     import dataclasses
 
@@ -117,6 +126,8 @@ def _sanitize_history_for_llm(messages: list) -> list:
         for p in m.parts:
             if isinstance(p, UserPromptPart) and isinstance(p.content, str):
                 cleaned = _strip_evidence_block(p.content)
+                if scrub is not None:
+                    cleaned = scrub(cleaned)
                 if cleaned != p.content:
                     new_parts.append(dataclasses.replace(p, content=cleaned))
                     changed = True
@@ -262,10 +273,34 @@ class AskService:
                 payload={
                     "user_id": user_id,
                     "rule_hits": report.rule_hits,
+                    "model_hits": report.model_hits,
+                    "model_failed": report.model_failed,
                     "text_len_before": report.text_len_before,
                     "text_len_after": report.text_len_after,
                 },
             )
+            if report.model_failed:
+                # privacy_filter.enabled=true is the safety contract.
+                # If the model layer fails for a cloud-bound turn, fail
+                # loud instead of silently leaking PHI the regex layer
+                # missed. The user sees an Error event; nothing reaches
+                # the LLM.
+                logger.error(
+                    "privacy-filter model failed on cloud turn; refusing to "
+                    "send unscrubbed text to %s",
+                    self._provider_id,
+                )
+                yield Error(
+                    error_type="scrub_unavailable",
+                    message=(
+                        "Privacy filter is configured but unavailable; "
+                        "refusing to send unscrubbed text to the cloud "
+                        "provider. Switch to a local provider or fix the "
+                        "filter setup, then retry."
+                    ),
+                    retryable=False,
+                )
+                return
         else:
             scrubbed = user_input
 
@@ -349,6 +384,22 @@ class AskService:
                                 },
                             )
                             result["final_text"] = cleaned
+                            # The user already saw the bad markers in the
+                            # streamed text. Emit a TokenChunk that lists
+                            # the dropped indices so the UI can render a
+                            # short correction line under the answer,
+                            # before the Sources block. Keep the message
+                            # ASCII so it round-trips in any locale.
+                            offending_str = ", ".join(f"[{n}]" for n in offending)
+                            yield TokenChunk(
+                                text=(
+                                    "\n\n*Note: the markers "
+                                    f"{offending_str} above point to sources "
+                                    f"beyond the {valid_max} listed below "
+                                    "and have been removed from the saved "
+                                    "transcript.*"
+                                )
+                            )
                         self._finalize_turn(user_id, result, deps)
                     if deps.retrieved_chunks:
                         self._last_chunks = list(deps.retrieved_chunks)
@@ -470,10 +521,25 @@ class AskService:
             # registered; without tools the LLM cannot loop. Keep the
             # backstop on tool turns so a misbehaving model cannot run
             # the retrieval pipeline 50× per turn.
+            # When the current turn is cloud, re-scrub every prior
+            # ``UserPromptPart`` in the carried history. Local turns
+            # persist raw user text into ``messages_json``; without this
+            # the next cloud turn replays unscrubbed PHI from earlier
+            # turns. Recomputed here so the producer is self-contained
+            # rather than closing over a flag from the outer scope.
+            producer_is_cloud = getattr(self._provider_config, "kind", None) == "cloud"
+            history_scrub = None
+            if producer_is_cloud and message_history:
+
+                def _history_scrub(s: str) -> str:
+                    scrubbed, _r = self._guard.scrub_free_text(s)
+                    return scrubbed
+
+                history_scrub = _history_scrub
             stream_kwargs: dict = {
                 "deps": deps,
                 "message_history": (
-                    _sanitize_history_for_llm(message_history)
+                    _sanitize_history_for_llm(message_history, scrub=history_scrub)
                     if message_history
                     else None
                 ),
@@ -547,22 +613,32 @@ class AskService:
                 if ev is None:
                     break
                 yield ev
-        finally:
-            producer_task.cancel()
-            drain_task.cancel()
-            await asyncio.gather(producer_task, drain_task, return_exceptions=True)
+            # Normal completion: flush any events still in the queues
+            # so trailing telemetry (ToolCompleted, Steps, etc.) is not
+            # lost. Done OUTSIDE the finally — yielding from a finally
+            # block raises ``RuntimeError: async generator ignored
+            # GeneratorExit`` when the consumer cancels (TUI Esc),
+            # which previously crashed every cancelled turn.
             while not out.empty():
                 try:
                     ev = out.get_nowait()
-                    if ev is not None:
-                        yield ev
                 except asyncio.QueueEmpty:
                     break
+                if ev is not None:
+                    yield ev
             while not deps.event_queue.empty():
                 try:
                     yield deps.event_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
+        finally:
+            # Cancellation cleanup only — never yield here. On cancel
+            # we drop pending events: the consumer is gone, and these
+            # events are non-critical telemetry (the audit row was
+            # written in _finalize_turn before Done).
+            producer_task.cancel()
+            drain_task.cancel()
+            await asyncio.gather(producer_task, drain_task, return_exceptions=True)
 
         t_end = st["t_end"]
         t_start = st["t_start"]
@@ -651,8 +727,10 @@ class AskService:
         Skipped if RAG is not in tool mode (deterministic always
         retrieves; agentic is disabled). Otherwise: regex the final
         text; if a match is present and the retrieve tool call count
-        is still zero, emit one audit row with the matched snippet so
-        a human can sanity-check and grow the pattern list.
+        is still zero, emit one audit row. The matched snippet is NOT
+        recorded — the LLM may have paraphrased user PHI back, and the
+        signal we actually need (a count by provider/model) does not
+        require the text. The pattern itself is captured for triage.
         """
         if self._feature_modes.get("rag") != "tool":
             return
@@ -666,7 +744,7 @@ class AskService:
             "tool": "retrieve_medical_literature",
             "model": self._model_name,
             "provider_id": self._provider_id,
-            "snippet": snippet[:120],
+            "snippet_len": len(snippet),
         }
         if self._chat_session is not None:
             payload["session_id"] = self._chat_session.session_id

@@ -14,6 +14,12 @@ Return shape is always a string:
   text. The model has been told in its tool description not to retry.
 * User declined: short hint telling the LLM the user opted out so it
   can decide whether to re-ask differently or proceed without.
+
+PHI: the modal lets the user pick a structured option OR type free text
+under "Other". Any string the user typed counts as free text and MUST
+flow through ``PhiGuard.scrub_free_text`` before going back to the LLM.
+Picked labels come from the LLM itself, so they cannot carry user PHI;
+the scrub still runs over them defensively (it's a regex-cheap pass).
 """
 
 from __future__ import annotations
@@ -26,7 +32,10 @@ from claritymed.core.interaction.prompt_channel import (
     InteractiveChannelUnavailable,
     UserDeclinedAnswer,
 )
-from claritymed.core.interaction.schemas import AskUserQuestionInput
+from claritymed.core.interaction.schemas import (
+    AskUserQuestionInput,
+    AskUserQuestionResult,
+)
 from claritymed.core.prompts.registry import PromptRegistry
 from claritymed.core.turn_state import TurnState
 
@@ -128,8 +137,36 @@ async def ask_user_question_body(
         "ask_user_question_body: RETURN channel.ask() answered=%d",
         len(result.answers),
     )
-    await _complete(f"answered ({len(result.answers)})")
-    return result.model_dump_json()
+    scrubbed = _scrub_result(result)
+    await _complete(f"answered ({len(scrubbed.answers)})")
+    return scrubbed.model_dump_json()
+
+
+def _scrub_result(result: AskUserQuestionResult) -> AskUserQuestionResult:
+    """Scrub PII from user-supplied free text in the result map.
+
+    The user may have typed free text under the modal's auto-injected
+    "Other" option. That string flows back to the LLM verbatim unless we
+    scrub it here, breaking the cloud-PHI invariant on the next LLM hop.
+    ``PhiGuard.from_config`` reads ``configs/safety.yaml`` for the same
+    rules ``AskService`` uses on initial input, so the two paths cannot
+    drift.
+    """
+    from claritymed.core.phi.guard import get_default_guard
+
+    guard = get_default_guard()
+
+    def _scrub_one(value: str) -> str:
+        scrubbed, _report = guard.scrub_free_text(value)
+        return scrubbed
+
+    cleaned: dict[str, str | list[str]] = {}
+    for question, answer in result.answers.items():
+        if isinstance(answer, list):
+            cleaned[question] = [_scrub_one(a) for a in answer]
+        else:
+            cleaned[question] = _scrub_one(answer)
+    return AskUserQuestionResult(answers=cleaned)
 
 
 def build_ask_user_question_tool(

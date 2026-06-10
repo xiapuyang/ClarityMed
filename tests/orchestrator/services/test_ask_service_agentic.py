@@ -153,7 +153,12 @@ async def test_announced_but_skipped_emits_audit_event(monkeypatch):
         p for name, p in captured if name == "mode.ask.tool_announced_but_skipped"
     )
     assert payload["tool"] == "retrieve_medical_literature"
-    assert "检索" in payload["snippet"]
+    # The matched snippet itself is deliberately NOT recorded: the LLM
+    # may have paraphrased user PHI into the announcement, so audit only
+    # carries the snippet *length* — enough to confirm the regex hit
+    # something, without persisting the text.
+    assert "snippet" not in payload
+    assert payload["snippet_len"] > 0
 
 
 async def test_no_announce_no_audit(monkeypatch):

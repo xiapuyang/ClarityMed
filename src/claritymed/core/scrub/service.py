@@ -279,12 +279,21 @@ class ScrubReport(BaseModel):
 
     Counts only — no original spans recorded, so the report is safe to
     emit as audit log.
+
+    ``model_failed`` is True when ``privacy_filter.enabled`` was set but
+    the model layer either failed to load or raised during inference.
+    Callers that consider model scrub mandatory (cloud-bound prompts)
+    can branch on this flag to fail loud rather than silently leak
+    PHI the regex pass missed. The regex output is still returned —
+    failing closed at the orchestrator level is the caller's policy
+    decision, not this service's.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     rule_hits: dict[str, int] = Field(default_factory=dict)
     model_hits: int = 0
+    model_failed: bool = False
     text_len_before: int = 0
     text_len_after: int = 0
 
@@ -303,8 +312,15 @@ class ScrubService:
 
     @classmethod
     def from_config(cls) -> "ScrubService":
-        """Load config from safety.yaml and return a ready service."""
-        _cfg.reload_configs()
+        """Load config from safety.yaml and return a ready service.
+
+        Reads through the YAML lru_cache without forcing a reload.
+        Earlier versions called ``_cfg.reload_configs()`` here, which
+        invalidated the whole YAML cache and made the very next
+        ``load_yaml`` call (e.g. ``retrieval.yaml``) re-parse from disk
+        for every retrieval. Admins who edit safety.yaml at runtime can
+        call ``_cfg.reload_configs()`` explicitly to refresh.
+        """
         phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
         config = ScrubConfig.model_validate(
             {
@@ -315,7 +331,13 @@ class ScrubService:
         return cls(config)
 
     def scrub(self, text: str) -> tuple[str, ScrubReport]:
-        """Run regex then model pass. Returns (scrubbed_text, report)."""
+        """Run regex then model pass. Returns (scrubbed_text, report).
+
+        When ``privacy_filter.enabled`` is True but the model layer
+        fails (load or inference), ``ScrubReport.model_failed`` is set
+        so callers can distinguish a clean model pass from a silent
+        degradation to regex-only output.
+        """
         if not text:
             return text, ScrubReport(text_len_before=0, text_len_after=0)
 
@@ -323,12 +345,14 @@ class ScrubService:
         scrubbed, rule_hits = self._layer_regex(text)
 
         model_hits = 0
+        model_failed = False
         if self._config.privacy_filter.enabled:
-            scrubbed, model_hits = self._layer_model(scrubbed)
+            scrubbed, model_hits, model_failed = self._layer_model(scrubbed)
 
         return scrubbed, ScrubReport(
             rule_hits=rule_hits,
             model_hits=model_hits,
+            model_failed=model_failed,
             text_len_before=original_len,
             text_len_after=len(scrubbed),
         )
@@ -451,13 +475,20 @@ class ScrubService:
                 text = new_text
         return text, rule_hits
 
-    def _layer_model(self, text: str) -> tuple[str, int]:
-        """Run privacy-filter pipeline. Returns input unchanged on failure."""
+    def _layer_model(self, text: str) -> tuple[str, int, bool]:
+        """Run privacy-filter pipeline. Returns ``(text, hits, failed)``.
+
+        ``failed`` is True when the model layer was supposed to run but
+        either the pipeline could not be constructed (None) or inference
+        raised. Callers that consider model scrub mandatory branch on
+        this to fail loud — text is still returned (regex output) so
+        the orchestrator can choose between substituting and refusing.
+        """
         pipe = self._get_pipeline()
         backend = "onnx" if self._config.privacy_filter.onnx_file else "torch"
         if pipe is None:
             _emit_scrub_audit({"status": "skipped", "backend": backend})
-            return text, 0
+            return text, 0, True
         t0 = time.perf_counter()
         try:
             spans = pipe(text)
@@ -473,7 +504,7 @@ class ScrubService:
                     "chars_out": len(scrubbed),
                 }
             )
-            return scrubbed, len(spans)
+            return scrubbed, len(spans), False
         except Exception:
             duration_ms = int((time.perf_counter() - t0) * 1000)
             _emit_scrub_audit(
@@ -484,7 +515,7 @@ class ScrubService:
                 }
             )
             logger.exception("privacy-filter scrub failed; using regex-only output")
-            return text, 0
+            return text, 0, True
 
     def _get_pipeline(self) -> Any:
         """Return the cached pipeline (ONNX or PyTorch), or None if unavailable."""

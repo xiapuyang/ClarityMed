@@ -20,7 +20,7 @@ import os
 
 from claritymed import config as _cfg
 from claritymed.core.schemas import Account, ModelsConfig, ProviderConfig
-from claritymed.errors import UnknownProviderError
+from claritymed.errors import CloudOptInRequiredError, UnknownProviderError
 
 # pydantic-ai reads these env vars for each model prefix (no base_url path).
 # Derived from pydantic-ai's provider source; update when new providers land.
@@ -61,6 +61,15 @@ def resolve_provider(
     A typo at any layer is surfaced — we never silently downgrade to the
     default, because hiding a misconfigured per-user setting would let a
     cloud-opted-in user accidentally fall back to a different backend.
+
+    Per-user cloud opt-in is the third leg of the documented invariant
+    (env key ∧ ``Account.cloud_provider_opt_in`` ∧ catalog ``kind=cloud``).
+    When an account is supplied AND the resolved provider has
+    ``kind=cloud`` AND the account has ``cloud_provider_opt_in=False``,
+    ``CloudOptInRequiredError`` is raised. The override path
+    (CLI ``--provider``) is exempt because an explicit human flag is
+    the strongest possible opt-in signal — but the audit row downstream
+    will still record the choice.
     """
     models = load_models()
     catalog = {p.id: p for p in models.providers}
@@ -78,7 +87,20 @@ def resolve_provider(
                 f"{source} requested provider {candidate!r}, "
                 f"which is not in models.yaml"
             )
-        return catalog[candidate]
+        provider = catalog[candidate]
+        if (
+            source != "override"
+            and provider.kind == "cloud"
+            and account is not None
+            and not account.cloud_provider_opt_in
+        ):
+            raise CloudOptInRequiredError(
+                f"resolved cloud provider {provider.id!r} for user "
+                f"{account.user_id!r} but cloud_provider_opt_in=False; "
+                "set cloud_provider_opt_in=True in settings.yaml or "
+                "pass --provider with a local provider id"
+            )
+        return provider
 
     # Unreachable: ModelsConfig requires default_provider to be set.
     raise UnknownProviderError("no provider could be resolved")
@@ -90,6 +112,13 @@ def is_provider_available(provider: ProviderConfig) -> bool:
     Self-hosted (base_url set): available when api_key_env is absent or its
     env var is non-empty.  Stock cloud (no base_url): available when the env
     var pydantic-ai would read for the model prefix is non-empty.
+
+    Unknown prefixes return ``False``. Earlier versions returned True
+    optimistically and deferred the verdict to pydantic-ai — which then
+    failed with a confusing message at the LLM call site. Treating an
+    unrecognised prefix as "not available" surfaces the typo at provider
+    selection time (CLI ``--provider``, eval auto-pick) where the operator
+    can read the error message in context.
     """
     if provider.base_url is not None:
         if provider.api_key_env is None:
@@ -99,7 +128,7 @@ def is_provider_available(provider: ProviderConfig) -> bool:
     prefix = provider.model.split(":")[0]
     keys = _PREFIX_ENV.get(prefix)
     if keys is None:
-        return True  # unknown prefix — optimistic, let pydantic-ai decide
+        return False
     if isinstance(keys, str):
         keys = [keys]
     return any(bool(os.environ.get(k)) for k in keys)

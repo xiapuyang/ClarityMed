@@ -42,19 +42,24 @@ if TYPE_CHECKING:
 # from a reasoning model, low enough to keep runaway responses bounded.
 _DEFAULT_MAX_GEN_TOKS = 256
 
-# Default system instruction for MCQA tasks. Forwarded as ``instructions``
-# on the pydantic-ai Agent, which puts it in the conversation's system
-# role — far stronger than burying the same hint inside the user prompt
-# (the task YAML's ``doc_to_text`` ends with "Answer:" but compliant
-# models still wrote 9-KB essays when this layer was missing). Callers
-# override per-task; the filter is what we trust for correctness, this
-# is just the politeness layer.
-_DEFAULT_INSTRUCTIONS = (
-    "You are taking a multiple-choice exam. For each question, reply "
-    "with the single capital letter (A, B, C, or D) of the correct "
-    "answer and nothing else. No explanation, no reasoning, no "
-    "restatement of the question."
-)
+# Prompt registry name for the MCQA system instruction. The bilingual
+# template lives at ``core/prompts/store/eval_mcqa_instructions.yaml``
+# and is versioned per CLAUDE.md's prompt-immutability rule. Hardcoding
+# the text here is forbidden by project standards.
+_MCQA_INSTRUCTIONS_PROMPT = "eval_mcqa_instructions"
+
+# Sentinel for "caller did not pass anything; load the registry default".
+# A separate token distinguishes that case from ``instructions=None``,
+# which is an explicit request to run the model with no system message
+# (useful for vanilla-baseline runs that compare against any tuning).
+_USE_DEFAULT_INSTRUCTIONS = object()
+
+
+def _default_instructions(language: str = "en") -> str:
+    """Read the MCQA system instruction from the prompt registry."""
+    from claritymed.core.prompts.registry import PromptRegistry
+
+    return PromptRegistry().get(_MCQA_INSTRUCTIONS_PROMPT, language=language)  # type: ignore[arg-type]
 
 
 class ClaritymedBaselineLM(LM):
@@ -64,11 +69,16 @@ class ClaritymedBaselineLM(LM):
         self,
         provider: "ProviderConfig",
         *,
-        instructions: str | None = _DEFAULT_INSTRUCTIONS,
+        instructions=_USE_DEFAULT_INSTRUCTIONS,
     ) -> None:
         super().__init__()
         self.provider_id = provider.id
         self.model_name = provider.model
+        # Use the registry default unless the caller explicitly passed
+        # something (including ``instructions=None`` to request no
+        # system message at all).
+        if instructions is _USE_DEFAULT_INSTRUCTIONS:
+            instructions = _default_instructions()
         self._agent: Agent = Agent(
             build_model(provider),
             output_type=str,

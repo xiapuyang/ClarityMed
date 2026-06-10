@@ -71,6 +71,29 @@ class PhiHit(BaseModel):
     action: Action
 
 
+_GUARD_CACHE: "PhiGuard | None" = None
+
+
+def get_default_guard() -> "PhiGuard":
+    """Return the process-wide cached ``PhiGuard``.
+
+    Construction reads ``safety.yaml`` AND eagerly builds a
+    ``ScrubService`` (which lazy-loads the ONNX privacy-filter on first
+    scrub call). Caching avoids rebuilding both per request — the YAML
+    is hot-reloadable via ``invalidate_guard_cache()`` for admins.
+    """
+    global _GUARD_CACHE
+    if _GUARD_CACHE is None:
+        _GUARD_CACHE = PhiGuard.from_config()
+    return _GUARD_CACHE
+
+
+def invalidate_guard_cache() -> None:
+    """Force the next ``get_default_guard`` to rebuild from disk."""
+    global _GUARD_CACHE
+    _GUARD_CACHE = None
+
+
 class PhiGuard:
     """PHI policy. Construct from rules; call ``check_outbound`` per request."""
 
@@ -84,7 +107,17 @@ class PhiGuard:
 
     @classmethod
     def from_config(cls) -> "PhiGuard":
-        _cfg.reload_configs()
+        """Construct a PhiGuard from ``safety.yaml``.
+
+        Reads from the YAML cache without forcing a process-wide
+        ``reload_configs()`` — earlier versions called ``reload_configs``
+        unconditionally, which thrashed the lru_cache for every retrieval
+        in the hot path (and forced the next ``load_retrieval_config()``
+        to re-parse from disk). Operators who edit ``safety.yaml`` at
+        runtime should call ``invalidate_guard_cache()`` or
+        ``_cfg.reload_configs()`` explicitly; that hot-reload hook is
+        documented in CLAUDE.md alongside other admin operations.
+        """
         phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
         rules = PhiRules.model_validate(
             {

@@ -64,9 +64,10 @@ async def retrieve_medical_literature(ctx: RunContext[TurnState], query: str) ->
         return ""
 
     safe_chunks = await perform_retrieval(deps, query)
-    # Accumulate per-call chunks onto deps so AskService can render the
-    # cumulative Sources block. The tool may be invoked 1..N times per
-    # turn; ``deps.retrieved_chunks`` is the union across calls, while
-    # the per-call ``safe_chunks`` is what this round's LLM sees.
+    # Extend FIRST so format_evidence can number against the cumulative
+    # union of chunks. Without this, multi-call tool turns produced
+    # colliding citation indices: call 1's [2] and call 2's [2] referred
+    # to different docs, while the final Sources block showed only the
+    # first one — the LLM's "[2]" was unmoored from what the user saw.
     deps.retrieved_chunks.extend(safe_chunks)
-    return format_evidence(safe_chunks)
+    return format_evidence(safe_chunks, cumulative=deps.retrieved_chunks)

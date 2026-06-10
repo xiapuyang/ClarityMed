@@ -201,28 +201,45 @@ def _phi_scrub_processor_class():
     """
     from opentelemetry.sdk.trace import SpanProcessor
 
-    from claritymed.core.phi.guard import PhiGuard
+    from claritymed.core.scrub.service import ScrubConfig, ScrubService
 
     class _PhiScrubSpanProcessor(SpanProcessor):
-        """Strip / redact PHI from OI-written attributes pre-export."""
+        """Strip / redact PHI from OI-written attributes pre-export.
+
+        Uses a regex-only ``ScrubService`` (privacy_filter disabled) so
+        the per-span scrub stays cheap. Running the ONNX privacy filter
+        inline inside ``on_end`` for every span attribute would dwarf
+        the actual LLM cost when tracing is on; the model layer is the
+        right home for user-input scrub, not telemetry side-channels.
+        """
 
         def __init__(self) -> None:
-            # PhiGuard reads safety.yaml; if config is missing or broken,
-            # we must still emit *something* (better redacted than raw).
-            # Fall back to a guard with no rules — it still no-ops PHI
-            # but at least the processor doesn't crash the tracer.
+            # Read the same safety.yaml regex rules the orchestrator uses,
+            # but build a ScrubService with privacy_filter disabled so
+            # this on_end path stays cheap. The model layer's right
+            # home is user-input scrub, not telemetry side-channels.
             try:
-                self._guard = PhiGuard.from_config()
+                from claritymed import config as _cfg
+
+                _cfg.reload_configs()
+                phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
+                cfg = ScrubConfig.model_validate(
+                    {
+                        "free_text_patterns": phi_raw.get("free_text_patterns", []),
+                        "privacy_filter": {"enabled": False},
+                    }
+                )
+                self._scrub = ScrubService(cfg)
             except Exception:  # noqa: BLE001
-                logger.exception("PhiGuard.from_config failed; scrubber inert")
-                self._guard = None
+                logger.exception("ScrubService init failed; scrubber inert")
+                self._scrub = None
 
         def on_start(self, span, parent_context=None):  # noqa: D401, ARG002
             return
 
         def on_end(self, span):  # noqa: D401
-            guard = self._guard
-            if guard is None:
+            scrub = self._scrub
+            if scrub is None:
                 return
             attrs = getattr(span, "_attributes", None)
             if not attrs:
@@ -234,8 +251,13 @@ def _phi_scrub_processor_class():
                     value = attrs[key]
                     if not isinstance(value, str) or not value:
                         continue
-                    scrubbed, report = guard.scrub_free_text(value)
-                    if report.rule_hits:
+                    scrubbed, report = scrub.scrub(value)
+                    # Replace whenever ANY rule fired (model layer is
+                    # disabled for spans, so model_hits is always 0 —
+                    # the check stays explicit so a future re-enable
+                    # of the model layer would still substitute when
+                    # only the model layer matched).
+                    if report.rule_hits or report.model_hits:
                         attrs[key] = scrubbed
             except Exception:  # noqa: BLE001
                 logger.exception(

@@ -87,6 +87,40 @@ def _stderr(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _try_current_account():
+    """Return the account for the current ContextVar user, or None.
+
+    Used by commands that already opened ``inject_context``. Returning None
+    rather than raising lets ``resolve_provider`` fall through to its
+    default path when no settings.yaml exists yet (fresh install). When
+    the file does exist, the account is returned so cloud opt-in gets
+    enforced.
+    """
+    try:
+        from claritymed.stores.account import current_account
+
+        return current_account()
+    except Exception:  # noqa: BLE001 — best-effort lookup
+        return None
+
+
+def _try_load_account(user_id: str):
+    """Load an account by user_id without opening a ContextVar scope.
+
+    Used by ``tui`` which resolves the provider before ``inject_context``
+    is entered. Returns None when the user has no settings.yaml yet.
+    """
+    try:
+        from claritymed.stores.account import AccountStore
+
+        store = AccountStore(user_id)
+        if not store.exists():
+            return None
+        return store.load()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _prefetch_models() -> None:
     """Download in-process model weights to HF cache before the TUI starts.
 
@@ -164,7 +198,14 @@ def ask(
             command=f"ask q={question[:60]!r}",
             check_user_exists=True,
         ) as (_, uid, lang):
-            provider = resolve_provider(override=provider_id)
+            from claritymed.errors import CloudOptInRequiredError
+
+            account = _try_current_account()
+            try:
+                provider = resolve_provider(override=provider_id, account=account)
+            except CloudOptInRequiredError as exc:
+                _stderr(f"[error] {exc}")
+                raise typer.Exit(code=2) from exc
             model = build_model(provider)
             from claritymed.core.translation import make_translation_provider
 
@@ -861,24 +902,29 @@ def tui(
 ) -> None:
     """Launch the Textual TUI."""
     from claritymed.cli.tui import ClarityMedApp
-    from claritymed.errors import UnknownProviderError
-
-    # Resolve the provider up front so a typo (`--provider oMLX`) fails
-    # cleanly to stderr instead of opening the TUI and exploding on the
-    # first submit. Matches the project rule: provider resolution is loud,
-    # never silent.
-    try:
-        provider = resolve_provider(override=provider_id)
-    except UnknownProviderError as exc:
-        valid = ", ".join(p.id for p in load_models().providers)
-        _stderr(f"[error] {exc}")
-        _stderr(f"  valid provider ids: {valid}")
-        raise typer.Exit(code=1) from exc
+    from claritymed.errors import CloudOptInRequiredError, UnknownProviderError
 
     from claritymed.cli.entry import _resolve_language, _resolve_user_id
 
     resolved_lang = _resolve_language(language)
     resolved_user, _ = _resolve_user_id(user)
+
+    # Resolve the provider up front so a typo (`--provider oMLX`) fails
+    # cleanly to stderr instead of opening the TUI and exploding on the
+    # first submit. Matches the project rule: provider resolution is loud,
+    # never silent. Load the account so the cloud opt-in invariant is
+    # checked here too — same enforcement as `ask` / `eval`.
+    account = _try_load_account(resolved_user)
+    try:
+        provider = resolve_provider(override=provider_id, account=account)
+    except UnknownProviderError as exc:
+        valid = ", ".join(p.id for p in load_models().providers)
+        _stderr(f"[error] {exc}")
+        _stderr(f"  valid provider ids: {valid}")
+        raise typer.Exit(code=1) from exc
+    except CloudOptInRequiredError as exc:
+        _stderr(f"[error] {exc}")
+        raise typer.Exit(code=2) from exc
 
     # Pre-download in-process models before the TUI takes over the terminal.
     # Currently only openai/privacy-filter (BGE embedder/reranker are served
