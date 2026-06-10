@@ -8,12 +8,12 @@ TUI and the CLI together.
 
 from __future__ import annotations
 
+import logging
 import typer
 
 from claritymed.cli.common import (
     console,
     run_async,
-    stderr,
     try_current_account,
 )
 from claritymed.cli.entry import inject_context
@@ -25,6 +25,8 @@ from claritymed.orchestrator.services import (
     TokenChunk,
 )
 from claritymed.stores.models import resolve_provider
+
+logger = logging.getLogger(__name__)
 
 
 def _maybe_build_strategy(model=None):
@@ -78,7 +80,7 @@ def ask(
             try:
                 provider = resolve_provider(override=provider_id, account=account)
             except CloudOptInRequiredError as exc:
-                stderr(f"[error] {exc}")
+                logger.error("%s", exc)
                 raise typer.Exit(code=2) from exc
             model = build_model(provider)
             from claritymed.core.translation import make_translation_provider
@@ -103,7 +105,7 @@ def ask(
                 if isinstance(event, TokenChunk):
                     console.print(event.text, end="")
                 elif isinstance(event, Error):
-                    stderr(f"\n[error] {event.error_type}: {event.message}")
+                    logger.error("%s: %s", event.error_type, event.message)
                     raise typer.Exit(code=1)
                 elif isinstance(event, Done):
                     console.print()  # newline after streaming text

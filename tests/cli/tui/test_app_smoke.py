@@ -7,7 +7,10 @@ app never tries to resolve a real provider.
 
 from __future__ import annotations
 
+import faulthandler
+import sys
 from collections.abc import AsyncIterator
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -409,3 +412,52 @@ async def test_streaming_label_cleared_after_done():
         )
         assert "streaming…" not in step_text
         assert "done" in step_text
+
+
+# --- _strategy_for_session unit tests (no Textual event loop needed) ---
+
+
+def test_strategy_for_session_returns_cached():
+    """Short-circuits to the cached value without re-acquiring the lock."""
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    sentinel = object()
+    app._cached_strategy = sentinel
+    assert app._strategy_for_session() is sentinel
+
+
+def test_strategy_for_session_rag_disabled(monkeypatch):
+    """Returns None immediately when rag.enabled=False, then releases the lock."""
+    mock_cfg = MagicMock()
+    mock_cfg.rag.enabled = False
+    monkeypatch.setattr("claritymed.core.rag.load_retrieval_config", lambda: mock_cfg)
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    assert app._strategy_for_session() is None
+    assert not app._strategy_lock.locked()
+
+
+def test_strategy_for_session_lock_timeout():
+    """Raises RuntimeError when the lock cannot be acquired within the timeout."""
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    mock_lock = MagicMock()
+    mock_lock.acquire.return_value = False
+    app._strategy_lock = mock_lock
+
+    with pytest.raises(RuntimeError, match="strategy lock timed out"):
+        app._strategy_for_session()
+
+
+@pytest.mark.asyncio
+async def test_on_mount_faulthandler_exception_silenced(monkeypatch):
+    """faulthandler.register failures during mount are silently swallowed."""
+    if sys.__stderr__ is None:
+        pytest.skip("sys.__stderr__ is None in this environment")
+
+    def _bad_register(*args, **kwargs):
+        raise RuntimeError("simulated bad file descriptor")
+
+    monkeypatch.setattr(faulthandler, "register", _bad_register)
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(StatusBar)  # mount completed despite faulthandler failure

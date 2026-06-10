@@ -23,6 +23,7 @@ subcommand is one import + one ``add_typer`` / ``command`` registration.
 
 from __future__ import annotations
 
+import logging
 import typer
 
 from claritymed.cli.commands.admin import init_user_cmd
@@ -34,7 +35,9 @@ from claritymed.cli.commands.prompts import prompts_app
 from claritymed.cli.commands.rag import rag_app
 from claritymed.cli.commands.terminology import terminology_app
 from claritymed.cli.commands.tui import tui
-from claritymed.cli.common import bootstrap_once, stderr
+from claritymed.cli.common import bootstrap_once
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="claritymed",
@@ -78,10 +81,10 @@ except ImportError as _exc:  # pragma: no cover — install-time gate
     @app.command("eval", hidden=True)
     def _eval_stub() -> None:
         """Placeholder when ``uv sync --extra evals`` has not been run."""
-        stderr(
-            "claritymed eval requires the `evals` extra:\n"
-            "  uv sync --extra evals\n"
-            f"(import failed: {_eval_import_error})"
+        logger.error(
+            "claritymed eval requires the `evals` extra: "
+            "uv sync --extra evals (import failed: %s)",
+            _eval_import_error,
         )
         raise typer.Exit(code=2)
 

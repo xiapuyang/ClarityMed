@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from pathlib import Path
 
 import typer
 from rich.table import Table
 
-from claritymed.cli.common import console, stderr
+from claritymed.cli.common import console
 from claritymed.stores.paths import shared_terminology_jsonl
+
+logger = logging.getLogger(__name__)
 
 terminology_app = typer.Typer(help="Inspect the shared terminology catalog.")
 
@@ -28,10 +31,10 @@ def summary(
     target = Path(path) if path else shared_terminology_jsonl()
 
     if not target.exists():
-        stderr(
-            f"[error] terminology file not found: {target}\n"
-            "Run: uv run python scripts/init_terminology.py --seed\n"
-            "  or: uv run python scripts/init_terminology.py --merge <file.jsonl>"
+        logger.error(
+            "terminology file not found: %s -- "
+            "run: uv run python scripts/init_terminology.py --seed",
+            target,
         )
         raise typer.Exit(code=1)
 

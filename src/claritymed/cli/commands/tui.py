@@ -9,15 +9,17 @@ half-downloaded ONNX model.
 
 from __future__ import annotations
 
+import logging
 import typer
 
 from claritymed.cli.commands.corpora import refresh_system_centroids_on_startup
 from claritymed.cli.common import (
     prefetch_models,
-    stderr,
     try_load_account,
 )
 from claritymed.stores.models import load_models, resolve_provider
+
+logger = logging.getLogger(__name__)
 
 
 def tui(
@@ -43,11 +45,13 @@ def tui(
         provider = resolve_provider(override=provider_id, account=account)
     except UnknownProviderError as exc:
         valid = ", ".join(p.id for p in load_models().providers)
-        stderr(f"[error] {exc}")
-        stderr(f"  valid provider ids: {valid}")
+        msg = f"{exc}  valid provider ids: {valid}"
+        logger.error(msg)
+        typer.echo(msg, err=True)
         raise typer.Exit(code=1) from exc
     except CloudOptInRequiredError as exc:
-        stderr(f"[error] {exc}")
+        logger.error("%s", exc)
+        typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
 
     # Pre-download in-process models before the TUI takes over the

@@ -26,6 +26,7 @@ Cancellation contract:
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from claritymed.cli.tui.modals.question_modal import QuestionModal
@@ -60,10 +61,16 @@ class TextualPromptChannel:
             [q.header for q in payload.questions],
         )
         try:
+            _t0 = time.monotonic()
             result = await self._app.push_screen_wait(QuestionModal(payload))
+            logger.debug(
+                "TextualPromptChannel.ask: push_screen_wait returned after %.0fms",
+                (time.monotonic() - _t0) * 1000,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
-                "TextualPromptChannel.ask: push_screen_wait RAISED %s: %s",
+                "TextualPromptChannel.ask: push_screen_wait RAISED after %.0fms %s: %s",
+                (time.monotonic() - _t0) * 1000,
                 type(exc).__name__,
                 exc,
             )

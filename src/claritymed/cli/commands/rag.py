@@ -7,12 +7,13 @@ and wires in the admin ``corpora`` sub-app from
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import typer
 
 from claritymed.cli.commands.corpora import corpora_app
-from claritymed.cli.common import console, run_async, stderr
+from claritymed.cli.common import console, run_async
 from claritymed.cli.entry import inject_context
 from claritymed.orchestrator.services import (
     Done,
@@ -22,6 +23,8 @@ from claritymed.orchestrator.services import (
     ToolStarted,
 )
 from claritymed.stores.user_rag import make_user_rag_store
+
+logger = logging.getLogger(__name__)
 
 # File extensions that require OCR conversion before ingestion.
 _OCR_EXTENSIONS = {
@@ -70,7 +73,7 @@ def rag_add(
                 try:
                     text = await ocr.extract_text(file_path)
                 except OcrError as exc:
-                    stderr(f"[error] OCR failed: {exc}")
+                    logger.error("OCR failed: %s", exc)
                     raise typer.Exit(code=1) from exc
             else:
                 with open(path, encoding="utf-8") as fh:
@@ -98,7 +101,7 @@ def rag_add(
                             f"chunks={event.final.chunk_count}[/green]"
                         )
                     elif isinstance(event, Error):
-                        stderr(f"[error] {event.message}")
+                        logger.error("%s", event.message)
                         raise typer.Exit(code=1)
             except DuplicateDocumentError as exc:
                 console.print(

@@ -7,9 +7,10 @@ audit row and event shape stay identical to the TUI path.
 
 from __future__ import annotations
 
+import logging
 import typer
 
-from claritymed.cli.common import console, run_async, stderr
+from claritymed.cli.common import console, run_async
 from claritymed.cli.entry import inject_context
 from claritymed.orchestrator.services import (
     Done,
@@ -18,6 +19,8 @@ from claritymed.orchestrator.services import (
     ToolCompleted,
     ToolStarted,
 )
+
+logger = logging.getLogger(__name__)
 
 ingest_app = typer.Typer(help="Ingest personal info, history, or reports.")
 
@@ -46,7 +49,7 @@ def ingest_profile(
                 elif isinstance(event, Done):
                     console.print(f"[green]{event.final.summary}[/green]")
                 elif isinstance(event, Error):
-                    stderr(f"[error] {event.message}")
+                    logger.error("%s", event.message)
                     raise typer.Exit(code=1)
 
     run_async(_run())

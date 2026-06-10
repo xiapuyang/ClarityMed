@@ -9,7 +9,7 @@ console (matching the previous single-file behaviour).
 from __future__ import annotations
 
 import asyncio
-import sys
+import logging
 
 from rich.console import Console
 
@@ -20,6 +20,8 @@ from claritymed.core.observability.logging import setup_logging
 # the pre-split behaviour and keeps colour / theming settings consistent.
 console = Console()
 
+logger = logging.getLogger(__name__)
+
 _BOOTSTRAPPED = False
 
 
@@ -27,25 +29,22 @@ def bootstrap_once() -> None:
     """Idempotent CLI bootstrap: load ``~/.claritymed/.env`` then init the loggers.
 
     Called from the root Typer callback (every subcommand) and from
-    one-shot entry points like ``init-user`` that may run before the
+    one-off entry points like ``init-user`` that may run before the
     callback. The first call wins; subsequent calls in the same process
     are no-ops.
+
+    WARNING-level messages are echoed to the console so operator errors
+    (bad provider id, missing model download) are visible without reading
+    log files. TUI mode is unaffected: Textual captures sys.stderr after
+    bootstrap, but the StreamHandler captured the real fd at construction,
+    so fatal pre-TUI errors still reach the terminal.
     """
     global _BOOTSTRAPPED
     if _BOOTSTRAPPED:
         return
     _cfg.load_env_file()
-    setup_logging(script_name="claritymed", console_level=None)
+    setup_logging(script_name="claritymed", console_level=logging.WARNING)
     _BOOTSTRAPPED = True
-
-
-def stderr(msg: str) -> None:
-    """Write a single message to stderr without Rich formatting.
-
-    Kept separate from ``console.print`` so error lines round-trip cleanly
-    when stdout is piped (CLI agent-readiness — stderr stays plain text).
-    """
-    print(msg, file=sys.stderr)
 
 
 def run_async(coro):
@@ -103,10 +102,10 @@ def prefetch_models() -> None:
     try:
         svc.check_runtime_deps()
     except ImportError as exc:
-        print(f"startup error: {exc}", file=sys.stderr)
+        logger.error("startup error: %s", exc)
         raise SystemExit(1) from exc
     ok = svc.ensure_downloaded()
     if not ok:
         model = svc._config.privacy_filter.model_name
-        print(f"  ✗ {model} download failed", file=sys.stderr)
+        logger.error("✗ %s download failed", model)
         raise SystemExit(1)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -45,6 +46,20 @@ NOISY_LOGGERS = (
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+class _LazyStderrHandler(logging.StreamHandler):
+    """StreamHandler that reads sys.stderr at emit time rather than init time.
+
+    logging.StreamHandler captures sys.stderr once at construction. That
+    breaks Click's test runner (which redirects sys.stderr per invocation)
+    and Textual (which replaces sys.stderr with an internal pipe). Reading
+    at emit time matches the behaviour of plain ``print(file=sys.stderr)``.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.stream = sys.stderr
+        super().emit(record)
 
 
 class ClarityMedFormatter(logging.Formatter):
@@ -110,7 +125,7 @@ def setup_logging(
     app.addHandler(handler)
 
     if console_level is not None:
-        ch = logging.StreamHandler()
+        ch = _LazyStderrHandler()
         ch.setLevel(console_level)
         ch.setFormatter(
             ClarityMedFormatter(

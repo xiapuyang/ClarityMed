@@ -13,7 +13,9 @@ in real time.
 
 from __future__ import annotations
 
+import faulthandler
 import logging
+import signal
 import threading
 from typing import TYPE_CHECKING, Literal
 
@@ -163,6 +165,17 @@ class ClarityMedApp(App):
         yield StatusBar()
 
     def on_mount(self) -> None:
+        # Dump all thread stacks to stderr on SIGUSR1 — useful when the TUI
+        # freezes: run `kill -USR1 <pid>` to see exactly where each thread is.
+        # Uses sys.__stderr__ because Textual replaces sys.stderr with an
+        # internal pipe that has no real file descriptor.
+        import sys
+
+        if sys.__stderr__ is not None:
+            try:
+                faulthandler.register(signal.SIGUSR1, file=sys.__stderr__)
+            except Exception:  # noqa: BLE001
+                pass
         # Boot tracing first turn — no-op when PHOENIX_COLLECTOR_ENDPOINT
         # is unset, so headless tests and offline runs stay untouched.
         setup_tracing()
@@ -726,7 +739,14 @@ class ClarityMedApp(App):
         its LLM call against the same provider the rest of the turn
         uses; other strategies ignore it.
         """
-        with self._strategy_lock:
+        _LOCK_TIMEOUT = 30
+        logger.debug("_strategy_for_session: waiting for strategy lock")
+        if not self._strategy_lock.acquire(timeout=_LOCK_TIMEOUT):
+            raise RuntimeError(
+                f"strategy lock timed out after {_LOCK_TIMEOUT}s — possible deadlock"
+            )
+        try:
+            logger.debug("_strategy_for_session: lock acquired")
             if self._cached_strategy is not None:
                 return self._cached_strategy
             from claritymed.core.rag import load_retrieval_config
@@ -737,14 +757,20 @@ class ClarityMedApp(App):
             from claritymed.core.rag import build_hybrid_retriever
             from claritymed.core.rag.strategies import build_strategy
 
+            logger.debug("_strategy_for_session: building retriever")
             retriever = build_hybrid_retriever(cfg)
+            logger.debug("_strategy_for_session: building strategy")
             self._cached_strategy = build_strategy(
                 retriever,
                 config=cfg.strategies,
                 max_evidence=cfg.rag.max_evidence,
                 model=model,
             )
+            logger.debug("_strategy_for_session: strategy ready")
             return self._cached_strategy
+        finally:
+            self._strategy_lock.release()
+            logger.debug("_strategy_for_session: lock released")
 
     @staticmethod
     def _default_rag_service(user_id: str) -> RagService:

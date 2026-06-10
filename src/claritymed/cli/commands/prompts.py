@@ -8,9 +8,12 @@ is the only direction that touches Phoenix's HTTP API.
 
 from __future__ import annotations
 
+import logging
 import typer
 
-from claritymed.cli.common import console, stderr
+from claritymed.cli.common import console
+
+logger = logging.getLogger(__name__)
 
 prompts_app = typer.Typer(
     name="prompts",
@@ -54,7 +57,7 @@ def prompts_push(
     try:
         report = push(name=name, dry_run=dry_run)
     except Exception as exc:  # noqa: BLE001
-        stderr(f"[error] {exc}")
+        logger.error("%s", exc)
         raise typer.Exit(code=1) from exc
     _print_sync_report(report)
     if report.errors:
@@ -79,7 +82,7 @@ def prompts_diff(
     try:
         report = diff(name=name)
     except Exception as exc:  # noqa: BLE001
-        stderr(f"[error] {exc}")
+        logger.error("%s", exc)
         raise typer.Exit(code=1) from exc
 
     for entry in report.entries:
@@ -151,7 +154,7 @@ def prompts_pull(
             new_version_name=new_version_name,
         )
     except Exception as exc:  # noqa: BLE001
-        stderr(f"[error] {exc}")
+        logger.error("%s", exc)
         raise typer.Exit(code=1) from exc
     _print_sync_report(report)
     if report.errors:

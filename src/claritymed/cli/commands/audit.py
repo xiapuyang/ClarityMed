@@ -9,12 +9,15 @@ human-readable or JSON report).
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import typer
 
 from claritymed import config as _cfg
-from claritymed.cli.common import console, stderr
+from claritymed.cli.common import console
+
+logger = logging.getLogger(__name__)
 
 audit_app = typer.Typer(
     name="audit",
@@ -57,11 +60,11 @@ def audit_grep(
     """
     log_dir = Path(_cfg.LOG_DIR)
     if not log_dir.exists():
-        stderr(f"[error] log dir does not exist: {log_dir}")
+        logger.error("log dir does not exist: %s", log_dir)
         raise typer.Exit(code=1)
     files = sorted(log_dir.glob("audit.log*"), key=lambda p: p.stat().st_mtime)
     if not files:
-        stderr(f"[error] no audit.log* files in {log_dir}")
+        logger.error("no audit.log* files in %s", log_dir)
         raise typer.Exit(code=1)
 
     matched = 0
@@ -69,7 +72,7 @@ def audit_grep(
         try:
             fh = fp.open(encoding="utf-8")
         except OSError as exc:
-            stderr(f"[warn] cannot open {fp}: {exc}")
+            logger.warning("cannot open %s: %s", fp, exc)
             continue
         with fh:
             for raw in fh:
@@ -102,7 +105,7 @@ def audit_grep(
                 if limit is not None and matched >= limit:
                     return
     if matched == 0:
-        stderr("[info] no matches")
+        logger.info("no matches")
         raise typer.Exit(code=1)
 
 
@@ -154,13 +157,13 @@ def audit_scan(
     try:
         rule_objs = build_rules(only=rules)
     except KeyError as exc:
-        stderr(f"[error] {exc}")
+        logger.error("%s", exc)
         raise typer.Exit(code=2) from None
 
     try:
         event_iter = read_audit_events(since=since, until=until, user_id=user_id)
     except FileNotFoundError as exc:
-        stderr(f"[error] {exc}")
+        logger.error("%s", exc)
         raise typer.Exit(code=1) from None
 
     consumed = 0
@@ -195,7 +198,7 @@ def audit_scan(
         return
 
     if consumed == 0:
-        stderr(f"[warn] no audit events in window since={since!r} until={until!r}")
+        logger.warning("no audit events in window since=%r until=%r", since, until)
 
     for rep in reports:
         console.print(f"\n[bold cyan]{rep.name}[/] — {rep.description}")
