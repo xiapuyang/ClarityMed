@@ -1,0 +1,65 @@
+# MedQA-USMLE — 4-option English MCQA.
+#
+# Dataset choice deviates from the plan's nominal `bigbio/med_qa` because
+# `datasets >= 3.0` removed the trust_remote_code script-dataset loader path
+# `bigbio` depends on, and we install datasets 5.x via the `evals` extra.
+# `GBaker/MedQA-USMLE-4-options-hf` is parquet-only, holds the same 4-option
+# English USMLE content (1273 test questions), and is the dataset lm-eval's
+# own bundled `medqa` task uses, so it's the de-facto standard.
+#
+# Schema:
+#   sent1                  question stem
+#   ending0..ending3       options A..D
+#   label                  int 0..3 — gold answer index
+#
+# Scoring mode is `generate_until` (not loglikelihood), because the plan's
+# constraint R4 requires provider neutrality and Anthropic does not expose
+# per-token logprobs through pydantic-ai. We force the model to emit a
+# single letter, regex-extract it, and compare via `exact_match`.
+
+task: medqa
+dataset_path: GBaker/MedQA-USMLE-4-options-hf
+test_split: test
+training_split: train
+validation_split: validation
+output_type: generate_until
+
+doc_to_text: |-
+  Question: {{sent1}}
+  (A) {{ending0}}
+  (B) {{ending1}}
+  (C) {{ending2}}
+  (D) {{ending3}}
+  Answer with a single letter (A, B, C, or D).
+  Answer:
+
+doc_to_target: '{{ ["A", "B", "C", "D"][label] }}'
+
+generation_kwargs:
+  until:
+    - "\n\n"
+    - "\n"
+  max_gen_toks: 8
+  temperature: 0
+  do_sample: false
+
+filter_list:
+  # \b on both sides keeps the regex from matching letters embedded in
+  # words ('A' in 'Answer', 'a' in 'idea'). First match wins — chatty
+  # completions like "between A and C, probably C" extract 'A'; the plan
+  # accepts this false-positive rate for the v1 zero-shot baseline.
+  - name: extract_letter
+    filter:
+      - function: regex
+        regex_pattern: '(?i)\b([A-D])\b'
+      - function: take_first
+
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+
+metadata:
+  version: 1.0
