@@ -1,0 +1,67 @@
+# PubMedQA — literature-grounded yes / no / maybe QA.
+#
+# Dataset choice deviates from lm-eval's bundled task (which targets
+# ``bigbio/pubmed_qa``, a script-loader dataset broken under
+# datasets>=3 — same problem MedQA hit). ``qiaojin/PubMedQA`` is the
+# canonical parquet-only mirror of the same content and is what HF
+# recommends in the dataset card.
+#
+# Only the ``pqa_labeled`` config is human-annotated (1,000 questions);
+# it ships as a single ``train`` split. We score against the full set —
+# we never fine-tune in this project, so train/test contamination isn't
+# a concern here, and 1,000 questions matches the published benchmark
+# protocol.
+#
+# Schema:
+#   pubid             int — PubMed identifier
+#   question          str — research question
+#   context.contexts  list[str] — abstract paragraphs (joined for the prompt)
+#   long_answer       str — gold long-form answer (unused here)
+#   final_decision    str — one of {"yes", "no", "maybe"} — the gold label
+#
+# This task confirms the framework generalizes beyond MCQA-letter shape:
+# same generate_until + regex-filter + exact_match scaffolding, just a
+# word-extracting regex instead of a letter-extracting one.
+
+task: pubmedqa
+dataset_path: qiaojin/PubMedQA
+dataset_name: pqa_labeled
+test_split: train
+output_type: generate_until
+
+doc_to_text: |-
+  Abstract: {{ context.contexts | join('\n') }}
+  Question: {{ question }}
+  Answer with one word: yes, no, or maybe.
+  Answer:
+
+doc_to_target: '{{ final_decision }}'
+
+generation_kwargs:
+  # See medqa.yaml for the rationale on ``until: []`` and ``max_gen_toks``.
+  until: []
+  max_gen_toks: 2048
+  temperature: 0
+  do_sample: false
+
+filter_list:
+  # Word-extraction analogue of medqa.yaml's letter regex. Two-layer
+  # extraction with ``group_select: -1`` so the LAST anchor wins —
+  # reasoning preambles that compare hypotheses ("if yes... then no...")
+  # don't poison the final answer.
+  - name: extract_word
+    filter:
+      - function: regex
+        regex_pattern: '(?i)(?:answer(?:\s+is)?[:\s]*\(?(yes|no|maybe)\)?|(?<!\w)(yes|no|maybe)(?!\w))'
+        group_select: -1
+      - function: take_first
+
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+
+metadata:
+  version: 1.0
