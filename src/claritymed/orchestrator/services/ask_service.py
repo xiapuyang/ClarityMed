@@ -250,9 +250,13 @@ class AskService:
         from claritymed.context import attach_session_baggage, detach_session_baggage
 
         # PHI scrub only for cloud-bound turns.
+        # scrub_free_text loads the ONNX session on first call (can take
+        # 10-60 s); running it in a thread keeps the event loop free.
         is_cloud = getattr(self._provider_config, "kind", None) == "cloud"
         if is_cloud:
-            scrubbed, report = self._guard.scrub_free_text(user_input)
+            scrubbed, report = await asyncio.to_thread(
+                self._guard.scrub_free_text, user_input
+            )
             audit_event(
                 "mode.ask.scrub",
                 payload={
@@ -479,12 +483,18 @@ class AskService:
             try:
                 logger.debug("_producer: ENTER agent.run_stream")
                 async with agent.run_stream(prompt, **stream_kwargs) as stream:
+                    logger.debug(
+                        "_producer: agent.run_stream context entered, iterating stream_text"
+                    )
                     async for chunk in stream.stream_text(delta=True):
                         if chunk:
                             if st["t_first_token"] is None:
                                 st["t_first_token"] = time.perf_counter()
                                 ttft_ms = int(
                                     (st["t_first_token"] - st["t_start"]) * 1000
+                                )
+                                logger.debug(
+                                    "_producer: FIRST TOKEN ttft=%dms", ttft_ms
                                 )
                                 await out.put(LlmFirstToken(ttft_ms=ttft_ms))
                             await out.put(TokenChunk(text=chunk))
