@@ -22,7 +22,7 @@ from rich.console import Console
 from claritymed.cli.entry import inject_context
 from claritymed.errors import UnknownProviderError
 from claritymed.evals.runners.lm_eval_runner import LmEvalRunner
-from claritymed.stores.models import resolve_provider
+from claritymed.stores.models import pick_reachable_provider, resolve_provider
 
 eval_app = typer.Typer(
     name="eval",
@@ -67,12 +67,38 @@ def eval_medqa(
                 )
             )
 
+        provider = _resolve_for_eval(provider_id)
+        LmEvalRunner().run(provider, task_id="medqa", limit=limit)
+
+
+def _resolve_for_eval(provider_id: str | None):
+    """Pick the provider for an eval run.
+
+    When the caller passes ``--provider``, honor it exactly (same path as
+    every other CLI command — typos surface as ``UnknownProviderError``).
+
+    When the caller omits ``--provider``, mirror the e2e fixture's
+    auto-pick: probe the known local servers (omlx → ollama) and use the
+    first one that's both reachable and credentialed. This stops the
+    common surprise of a fresh shell defaulting to ``ollama`` when the
+    operator's only running backend is ``omlx``. Falls back to the
+    catalog default if no probed local provider is up — the run will
+    fail loud at the LLM call site, same as before.
+    """
+    if provider_id is not None:
         try:
-            provider = resolve_provider(override=provider_id)
+            return resolve_provider(override=provider_id)
         except UnknownProviderError as exc:
             raise typer.Exit(_emit_error(str(exc))) from exc
 
-        LmEvalRunner().run(provider, task_id="medqa", limit=limit)
+    reachable = pick_reachable_provider()
+    if reachable is not None:
+        _console.print(
+            f"[dim]auto-selected provider [bold]{reachable.id}[/bold] "
+            f"(model: {reachable.model}); pass --provider to override.[/dim]"
+        )
+        return reachable
+    return resolve_provider(override=None)
 
 
 def _emit_error(message: str) -> int:

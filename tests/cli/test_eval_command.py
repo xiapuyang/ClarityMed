@@ -71,9 +71,12 @@ def test_eval_medqa_invokes_runner(tmp_path, monkeypatch):
     assert captured == {"provider_id": "ollama", "task_id": "medqa", "limit": 5}
 
 
-def test_eval_medqa_omits_provider_falls_back_to_default(tmp_path, monkeypatch):
-    """No --provider → resolve_provider falls back to default ('ollama' in
-    the repo's configs/models.yaml)."""
+def test_eval_medqa_omits_provider_auto_picks_reachable(tmp_path, monkeypatch):
+    """No --provider → auto-pick the first reachable local provider, same
+    way the e2e fixture does. Mocked to return a specific provider for
+    deterministic assertion."""
+    from claritymed.core.schemas import ProviderConfig
+
     captured: dict[str, Any] = {}
 
     class _StubRunner:
@@ -81,12 +84,45 @@ def test_eval_medqa_omits_provider_falls_back_to_default(tmp_path, monkeypatch):
             captured["provider_id"] = provider.id
             return _stub_run_result(tmp_path)
 
+    fake_provider = ProviderConfig.model_validate(
+        {
+            "id": "omlx",
+            "kind": "local",
+            "model": "Qwen3.6-35B-A3B-oQ4-mtp",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key_env": "OMLX_API_KEY",
+        }
+    )
+    monkeypatch.setattr(
+        "claritymed.cli.eval.pick_reachable_provider", lambda: fake_provider
+    )
     monkeypatch.setattr(
         "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
     result = runner.invoke(app, ["eval", "medqa", "--limit", "1"])
     assert result.exit_code == 0, result.stdout
-    assert captured["provider_id"] == "ollama"  # repo default
+    assert captured["provider_id"] == "omlx"
+    assert "auto-selected provider" in result.stdout
+
+
+def test_eval_medqa_omits_provider_falls_back_to_catalog_default(tmp_path, monkeypatch):
+    """No --provider AND no reachable provider → fall back to the catalog
+    default (the LLM call will then fail loud at the wire, which is the
+    expected behavior — we don't pretend to succeed)."""
+    captured: dict[str, Any] = {}
+
+    class _StubRunner:
+        def run(self, provider, task_id, limit):
+            captured["provider_id"] = provider.id
+            return _stub_run_result(tmp_path)
+
+    monkeypatch.setattr("claritymed.cli.eval.pick_reachable_provider", lambda: None)
+    monkeypatch.setattr(
+        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
+    )
+    result = runner.invoke(app, ["eval", "medqa", "--limit", "1"])
+    assert result.exit_code == 0, result.stdout
+    assert captured["provider_id"] == "ollama"  # repo catalog default
 
 
 # ---------------------------------------------------------------------------

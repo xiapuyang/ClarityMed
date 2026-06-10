@@ -85,30 +85,18 @@ def require_local_services() -> None:
 def e2e_provider_id() -> str:
     """Return the first usable LLM provider id; skip the test if none found.
 
-    Checks both server reachability and credential availability.
-    Local providers are checked by their health/version endpoints; credentials
-    are validated via the project's is_provider_available() helper.
+    Delegates to ``stores.models.pick_reachable_provider`` so production
+    code (e.g. ``claritymed eval``) and this fixture agree on what
+    "reachable" means — without one drifting from the other.
     """
-    from claritymed.stores.models import is_provider_available, load_models
+    from claritymed.stores.models import pick_reachable_provider
 
-    # Endpoint that returns 200 without auth — one per local provider id.
-    health_urls: dict[str, str] = {
-        "omlx": "http://127.0.0.1:8000/health",
-        "ollama": "http://127.0.0.1:11434/api/version",
-    }
-
-    catalog = {p.id: p for p in load_models().providers}
-    for pid, url in health_urls.items():
-        provider = catalog.get(pid)
-        if provider is None:
-            continue
-        if not is_provider_available(provider):
-            continue  # missing credentials
-        if _service_up(url):
-            return pid
+    provider = pick_reachable_provider()
+    if provider is not None:
+        return provider.id
 
     pytest.skip(
         "No LLM provider reachable with valid credentials.\n"
-        "  Checked: " + ", ".join(health_urls) + "\n"
-        "  Start a server and set any required API key env vars."
+        "  Start a server (omlx :8000 or ollama :11434) "
+        "and set any required API key env vars."
     )

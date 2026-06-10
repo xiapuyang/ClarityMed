@@ -52,3 +52,53 @@ def test_resolved_provider_carries_full_config():
     p = resolve_provider(override="claude")
     assert p.kind == "cloud"
     assert p.model.startswith("anthropic:")
+
+
+# ---------- pick_reachable_provider ----------
+
+
+def test_pick_reachable_returns_first_reachable_provider(monkeypatch):
+    """omlx and ollama both healthy + credentialed → first in probe order."""
+    from claritymed.stores import models as _m
+
+    monkeypatch.setattr(_m, "_local_service_up", lambda url, timeout_s=2.0: True)
+    monkeypatch.setattr(_m, "is_provider_available", lambda p: True)
+
+    picked = _m.pick_reachable_provider()
+    assert picked is not None
+    assert picked.id == "omlx"  # first in _LOCAL_HEALTH_URLS
+
+
+def test_pick_reachable_skips_uncredentialed_provider(monkeypatch):
+    from claritymed.stores import models as _m
+
+    monkeypatch.setattr(_m, "_local_service_up", lambda url, timeout_s=2.0: True)
+    monkeypatch.setattr(_m, "is_provider_available", lambda p: p.id != "omlx")
+
+    picked = _m.pick_reachable_provider()
+    assert picked is not None
+    assert picked.id == "ollama"
+
+
+def test_pick_reachable_skips_unreachable_provider(monkeypatch):
+    from claritymed.stores import models as _m
+
+    monkeypatch.setattr(_m, "is_provider_available", lambda p: True)
+    monkeypatch.setattr(
+        _m,
+        "_local_service_up",
+        lambda url, timeout_s=2.0: "omlx" not in url and "8000" not in url,
+    )
+
+    picked = _m.pick_reachable_provider()
+    assert picked is not None
+    assert picked.id == "ollama"
+
+
+def test_pick_reachable_returns_none_when_nothing_up(monkeypatch):
+    from claritymed.stores import models as _m
+
+    monkeypatch.setattr(_m, "is_provider_available", lambda p: True)
+    monkeypatch.setattr(_m, "_local_service_up", lambda url, timeout_s=2.0: False)
+
+    assert _m.pick_reachable_provider() is None

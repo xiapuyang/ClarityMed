@@ -108,3 +108,50 @@ def is_provider_available(provider: ProviderConfig) -> bool:
 def list_available_providers() -> list[ProviderConfig]:
     """Return catalog providers whose credentials are present in the environment."""
     return [p for p in load_models().providers if is_provider_available(p)]
+
+
+# Local-provider health endpoints checked by ``pick_reachable_provider``. The
+# probe is the same set the e2e fixture (``tests/e2e/conftest.py``) uses, so
+# both call sites agree on what "reachable" means without one drifting from
+# the other. Order is preference: try omlx first (MLX server with the larger
+# Qwen model), fall back to Ollama (default catalog entry).
+_LOCAL_HEALTH_URLS: tuple[tuple[str, str], ...] = (
+    ("omlx", "http://127.0.0.1:8000/health"),
+    ("ollama", "http://127.0.0.1:11434/api/version"),
+)
+
+
+def _local_service_up(url: str, timeout_s: float = 2.0) -> bool:
+    """HTTP GET ``url`` and return True iff it responds 200 in ``timeout_s``."""
+    try:
+        import httpx
+
+        return httpx.get(url, timeout=timeout_s).status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def pick_reachable_provider() -> ProviderConfig | None:
+    """Return the first local provider whose server responds + creds are set.
+
+    Mirrors the resolution order in the e2e provider fixture so a
+    ``claritymed eval medqa`` run with no ``--provider`` flag lands on the
+    same backend the e2e suite would use. Returns ``None`` when no probed
+    local provider is reachable — callers fall back to the catalog default
+    (which may itself be unreachable; that's the caller's concern).
+
+    Cloud providers are intentionally not probed: probing implies a network
+    call, and a half-up cloud endpoint reachable from CI but not from the
+    operator's box is exactly the kind of brittleness we want to avoid in
+    a default-picker.
+    """
+    catalog = {p.id: p for p in load_models().providers}
+    for pid, url in _LOCAL_HEALTH_URLS:
+        provider = catalog.get(pid)
+        if provider is None:
+            continue
+        if not is_provider_available(provider):
+            continue
+        if _local_service_up(url):
+            return provider
+    return None
