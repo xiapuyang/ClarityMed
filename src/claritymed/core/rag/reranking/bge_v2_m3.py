@@ -54,6 +54,10 @@ class BgeRerankerV2M3HttpReranker(Reranker):
         self._timeout_s = timeout_s
         self._api_key = self._resolve_api_key(api_key_env)
         self._transport = transport
+        # Shared AsyncClient — lazy on first use, reused across all
+        # batches and turns. Building a new client per batch was paying
+        # TCP/TLS setup for every retrieval round trip.
+        self._async_client: httpx.AsyncClient | None = None
 
     @staticmethod
     def _resolve_api_key(api_key_env: str | None) -> str | None:
@@ -102,24 +106,32 @@ class BgeRerankerV2M3HttpReranker(Reranker):
         return headers
 
     def _client(self) -> httpx.AsyncClient:
-        kwargs: dict[str, Any] = {
-            "base_url": self._base_url,
-            "timeout": self._timeout_s,
-            "headers": self._headers(),
-        }
-        if self._transport is not None:
-            kwargs["transport"] = self._transport
-        return httpx.AsyncClient(**kwargs)
+        if self._async_client is None:
+            kwargs: dict[str, Any] = {
+                "base_url": self._base_url,
+                "timeout": self._timeout_s,
+                "headers": self._headers(),
+            }
+            if self._transport is not None:
+                kwargs["transport"] = self._transport
+            self._async_client = httpx.AsyncClient(**kwargs)
+        return self._async_client
+
+    async def aclose(self) -> None:
+        """Close the shared AsyncClient. Safe to call multiple times."""
+        if self._async_client is not None:
+            await self._async_client.aclose()
+            self._async_client = None
 
     async def _post_batch(self, query: str, batch: list[str]) -> list[RerankHit]:
         payload = {"query": query, "texts": batch, "raw_scores": False}
-        async with self._client() as client:
-            try:
-                resp = await client.post("/rerank", json=payload)
-            except httpx.HTTPError as exc:
-                raise RerankerUnreachableError(
-                    f"bge-reranker-v2-m3 rerank failed at {self._base_url}: {exc}"
-                ) from exc
+        client = self._client()
+        try:
+            resp = await client.post("/rerank", json=payload)
+        except httpx.HTTPError as exc:
+            raise RerankerUnreachableError(
+                f"bge-reranker-v2-m3 rerank failed at {self._base_url}: {exc}"
+            ) from exc
         if resp.status_code >= 400:
             raise RerankerUnreachableError(
                 f"bge-reranker-v2-m3 returned {resp.status_code} "

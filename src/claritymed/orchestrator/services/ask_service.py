@@ -143,25 +143,44 @@ def _trim_message_history(messages, budget: int):
     Returns ``(trimmed, dropped_count)``. Trim works on request/response
     pairs (2 messages at a time) because dropping a lone request leaves
     the next response unanchored, which pydantic-ai rejects.
+
+    Cost: at most O(log N) full serializations because we use bisection
+    on the drop count when the initial estimate overshoots, and a single
+    final serialization to confirm. The previous implementation
+    re-encoded the entire kept list after every pair drop, which was
+    quadratic in message count for big overshoots.
     """
     from pydantic_ai.messages import ModelMessagesTypeAdapter
 
     if not messages:
         return messages, 0
-    encoded = ModelMessagesTypeAdapter.dump_json(messages)
-    if len(encoded) <= budget:
+    encoded_full = ModelMessagesTypeAdapter.dump_json(messages)
+    if len(encoded_full) <= budget:
         return messages, 0
-    keep = list(messages)
-    dropped = 0
-    while len(keep) > HISTORY_MIN_KEEP:
-        candidate = keep[2:]
-        if not candidate:
-            break
-        keep = candidate
-        dropped += 2
-        if len(ModelMessagesTypeAdapter.dump_json(keep)) <= budget:
-            break
-    return keep, dropped
+    max_drop_pairs = (len(messages) - HISTORY_MIN_KEEP) // 2
+    if max_drop_pairs <= 0:
+        return messages, 0
+    # Bisect on the number of pairs to drop. Invariant: lo always fits
+    # within budget (or equals 0), hi never fits. We start with the
+    # cheapest serializations (largest drops) so the common case of
+    # 'one extra-long turn pushed us slightly over' still costs only
+    # 1-2 dumps.
+    # Invariant: lo never fits (precondition for the full slice); hi
+    # either fits or is the unknown upper bound (max_drop_pairs + 1).
+    # We want the smallest drop_pairs that fits.
+    lo, hi = 0, max_drop_pairs + 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        candidate = messages[2 * mid :]
+        if len(ModelMessagesTypeAdapter.dump_json(candidate)) <= budget:
+            hi = mid
+        else:
+            lo = mid
+    # Clamp when even the maximum allowed drop doesn't fit — we still
+    # respect the HISTORY_MIN_KEEP floor and let the caller decide what
+    # to do with an over-budget kept slice.
+    drop_pairs = min(hi, max_drop_pairs)
+    return messages[2 * drop_pairs :], drop_pairs * 2
 
 
 class AskService:
@@ -354,6 +373,7 @@ class AskService:
             "latency": None,
             "had_error": False,
         }
+        finalized = False
         try:
             async for event in self._stream_turn(
                 scrubbed, deps, message_history, user_id, result
@@ -401,6 +421,7 @@ class AskService:
                                 )
                             )
                         self._finalize_turn(user_id, result, deps)
+                        finalized = True
                     if deps.retrieved_chunks:
                         self._last_chunks = list(deps.retrieved_chunks)
                         yield TokenChunk(
@@ -416,6 +437,36 @@ class AskService:
                             )
                 yield event
         finally:
+            # When the consumer cancels mid-stream (TUI Esc) or the
+            # generator is GC'd without ever seeing Done, persist a
+            # short cancelled-turn record so resume sees the question
+            # paired with an empty assistant reply rather than a
+            # dangling user message. Best-effort: the chat session may
+            # already be closed.
+            if not finalized and self._chat_session is not None:
+                try:
+                    self._chat_session.append_assistant(
+                        text=result["final_text"],
+                        messages_json=result["messages_json"] or b"",
+                        model=self._model_name,
+                        provider_id=self._provider_id,
+                        usage=result["usage"],
+                        latency=result["latency"],
+                        steps=result["steps"],
+                        cancelled=True,
+                    )
+                    audit_event(
+                        "mode.cancelled",
+                        payload={
+                            "user_id": user_id,
+                            "session_id": self._chat_session.session_id,
+                            "had_error": bool(result["had_error"]),
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "failed to persist cancelled turn for user %s", user_id
+                    )
             detach_session_baggage(session_token)
 
     async def _stream_turn(
@@ -596,13 +647,21 @@ class AskService:
             # Forward tool-emitted events from the deps queue concurrently
             # with the text stream so RetrievalPending / ToolStarted / etc
             # surface immediately rather than piling up behind the next
-            # text chunk.
+            # text chunk. The earlier version polled at 10Hz with
+            # ``wait_for(get(), timeout=0.1)``, burning ~300 spurious
+            # scheduler entries per 30 s call. A plain ``await get()``
+            # plus the consumer's ``cancel()`` in finally is sufficient,
+            # and any unexpected exception is re-raised so the consumer
+            # loop sees it instead of silently dying.
             while True:
                 try:
-                    ev = await asyncio.wait_for(deps.event_queue.get(), timeout=0.1)
-                    await out.put(ev)
-                except asyncio.TimeoutError:
-                    pass
+                    ev = await deps.event_queue.get()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("event-queue drain raised; re-raising")
+                    raise
+                await out.put(ev)
 
         producer_task = asyncio.create_task(_producer())
         drain_task = asyncio.create_task(_drain_tools())

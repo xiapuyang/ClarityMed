@@ -123,6 +123,39 @@ def test_resolved_provider_carries_full_config():
     assert p.model.startswith("anthropic:")
 
 
+# ---------- is_provider_available ----------
+
+
+def test_is_provider_available_returns_false_for_unknown_prefix():
+    """A typoed prefix (e.g. ``"openni:gpt-4o"``) must surface as
+    unavailable so the operator can read the error message at provider
+    selection time, not deep inside pydantic-ai's model dispatch.
+
+    Regression guard for ce:review P1 #8 — the optimistic ``return
+    True`` for unknown prefixes was hiding misconfiguration.
+    """
+    from claritymed.core.schemas import ProviderConfig
+    from claritymed.stores.models import is_provider_available
+
+    p = ProviderConfig(
+        id="typo",
+        kind="cloud",
+        model="openni:gpt-4o",  # deliberate typo (open**ni**, not openai)
+    )
+    assert is_provider_available(p) is False
+
+
+def test_is_provider_available_returns_true_for_known_prefix_with_env(monkeypatch):
+    """Known prefix + env var present → available. Sanity check the
+    happy path didn't regress alongside the unknown-prefix fix."""
+    from claritymed.core.schemas import ProviderConfig
+    from claritymed.stores.models import is_provider_available
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    p = ProviderConfig(id="ok", kind="cloud", model="openai:gpt-4o")
+    assert is_provider_available(p) is True
+
+
 # ---------- pick_reachable_provider ----------
 
 

@@ -65,6 +65,33 @@ class Prompt(BaseModel):
     versions: list[PromptVersion] = Field(min_length=1)
 
 
+_DEFAULT_REGISTRY: "PromptRegistry | None" = None
+
+
+def get_default_registry() -> "PromptRegistry":
+    """Return the process-wide cached ``PromptRegistry``.
+
+    Building a registry globs every YAML in the store, parses with PyYAML,
+    and validates each one through pydantic — small per file, but ~10 ms
+    aggregate when called per-HyDE-strategy / per-translation / per-OCR
+    call (each previously built its own). Module-level caching keeps the
+    one-shot startup cost without paying it on every retrieval. The
+    process-wide cached registry is the right home for the load
+    invariant; ``invalidate_registry_cache`` lets tests + admin hot-reload
+    after editing a YAML on disk.
+    """
+    global _DEFAULT_REGISTRY
+    if _DEFAULT_REGISTRY is None:
+        _DEFAULT_REGISTRY = PromptRegistry()
+    return _DEFAULT_REGISTRY
+
+
+def invalidate_registry_cache() -> None:
+    """Force the next ``get_default_registry`` to rebuild from disk."""
+    global _DEFAULT_REGISTRY
+    _DEFAULT_REGISTRY = None
+
+
 class PromptRegistry:
     """Eager-load all prompt files in the store directory.
 

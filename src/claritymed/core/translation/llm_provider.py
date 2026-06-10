@@ -111,9 +111,9 @@ class LLMTranslationProvider(TranslationProvider):
         from pydantic_ai import Agent
 
         from claritymed.core.observability.steps import step
-        from claritymed.core.prompts.registry import PromptRegistry
+        from claritymed.core.prompts.registry import get_default_registry
 
-        system_prompt = PromptRegistry().get(prompt_name, language=target_lang)
+        system_prompt = get_default_registry().get(prompt_name, language=target_lang)
         agent: Agent[None, str] = Agent(
             self._model,
             system_prompt=system_prompt,

@@ -57,9 +57,9 @@ _USE_DEFAULT_INSTRUCTIONS = object()
 
 def _default_instructions(language: str = "en") -> str:
     """Read the MCQA system instruction from the prompt registry."""
-    from claritymed.core.prompts.registry import PromptRegistry
+    from claritymed.core.prompts.registry import get_default_registry
 
-    return PromptRegistry().get(_MCQA_INSTRUCTIONS_PROMPT, language=language)  # type: ignore[arg-type]
+    return get_default_registry().get(_MCQA_INSTRUCTIONS_PROMPT, language=language)  # type: ignore[arg-type]
 
 
 class ClaritymedBaselineLM(LM):

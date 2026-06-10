@@ -121,9 +121,9 @@ class HydeStrategy(RagStrategy):
             return await self._hypothesizer(query, language)
         from pydantic_ai import Agent
 
-        from claritymed.core.prompts.registry import PromptRegistry
+        from claritymed.core.prompts.registry import get_default_registry
 
-        system_prompt = PromptRegistry().get(_PROMPT_NAME, language=language)
+        system_prompt = get_default_registry().get(_PROMPT_NAME, language=language)
         agent: Agent[None, str] = Agent(
             self._model,
             system_prompt=system_prompt,

@@ -43,7 +43,7 @@ class LLMOcrProvider(OcrProvider):
         """
         from pydantic_ai import Agent, BinaryContent
 
-        from claritymed.core.prompts.registry import PromptRegistry
+        from claritymed.core.prompts.registry import get_default_registry
         from claritymed.core.schemas.ocr import OcrExtraction
 
         try:
@@ -51,7 +51,7 @@ class LLMOcrProvider(OcrProvider):
         except (FileNotFoundError, PermissionError) as exc:
             raise OcrError(f"Cannot read {path}: {exc}") from exc
 
-        prompt = PromptRegistry().get(_PROMPT_NAME)
+        prompt = get_default_registry().get(_PROMPT_NAME)
         agent: Agent[None, OcrExtraction] = Agent(
             self._model, system_prompt=prompt, output_type=OcrExtraction
         )

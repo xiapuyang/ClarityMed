@@ -63,6 +63,11 @@ class BgeM3HttpEmbedder(Embedder):
         self._timeout_s = timeout_s
         self._api_key = self._resolve_api_key(api_key_env)
         self._transport = transport  # tests inject MockTransport here
+        # Lazy-initialised on first request and reused for the embedder's
+        # lifetime. Building a new AsyncClient per call (the prior
+        # behaviour) paid TCP+TLS setup on every retrieval — 3-6 client
+        # lifecycles per RAG turn for nothing.
+        self._async_client: httpx.AsyncClient | None = None
 
     @staticmethod
     def _resolve_api_key(api_key_env: str | None) -> str | None:
@@ -110,23 +115,38 @@ class BgeM3HttpEmbedder(Embedder):
         return headers
 
     def _client(self) -> httpx.AsyncClient:
-        kwargs: dict[str, Any] = {
-            "base_url": self._base_url,
-            "timeout": self._timeout_s,
-            "headers": self._headers(),
-        }
-        if self._transport is not None:
-            kwargs["transport"] = self._transport
-        return httpx.AsyncClient(**kwargs)
+        """Return the shared AsyncClient, building it on first use.
+
+        Tests that inject a fresh ``transport`` per call (rare) can
+        clear ``self._async_client`` to force rebuild; the production
+        path reuses one client for the embedder's lifetime so connection
+        pooling actually works.
+        """
+        if self._async_client is None:
+            kwargs: dict[str, Any] = {
+                "base_url": self._base_url,
+                "timeout": self._timeout_s,
+                "headers": self._headers(),
+            }
+            if self._transport is not None:
+                kwargs["transport"] = self._transport
+            self._async_client = httpx.AsyncClient(**kwargs)
+        return self._async_client
+
+    async def aclose(self) -> None:
+        """Close the shared AsyncClient. Safe to call multiple times."""
+        if self._async_client is not None:
+            await self._async_client.aclose()
+            self._async_client = None
 
     async def _post_dense(self, batch: list[str]) -> list[list[float]]:
-        async with self._client() as client:
-            try:
-                resp = await client.post("/embed", json={"inputs": batch})
-            except httpx.HTTPError as exc:
-                raise EmbedderUnreachableError(
-                    f"bge-m3 dense embed failed at {self._base_url}: {exc}"
-                ) from exc
+        client = self._client()
+        try:
+            resp = await client.post("/embed", json={"inputs": batch})
+        except httpx.HTTPError as exc:
+            raise EmbedderUnreachableError(
+                f"bge-m3 dense embed failed at {self._base_url}: {exc}"
+            ) from exc
         if resp.status_code >= 400:
             raise EmbedderUnreachableError(
                 f"bge-m3 dense embed returned {resp.status_code} "
@@ -136,13 +156,13 @@ class BgeM3HttpEmbedder(Embedder):
         return self._parse_dense(data, expected_count=len(batch))
 
     async def _post_sparse(self, batch: list[str]) -> list[SparseVector]:
-        async with self._client() as client:
-            try:
-                resp = await client.post("/embed_sparse", json={"inputs": batch})
-            except httpx.HTTPError as exc:
-                raise EmbedderUnreachableError(
-                    f"bge-m3 sparse embed failed at {self._base_url}: {exc}"
-                ) from exc
+        client = self._client()
+        try:
+            resp = await client.post("/embed_sparse", json={"inputs": batch})
+        except httpx.HTTPError as exc:
+            raise EmbedderUnreachableError(
+                f"bge-m3 sparse embed failed at {self._base_url}: {exc}"
+            ) from exc
         if resp.status_code >= 400:
             raise EmbedderUnreachableError(
                 f"bge-m3 sparse embed returned {resp.status_code} "
