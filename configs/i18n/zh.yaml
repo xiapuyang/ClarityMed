@@ -34,6 +34,14 @@ modes:
     description: "管理参考资料（上传的文档、已激活的系统知识库）。"
     empty_prompt: "用 /library 管理资料库，或 /upload 添加新文档。"
 
+rag:
+  collection:
+    # 与 en.yaml 同结构。StatPearls / MedRAG 是品牌名两侧一致，
+    # user_rag 用中文 label，避免暴露 user_rag_<id> 这种内部标识。
+    statpearls_en: "StatPearls"
+    textbooks_en: "MedRAG"
+    user_rag: "我的资料库"
+
 phi:
   redaction_marker:
     name: "[已脱敏:姓名]"

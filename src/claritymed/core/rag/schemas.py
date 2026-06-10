@@ -40,6 +40,8 @@ from claritymed.errors import (
 
 _RAG_ENABLED_ENV = "CLARITYMED_RAG_ENABLED"
 _QDRANT_URL_ENV = "CLARITYMED_QDRANT_URL"
+_RAG_ROUTER_ENV = "CLARITYMED_RAG_ROUTER"
+_RAG_MODE_ENV = "CLARITYMED_RAG_MODE"
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
 
@@ -484,7 +486,7 @@ class RetrievalConfig(BaseModel):
 def load_retrieval_config() -> RetrievalConfig:
     """Parse ``configs/retrieval.yaml`` through the mtime-cached loader.
 
-    Two env vars can override yaml fields so local dev can flip without
+    Four env vars can override yaml fields so local dev can flip without
     editing (and accidentally committing) the shipped defaults:
 
     * ``CLARITYMED_RAG_ENABLED`` — overrides ``rag.enabled``. Accepts
@@ -492,21 +494,36 @@ def load_retrieval_config() -> RetrievalConfig:
       for off; anything else is ignored so a typo cannot silently flip.
     * ``CLARITYMED_QDRANT_URL`` — overrides ``qdrant.url``. Any
       non-empty value wins; unset / empty leaves yaml intact.
+    * ``CLARITYMED_RAG_ROUTER`` — overrides ``router.active`` (e.g.
+      ``rule_based`` ↔ ``centroid_classifier``). An id missing from the
+      catalog still fails loud via ``RouterConfig._resolve_active``, so a
+      typo cannot silently fall back.
+    * ``CLARITYMED_RAG_MODE`` — overrides ``rag.mode`` (``deterministic``
+      / ``tool`` / ``agentic``). Pydantic's ``Literal`` validator rejects
+      anything else, so a typo raises at config load.
 
     Tests can call ``claritymed.config.reload_configs()`` to force a
     re-read after redirecting CONFIG_DIR.
     """
     raw = _cfg.load_yaml("retrieval.yaml")
+    rag_block = dict(raw.get("rag", {}))
     rag_override = os.environ.get(_RAG_ENABLED_ENV, "").strip().lower()
     if rag_override in _TRUTHY or rag_override in _FALSY:
-        raw = {
-            **raw,
-            "rag": {**raw.get("rag", {}), "enabled": rag_override in _TRUTHY},
-        }
+        rag_block["enabled"] = rag_override in _TRUTHY
+    mode_override = os.environ.get(_RAG_MODE_ENV, "").strip()
+    if mode_override:
+        rag_block["mode"] = mode_override
+    raw = {**raw, "rag": rag_block}
     qdrant_override = os.environ.get(_QDRANT_URL_ENV, "").strip()
     if qdrant_override:
         raw = {
             **raw,
             "qdrant": {**raw.get("qdrant", {}), "url": qdrant_override},
+        }
+    router_override = os.environ.get(_RAG_ROUTER_ENV, "").strip()
+    if router_override:
+        raw = {
+            **raw,
+            "router": {**raw.get("router", {}), "active": router_override},
         }
     return RetrievalConfig.model_validate(raw)

@@ -290,6 +290,337 @@ def test_format_sources_empty_returns_empty():
     assert AskService._format_sources([]) == ""
 
 
+def test_format_sources_uses_i18n_display_label_for_system_rag():
+    """Sources line format: ``[N] <title> · <i18n display label>``.
+
+    The label is looked up from ``configs/i18n/<lang>.yaml`` under
+    ``rag.collection.<collection_name>``. statpearls_en → "StatPearls",
+    textbooks_en → "MedRAG" — adding a new corpus only needs an i18n
+    entry, no code change.
+    """
+    chunk = RetrievedChunk(
+        text="body",
+        source="system_rag",
+        score=0.9,
+        doc_id="d1",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="statpearls_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.9,
+        source_uri=None,
+        doc_title="StatPearls: Iron Deficiency Anemia",
+    )
+    block_en = AskService._format_sources([chunk], lang="en")
+    assert " · StatPearls" in block_en
+    # Brand names match across languages, so zh resolves to the same string.
+    block_zh = AskService._format_sources([chunk], lang="zh")
+    assert " · StatPearls" in block_zh
+
+
+def test_format_sources_zh_translates_user_library_label():
+    """user_rag chunks render as ``我的资料库`` in zh, ``My Library`` in en.
+
+    Plus: never leak the per-user collection id (``user_rag_alice``).
+    """
+    chunk = RetrievedChunk(
+        text="body",
+        source="user_rag",
+        score=0.9,
+        doc_id="upload-42",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=False,
+        collection_name="user_rag_alice",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.9,
+        source_uri=None,
+        doc_title="my-lab-report.pdf",
+    )
+    block_en = AskService._format_sources([chunk], lang="en")
+    assert " · My Library" in block_en
+    assert "user_rag_alice" not in block_en
+    assert "alice" not in block_en
+
+    block_zh = AskService._format_sources([chunk], lang="zh")
+    assert " · 我的资料库" in block_zh
+    assert "user_rag_alice" not in block_zh
+
+
+def test_format_sources_unknown_collection_falls_back_to_raw_id():
+    """A new corpus without an i18n entry surfaces its raw id, not the key.
+
+    Without this guard, adding a new collection but forgetting to add
+    an i18n key would render ``rag.collection.foo_en`` in the UI —
+    visibly broken. Falling back to ``foo_en`` is uglier than the brand
+    label but still informative.
+    """
+    chunk = RetrievedChunk(
+        text="body",
+        source="system_rag",
+        score=0.9,
+        doc_id="d1",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="brand_new_corpus_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.9,
+        source_uri=None,
+        doc_title="A Document Title",
+    )
+    block = AskService._format_sources([chunk], lang="en")
+    assert " · brand_new_corpus_en" in block
+    assert "rag.collection." not in block
+
+
+def test_format_sources_no_title_shows_only_corpus_label():
+    """No URI + no doc_title → just the corpus label (no stray separator).
+
+    Older chunks ingested before source_uri / doc_title backfill must
+    still render usefully — `· ` with nothing on its left would be
+    visual noise.
+    """
+    chunk = _chunk(text="body", parent_text=None)
+    assert chunk.source_uri is None
+    assert chunk.doc_title is None
+    block = AskService._format_sources([chunk], lang="en")
+    assert "- [1] StatPearls" in block
+    assert " · " not in block
+
+
+def test_ask_prompt_v5_is_latest_and_allows_graceful_fallback():
+    """v5 must win ``latest`` resolution and contain the per-claim mode rule.
+
+    Regression for the NSAID-pharmacology screenshot: v4 trained the
+    model to refuse outright when retrieval mismatched the question.
+    v5 splits answer modes — general knowledge can fall back to model
+    training (without [N]) while specific numbers stay strictly cited.
+    """
+    from claritymed.core.prompts.registry import PromptRegistry
+
+    registry = PromptRegistry()
+    en = registry.get("ask", language="en")
+    zh = registry.get("ask", language="zh")
+    # English contract markers.
+    assert "Answer mode — pick PER CLAIM" in en
+    assert "Beyond the retrieved sources" in en
+    assert "Each turn judges its topic independently" in en
+    # Chinese contract markers.
+    assert "回答模式" in zh
+    assert "超出检索资料范围" in zh
+    assert "每一轮独立判定主题" in zh
+
+
+def test_format_evidence_never_leaks_collection_name():
+    """LLM-facing evidence must not contain the collection id either.
+
+    The LLM mimics whatever string it sees as a "source", so leaking the
+    collection name into evidence trains it to write fake "[1] statpearls_en"
+    footnotes in later turns (the original failure mode).
+    """
+    chunk = _chunk(text="aspirin treats pain", parent_text="aspirin parent text")
+    formatted = AskService._format_evidence([chunk])
+    assert "statpearls_en" not in formatted
+    # No source identifier available → unlabeled [N] line (still cite-able).
+    assert "[1]" in formatted
+    assert "aspirin parent text" in formatted
+
+
+def test_format_evidence_uses_source_uri_label_when_available():
+    chunk = RetrievedChunk(
+        text="aspirin treats pain",
+        source="system_rag",
+        score=0.9,
+        doc_id="d1",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="statpearls_en",
+        parent_id=None,
+        parent_text="aspirin parent text",
+        rerank_score=0.9,
+        source_uri="https://ncbi.nlm.nih.gov/books/NBK123",
+    )
+    formatted = AskService._format_evidence([chunk])
+    assert "(https://ncbi.nlm.nih.gov/books/NBK123)" in formatted
+    assert "statpearls_en" not in formatted
+
+
+def test_clamp_citations_strips_out_of_range_markers():
+    """``[N]`` with ``N > max_n`` is hallucinated; strip it.
+
+    Direct regression for the screenshot showing ``[11]`` in an answer
+    whose current turn only surfaced 2 Sources entries.
+    """
+    text = "首先 [1]，然后 [11]，最后 [2] 收尾。"
+    cleaned, offending = AskService._clamp_citations(text, max_n=2)
+    assert "[11]" not in cleaned
+    assert "[1]" in cleaned
+    assert "[2]" in cleaned
+    assert offending == [11]
+
+
+def test_clamp_citations_max_n_zero_strips_all_markers():
+    """When no chunks were retrieved this turn, NO [N] should survive.
+
+    Belt-and-suspenders for the v4 prompt rule "no Evidence → no citations".
+    """
+    text = "Body claim [1] more claim [2]."
+    cleaned, offending = AskService._clamp_citations(text, max_n=0)
+    assert "[1]" not in cleaned
+    assert "[2]" not in cleaned
+    assert offending == [1, 2]
+
+
+def test_clamp_citations_in_range_unchanged():
+    text = "claim [1] claim [2] claim [3]"
+    cleaned, offending = AskService._clamp_citations(text, max_n=3)
+    assert cleaned == text
+    assert offending == []
+
+
+def test_clamp_citations_dedupes_offending_list():
+    text = "claim [11] claim [11] claim [12] claim [11]"
+    cleaned, offending = AskService._clamp_citations(text, max_n=2)
+    assert "[11]" not in cleaned and "[12]" not in cleaned
+    assert offending == [11, 12]  # sorted, unique
+
+
+def test_strip_evidence_block_removes_inline_splice():
+    """The exact splice ``_compose_prompt`` produces is recognized + removed."""
+    from claritymed.orchestrator.services.ask_service import _strip_evidence_block
+
+    spliced = (
+        "\nEvidence (cite by [n]):\n"
+        "[1] (uri-1) body one\n"
+        "[2] (uri-2) body two\n\n"
+        "Question: what is my hemoglobin?"
+    )
+    cleaned = _strip_evidence_block(spliced)
+    assert "Evidence (cite by [n]):" not in cleaned
+    assert "uri-1" not in cleaned and "uri-2" not in cleaned
+    assert cleaned.endswith("what is my hemoglobin?")
+
+
+def test_strip_evidence_block_passes_through_plain_text():
+    """Plain user messages (no splice) must round-trip untouched."""
+    from claritymed.orchestrator.services.ask_service import _strip_evidence_block
+
+    plain = "我贫血了吗？血红蛋白 105 g/L。"
+    assert _strip_evidence_block(plain) == plain
+
+
+def test_sanitize_history_strips_evidence_from_user_prompts():
+    """Drives the helper through a realistic two-turn history."""
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        UserPromptPart,
+    )
+
+    from claritymed.orchestrator.services.ask_service import (
+        _sanitize_history_for_llm,
+    )
+
+    spliced = "\nEvidence (cite by [n]):\n[1] (x) body\n\nQuestion: prior question"
+    history = [
+        ModelRequest(parts=[UserPromptPart(content=spliced)]),
+        ModelResponse(parts=[TextPart(content="prior answer with [1]")]),
+        ModelRequest(parts=[UserPromptPart(content="follow-up question")]),
+    ]
+    sanitized = _sanitize_history_for_llm(history)
+    # User-prompt evidence is gone; assistant response (which references
+    # [1]) is preserved — that's fine, the index is now opaque to the LLM.
+    assert "Evidence (cite by [n]):" not in sanitized[0].parts[0].content
+    assert "prior question" in sanitized[0].parts[0].content
+    assert sanitized[1].parts[0].content == "prior answer with [1]"
+    assert sanitized[2].parts[0].content == "follow-up question"
+
+
+def test_format_debug_collections_dedupes_by_doc_id():
+    """Debug indices must match Sources [N], not surface raw chunk duplicates.
+
+    Regression for the second screenshot: two chunks from
+    ``article-132882`` formerly produced Debug ``[1]`` + ``[2]`` while
+    Sources merged them into ``[1]`` — so Sources ``[2]`` mapped to
+    Debug ``[3]`` and the reader couldn't cross-reference.
+    """
+    c1 = RetrievedChunk(
+        text="x",
+        source="system_rag",
+        score=0.7,
+        doc_id="article-132882",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="statpearls_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.678,
+    )
+    c2 = RetrievedChunk(
+        text="y",
+        source="system_rag",
+        score=0.6,
+        doc_id="article-132882",  # SAME doc_id as c1
+        chunk_index=1,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="statpearls_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.594,
+    )
+    c3 = RetrievedChunk(
+        text="z",
+        source="system_rag",
+        score=0.4,
+        doc_id="article-56333",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="statpearls_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.441,
+    )
+    block = AskService._format_debug_collections([c1, c2, c3])
+    # Two rows, matching what Sources would show.
+    assert block.count("\n- [") == 2
+    assert "[1]" in block and "[2]" in block
+    assert "[3]" not in block
+    # Best score reported for the duplicated doc + chunk count annotation.
+    assert "0.678" in block
+    assert "2 chunks" in block
+    # Single-chunk row has no count annotation.
+    assert "1 chunks" not in block
+
+
+def test_latest_ask_prompt_forbids_phantom_citations():
+    """The active ask prompt must always carry the no-evidence-no-cite rule.
+
+    Originally added in v4 to stop fake ``[1] statpearls_en`` footnotes
+    when retrieval returned nothing. v5 inherits the rule; future
+    versions must too — that's why this asserts on ``latest`` rather
+    than pinning a version.
+    """
+    from claritymed.core.prompts.registry import PromptRegistry
+
+    registry = PromptRegistry()
+    en = registry.get("ask", language="en")
+    zh = registry.get("ask", language="zh")
+    assert "Citation honesty" in en
+    assert "Evidence (cite by [n]):" in en
+    assert "引用诚实性" in zh
+    assert "Evidence (cite by [n]):" in zh
+
+
 async def test_sources_block_always_injected_before_done():
     """Sources section is emitted as a TokenChunk before Done when chunks exist."""
     bundle = EvidenceBundle(

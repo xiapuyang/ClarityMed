@@ -34,6 +34,20 @@ modes:
     description: "Manage reference materials (uploaded docs, system collections)."
     empty_prompt: "Use /library to manage references, or /upload to add a new one."
 
+rag:
+  collection:
+    # Display labels shown to users in the Sources section. Keys mirror
+    # collection ids in `configs/retrieval.yaml:system_rag.collections[].name`
+    # plus the synthetic `user_rag` key (one shared label across every
+    # per-user collection like `user_rag_alice`).
+    #
+    # StatPearls / MedRAG are brand names — same in en and zh — but we
+    # still maintain them here so adding a new collection only touches
+    # i18n yaml, never Python code.
+    statpearls_en: "StatPearls"
+    textbooks_en: "MedRAG"
+    user_rag: "My Library"
+
 phi:
   redaction_marker:
     name: "[REDACTED:NAME]"

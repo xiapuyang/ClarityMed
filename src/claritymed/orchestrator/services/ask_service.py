@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
@@ -60,6 +61,68 @@ HISTORY_BUDGET_BYTES = 80_000
 # pairs (4 messages) preserves enough recent context for the model to
 # stay coherent even with a pathologically long single turn.
 HISTORY_MIN_KEEP = 4
+
+
+# Matches the exact splice ``_compose_prompt`` emits when an Evidence
+# block is present. Anchoring on both the ``Evidence (cite by [n]):``
+# header AND the ``\n\nQuestion:`` separator keeps this conservative —
+# we only strip blocks the framework itself produced, never a user
+# message that happens to mention the phrase.
+_EVIDENCE_BLOCK_RE = re.compile(
+    r"\n*Evidence \(cite by \[n\]\):.*?\n\nQuestion:\s*",
+    re.DOTALL,
+)
+# Citation marker like ``[1]`` / ``[12]``. We only consider it
+# out-of-range — never strip legitimate bracketed text — by matching
+# digits only.
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+def _strip_evidence_block(text: str) -> str:
+    """Remove one inline ``Evidence (cite by [n]):`` block from a stored prompt.
+
+    pydantic-ai's message history captures the *full* request body we
+    sent — including any retrieval evidence ``RagFeature.pre_invoke``
+    spliced in. Carrying that into the next turn teaches the LLM that
+    prior turns' citation indices (``[1]``..``[N]``) are still valid,
+    which is how ``[11]`` showed up in an answer whose current turn only
+    surfaced 2 sources. Strip the splice; the assistant's reply (which
+    still references the indices) stays — that's fine, the indices are
+    now opaque to the model.
+    """
+    return _EVIDENCE_BLOCK_RE.sub("", text, count=1)
+
+
+def _sanitize_history_for_llm(messages: list) -> list:
+    """Return a copy of message history with Evidence blocks removed.
+
+    Only touches ``UserPromptPart`` content strings; multimodal content
+    lists are passed through untouched (no Evidence splice path exists
+    for them today). ``ModelRequest`` / ``UserPromptPart`` are
+    dataclasses in pydantic-ai, so we ``dataclasses.replace`` rather
+    than ``model_copy``.
+    """
+    import dataclasses
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    out: list = []
+    for m in messages:
+        if not isinstance(m, ModelRequest):
+            out.append(m)
+            continue
+        new_parts: list = []
+        changed = False
+        for p in m.parts:
+            if isinstance(p, UserPromptPart) and isinstance(p.content, str):
+                cleaned = _strip_evidence_block(p.content)
+                if cleaned != p.content:
+                    new_parts.append(dataclasses.replace(p, content=cleaned))
+                    changed = True
+                    continue
+            new_parts.append(p)
+        out.append(dataclasses.replace(m, parts=new_parts) if changed else m)
+    return out
 
 
 def _trim_message_history(messages, budget: int):
@@ -249,11 +312,33 @@ class AskService:
                     # after `yield event` would make it dead code because the TUI
                     # returns immediately when it receives Done.
                     if not result["had_error"]:
+                        # Clamp before persist so future turns' history
+                        # never carries out-of-range markers forward.
+                        from claritymed.core.rag.retrieval_pipeline import (
+                            deduplicate_chunks,
+                        )
+
+                        valid_max = len(deduplicate_chunks(deps.retrieved_chunks))
+                        cleaned, offending = self._clamp_citations(
+                            result["final_text"], valid_max
+                        )
+                        if offending:
+                            audit_event(
+                                "ask.citation.out_of_range",
+                                payload={
+                                    "user_id": user_id,
+                                    "valid_max": valid_max,
+                                    "offending": offending,
+                                },
+                            )
+                            result["final_text"] = cleaned
                         self._finalize_turn(user_id, result, deps)
                     if deps.retrieved_chunks:
                         self._last_chunks = list(deps.retrieved_chunks)
                         yield TokenChunk(
-                            text=self._format_sources(deps.retrieved_chunks)
+                            text=self._format_sources(
+                                deps.retrieved_chunks, lang=self._language
+                            )
                         )
                         if os.environ.get("CLARITYMED_DEBUG"):
                             yield TokenChunk(
@@ -352,7 +437,11 @@ class AskService:
             # the retrieval pipeline 50× per turn.
             stream_kwargs: dict = {
                 "deps": deps,
-                "message_history": message_history or None,
+                "message_history": (
+                    _sanitize_history_for_llm(message_history)
+                    if message_history
+                    else None
+                ),
             }
             if any_tool:
                 stream_kwargs["usage_limits"] = UsageLimits(request_limit=5)
@@ -538,17 +627,73 @@ class AskService:
         audit_event("mode.ask.tool_announced_but_skipped", payload=payload)
 
     @staticmethod
+    def _clamp_citations(text: str, max_n: int) -> tuple[str, list[int]]:
+        """Strip ``[N]`` markers where ``N`` exceeds ``max_n``.
+
+        Defense-in-depth against citation hallucination. ``max_n`` is the
+        number of deduplicated Sources entries this turn — that's what
+        the user sees, so any ``[N]`` above that is unmoored. Returns
+        the cleaned text plus the sorted, deduplicated list of offending
+        indices so the caller can audit them.
+
+        We strip rather than substitute ``[?]`` because the stripped
+        form reads cleanly when the user re-opens the conversation; an
+        in-line ``[?]`` is just visual noise once the streaming UI has
+        already rendered the original (incorrect) bracket.
+        """
+        bad: list[int] = []
+
+        def _sub(m: "re.Match[str]") -> str:
+            n = int(m.group(1))
+            if n > max_n:
+                bad.append(n)
+                return ""
+            return m.group(0)
+
+        cleaned = _CITATION_RE.sub(_sub, text)
+        return cleaned, sorted(set(bad))
+
+    @staticmethod
     def _format_evidence(chunks: "list[RetrievedChunk]") -> str:
         from claritymed.core.rag.retrieval_pipeline import format_evidence
 
         return format_evidence(chunks)
 
     @staticmethod
-    def _format_sources(chunks: "list[RetrievedChunk]") -> str:
-        """Build an authoritative Sources section from chunk metadata.
+    def _collection_label(chunk: "RetrievedChunk", lang: str | None) -> str:
+        """Look up the user-facing label for a chunk's corpus.
 
-        Uses source_uri (a real URL) when available. Falls back to doc_title
-        (article title stored during ingest), then collection_name, then source type.
+        ``user_rag`` collapses to one shared label (e.g. ``My Library``)
+        across every per-user store — ``user_rag_alice`` etc. is an
+        internal id we never surface. ``system_rag`` chunks look up
+        ``rag.collection.<collection_name>`` and fall back to the raw
+        ``collection_name`` when no translation exists, so adding a new
+        corpus needs only an i18n entry, never a code change.
+        """
+        from claritymed.core.i18n import t
+
+        if chunk.source == "user_rag":
+            key = "rag.collection.user_rag"
+            label = t(key, lang=lang)
+            return label if label != key else "My Library"
+        name = chunk.collection_name or "source"
+        key = f"rag.collection.{name}"
+        label = t(key, lang=lang)
+        return label if label != key else name
+
+    @staticmethod
+    def _format_sources(chunks: "list[RetrievedChunk]", lang: str | None = None) -> str:
+        """Build the user-facing Sources section.
+
+        Layout: ``[N] <title-or-uri> · <corpus-label>``. The corpus
+        label comes from i18n (``configs/i18n/*.yaml`` under
+        ``rag.collection.*``) so ``my library`` translates to ``我的
+        资料库`` automatically and new corpora can be added without
+        editing Python.
+
+        This block is appended *after* ``_finalize_turn`` has persisted
+        ``result["final_text"]``, so the corpus label never enters chat
+        history and the LLM cannot mimic it on the next turn.
         """
         if not chunks:
             return ""
@@ -557,21 +702,47 @@ class AskService:
         unique = deduplicate_chunks(chunks)
         lines = ["\n\n**Sources:**"]
         for i, c in enumerate(unique, start=1):
-            src = c.source_uri or c.doc_title or c.collection_name or c.source
-            lines.append(f"- [{i}] {src}")
+            title = c.source_uri or c.doc_title
+            corpus = AskService._collection_label(c, lang)
+            display = f"{title} · {corpus}" if title else corpus
+            lines.append(f"- [{i}] {display}")
         return "\n".join(lines)
 
     @staticmethod
     def _format_debug_collections(chunks: "list[RetrievedChunk]") -> str:
-        """Append-only markdown block naming the RAG collection for each
-        cited chunk. Only emitted when ``CLARITYMED_DEBUG=1``."""
+        """Markdown block listing the RAG-collection backing each Sources entry.
+
+        Only emitted when ``CLARITYMED_DEBUG=1``. Indices match the
+        Sources block (same dedup-by-doc_id, same first-seen order) so a
+        reader can map ``[N]`` in the answer ↔ Sources ``[N]`` ↔ Debug
+        ``[N]``. When more than one chunk of the same doc passed
+        retrieval, the line reports the best score and a chunk count
+        rather than spawning a second row — that information lives in
+        the ``rag.retrieval`` audit row already.
+        """
         lines = ["\n\n---\n**Debug — RAG Collections:**"]
-        for i, c in enumerate(chunks, start=1):
-            col = c.collection_name or "unknown"
-            effective_score = c.rerank_score if c.rerank_score is not None else c.score
-            score = f"{effective_score:.3f}" if effective_score is not None else "—"
-            doc = c.doc_id or "—"
-            lines.append(f"- [{i}] `{col}` · `{doc}` (score {score})")
+        groups: dict[str, list] = {}
+        order: list[str] = []
+        for c in chunks:
+            if c.doc_id not in groups:
+                groups[c.doc_id] = []
+                order.append(c.doc_id)
+            groups[c.doc_id].append(c)
+        for i, doc_id in enumerate(order, start=1):
+            members = groups[doc_id]
+            first = members[0]
+            col = first.collection_name or "unknown"
+            scores = [
+                c.rerank_score if c.rerank_score is not None else c.score
+                for c in members
+            ]
+            scores = [s for s in scores if s is not None]
+            best = max(scores) if scores else None
+            score_str = f"{best:.3f}" if best is not None else "—"
+            n = len(members)
+            chunk_suffix = f", {n} chunks" if n > 1 else ""
+            doc = first.doc_id or "—"
+            lines.append(f"- [{i}] `{col}` · `{doc}` (score {score_str}{chunk_suffix})")
         return "\n".join(lines) + "\n"
 
     @staticmethod

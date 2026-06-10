@@ -22,10 +22,14 @@
 #   * agentic       — reserved for a future state-graph workflow
 #                     (planner / CRAG-style evaluator / writer); raises
 #                     NotImplementedError at runtime in v1.
+#
+# Env overrides: `CLARITYMED_RAG_ENABLED` (1/0/true/false/yes/no/on/off)
+# flips `enabled`; `CLARITYMED_RAG_MODE` (deterministic/tool/agentic)
+# flips `mode`. Both validate at load — typos raise.
 rag:
   enabled: false
   max_evidence: 5
-  mode: tool
+  mode: deterministic
 
 # --- qdrant connection -------------------------------------------------
 # Required — server-only (local file-locked mode was removed; see
@@ -134,8 +138,12 @@ term_service:
 # similarity against their precomputed centroids; falls back per-
 # collection to `rule_based` when a centroid file is absent (e.g. a new
 # collection added without a `rag corpora refresh-centroid` run yet).
+#
+# Env override: `CLARITYMED_RAG_ROUTER` rewrites `active` at load time
+# (e.g. `CLARITYMED_RAG_ROUTER=centroid_classifier uv run claritymed ask ...`).
+# Unknown ids still fail loud via RouterConfig._resolve_active.
 router:
-  active: rule_based
+  active: centroid_classifier
   catalog:
     - id: rule_based
       max_active: 3

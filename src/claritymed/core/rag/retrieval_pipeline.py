@@ -253,6 +253,14 @@ def format_evidence(chunks: list) -> str:
 
     Deduplicates by doc_id before numbering so citation indices in the
     LLM response match the Sources section shown to the user.
+
+    The parenthesised label is a *user-facing* source identifier
+    (``source_uri`` or ``doc_title``). ``collection_name`` is the
+    internal vector-store id and is deliberately never exposed — letting
+    the LLM see ``statpearls_en`` in evidence trains it to mimic that
+    string as a "source" in later turns (observed hallucination).
+    Chunks without any human-readable identifier emit an unlabeled
+    ``[N] <body>`` line instead.
     """
     chunks = deduplicate_chunks(chunks)
     if not chunks:
@@ -260,6 +268,7 @@ def format_evidence(chunks: list) -> str:
     lines = ["", "Evidence (cite by [n]):"]
     for i, c in enumerate(chunks, start=1):
         body = c.parent_text or c.text
-        src = c.source_uri or c.collection_name or c.source
-        lines.append(f"[{i}] ({src}) {body}")
+        src = c.source_uri or c.doc_title
+        prefix = f"[{i}] ({src}) " if src else f"[{i}] "
+        lines.append(f"{prefix}{body}")
     return "\n".join(lines)
