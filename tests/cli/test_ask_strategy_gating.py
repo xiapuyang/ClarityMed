@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import claritymed.cli.main as cli_main
+from claritymed.cli.commands.ask import _maybe_build_strategy
 from claritymed.core.rag import load_retrieval_config
 from claritymed.core.rag.schemas import TermServiceConfig
 from claritymed.core.rag.strategies.naive_hybrid import NaiveHybridStrategy
@@ -27,7 +27,7 @@ def test_maybe_build_strategy_returns_none_when_disabled():
         "claritymed.core.rag.load_retrieval_config",
         return_value=disabled,
     ):
-        assert cli_main._maybe_build_strategy() is None
+        assert _maybe_build_strategy() is None
 
 
 def test_maybe_build_strategy_builds_when_enabled():
@@ -49,5 +49,5 @@ def test_maybe_build_strategy_builds_when_enabled():
         "claritymed.core.rag.load_retrieval_config",
         return_value=enabled,
     ):
-        strategy = cli_main._maybe_build_strategy()
+        strategy = _maybe_build_strategy()
     assert isinstance(strategy, NaiveHybridStrategy)

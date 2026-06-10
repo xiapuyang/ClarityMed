@@ -94,9 +94,11 @@ def test_rag_add_with_file(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(_ur, "make_user_rag_store", _factory)
-    import claritymed.cli.main as _cli_main
+    # `make_user_rag_store` is imported by name into the rag subcommand
+    # module; patch both bindings so the CLI invocation hits the stub.
+    import claritymed.cli.commands.rag as _cli_rag
 
-    monkeypatch.setattr(_cli_main, "make_user_rag_store", _factory)
+    monkeypatch.setattr(_cli_rag, "make_user_rag_store", _factory)
     monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
     from claritymed.stores.account import init_user
 
