@@ -160,3 +160,15 @@ def get_audit_logger() -> logging.Logger:
             _file_handler(_cfg.LOG_DIR, "audit.log", AUDIT_FMT, 20 * 1024 * 1024, 20)
         )
     return logger
+
+
+def get_llm_logger() -> logging.Logger:
+    """Lazily configure and return the llm debug logger."""
+    logger = logging.getLogger(LLM_LOGGER)
+    if not logger.handlers:
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        logger.addHandler(
+            _file_handler(_cfg.LOG_DIR, "llm.log", "%(message)s", 20 * 1024 * 1024, 5)
+        )
+    return logger

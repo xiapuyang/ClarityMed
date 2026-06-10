@@ -7,7 +7,7 @@ produces a REQ/RES block in ``~/.claritymed/logs/llm.log``:
     ==== REQ 2026-06-10T03:27:24 rid=2026...  call#1 ====
     model: claude-sonnet-4-5  system: anthropic
     history: 2 messages  tools: ask_user_question, retrieve_medical_literature
-    user: 我应该做哪个体检套餐
+    user: which health checkup package should I choose
     ==== RES  total_ms=7213  ttft_ms=6195  call#1 ====
     finish: tool_calls  tokens: in=1234 out=45 total=1279
       tool_call: ask_user_question({"questions": [...]})
@@ -19,8 +19,8 @@ produces a REQ/RES block in ``~/.claritymed/logs/llm.log``:
 from __future__ import annotations
 
 import datetime
-import logging
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
@@ -28,32 +28,17 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai.models import Model as _PydanticModel
 
 from claritymed.context import request_id_ctx
+from claritymed.core.observability.logging import get_llm_logger
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
     from pydantic_ai.models import ModelRequestParameters, StreamedResponse
     from pydantic_ai.settings import ModelSettings
 
-LLM_LOGGER_NAME = "claritymed.llm"
 _TEXT_LIMIT = 2000
 _ARG_LIMIT = 400
 _USER_LIMIT = 300
 _SYS_LIMIT = 120
-
-
-def get_llm_logger() -> logging.Logger:
-    """Lazily configure and return the llm debug logger."""
-    from claritymed import config as _cfg
-    from claritymed.core.observability.logging import _file_handler
-
-    log = logging.getLogger(LLM_LOGGER_NAME)
-    if not log.handlers:
-        log.setLevel(logging.DEBUG)
-        log.propagate = False
-        log.addHandler(
-            _file_handler(_cfg.LOG_DIR, "llm.log", "%(message)s", 20 * 1024 * 1024, 5)
-        )
-    return log
 
 
 def _fmt_messages(messages: list[ModelMessage]) -> str:
@@ -85,20 +70,24 @@ def _fmt_messages(messages: list[ModelMessage]) -> str:
 
 
 def _fmt_response(response: Any) -> str:
-    """Format ModelResponse parts for the log."""
+    """Format ModelResponse parts for the log.
+
+    Newlines in text/tool-call payloads are stripped so a model output
+    cannot inject fake ``==== REQ ====`` boundary markers into the log.
+    """
     from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 
     lines: list[str] = []
     for part in getattr(response, "parts", []):
         if isinstance(part, TextPart):
-            text = part.content
+            text = part.content.replace("\n", " ")
             shown = text[:_TEXT_LIMIT]
             suffix = (
                 f" [{len(text) - _TEXT_LIMIT} more]" if len(text) > _TEXT_LIMIT else ""
             )
             lines.append(f"  text: {shown}{suffix}")
         elif isinstance(part, ToolCallPart):
-            args = str(part.args)[:_ARG_LIMIT]
+            args = str(part.args).replace("\n", " ")[:_ARG_LIMIT]
             lines.append(f"  tool_call: {part.tool_name}({args})")
         elif isinstance(part, ThinkingPart):
             lines.append(f"  thinking: [{len(part.content)} chars]")
@@ -106,6 +95,7 @@ def _fmt_response(response: Any) -> str:
 
 
 def _fmt_usage(usage: Any) -> str:
+    """Return a compact token-usage summary string from a pydantic-ai usage object."""
     if usage is None:
         return "n/a"
     from claritymed.core.observability.latency import usage_dict
@@ -158,12 +148,17 @@ class LoggingModel:
 
     def __init__(self, inner: "_PydanticModel") -> None:
         self._inner = inner
-        # Per-request_id call counter so call#N is meaningful per turn
-        self._counters: dict[str, int] = {}
+        # Per-request_id call counter so call#N is meaningful per turn.
+        # OrderedDict gives insertion-order LRU eviction independent of rid format.
+        self._counters: OrderedDict[str, int] = OrderedDict()
 
     # ---- delegation ---------------------------------------------------------
 
     def __getattr__(self, name: str) -> Any:
+        # Guard against infinite recursion when _inner is missing
+        # (e.g. object.__new__ without __init__ during unpickling).
+        if name == "_inner":
+            raise AttributeError(name)
         return getattr(self._inner, name)
 
     async def __aenter__(self) -> "LoggingModel":
@@ -177,13 +172,11 @@ class LoggingModel:
 
     def _next_call(self) -> tuple[str, int]:
         rid = request_id_ctx.get() or "-"
-        n = self._counters.get(rid, 0) + 1
+        n = self._counters.pop(rid, 0) + 1
         self._counters[rid] = n
-        # Evict old rids to keep memory bounded
-        if len(self._counters) > 200:
-            oldest = sorted(self._counters)[:100]
-            for k in oldest:
-                del self._counters[k]
+        # Evict oldest entries (insertion order) to keep memory bounded.
+        while len(self._counters) > 200:
+            self._counters.popitem(last=False)
         return rid, n
 
     def _log_req(
@@ -270,11 +263,14 @@ class LoggingModel:
             yield _TimedStreamProxy(stream, lambda t: t_first.__setitem__(0, t))
 
         total_ms = int((time.perf_counter() - t_start) * 1000)
-        ttft_ms = int((t_first[0] - t_start) * 1000) if t_first[0] else None
+        ttft_ms = int((t_first[0] - t_start) * 1000) if t_first[0] is not None else None
         try:
             response = stream.get()
-            usage = stream._usage
+            usage = stream.usage
         except Exception:
+            get_llm_logger().debug(
+                "llm_logger: post-stream state read failed", exc_info=True
+            )
             response = None
             usage = None
         self._log_res(rid, call_n, total_ms, ttft_ms, response, usage)

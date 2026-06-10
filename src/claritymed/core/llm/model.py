@@ -56,7 +56,7 @@ def build_model(provider: ProviderConfig) -> "Model":
             provider=OllamaProvider(base_url=provider.base_url, api_key=api_key),
         )
 
-    if os.environ.get("CLARITYMED_DEBUG"):
+    if os.environ.get("CLARITYMED_DEBUG") == "1":
         from claritymed.core.observability.llm_logger import LoggingModel
 
         return LoggingModel(model)
