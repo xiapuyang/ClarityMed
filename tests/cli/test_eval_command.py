@@ -65,7 +65,7 @@ def test_eval_run_invokes_runner_with_task_id(tmp_path, monkeypatch):
             return _stub_run_result(tmp_path, task_id)
 
     monkeypatch.setattr(
-        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
+        "claritymed.cli.commands.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
     result = runner.invoke(
         app, ["eval", "run", "medqa", "--provider", "ollama", "--limit", "5"]
@@ -85,7 +85,7 @@ def test_eval_run_forwards_arbitrary_task_id(tmp_path, monkeypatch):
             return _stub_run_result(tmp_path, task_id)
 
     monkeypatch.setattr(
-        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
+        "claritymed.cli.commands.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
     result = runner.invoke(
         app, ["eval", "run", "cmb_exam", "--provider", "ollama", "--limit", "1"]
@@ -117,10 +117,10 @@ def test_eval_run_omits_provider_auto_picks_reachable(tmp_path, monkeypatch):
         }
     )
     monkeypatch.setattr(
-        "claritymed.cli.eval.pick_reachable_provider", lambda: fake_provider
+        "claritymed.cli.commands.eval.pick_reachable_provider", lambda: fake_provider
     )
     monkeypatch.setattr(
-        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
+        "claritymed.cli.commands.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
     result = runner.invoke(app, ["eval", "run", "medqa", "--limit", "1"])
     assert result.exit_code == 0, result.stdout
@@ -139,9 +139,11 @@ def test_eval_run_omits_provider_falls_back_to_catalog_default(tmp_path, monkeyp
             captured["provider_id"] = provider.id
             return _stub_run_result(tmp_path)
 
-    monkeypatch.setattr("claritymed.cli.eval.pick_reachable_provider", lambda: None)
     monkeypatch.setattr(
-        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
+        "claritymed.cli.commands.eval.pick_reachable_provider", lambda: None
+    )
+    monkeypatch.setattr(
+        "claritymed.cli.commands.eval.LmEvalRunner", lambda *a, **kw: _StubRunner()
     )
     result = runner.invoke(app, ["eval", "run", "medqa", "--limit", "1"])
     assert result.exit_code == 0, result.stdout
@@ -173,7 +175,7 @@ def test_with_rag_swaps_adapter_and_tags_output(tmp_path, monkeypatch):
         captured["run_tag"] = kwargs.get("run_tag")
         return _StubRunner()
 
-    monkeypatch.setattr("claritymed.cli.eval.LmEvalRunner", _record_factory)
+    monkeypatch.setattr("claritymed.cli.commands.eval.LmEvalRunner", _record_factory)
     # Block real adapter construction inside the factory closure so
     # invoking it (test below) doesn't touch the model layer.
     monkeypatch.setattr(
@@ -222,7 +224,7 @@ def test_with_rag_rag_mode_tool_passed_through(tmp_path, monkeypatch):
         captured["lm_factory"] = kwargs.get("lm_factory")
         return _StubRunner()
 
-    monkeypatch.setattr("claritymed.cli.eval.LmEvalRunner", _record_factory)
+    monkeypatch.setattr("claritymed.cli.commands.eval.LmEvalRunner", _record_factory)
     monkeypatch.setattr(
         "claritymed.evals.lm.rag.ClaritymedRagLM._build_service",
         lambda self: None,
@@ -268,7 +270,7 @@ def test_invalid_rag_mode_rejected(tmp_path, monkeypatch):
             raise AssertionError("runner should not be invoked on bad rag-mode")
 
     monkeypatch.setattr(
-        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _Should_Not_Run()
+        "claritymed.cli.commands.eval.LmEvalRunner", lambda *a, **kw: _Should_Not_Run()
     )
     result = runner.invoke(
         app,
@@ -300,7 +302,7 @@ def test_unknown_provider_exits_two(monkeypatch):
             raise AssertionError("runner should not be invoked")
 
     monkeypatch.setattr(
-        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _Should_Not_Run()
+        "claritymed.cli.commands.eval.LmEvalRunner", lambda *a, **kw: _Should_Not_Run()
     )
     result = runner.invoke(
         app,

@@ -19,7 +19,7 @@ Design notes:
   Each eval question is a fresh turn.
 * ``user_id="eval"`` — synthetic, never a real account. Matches the
   CLI's ``inject_context(user_id="eval", ...)`` wrapping in
-  ``cli/eval.py``. ``AskService`` doesn't enforce a user_exists check,
+  ``cli/commands/eval.py``. ``AskService`` doesn't enforce a user_exists check,
   so this stays clean.
 * Sync interface: lm-eval-harness is synchronous; ``AskService.run`` is
   an async generator. Each request wraps the drain in ``asyncio.run``.

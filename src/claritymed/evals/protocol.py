@@ -2,7 +2,7 @@
 
 ``LmEvalRunner`` (Phase 1) implements this protocol over lm-evaluation-
 harness; a future RAG-only comparison runner (Phase 2) will too. Pinning
-the shape early means the CLI dispatch in ``cli/eval.py`` can swap
+the shape early means the CLI dispatch in ``cli/commands/eval.py`` can swap
 runners without conditional branches.
 """
 

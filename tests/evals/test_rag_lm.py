@@ -261,7 +261,7 @@ def test_loglikelihood_rolling_raises_not_implemented(monkeypatch):
 
 def test_service_called_with_synthetic_eval_user_id(monkeypatch):
     """Every eval request goes through ``user_id="eval"`` — the
-    inject_context wrap in cli/eval.py picks this up for audit rows
+    inject_context wrap in cli/commands/eval.py picks this up for audit rows
     and Phoenix span baggage."""
     script = [[Done(final="")]]
     lm, stub = _make_lm(monkeypatch, script)

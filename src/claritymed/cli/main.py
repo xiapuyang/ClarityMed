@@ -67,7 +67,7 @@ app.add_typer(audit_app, name="audit")
 # extra; a missing extra prints a remediation hint at first invocation.
 _eval_import_error: str | None = None
 try:
-    from claritymed.cli.eval import eval_app
+    from claritymed.cli.commands.eval import eval_app
 
     app.add_typer(eval_app, name="eval")
 except ImportError as _exc:  # pragma: no cover — install-time gate
