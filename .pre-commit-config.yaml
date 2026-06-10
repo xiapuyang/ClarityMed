@@ -14,6 +14,11 @@ repos:
       - id: debug-statements
       - id: check-json
       - id: check-yaml
+        # ``--unsafe`` accepts (without constructing) custom YAML tags
+        # so lm-eval-harness task YAMLs like ``cmb_exam.yaml`` — which
+        # use ``!function utils_cmb_exam.process_docs`` — still parse
+        # for syntax checking without the hook trying to resolve them.
+        args: [--unsafe]
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.4
