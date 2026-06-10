@@ -74,60 +74,95 @@ def test_provider_id_and_model_name_exposed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Truncation
+# gen_kwargs → ModelSettings forwarding
 # ---------------------------------------------------------------------------
 
 
-def test_until_substring_truncates_completion(monkeypatch):
-    _patch_model(monkeypatch, output_text="Answer: B\nExplanation: ...")
+def test_full_completion_returned_verbatim_no_client_truncation(monkeypatch):
+    """Reasoning models emit thinking + answer in one content blob. The
+    adapter must NOT truncate — the downstream filter pulls the answer
+    out of the trailing portion."""
+    long_text = (
+        "First the model thinks: option A is interesting, option B too. "
+        "After analysis, Answer: C"
+    )
+    _patch_model(monkeypatch, output_text=long_text)
     lm = ClaritymedBaselineLM(_provider())
 
     out = lm.generate_until(
-        [_instance("Q?", gen_kwargs={"until": ["\n"], "max_gen_toks": 32})]
+        [_instance("Q?", gen_kwargs={"max_gen_toks": 2048, "temperature": 0})]
     )
-    assert out == ["Answer: B"]
+    assert out == [long_text]
 
 
-def test_max_gen_toks_caps_completion(monkeypatch):
-    # 100 chars of A. max_gen_toks=2 ⇒ char_cap = 2 * 4 = 8.
-    _patch_model(monkeypatch, output_text="A" * 100)
+def test_gen_kwargs_forwarded_via_model_settings(monkeypatch):
+    """``max_gen_toks`` / ``until`` / ``temperature`` go to the wire so the
+    API enforces the cap, instead of us truncating after generation."""
+    captured: dict = {}
+
+    class _Recorder:
+        def run_sync(self, ctx, *, model_settings=None, **_):
+            captured["settings"] = model_settings
+
+            class _R:
+                output = "A"
+
+            return _R()
+
+    monkeypatch.setattr(
+        "claritymed.evals.lm.baseline.build_model",
+        lambda _p: TestModel(custom_output_text="placeholder"),
+    )
+    monkeypatch.setattr(
+        "claritymed.evals.lm.baseline.Agent", lambda *_a, **_kw: _Recorder()
+    )
+
     lm = ClaritymedBaselineLM(_provider())
-
-    out = lm.generate_until(
-        [_instance("Q?", gen_kwargs={"max_gen_toks": 2, "until": []})]
+    lm.generate_until(
+        [
+            _instance(
+                "Q?",
+                gen_kwargs={
+                    "max_gen_toks": 2048,
+                    "until": ["\n\n"],
+                    "temperature": 0,
+                },
+            )
+        ]
     )
-    assert out == ["A" * 8]
+    settings = captured["settings"]
+    assert settings is not None
+    assert settings.get("max_tokens") == 2048
+    assert settings.get("stop_sequences") == ["\n\n"]
+    assert settings.get("temperature") == 0.0
 
 
-def test_until_empty_no_truncation_applied(monkeypatch):
-    _patch_model(monkeypatch, output_text="abc")
+def test_no_gen_kwargs_means_no_model_settings(monkeypatch):
+    """When the task supplies nothing, the agent runs with its default."""
+    captured: dict = {}
+
+    class _Recorder:
+        def run_sync(self, ctx, *, model_settings=None, **_):
+            captured["settings"] = model_settings
+
+            class _R:
+                output = "A"
+
+            return _R()
+
+    monkeypatch.setattr(
+        "claritymed.evals.lm.baseline.build_model",
+        lambda _p: TestModel(custom_output_text="placeholder"),
+    )
+    monkeypatch.setattr(
+        "claritymed.evals.lm.baseline.Agent", lambda *_a, **_kw: _Recorder()
+    )
+
     lm = ClaritymedBaselineLM(_provider())
-
-    out = lm.generate_until(
-        [_instance("Q?", gen_kwargs={"until": [], "max_gen_toks": 128})]
-    )
-    assert out == ["abc"]
-
-
-def test_until_accepts_single_string(monkeypatch):
-    _patch_model(monkeypatch, output_text="A\nB")
-    lm = ClaritymedBaselineLM(_provider())
-
-    out = lm.generate_until(
-        [_instance("Q?", gen_kwargs={"until": "\n", "max_gen_toks": 32})]
-    )
-    assert out == ["A"]
-
-
-def test_first_until_match_wins(monkeypatch):
-    _patch_model(monkeypatch, output_text="Answer: A\n\nMore text")
-    lm = ClaritymedBaselineLM(_provider())
-
-    out = lm.generate_until(
-        [_instance("Q?", gen_kwargs={"until": ["\n\n", "\n"], "max_gen_toks": 64})]
-    )
-    # Either stop works; both produce "Answer: A" because \n is hit first.
-    assert out == ["Answer: A"]
+    lm.generate_until([_instance("Q?", gen_kwargs={})])
+    # Adapter passes no model_settings kwarg → recorder's default None
+    # (i.e. the agent's own default settings would apply at runtime).
+    assert captured["settings"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -160,13 +195,97 @@ def test_empty_completion(monkeypatch):
     assert out == [""]
 
 
-def test_default_max_gen_toks_when_absent(monkeypatch):
+def test_completion_returned_verbatim_regardless_of_length(monkeypatch):
+    """No client-side cap — the API-level ``max_tokens`` is what bounds
+    generation. Whatever the agent returns lands in the output."""
     _patch_model(monkeypatch, output_text="x" * 50)
     lm = ClaritymedBaselineLM(_provider())
 
-    out = lm.generate_until([_instance("Q?", gen_kwargs={"until": []})])
-    # No truncation because default 256 * 4 = 1024 chars > 50.
+    out = lm.generate_until([_instance("Q?", gen_kwargs={})])
     assert out == ["x" * 50]
+
+
+def test_adapter_passes_strict_mcqa_instructions_by_default(monkeypatch):
+    """The default system instruction tells compliant models to reply
+    with just a letter — strongest signal short of training."""
+    captured: dict = {}
+
+    def _record_agent(*args, **kwargs):
+        captured["instructions"] = kwargs.get("instructions")
+
+        class _R:
+            output = "A"
+
+        class _Fake:
+            def run_sync(self, *_a, **_kw):
+                return _R()
+
+        return _Fake()
+
+    monkeypatch.setattr(
+        "claritymed.evals.lm.baseline.build_model",
+        lambda _p: TestModel(custom_output_text="placeholder"),
+    )
+    monkeypatch.setattr("claritymed.evals.lm.baseline.Agent", _record_agent)
+
+    ClaritymedBaselineLM(_provider())
+    assert captured["instructions"] is not None
+    assert "single capital letter" in captured["instructions"].lower() or (
+        "single letter" in captured["instructions"].lower()
+    )
+
+
+def test_adapter_accepts_custom_instructions(monkeypatch):
+    """Phase 3 task YAMLs may use yes/no/maybe (PubMedQA) instead of A-D —
+    callers override the instruction without subclassing."""
+    captured: dict = {}
+
+    def _record_agent(*args, **kwargs):
+        captured["instructions"] = kwargs.get("instructions")
+
+        class _Fake:
+            def run_sync(self, *_a, **_kw):
+                class _R:
+                    output = "yes"
+
+                return _R()
+
+        return _Fake()
+
+    monkeypatch.setattr(
+        "claritymed.evals.lm.baseline.build_model",
+        lambda _p: TestModel(custom_output_text="placeholder"),
+    )
+    monkeypatch.setattr("claritymed.evals.lm.baseline.Agent", _record_agent)
+
+    ClaritymedBaselineLM(_provider(), instructions="Reply with yes, no, or maybe.")
+    assert captured["instructions"] == "Reply with yes, no, or maybe."
+
+
+def test_adapter_accepts_no_instructions(monkeypatch):
+    """``instructions=None`` runs the model without any system message."""
+    captured: dict = {}
+
+    def _record_agent(*args, **kwargs):
+        captured["instructions"] = kwargs.get("instructions")
+
+        class _Fake:
+            def run_sync(self, *_a, **_kw):
+                class _R:
+                    output = "X"
+
+                return _R()
+
+        return _Fake()
+
+    monkeypatch.setattr(
+        "claritymed.evals.lm.baseline.build_model",
+        lambda _p: TestModel(custom_output_text="placeholder"),
+    )
+    monkeypatch.setattr("claritymed.evals.lm.baseline.Agent", _record_agent)
+
+    ClaritymedBaselineLM(_provider(), instructions=None)
+    assert captured["instructions"] is None
 
 
 def test_missing_gen_kwargs_falls_back_to_defaults(monkeypatch):

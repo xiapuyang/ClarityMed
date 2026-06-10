@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from lm_eval.api.model import LM
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings
 
 from claritymed.core.llm.model import build_model
 
@@ -35,27 +36,43 @@ if TYPE_CHECKING:
 
     from claritymed.core.schemas import ProviderConfig
 
-# Rough char-per-token approximation used to enforce ``max_gen_toks`` at
-# the string layer. We don't tokenize at the adapter — for MCQA the
-# downstream regex filter only needs the first letter, so being a little
-# generous on the upper bound is harmless. Used only when ``max_gen_toks``
-# is provided in ``gen_kwargs``.
-_CHARS_PER_TOKEN_ESTIMATE = 4
-
 # Default ``max_gen_toks`` when the task YAML doesn't specify. Matches
-# lm-eval-harness's own default — high enough not to cut off an answer,
-# low enough to keep runaway responses bounded.
+# lm-eval-harness's own default — high enough not to cut off an answer
+# from a reasoning model, low enough to keep runaway responses bounded.
 _DEFAULT_MAX_GEN_TOKS = 256
+
+# Default system instruction for MCQA tasks. Forwarded as ``instructions``
+# on the pydantic-ai Agent, which puts it in the conversation's system
+# role — far stronger than burying the same hint inside the user prompt
+# (the task YAML's ``doc_to_text`` ends with "Answer:" but compliant
+# models still wrote 9-KB essays when this layer was missing). Callers
+# override per-task; the filter is what we trust for correctness, this
+# is just the politeness layer.
+_DEFAULT_INSTRUCTIONS = (
+    "You are taking a multiple-choice exam. For each question, reply "
+    "with the single capital letter (A, B, C, or D) of the correct "
+    "answer and nothing else. No explanation, no reasoning, no "
+    "restatement of the question."
+)
 
 
 class ClaritymedBaselineLM(LM):
     """Bare-model adapter: pydantic-ai Agent in, lm-eval LM out."""
 
-    def __init__(self, provider: "ProviderConfig") -> None:
+    def __init__(
+        self,
+        provider: "ProviderConfig",
+        *,
+        instructions: str | None = _DEFAULT_INSTRUCTIONS,
+    ) -> None:
         super().__init__()
         self.provider_id = provider.id
         self.model_name = provider.model
-        self._agent: Agent = Agent(build_model(provider), output_type=str)
+        self._agent: Agent = Agent(
+            build_model(provider),
+            output_type=str,
+            instructions=instructions,
+        )
         # Per-request wall-clock latency in milliseconds, one entry per
         # ``generate_until`` request in call order. Drained by the runner.
         self.latencies_ms: list[float] = []
@@ -69,24 +86,53 @@ class ClaritymedBaselineLM(LM):
     # ------------------------------------------------------------------
 
     def generate_until(self, requests: list["Instance"]) -> list[str]:
-        """Score each request by calling the agent and truncating the reply."""
+        """Score each request by calling the agent and forwarding gen_kwargs.
+
+        The full agent response is returned verbatim — reasoning models
+        produce thinking + answer in one content blob, and the downstream
+        ``filter_list`` regex is responsible for pulling the answer out.
+        Truncating client-side would lose the trailing "Answer: X" that
+        the filter needs.
+        """
         completions: list[str] = []
         for req in requests:
             context, gen_kwargs = self._unpack(req)
-            until = self._normalize_until(gen_kwargs.get("until"))
-            max_gen_toks = int(gen_kwargs.get("max_gen_toks", _DEFAULT_MAX_GEN_TOKS))
+            settings = self._build_settings(gen_kwargs)
 
             t0 = time.perf_counter_ns()
             try:
-                text = self._call_agent(context)
+                text = self._call_agent(context, settings)
             finally:
                 elapsed_ms = (time.perf_counter_ns() - t0) / 1_000_000
                 self.latencies_ms.append(elapsed_ms)
                 if req.doc_id is not None:
                     self.latencies_ms_by_doc_id[req.doc_id] = elapsed_ms
 
-            completions.append(self._truncate(text, until, max_gen_toks))
+            completions.append(text)
         return completions
+
+    @staticmethod
+    def _build_settings(gen_kwargs: dict) -> ModelSettings | None:
+        """Translate task YAML ``generation_kwargs`` into pydantic-ai settings.
+
+        Forwarding ``max_gen_toks`` / ``until`` / ``temperature`` to the wire
+        is what lets the API enforce the cap, instead of us truncating the
+        response after the model already spent latency generating it. Returns
+        ``None`` when there's nothing to override.
+        """
+        max_gen_toks = gen_kwargs.get("max_gen_toks")
+        until = ClaritymedBaselineLM._normalize_until(gen_kwargs.get("until"))
+        temperature = gen_kwargs.get("temperature")
+
+        kwargs: dict = {}
+        if max_gen_toks is not None:
+            kwargs["max_tokens"] = int(max_gen_toks)
+        if until:
+            kwargs["stop_sequences"] = until
+        if temperature is not None:
+            kwargs["temperature"] = float(temperature)
+
+        return ModelSettings(**kwargs) if kwargs else None
 
     # ------------------------------------------------------------------
     # Unsupported request types — fail loud, not silently.
@@ -110,9 +156,12 @@ class ClaritymedBaselineLM(LM):
     # Internals.
     # ------------------------------------------------------------------
 
-    def _call_agent(self, context: str) -> str:
+    def _call_agent(self, context: str, settings: ModelSettings | None) -> str:
         """Run the agent on a single context, returning the raw completion."""
-        result = self._agent.run_sync(context)
+        if settings is None:
+            result = self._agent.run_sync(context)
+        else:
+            result = self._agent.run_sync(context, model_settings=settings)
         return str(result.output)
 
     @staticmethod
@@ -135,19 +184,3 @@ class ClaritymedBaselineLM(LM):
         if isinstance(raw, str):
             return [raw]
         return [str(s) for s in raw if s]
-
-    @staticmethod
-    def _truncate(text: str, until: list[str], max_gen_toks: int) -> str:
-        """Apply ``until`` substrings then a max-token char cap.
-
-        The lm-eval harness expects the LM to honor the task's ``until``
-        sequences itself (the harness doesn't post-process). Cap with the
-        char-per-token approximation as a safety net — task YAMLs set
-        ``max_gen_toks: 8`` for letter answers, so this stays tight.
-        """
-        for stop in until:
-            idx = text.find(stop)
-            if idx != -1:
-                text = text[:idx]
-        char_cap = max(1, max_gen_toks * _CHARS_PER_TOKEN_ESTIMATE)
-        return text[:char_cap]

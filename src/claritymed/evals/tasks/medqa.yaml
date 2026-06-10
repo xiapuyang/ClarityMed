@@ -36,22 +36,27 @@ doc_to_text: |-
 doc_to_target: '{{ ["A", "B", "C", "D"][label] }}'
 
 generation_kwargs:
-  until:
-    - "\n\n"
-    - "\n"
-  max_gen_toks: 8
+  # No ``until`` — reasoning-tuned models (Qwen3, o1, etc.) need to write
+  # their analysis before concluding. A ``\n`` stop would cut off mid-
+  # thought. The filter below pulls the answer out of the final line.
+  max_gen_toks: 2048
   temperature: 0
   do_sample: false
 
 filter_list:
-  # \b on both sides keeps the regex from matching letters embedded in
-  # words ('A' in 'Answer', 'a' in 'idea'). First match wins — chatty
-  # completions like "between A and C, probably C" extract 'A'; the plan
-  # accepts this false-positive rate for the v1 zero-shot baseline.
+  # Two-layer extraction:
+  #   1. Strict — prefer the *last* "Answer: X" / "answer is X" / "(X)"
+  #      anchor in the completion. ``group_select: -1`` picks the LAST
+  #      match so reasoning text that mentions options earlier ("option
+  #      A then C") doesn't poison the result; the model's final answer
+  #      always lands later than its analysis.
+  #   2. Flexible — if no "Answer:" anchor exists, take the last bare
+  #      A-D word in the completion. Same group_select: -1 logic.
   - name: extract_letter
     filter:
       - function: regex
-        regex_pattern: '(?i)\b([A-D])\b'
+        regex_pattern: '(?i)(?:answer(?:\s+is)?[:\s]*\(?([A-D])\)?|\(([A-D])\)|(?<!\w)([A-D])(?!\w))'
+        group_select: -1
       - function: take_first
 
 metric_list:

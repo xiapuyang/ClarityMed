@@ -72,12 +72,17 @@ def test_task_manager_loads_medqa(medqa_task):
 
 def test_generation_kwargs_pinned_for_letter_answer(medqa_yaml):
     gen = medqa_yaml["generation_kwargs"]
-    assert gen["max_gen_toks"] == 8
+    assert gen["max_gen_toks"] >= 256, (
+        "headroom needed for reasoning models that think before answering"
+    )
     assert gen["temperature"] == 0
     assert gen["do_sample"] is False
-    # ``until`` stops at the first newline so the model can't ramble past
-    # the letter.
-    assert "\n" in gen["until"]
+    # No ``until`` — a \n stop would cut reasoning models mid-thought,
+    # and the filter pulls the answer out of the trailing line anyway.
+    assert "until" not in gen, (
+        "drop `until` so reasoning headroom is real; "
+        "the filter handles answer extraction"
+    )
 
 
 def test_filter_list_extracts_letter(medqa_yaml):
@@ -157,14 +162,32 @@ def _apply(filt: FilterEnsemble, completion: str) -> str:
 @pytest.mark.parametrize(
     ("completion", "expected"),
     [
+        # Compliant single-letter replies — the system instruction's
+        # happy path.
+        ("B", "B"),
+        ("D", "D"),
+        ("a", "a"),
+        # Explicit "Answer: X" suffixes — anchored regex prefers these.
         ("Answer: B", "B"),
         ("The answer is C.", "C"),
-        ("D", "D"),
-        ("a", "a"),  # lowercase honored by regex; exact_match ignore_case in YAML
-        ("I think it's between A and C, probably C", "A"),  # first-match policy
+        # Reasoning models that ramble before concluding — last "Answer:"
+        # wins. This is the case that motivated the rewrite.
+        (
+            "Option A is wrong because... Option B explores... "
+            "After analysis, Answer: C",
+            "C",
+        ),
+        # Even when reasoning mentions a different letter in passing,
+        # the final "Answer: X" wins.
+        (
+            "I considered A and then C, but actually Answer: D",
+            "D",
+        ),
+        # Parenthesized final answer ("the answer is (B)") — covered.
+        ("Therefore the answer is (B)", "B"),
     ],
 )
-def test_filter_extracts_first_letter(medqa_yaml, completion, expected):
+def test_filter_prefers_trailing_answer(medqa_yaml, completion, expected):
     filt = _build_extract_letter_filter(medqa_yaml)
     assert _apply(filt, completion) == expected
 
