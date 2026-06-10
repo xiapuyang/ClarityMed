@@ -470,7 +470,9 @@ class ClarityMedApp(App):
             )
             access.info("tui_turn_start mode=%s", mode)
             try:
-                events = self._make_service_stream(mode, text, status.user_id, public)
+                events = await self._make_service_stream(
+                    mode, text, status.user_id, public
+                )
             except Exception as exc:  # noqa: BLE001
                 request_status = "init_error"
                 conv.add_error_turn(f"service init failed: {exc}")
@@ -634,7 +636,7 @@ class ClarityMedApp(App):
 
         self.set_timer(ROUTING_FLASH_SECONDS, _clear)
 
-    def _make_service_stream(
+    async def _make_service_stream(
         self,
         mode: ModeName,
         text: str,
@@ -642,7 +644,7 @@ class ClarityMedApp(App):
         public: bool,
     ):
         if mode == "ask":
-            service = self._build_ask_service()
+            service = await self._build_ask_service()
             return service.run(text, user_id=user_id)
         if mode == "ingest":
             service = (
@@ -659,7 +661,7 @@ class ClarityMedApp(App):
         )
         return service.run(text, user_id=user_id, public=public)
 
-    def _build_ask_service(self) -> "AskService":
+    async def _build_ask_service(self) -> "AskService":
         if self._ask_service_factory is not None:
             return self._ask_service_factory()
         # Return the cached service when the provider hasn't changed, updating
@@ -673,13 +675,18 @@ class ClarityMedApp(App):
             self._cached_ask_service._language = self.query_one(StatusBar).language
             return self._cached_ask_service
         # First turn or after a provider/user switch — build from scratch.
+        # _strategy_for_session acquires a threading.Lock (the warm-up worker
+        # may still hold it); running it in a thread executor keeps the asyncio
+        # event loop free while we wait, so the UI stays responsive.
+        import asyncio
+
         from claritymed.core.llm.model import build_model
         from claritymed.orchestrator.services import AskService
         from claritymed.stores.models import resolve_provider
 
         provider = resolve_provider(override=self._current_provider_id)
         model = build_model(provider)
-        strategy = self._strategy_for_session(model=model)
+        strategy = await asyncio.to_thread(self._strategy_for_session, model=model)
         if self._chat_session is None:
             self._chat_session = ChatSession.new(self._current_user_id)
         from claritymed.core.rag import load_retrieval_config
