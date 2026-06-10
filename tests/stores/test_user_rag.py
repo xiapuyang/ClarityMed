@@ -9,7 +9,6 @@ list.
 from __future__ import annotations
 
 import hashlib
-import importlib
 
 import pytest
 from qdrant_client import AsyncQdrantClient
@@ -78,17 +77,18 @@ def _uuid_for(seed: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
-@pytest.fixture
-def store() -> UserRagStore:
-    # Make sure config picks up the per-test tmp HOME.
-    from claritymed import config as _cfg
+@pytest.fixture(scope="module")
+def _phi_guard() -> PhiGuard:
+    return PhiGuard.from_config()
 
-    importlib.reload(_cfg)
+
+@pytest.fixture
+def store(_phi_guard: PhiGuard) -> UserRagStore:
     return UserRagStore(
         aclient=AsyncQdrantClient(":memory:"),
         embedder=StubEmbedder(),
         chunker=StubChunker(),
-        guard=PhiGuard.from_config(),
+        guard=_phi_guard,
     )
 
 

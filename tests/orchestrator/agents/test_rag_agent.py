@@ -63,13 +63,18 @@ class _StubChunker:
         return ChunkedDocument(parents=[parent], children=[child])
 
 
+@pytest.fixture(scope="module")
+def _phi_guard() -> PhiGuard:
+    return PhiGuard.from_config()
+
+
 @pytest.fixture
-def store() -> UserRagStore:
+def store(_phi_guard: PhiGuard) -> UserRagStore:
     return UserRagStore(
         aclient=AsyncQdrantClient(":memory:"),
         embedder=_StubEmbedder(),
         chunker=_StubChunker(),
-        guard=PhiGuard.from_config(),
+        guard=_phi_guard,
     )
 
 

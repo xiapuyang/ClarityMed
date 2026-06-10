@@ -66,13 +66,18 @@ class _StubChunker:
         return ChunkedDocument(parents=[parent], children=[child])
 
 
+@pytest.fixture(scope="module")
+def _phi_guard() -> PhiGuard:
+    return PhiGuard.from_config()
+
+
 @pytest.fixture
-def rag_store():
+def rag_store(_phi_guard: PhiGuard):
     return UserRagStore(
         aclient=AsyncQdrantClient(":memory:"),
         embedder=_StubEmbedder(),
         chunker=_StubChunker(),
-        guard=PhiGuard.from_config(),
+        guard=_phi_guard,
     )
 
 
@@ -362,7 +367,7 @@ async def test_ask_service_audit_picks_up_trace_id_when_tracing_active(monkeypat
     )
 
 
-async def test_ask_service_phi_scrub_before_llm(monkeypatch):
+async def test_ask_service_phi_scrub_before_llm(monkeypatch, _phi_guard: PhiGuard):
     """Verify scrub_free_text is called for cloud providers before the LLM.
 
     Local providers skip the scrub (data stays on device); cloud providers
@@ -370,7 +375,7 @@ async def test_ask_service_phi_scrub_before_llm(monkeypatch):
     """
     from claritymed.core.schemas.models import ProviderConfig
 
-    guard = PhiGuard.from_config()
+    guard = _phi_guard
     captured: list[str] = []
     original = guard.scrub_free_text
 
@@ -398,9 +403,9 @@ async def test_ask_service_phi_scrub_before_llm(monkeypatch):
     assert "13800138000" in captured[0], "scrub must see the raw input"
 
 
-async def test_ask_service_local_skips_phi_scrub(monkeypatch):
+async def test_ask_service_local_skips_phi_scrub(monkeypatch, _phi_guard: PhiGuard):
     """Local providers must NOT call scrub_free_text — data never leaves device."""
-    guard = PhiGuard.from_config()
+    guard = _phi_guard
     captured: list[str] = []
     original = guard.scrub_free_text
 

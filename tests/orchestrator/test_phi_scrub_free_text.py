@@ -6,20 +6,14 @@ email, ID, MRN, etc. NER pass is hook-only in v1 and skipped here.
 
 from __future__ import annotations
 
-import importlib
-
 import pytest
 
 from claritymed.core.phi.guard import PhiGuard
 from claritymed.core.scrub.service import ScrubReport
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def guard():
-    # Reload config to pick up safety.yaml additions in tests run after edits.
-    from claritymed import config as _cfg
-
-    importlib.reload(_cfg)
     return PhiGuard.from_config()
 
 
