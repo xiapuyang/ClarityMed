@@ -20,6 +20,7 @@ so the runner expects to be invoked from within an active context.
 from __future__ import annotations
 
 import json
+import os
 import time
 import traceback
 from dataclasses import asdict
@@ -137,6 +138,13 @@ class LmEvalRunner:
         limit: int | None,
     ) -> dict[str, Any]:
         """Wrap ``lm_eval.simple_evaluate`` with our project-local TaskManager."""
+        # lm-eval transitively imports transformers, which emits a "None of
+        # PyTorch, TensorFlow >= 2.0, or Flax have been found" advisory on
+        # import when no ML backend is installed. We don't need one — the
+        # eval path talks to the configured provider via pydantic-ai, never
+        # loads weights in-process. The advisory respects this env var.
+        os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+
         from lm_eval import simple_evaluate
         from lm_eval.tasks import TaskManager
 
