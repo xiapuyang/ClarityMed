@@ -66,10 +66,31 @@ def eval_medqa(
         "the bare model. Output filename gets a _with-rag suffix so "
         "`eval delta` can pair the runs.",
     ),
+    rag_mode: str = typer.Option(
+        "deterministic",
+        "--rag-mode",
+        case_sensitive=False,
+        help=(
+            "RAG mode used by --with-rag. 'deterministic' forces retrieval "
+            "on every question (correct default for measuring retrieval "
+            "value on MCQA). 'tool' hands the retrieval decision to the "
+            "LLM (production agent behaviour; on short MCQA prompts the "
+            "tool fires <30% of the time, collapsing the delta signal). "
+            "Ignored without --with-rag."
+        ),
+    ),
 ) -> None:
     """Score the configured provider on MedQA-USMLE (4-option English MCQA)."""
     arm = "with-rag" if with_rag else "baseline"
-    command_label = f"eval.medqa provider={provider_id or 'default'} arm={arm}"
+    if with_rag and rag_mode not in {"deterministic", "tool"}:
+        raise typer.Exit(
+            _emit_error(
+                f"--rag-mode must be 'deterministic' or 'tool', got {rag_mode!r}."
+            )
+        )
+    command_label = f"eval.medqa provider={provider_id or 'default'} arm={arm}" + (
+        f" rag_mode={rag_mode}" if with_rag else ""
+    )
     with inject_context(
         user_id="eval",
         language="en",
@@ -78,7 +99,7 @@ def eval_medqa(
         provider = _resolve_for_eval(provider_id)
         if with_rag:
             runner = LmEvalRunner(
-                lm_factory=ClaritymedRagLM,
+                lm_factory=lambda p: ClaritymedRagLM(p, rag_mode=rag_mode),
                 run_tag="with-rag",
             )
         else:

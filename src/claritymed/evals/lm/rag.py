@@ -41,6 +41,7 @@ from tqdm.auto import tqdm
 
 from claritymed.core.events import Done, Error, TokenChunk
 from claritymed.core.llm.model import build_model
+from claritymed.core.observability.audit import audit_event
 
 if TYPE_CHECKING:
     from lm_eval.api.instance import Instance
@@ -54,6 +55,28 @@ if TYPE_CHECKING:
 # Phoenix span baggage stay consistent across the run.
 _EVAL_USER_ID = "eval"
 
+# Per-question wall-clock cap on the full RAG turn (retrieval + LLM
+# stream). MedQA empirical budget is ~5–15 s/q on a local 7–35B model;
+# 90 s is ~6× that, well past any healthy completion but tight enough
+# that one rabbit-holed reasoning chain can't sink a 50-q run. On
+# timeout the question scores wrong (empty completion → filter regex
+# misses → exact_match=0) and the loop moves on — losing one row beats
+# losing the whole batch.
+_DEFAULT_QUESTION_TIMEOUT_S = 90.0
+
+# Default RAG mode for eval runs. Deviates from configs/retrieval.yaml
+# on purpose: the project default ``tool`` mode hands the retrieval
+# decision to the LLM, which on MedQA-style MCQA prompts (short clinical
+# vignette + four labelled options + "Answer with one letter") almost
+# never fires — observed ~20% tool-call rate. That collapses the RAG
+# arm into ~baseline performance and produces a near-zero delta that
+# isn't a real signal. ``deterministic`` forces retrieval on every turn
+# so the comparison answers the *intended* question — "does prepending
+# retrieved evidence to the prompt help?" Tool-mode evaluation is still
+# possible by passing ``rag_mode="tool"`` (CLI: ``--rag-mode tool``)
+# when measuring agent behaviour rather than retrieval value.
+_DEFAULT_RAG_MODE = "deterministic"
+
 
 class ClaritymedRagLM(LM):
     """``AskService``-backed adapter: PHI guard + retrieval + LLM stream."""
@@ -64,6 +87,7 @@ class ClaritymedRagLM(LM):
         *,
         strategy: "RagStrategy | None" = None,
         rag_mode: str | None = None,
+        question_timeout_s: float = _DEFAULT_QUESTION_TIMEOUT_S,
     ) -> None:
         super().__init__()
         self.provider_id = provider.id
@@ -72,13 +96,18 @@ class ClaritymedRagLM(LM):
         self._strategy = (
             strategy if strategy is not None else _default_strategy(provider)
         )
-        self._rag_mode = rag_mode if rag_mode is not None else _default_rag_mode()
+        self._rag_mode = rag_mode if rag_mode is not None else _DEFAULT_RAG_MODE
+        self._question_timeout_s = question_timeout_s
         self._service = self._build_service()
         # Per-request wall-clock latency, in input order.
         self.latencies_ms: list[float] = []
         # Same data keyed by ``Instance.doc_id`` so the runner can
         # correlate latencies with samples even when ordering shifts.
         self.latencies_ms_by_doc_id: dict[int, float] = {}
+        # Index of every question that hit the per-question timeout,
+        # surfaced via the ``timed_out_doc_ids`` property so the runner
+        # / tests can flag them in JSONL or summary output.
+        self._timed_out_doc_ids: list[int] = []
 
     # ------------------------------------------------------------------
     # The only request type our task YAMLs use.
@@ -106,7 +135,7 @@ class ClaritymedRagLM(LM):
             context = self._unpack(req)
             t0 = time.perf_counter_ns()
             try:
-                text = asyncio.run(self._drain(context))
+                text = asyncio.run(self._drain(context, doc_id=req.doc_id))
             finally:
                 elapsed_ms = (time.perf_counter_ns() - t0) / 1_000_000
                 self.latencies_ms.append(elapsed_ms)
@@ -163,7 +192,44 @@ class ClaritymedRagLM(LM):
             rag_mode=self._rag_mode,
         )
 
-    async def _drain(self, question: str) -> str:
+    async def _drain(self, question: str, *, doc_id: int | None = None) -> str:
+        """Drain ``AskService.run`` with a per-question wall-clock cap.
+
+        ``asyncio.wait_for`` cancels the inner coroutine on timeout.
+        That cancel propagates ``CancelledError`` through
+        ``AskService``'s ``try/finally`` (ContextVar reset) and ``with
+        start_as_current_span`` (OTel detach) — and crucially does so
+        *inside the same Task/Context that entered them*, so neither
+        teardown raises the "Token was created in a different Context"
+        / "Failed to detach context" errors that hit when we let
+        ``asyncio.run`` shutdown finalize a half-consumed generator.
+
+        On timeout we return an empty string so the downstream
+        ``filter_list`` regex misses → ``exact_match=0`` → ``correct``
+        is recorded as ``False`` in JSONL. The audit row
+        ``eval.question.timeout`` makes the event greppable for
+        post-mortem.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._drain_inner(question),
+                timeout=self._question_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            if doc_id is not None:
+                self._timed_out_doc_ids.append(doc_id)
+            audit_event(
+                "eval.question.timeout",
+                payload={
+                    "provider_id": self.provider_id,
+                    "model_name": str(self.model_name),
+                    "timeout_s": self._question_timeout_s,
+                    "doc_id": doc_id,
+                },
+            )
+            return ""
+
+    async def _drain_inner(self, question: str) -> str:
         """Iterate the service event stream into a single string completion.
 
         Critical: never ``break`` or ``aclose`` the generator early.
@@ -178,18 +244,9 @@ class ClaritymedRagLM(LM):
           on exit.
 
         Both rely on the *exact* Context they entered in being current
-        at exit. If we inject ``GeneratorExit`` mid-yield (via
-        ``aclose`` from our outer ``asyncio.run`` loop), or worse, leak
-        the half-consumed generator to ``asyncio.run`` shutdown, the
-        cleanup runs in a different Context and the resets raise
-        ``ValueError: Token was created in a different Context`` (or
-        OTel logs "Failed to detach context"). Draining the generator
-        to its natural end lets every ``finally`` and ``__exit__`` run
-        in the right Context — no surgery in ``AskService`` required.
-
-        ``Done`` is the terminal event in practice; anything emitted
-        after it (extremely unlikely in current ``AskService``, but
-        possible if a future plugin adds trailing diagnostics) is
+        at exit. Draining to the generator's natural end lets every
+        ``finally`` and ``__exit__`` unwind cleanly. ``Done`` is the
+        terminal event in practice; anything emitted after it is
         discarded rather than appended so the completion text stays
         faithful to the model's answer.
         """
@@ -208,6 +265,11 @@ class ClaritymedRagLM(LM):
                 done = True
         return "".join(parts)
 
+    @property
+    def timed_out_doc_ids(self) -> list[int]:
+        """Doc ids that hit ``question_timeout_s``. Empty when none did."""
+        return list(self._timed_out_doc_ids)
+
     @staticmethod
     def _unpack(request: "Instance") -> str:
         """Extract the prompt context from a ``generate_until`` Instance."""
@@ -222,16 +284,6 @@ class ClaritymedRagLM(LM):
 # ---------------------------------------------------------------------------
 # Defaults — kept module-level so tests can monkeypatch independently.
 # ---------------------------------------------------------------------------
-
-
-def _default_rag_mode() -> str:
-    """Read ``rag.mode`` from ``configs/retrieval.yaml``; fall back to ``tool``."""
-    try:
-        from claritymed.core.rag.schemas import load_retrieval_config
-
-        return load_retrieval_config().rag.mode
-    except Exception:  # noqa: BLE001 — config-load failures are non-fatal here
-        return "tool"
 
 
 def _default_strategy(provider: "ProviderConfig"):

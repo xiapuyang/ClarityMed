@@ -131,8 +131,9 @@ def test_eval_medqa_omits_provider_falls_back_to_catalog_default(tmp_path, monke
 
 
 def test_with_rag_swaps_adapter_and_tags_output(tmp_path, monkeypatch):
-    """``--with-rag`` constructs the runner with ``ClaritymedRagLM`` and
-    ``run_tag="with-rag"`` so the JSONL filename is paired by ``eval delta``."""
+    """``--with-rag`` constructs the runner with a factory that yields a
+    ``ClaritymedRagLM`` and ``run_tag="with-rag"`` so the JSONL filename
+    is paired by ``eval delta``."""
     from claritymed.evals.lm.rag import ClaritymedRagLM
 
     captured: dict[str, Any] = {}
@@ -150,14 +151,117 @@ def test_with_rag_swaps_adapter_and_tags_output(tmp_path, monkeypatch):
         return _StubRunner()
 
     monkeypatch.setattr("claritymed.cli.eval.LmEvalRunner", _record_factory)
+    # Block real adapter construction inside the factory closure so
+    # invoking it (test below) doesn't touch the model layer.
+    monkeypatch.setattr(
+        "claritymed.evals.lm.rag.ClaritymedRagLM._build_service",
+        lambda self: None,
+    )
+    monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
     result = runner.invoke(
         app,
         ["eval", "medqa", "--provider", "ollama", "--with-rag", "--limit", "1"],
     )
     assert result.exit_code == 0, result.stdout
-    assert captured["lm_factory"] is ClaritymedRagLM
     assert captured["run_tag"] == "with-rag"
     assert captured["provider_id"] == "ollama"
+
+    # The factory should yield a ClaritymedRagLM with the default
+    # ``deterministic`` rag_mode — caller didn't pass --rag-mode.
+    from claritymed.core.schemas import ProviderConfig
+
+    fake = ProviderConfig.model_validate(
+        {
+            "id": "anything",
+            "kind": "local",
+            "model": "stub",
+            "base_url": "http://x/v1",
+        }
+    )
+    lm = captured["lm_factory"](fake)
+    assert isinstance(lm, ClaritymedRagLM)
+    assert lm._rag_mode == "deterministic"
+
+
+def test_with_rag_rag_mode_tool_passed_through(tmp_path, monkeypatch):
+    """``--rag-mode tool`` flows into ``ClaritymedRagLM(rag_mode="tool")``
+    so the operator can compare deterministic (always-retrieve) and
+    tool-mode (LLM-decides) RAG arms."""
+    from claritymed.evals.lm.rag import ClaritymedRagLM
+
+    captured: dict[str, Any] = {}
+
+    class _StubRunner:
+        def run(self, provider, task_id, limit):
+            return _stub_run_result(tmp_path)
+
+    def _record_factory(*args, **kwargs):
+        captured["lm_factory"] = kwargs.get("lm_factory")
+        return _StubRunner()
+
+    monkeypatch.setattr("claritymed.cli.eval.LmEvalRunner", _record_factory)
+    monkeypatch.setattr(
+        "claritymed.evals.lm.rag.ClaritymedRagLM._build_service",
+        lambda self: None,
+    )
+    monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "medqa",
+            "--provider",
+            "ollama",
+            "--with-rag",
+            "--rag-mode",
+            "tool",
+            "--limit",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    from claritymed.core.schemas import ProviderConfig
+
+    fake = ProviderConfig.model_validate(
+        {
+            "id": "anything",
+            "kind": "local",
+            "model": "stub",
+            "base_url": "http://x/v1",
+        }
+    )
+    lm = captured["lm_factory"](fake)
+    assert isinstance(lm, ClaritymedRagLM)
+    assert lm._rag_mode == "tool"
+
+
+def test_invalid_rag_mode_rejected(tmp_path, monkeypatch):
+    """``--rag-mode wonky`` exits non-zero with a clear error."""
+
+    class _Should_Not_Run:
+        def run(self, *a, **kw):
+            raise AssertionError("runner should not be invoked on bad rag-mode")
+
+    monkeypatch.setattr(
+        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _Should_Not_Run()
+    )
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "medqa",
+            "--provider",
+            "ollama",
+            "--with-rag",
+            "--rag-mode",
+            "wonky",
+            "--limit",
+            "1",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "rag-mode" in result.stdout or "rag-mode" in (result.stderr or "")
 
 
 # ---------------------------------------------------------------------------

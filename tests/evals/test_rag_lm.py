@@ -10,6 +10,7 @@ to these unit tests.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 
 import pytest
@@ -79,12 +80,8 @@ def _make_lm(
         "_build_service",
         lambda self: stub,
     )
-    # Defaults can read configs/retrieval.yaml; force stable values to
-    # keep tests hermetic.
-    monkeypatch.setattr(
-        "claritymed.evals.lm.rag._default_rag_mode",
-        lambda: "tool",
-    )
+    # ``_default_strategy`` reads configs/retrieval.yaml + builds a real
+    # hybrid retriever; stub to None for hermeticity.
     monkeypatch.setattr(
         "claritymed.evals.lm.rag._default_strategy",
         lambda _p: None,
@@ -299,31 +296,27 @@ def test_latency_by_doc_id_populated_when_instance_carries_one(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_default_rag_mode_reads_config(monkeypatch):
-    """``_default_rag_mode`` returns whatever the retrieval config has."""
-    from claritymed.evals.lm import rag as rag_mod
+def test_default_rag_mode_is_deterministic(monkeypatch):
+    """Eval is opinionated about rag_mode — defaults to deterministic
+    so retrieval fires on every question. Project-wide default ``tool``
+    mode is wrong for MCQA: short clinical vignettes don't trigger the
+    LLM's "I should search" reflex, so the with-rag arm collapses to
+    baseline (~20% tool-call rate observed on MedQA) and the delta
+    signal disappears. Override via the ``rag_mode`` constructor arg
+    when measuring agent behaviour rather than retrieval value."""
+    monkeypatch.setattr(ClaritymedRagLM, "_build_service", lambda self: None)
+    monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
+    lm = ClaritymedRagLM(_provider())
+    assert lm._rag_mode == "deterministic"
 
-    class _Cfg:
-        class rag:  # noqa: D401, N801 — mimicking schema shape
-            mode = "deterministic"
 
-    monkeypatch.setattr(
-        "claritymed.core.rag.schemas.load_retrieval_config", lambda: _Cfg()
-    )
-    assert rag_mod._default_rag_mode() == "deterministic"
-
-
-def test_default_rag_mode_falls_back_when_config_unavailable(monkeypatch):
-    """Config-load failures fall back to ``"tool"`` rather than crashing
-    the adapter — the runner can still produce a useful "bare LLM"
-    completion without retrieval."""
-    from claritymed.evals.lm import rag as rag_mod
-
-    def _explode():
-        raise RuntimeError("config file missing")
-
-    monkeypatch.setattr("claritymed.core.rag.schemas.load_retrieval_config", _explode)
-    assert rag_mod._default_rag_mode() == "tool"
+def test_rag_mode_override_honored(monkeypatch):
+    """Caller can ask for tool-mode (production agent behaviour) when
+    measuring how often the LLM decides to search vs ignoring the tool."""
+    monkeypatch.setattr(ClaritymedRagLM, "_build_service", lambda self: None)
+    monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
+    lm = ClaritymedRagLM(_provider(), rag_mode="tool")
+    assert lm._rag_mode == "tool"
 
 
 def test_drain_consumes_to_natural_end_without_breaking(monkeypatch):
@@ -359,7 +352,6 @@ def test_drain_consumes_to_natural_end_without_breaking(monkeypatch):
 
     stub = _DrainStub()
     monkeypatch.setattr(ClaritymedRagLM, "_build_service", lambda self: stub)
-    monkeypatch.setattr("claritymed.evals.lm.rag._default_rag_mode", lambda: "tool")
     monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
     lm = ClaritymedRagLM(_provider())
     out = lm.generate_until([_instance("Q?")])
@@ -369,6 +361,115 @@ def test_drain_consumes_to_natural_end_without_breaking(monkeypatch):
     assert closed["post_done_yields"] == 1
     # finally ran on natural exit, not on GeneratorExit injection.
     assert closed["finally_ran"] is True
+
+
+# ---------------------------------------------------------------------------
+# Per-question timeout
+# ---------------------------------------------------------------------------
+
+
+def _make_lm_with_timeout(
+    monkeypatch,
+    stub,
+    *,
+    timeout_s: float,
+) -> ClaritymedRagLM:
+    """Build a ClaritymedRagLM with a custom service stub and tight timeout."""
+    monkeypatch.setattr(ClaritymedRagLM, "_build_service", lambda self: stub)
+    monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
+    return ClaritymedRagLM(_provider(), question_timeout_s=timeout_s)
+
+
+def test_hanging_question_returns_empty_within_timeout(monkeypatch):
+    """A single rabbit-holed LLM call must not sink the run. Slow stub
+    that exceeds the per-question timeout returns '' so the downstream
+    filter regex misses → exact_match=0 → correct=False."""
+    import asyncio as _asyncio
+
+    # The CLI normally sets request_id / user_id / language ContextVars
+    # via inject_context; in unit tests we stub audit_event so the
+    # missing-context guard doesn't trip during the timeout path.
+    monkeypatch.setattr("claritymed.evals.lm.rag.audit_event", lambda *a, **kw: None)
+
+    class _HangingStub:
+        async def run(self, user_input, user_id):
+            # Long enough to blow past the tight test timeout.
+            await _asyncio.sleep(5)
+            yield TokenChunk(text="A")
+            yield Done(final="A")
+
+    stub = _HangingStub()
+    lm = _make_lm_with_timeout(monkeypatch, stub, timeout_s=0.05)
+
+    t0 = time.perf_counter()
+    out = lm.generate_until([_instance("Q?")])
+    elapsed = time.perf_counter() - t0
+
+    assert out == [""]
+    # Completed well before the stub would have produced anything.
+    assert elapsed < 2.0, f"timeout did not interrupt promptly ({elapsed:.2f}s)"
+
+
+def test_timeout_records_doc_id_and_audits(monkeypatch):
+    """``timed_out_doc_ids`` lists every question that hit the cap and
+    one ``eval.question.timeout`` audit row fires per hit."""
+    import asyncio as _asyncio
+
+    audit_payloads: list[dict] = []
+
+    def _capture_audit(kind, payload=None):
+        if kind == "eval.question.timeout":
+            audit_payloads.append({"kind": kind, "payload": payload})
+
+    monkeypatch.setattr("claritymed.evals.lm.rag.audit_event", _capture_audit)
+
+    class _HangingStub:
+        async def run(self, user_input, user_id):
+            await _asyncio.sleep(5)
+            yield Done(final="")
+
+    stub = _HangingStub()
+    lm = _make_lm_with_timeout(monkeypatch, stub, timeout_s=0.05)
+
+    req1 = Instance(request_type="generate_until", doc={}, arguments=("Q1?", {}), idx=0)
+    req1.doc_id = 101
+    req2 = Instance(request_type="generate_until", doc={}, arguments=("Q2?", {}), idx=1)
+    req2.doc_id = 202
+    lm.generate_until([req1, req2])
+
+    assert lm.timed_out_doc_ids == [101, 202]
+    assert len(audit_payloads) == 2
+    assert audit_payloads[0]["payload"]["doc_id"] == 101
+    assert audit_payloads[0]["payload"]["timeout_s"] == 0.05
+    assert audit_payloads[1]["payload"]["doc_id"] == 202
+
+
+def test_normal_question_does_not_trigger_timeout_path(monkeypatch):
+    """Fast-completing stubs don't get logged as timed-out and the
+    audit row doesn't fire — proves the cap is only a backstop."""
+    audit_calls: list[str] = []
+
+    def _capture_audit(kind, payload=None):
+        if kind == "eval.question.timeout":
+            audit_calls.append(kind)
+
+    monkeypatch.setattr("claritymed.evals.lm.rag.audit_event", _capture_audit)
+
+    class _FastStub:
+        async def run(self, user_input, user_id):
+            yield TokenChunk(text="B")
+            yield Done(final="B")
+
+    stub = _FastStub()
+    lm = _make_lm_with_timeout(monkeypatch, stub, timeout_s=5.0)
+
+    req = Instance(request_type="generate_until", doc={}, arguments=("Q?", {}), idx=0)
+    req.doc_id = 42
+    out = lm.generate_until([req])
+
+    assert out == ["B"]
+    assert lm.timed_out_doc_ids == []
+    assert audit_calls == []
 
 
 def test_default_strategy_returns_none_when_rag_disabled(monkeypatch):

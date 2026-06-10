@@ -90,6 +90,12 @@ AuditKind = Literal[
     "eval.run.started",
     "eval.run.completed",
     "eval.run.failed",
+    # Per-question wall-clock timeout in ClaritymedRagLM. Fires when a
+    # single AskService turn exceeds the adapter's question_timeout_s
+    # cap. The question is scored wrong (empty completion → filter
+    # misses) and the run continues — one row beats losing the batch.
+    # payload: provider_id, model_name, timeout_s, doc_id
+    "eval.question.timeout",
     # Delta report comparing a baseline and a with-rag run of the same
     # (provider, task). One row per `claritymed eval delta` invocation.
     # payload: provider_id, task_id, n_questions, baseline_accuracy,
