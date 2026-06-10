@@ -885,7 +885,8 @@ class AskService:
         unique = deduplicate_chunks(chunks)
         lines = ["\n\n**Sources:**"]
         for i, c in enumerate(unique, start=1):
-            title = c.source_uri or c.doc_title
+            doc_title = c.doc_title.replace("_", " ") if c.doc_title else None
+            title = c.source_uri or doc_title
             corpus = AskService._collection_label(c, lang)
             display = f"{title} · {corpus}" if title else corpus
             lines.append(f"- [{i}] {display}")
