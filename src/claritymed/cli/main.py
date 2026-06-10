@@ -41,6 +41,13 @@ console = Console()
 
 _BOOTSTRAPPED = False
 
+# Cap concurrent Qdrant calls during the TUI-startup centroid refresh.
+# Each task issues one ``count`` + one ``scroll(limit=500)`` against Qdrant;
+# 4 in flight keeps the server unsaturated while still parallelising a
+# small (~2–10 collection) catalog. Raise only if Qdrant + network can
+# clearly handle more concurrent scrolls.
+_CENTROID_REFRESH_CONCURRENCY = 4
+
 # File extensions that require OCR conversion before ingestion.
 _OCR_EXTENSIONS = {
     ".pdf",
@@ -472,6 +479,66 @@ async def _refresh_centroid_for(aclient, collection_name: str, con) -> None:
         con.print(f"[yellow]centroid refresh failed ({exc}); continuing[/yellow]")
 
 
+def _refresh_system_centroids_on_startup() -> None:
+    """Synchronously refresh every system-RAG centroid before launching the TUI.
+
+    No-op unless ``rag.enabled`` is true AND the active router is
+    ``centroid_classifier`` — otherwise centroids are never consulted at
+    query time. For each collection, ``maybe_refresh`` covers both
+    "centroid file missing" and "delta >= threshold" with one call.
+
+    Per-collection exceptions are caught so a flaky Qdrant doesn't block
+    the TUI launch — the centroid router degrades gracefully to the rule-
+    based fallback when a centroid is absent.
+    """
+    from claritymed.core.rag import load_retrieval_config
+    from claritymed.core.rag.qdrant_store import build_qdrant_client
+    from claritymed.core.rag.routing.centroid_store import CentroidStore, maybe_refresh
+    from claritymed.stores.paths import shared_root
+
+    cfg = load_retrieval_config()
+    if not cfg.rag.enabled:
+        return
+    if cfg.router.resolved().id != "centroid_classifier":
+        return
+
+    collections = list(cfg.system_rag.collections)
+    if not collections:
+        return
+
+    console.print(
+        f"[dim]refreshing centroids for {len(collections)} system collection(s) "
+        f"(concurrency={_CENTROID_REFRESH_CONCURRENCY})…[/dim]"
+    )
+
+    async def _run() -> None:
+        aclient = build_qdrant_client(
+            url=cfg.qdrant.url,
+            api_key_env=cfg.qdrant.api_key_env,
+        )
+        store = CentroidStore(shared_root() / "centroids")
+        sem = asyncio.Semaphore(_CENTROID_REFRESH_CONCURRENCY)
+
+        async def _one(name: str) -> None:
+            async with sem:
+                try:
+                    refreshed = await maybe_refresh(aclient, name, store)
+                except Exception as exc:  # noqa: BLE001
+                    console.print(
+                        f"[yellow]centroid refresh failed for {name} "
+                        f"({exc}); continuing[/yellow]"
+                    )
+                    return
+                if refreshed:
+                    console.print(f"[green]centroid refreshed: {name}[/green]")
+                else:
+                    console.print(f"[dim]centroid up-to-date: {name}[/dim]")
+
+        await asyncio.gather(*(_one(meta.name) for meta in collections))
+
+    _run_async(_run())
+
+
 @corpora_app.command("refresh-centroid")
 def corpora_refresh_centroid(
     name: str = typer.Argument(..., help="Corpus name (e.g. statpearls)"),
@@ -817,6 +884,11 @@ def tui(
     # Currently only openai/privacy-filter (BGE embedder/reranker are served
     # separately and must be downloaded via `uv run hf download`).
     _prefetch_models()
+
+    # Recompute any missing or stale routing centroids before the UI takes
+    # over the terminal — blocking, so the first query inside the TUI never
+    # races a half-built centroid file.
+    _refresh_system_centroids_on_startup()
 
     ClarityMedApp(
         user_id=resolved_user,
