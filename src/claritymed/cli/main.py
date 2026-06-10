@@ -32,6 +32,7 @@ from claritymed.cli.commands.finetune import finetune_app
 from claritymed.cli.commands.ingest import ingest_app
 from claritymed.cli.commands.prompts import prompts_app
 from claritymed.cli.commands.rag import rag_app
+from claritymed.cli.commands.terminology import terminology_app
 from claritymed.cli.commands.tui import tui
 from claritymed.cli.common import bootstrap_once, stderr
 
@@ -56,6 +57,7 @@ app.command("init-user")(init_user_cmd)
 # Sub-apps.
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(rag_app, name="rag")
+app.add_typer(terminology_app, name="terminology")
 app.add_typer(finetune_app, name="finetune")
 app.add_typer(prompts_app, name="prompts")
 app.add_typer(audit_app, name="audit")
