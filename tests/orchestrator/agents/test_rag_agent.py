@@ -16,7 +16,6 @@ from claritymed.core.rag.chunking.base import (
 from claritymed.core.rag.embedding.base import Embedder, SparseVector
 from claritymed.core.phi.guard import PhiGuard
 from claritymed.orchestrator.agents import (
-    RAG_TOOL_NAMES,
     embed_and_store,
 )
 from claritymed.orchestrator.agents.rag_agent import fetch_web_link_stub, tag_phi
@@ -72,13 +71,6 @@ def store() -> UserRagStore:
         chunker=_StubChunker(),
         guard=PhiGuard.from_config(),
     )
-
-
-def test_tool_names_match_modes_config():
-    from claritymed import config as _cfg
-
-    modes = _cfg.load_modes_config()
-    assert set(modes.get("rag").tools) == set(RAG_TOOL_NAMES)
 
 
 def test_fetch_web_link_stub_is_marked_stub():

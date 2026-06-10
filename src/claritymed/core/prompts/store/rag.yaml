@@ -1,7 +1,7 @@
 name: rag
 description: |
   System prompt for the rag agent. Only reached when
-  modes.yaml.modes.rag.allow_llm_inference is true. Used solely for
+  allow_llm_inference is true. Used solely for
   metadata tagging of incoming documents — never for content generation,
   never for answering questions.
 versions:

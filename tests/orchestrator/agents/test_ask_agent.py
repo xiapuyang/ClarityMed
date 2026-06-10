@@ -7,13 +7,6 @@ from claritymed.orchestrator.agents import make_ask_agent
 from claritymed.orchestrator.agents.ask_agent import ASK_TOOL_NAMES
 
 
-def test_tool_names_match_modes_config():
-    from claritymed import config as _cfg
-
-    modes = _cfg.load_modes_config()
-    assert set(modes.get("ask").tools) == set(ASK_TOOL_NAMES)
-
-
 def test_make_ask_agent_streaming_text_shape():
     from pydantic_ai.models.test import TestModel
 

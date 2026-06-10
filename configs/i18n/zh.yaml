@@ -42,6 +42,16 @@ rag:
     textbooks_en: "MedRAG"
     user_rag: "我的资料库"
 
+ask_modal:
+  answer_header: "↳ 你的回答"
+  answer_question: "  • {question}"
+  answer_value: "    ▶ {value}"
+  declined_header: "用户已取消追问"
+  declined_question: "  └ · {question}（{options}）"
+  multi_empty: "—"
+  hint_single: "↑↓ 选择 · enter 提交 · esc 取消"
+  hint_multi: "↑↓ 移动 · space 勾选 · enter 提交 · esc 取消"
+
 phi:
   redaction_marker:
     name: "[已脱敏:姓名]"

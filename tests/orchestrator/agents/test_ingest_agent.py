@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from claritymed.core.prompts.registry import PromptRegistry
 from claritymed.orchestrator.agents import (
-    INGEST_TOOL_NAMES,
     save_to_lab_record,
     save_to_profile,
     save_to_vision_record,
@@ -14,13 +13,6 @@ from claritymed.orchestrator.agents.ingest_agent import (
     make_ingest_agent,
     normalize_to_loinc_stub,
 )
-
-
-def test_tool_names_match_modes_config():
-    from claritymed import config as _cfg
-
-    modes = _cfg.load_modes_config()
-    assert set(modes.get("ingest").tools) == set(INGEST_TOOL_NAMES)
 
 
 def test_extract_lab_fields_stub_marks_self_as_stub():

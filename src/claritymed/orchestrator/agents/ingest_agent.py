@@ -3,7 +3,7 @@
 Phase 1 ships stubs for the OCR / LOINC normalization tools; the save tools
 are real (they write to ``profile`` / ``lab_record`` / ``vision_record``
 stores). The Pydantic AI ``Agent`` is constructed only when
-``modes.yaml.modes.ingest.allow_llm_inference`` is true.
+``allow_llm_inference`` is true (controlled in the ingest agent constructor).
 
 ARCHITECTURE §2 rule 2 ("LLM does not touch numerical values") is enforced
 by the prompt at ``core/prompts/store/ingest.yaml`` plus the strict

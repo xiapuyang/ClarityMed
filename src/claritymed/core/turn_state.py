@@ -21,6 +21,7 @@ import asyncio
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from claritymed.core.interaction.prompt_channel import PromptChannel
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
     from claritymed.core.schemas.retrieval import RetrievedChunk
@@ -49,3 +50,8 @@ class TurnState(Protocol):
     # entry so the service layer can detect "announced-but-skipped"
     # patterns at turn end.
     tool_calls: dict[str, int]
+    # Channel used by the ``ask_user_question`` tool to surface a modal
+    # / dialog to the user. ``None`` means the host has no interactive
+    # surface in this run (eval, one-shot CLI, headless tests); the tool
+    # body translates that into a plain-text fallback hint to the LLM.
+    prompt_channel: "PromptChannel | None"

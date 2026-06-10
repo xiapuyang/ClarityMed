@@ -81,26 +81,25 @@ def supported_langs() -> tuple[str, ...]:
     return tuple(str(x).lower() for x in raw)
 
 
-def load_modes_config() -> "ModesConfig":
-    """Load and validate ``configs/modes.yaml``.
+def load_router_config() -> "RouterConfig":
+    """Load and validate ``configs/router.yaml``.
 
-    Single source of truth for which modes exist, what tools they may call,
-    whether LLM inference is allowed per-mode, and how the router classifies
-    inputs. Wraps :func:`load_yaml` (cached) and validates with Pydantic so
-    misspelled keys fail fast at load time, not at first runtime use.
+    Single source of truth for confidence thresholds and classification rules
+    used by the hybrid mode router. Wraps :func:`load_yaml` (cached) and
+    validates with Pydantic so misspelled keys fail fast at load time.
 
     Raises:
-        FileNotFoundError: If ``configs/modes.yaml`` does not exist.
+        FileNotFoundError: If ``configs/router.yaml`` does not exist.
         pydantic.ValidationError: If the YAML is structurally wrong.
     """
-    from claritymed.core.schemas.modes import ModesConfig
+    from claritymed.core.schemas.router import RouterConfig
 
-    raw = load_yaml("modes.yaml")
+    raw = load_yaml("router.yaml")
     if not raw:
         raise FileNotFoundError(
-            "configs/modes.yaml missing or empty — required for mode dispatch."
+            "configs/router.yaml missing or empty — required for mode dispatch."
         )
-    return ModesConfig.model_validate(raw)
+    return RouterConfig.model_validate(raw)
 
 
 def load_evals_config() -> "EvalsConfig":
@@ -162,4 +161,4 @@ def reload_configs() -> None:
 
 if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
     from claritymed.core.schemas.evals import EvalsConfig  # noqa: F401
-    from claritymed.core.schemas.modes import ModesConfig  # noqa: F401
+    from claritymed.core.schemas.router import RouterConfig  # noqa: F401

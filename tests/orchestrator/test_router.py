@@ -10,7 +10,7 @@ from claritymed.orchestrator.router import ModeRouter, RoutingDecision
 
 @pytest.fixture
 def router():
-    return ModeRouter(_cfg.load_modes_config())
+    return ModeRouter(_cfg.load_router_config())
 
 
 def test_explicit_mode_prefix_returns_explicit(router):

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from claritymed.core.features import FeaturePlugin
+    from claritymed.core.interaction.prompt_channel import PromptChannel
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
     from claritymed.core.schemas.retrieval import RetrievedChunk
@@ -181,6 +182,7 @@ class AskService:
         translation_service: "TranslationProvider | None" = None,
         rag_mode: str = "tool",
         features: "list[FeaturePlugin] | None" = None,
+        prompt_channel: "PromptChannel | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or PhiGuard.from_config()
@@ -192,6 +194,16 @@ class AskService:
         self._provider_config = provider_config
         self._user_whitelist = user_whitelist
         self._translation_service = translation_service
+        # Host-supplied interaction channel for the ``ask_user_question``
+        # tool. None means the host is non-interactive — the tool body
+        # falls back to a plain-text hint to the LLM rather than
+        # blocking on a UI that does not exist.
+        self._prompt_channel = prompt_channel
+        # PromptRegistry walks every YAML in the store on construction.
+        # When the channel is wired up we build the tool every turn, so
+        # cache the registry once instead of paying disk + Pydantic
+        # validation cost on each ``run()``.
+        self._prompt_registry = None
         # Plugins are stateless w.r.t. turn data — built once at startup.
         # Test paths can inject a pre-built list to assert dispatch
         # without going through the factory.
@@ -263,6 +275,7 @@ class AskService:
             language=output_lang,
             translation_service=self._translation_service,
             mode=self._feature_modes.get("rag", "tool"),
+            prompt_channel=self._prompt_channel,
         )
 
         # User turn first so the JSONL timeline reflects send order.
@@ -400,7 +413,24 @@ class AskService:
         pre_text = "\n\n".join(pre_blocks)
         prompt = f"{pre_text}\n\nQuestion: {scrubbed}" if pre_text else scrubbed
 
-        tools = [t for f in self._features if (t := f.as_tool()) is not None]
+        tools: list = [t for f in self._features if (t := f.as_tool()) is not None]
+        # Register ``ask_user_question`` only when a channel is wired up.
+        # Without a channel the tool would always return the "unavailable"
+        # hint, which wastes a turn and shows up as noise in the LLM's
+        # tool list — better to omit it entirely for one-shot CLI / eval
+        # runs.
+        if self._prompt_channel is not None:
+            from claritymed.core.interaction import build_ask_user_question_tool
+            from claritymed.core.prompts.registry import PromptRegistry
+
+            if self._prompt_registry is None:
+                self._prompt_registry = PromptRegistry()
+            tools.append(
+                build_ask_user_question_tool(
+                    self._prompt_registry,
+                    language=self._language,
+                )
+            )
         any_tool = bool(tools)
         agent = make_ask_agent(self._model, language=self._language, tools=tools)
 
@@ -412,6 +442,7 @@ class AskService:
         }
 
         async def _producer() -> None:
+            logger.debug("_producer: START")
             await out.put(
                 LlmCallStarted(
                     model_name=self._model_name,
@@ -446,6 +477,7 @@ class AskService:
             if any_tool:
                 stream_kwargs["usage_limits"] = UsageLimits(request_limit=5)
             try:
+                logger.debug("_producer: ENTER agent.run_stream")
                 async with agent.run_stream(prompt, **stream_kwargs) as stream:
                     async for chunk in stream.stream_text(delta=True):
                         if chunk:
@@ -472,11 +504,15 @@ class AskService:
                     except Exception:  # noqa: BLE001
                         logger.exception("failed to build per-step records")
             except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "_producer: agent.run_stream raised %s: %s", type(exc).__name__, exc
+                )
                 result["had_error"] = True
                 await out.put(
                     Error(error_type="llm_error", message=str(exc), retryable=True)
                 )
             finally:
+                logger.debug("_producer: FINALLY (sentinel → out)")
                 st["t_end"] = time.perf_counter()
                 await out.put(None)
 

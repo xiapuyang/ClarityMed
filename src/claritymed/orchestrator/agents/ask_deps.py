@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from claritymed.core.interaction.prompt_channel import PromptChannel
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
     from claritymed.core.schemas.retrieval import RetrievedChunk
@@ -36,3 +37,8 @@ class AskDeps:
     # rides on deps purely so the tool body and audit payload can name
     # which mode invoked them.
     mode: str = "tool"
+    # Optional per-turn channel for the ``ask_user_question`` tool to
+    # surface a UI prompt. ``None`` means the host is non-interactive
+    # (eval, one-shot CLI, headless tests); the tool body returns a
+    # plain-text fallback hint to the LLM in that case.
+    prompt_channel: "PromptChannel | None" = None

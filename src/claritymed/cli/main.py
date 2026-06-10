@@ -1303,17 +1303,6 @@ def init_user_cmd(
     )
 
 
-# Convenience subcommand to list known modes — useful for shell completion.
-@app.command()
-def modes() -> None:
-    """List configured interaction modes."""
-    cfg = _cfg.load_modes_config()
-    for name, mode in cfg.modes.items():
-        console.print(
-            f"[bold]{name}[/bold]  llm={mode.allow_llm_inference}  tools={len(mode.tools)}"
-        )
-
-
 def main() -> None:
     app()
 

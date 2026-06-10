@@ -17,14 +17,6 @@ def test_help_lists_three_modes():
     assert "rag" in result.stdout
 
 
-def test_modes_command_lists_registry():
-    result = runner.invoke(app, ["modes"])
-    assert result.exit_code == 0
-    assert "ingest" in result.stdout
-    assert "ask" in result.stdout
-    assert "rag" in result.stdout
-
-
 def test_ingest_profile_writes_field(tmp_path, monkeypatch):
     from claritymed.stores.account import init_user
 

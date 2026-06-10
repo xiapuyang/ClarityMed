@@ -1,7 +1,7 @@
 name: ingest
 description: |
   System prompt for the ingest agent. The agent is only ever invoked when
-  modes.yaml.modes.ingest.allow_llm_inference is true; otherwise the
+  allow_llm_inference is true; otherwise the
   service layer routes inputs directly to deterministic tools. When the
   LLM is reached, this prompt enforces the project's domain constraints:
   field identification only — never numerical interpretation, never a

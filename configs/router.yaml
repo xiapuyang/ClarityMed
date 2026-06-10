@@ -1,0 +1,53 @@
+# Router config — single source of truth for how the router classifies
+# user inputs into modes (ingest / ask / rag).
+#
+# Keys must match RouterConfig in core/schemas/router.py.
+
+high_threshold: 0.9
+low_threshold: 0.5
+
+rules:
+  # Explicit prefixes — highest confidence (1.0).
+  explicit_prefixes:
+    - prefix: "/mode "       # /mode ask, /mode ingest, /mode rag
+      target: derive          # parse remainder
+    - prefix: "/upload"
+      target: ingest
+    - prefix: "/library"
+      target: rag
+    - prefix: "/ask"
+      target: ask
+
+  # Imperative verbs that indicate the user wants to record something.
+  imperative_verbs_ingest:
+    - 上传
+    - 录入
+    - 存档
+    - 记录
+    - upload
+    - add to my records
+    - save this report
+    - record this
+
+  # Imperative verbs that indicate the user wants to manage reference material.
+  imperative_verbs_rag:
+    - 参考资料
+    - 资料库
+    - 收藏
+    - library
+    - reference
+    - add to my library
+    - save this paper
+
+  # Question patterns -> ask mode.
+  question_patterns:
+    - "\\?$"
+    - "？$"
+    - "^(what|how|why|when|where|is|are|can|should|could|do|does|will|would)"
+    - "^(是什么|怎么|为什么|什么时候|哪里|是否|能否|可以|会不会)"
+
+llm_fallback:
+  # Which provider to use for the small router LLM. Should be a fast local
+  # provider; ollama with qwen3-4b is a good default. The provider must
+  # already exist in configs/models.yaml.
+  provider_id: ollama

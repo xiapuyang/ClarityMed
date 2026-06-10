@@ -462,6 +462,7 @@ class ClarityMedApp(App):
         access = get_access_logger()
         request_status = "ok"
         llm_step = None  # Static widget for the LlmFirstToken step; cleared in finally
+        logger.debug("_run_stream: START rid=%s mode=%s", rid, mode)
         try:
             audit_event(
                 "request_start",
@@ -475,16 +476,46 @@ class ClarityMedApp(App):
                 conv.add_error_turn(f"service init failed: {exc}")
                 return
 
-            if mode == "ask":
-                conv.start_assistant_turn()
             final_text_parts: list[str] = []
+            # Byte offset into final_text_parts at the point ask_user_question
+            # fired. Used to discard pre-tool text when the user declines.
+            _ask_pre_tool_len: int = 0
             try:
                 async for event in events:
                     if isinstance(event, ModeRouted):
                         self._flash_routing(event.detected_mode, event.confidence)
                     elif isinstance(event, ToolStarted):
+                        if event.tool_name == "ask_user_question":
+                            # The model may have generated text before calling
+                            # the tool in the same response. Clear the bubble
+                            # now so the user sees only the Q&A interaction,
+                            # not a half-answer. We track the byte offset so
+                            # we can discard that text if the user declines.
+                            _ask_pre_tool_len = len("".join(final_text_parts))
+                            logger.debug(
+                                "_run_stream: ToolStarted ask_user_question pre_tool_len=%d",
+                                _ask_pre_tool_len,
+                            )
+                            conv.clear_active_streaming_text()
                         steps.push_start(event.tool_name, event.args_preview)
                     elif isinstance(event, ToolCompleted):
+                        if event.tool_name == "ask_user_question":
+                            logger.debug(
+                                "_run_stream: ToolCompleted ask_user_question summary=%r",
+                                event.summary,
+                            )
+                        if (
+                            event.tool_name == "ask_user_question"
+                            and event.summary == "declined"
+                        ):
+                            # Drop all text the model generated before the
+                            # tool call so finalize_active doesn't re-render
+                            # the pre-tool answer.
+                            combined = "".join(final_text_parts)
+                            post = combined[_ask_pre_tool_len:]
+                            final_text_parts.clear()
+                            if post:
+                                final_text_parts.append(post)
                         steps.push_complete(
                             event.tool_name, event.duration_ms, event.summary
                         )
@@ -547,6 +578,7 @@ class ClarityMedApp(App):
                     request_status = "exception"
                     conv.add_error_turn(f"stream failed: {exc}")
         finally:
+            logger.debug("_run_stream: FINALLY rid=%s status=%s", rid, request_status)
             steps.clear_streaming(llm_step)
             try:
                 audit_event(
@@ -654,6 +686,8 @@ class ClarityMedApp(App):
         from claritymed.core.translation import make_translation_provider
 
         mode_name = load_retrieval_config().rag.mode
+        from claritymed.cli.tui.prompt_channel import TextualPromptChannel
+
         service = AskService(
             model=model,
             language=self.query_one(StatusBar).language,
@@ -664,6 +698,7 @@ class ClarityMedApp(App):
             provider_config=provider,
             translation_service=make_translation_provider(model),
             rag_mode=mode_name,
+            prompt_channel=TextualPromptChannel(self),
         )
         self._cached_ask_service = service
         return service

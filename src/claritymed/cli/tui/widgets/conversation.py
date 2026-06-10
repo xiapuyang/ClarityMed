@@ -173,6 +173,11 @@ class Conversation(VerticalScroll):
         self.scroll_end(animate=False)
         return bubble
 
+    def clear_active_streaming_text(self) -> None:
+        """Erase any text streamed into the active assistant bubble."""
+        if self._active_assistant is not None:
+            self._active_assistant.streaming_text = ""
+
     def start_assistant_turn(self) -> TurnBubble:
         bubble = TurnBubble("assistant", "")
         self.mount(bubble)
@@ -198,13 +203,19 @@ class Conversation(VerticalScroll):
         """
         finalized = self._active_assistant
         self._active_assistant = None
-        if finalized is not None and markdown_text is not None:
+        if finalized is not None and markdown_text:
             try:
                 finalized.remove()
                 md = AssistantMarkdown(markdown_text)
                 self.mount(md)
                 self.scroll_end(animate=False)
             except Exception:  # noqa: BLE001 — fall through to raw bubble
+                pass
+        elif finalized is not None and markdown_text is not None:
+            # Empty text — just remove the streaming bubble, mount nothing.
+            try:
+                finalized.remove()
+            except Exception:  # noqa: BLE001
                 pass
         return finalized
 

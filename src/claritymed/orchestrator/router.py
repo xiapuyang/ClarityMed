@@ -16,7 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from claritymed.core.schemas.modes import ModeName, ModesConfig
+from claritymed.core.schemas.router import ModeName, RouterConfig
 
 DecisionSource = Literal["rule", "llm", "explicit", "ambiguous"]
 
@@ -33,9 +33,9 @@ class RoutingDecision(BaseModel):
 class ModeRouter:
     """Classify user input into ingest / ask / rag."""
 
-    def __init__(self, modes: ModesConfig) -> None:
-        self._modes = modes
-        rules = modes.router.rules
+    def __init__(self, config: RouterConfig) -> None:
+        self._config = config
+        rules = config.rules
         self._question_patterns = [
             re.compile(p, re.IGNORECASE) for p in rules.question_patterns
         ]
@@ -48,7 +48,7 @@ class ModeRouter:
         determinism over coverage.
         """
         text = user_input.strip()
-        rules = self._modes.router.rules
+        rules = self._config.rules
 
         # Explicit prefixes win — confidence 1.0
         for spec in rules.explicit_prefixes:
@@ -128,14 +128,14 @@ class ModeRouter:
         """
         decision = self.classify_rule_only(user_input, has_attachment)
 
-        if decision.confidence >= self._modes.router.high_threshold:
+        if decision.confidence >= self._config.high_threshold:
             return decision
-        if decision.confidence < self._modes.router.low_threshold:
+        if decision.confidence < self._config.low_threshold:
             # Rules failed — try LLM if available; else surface ambiguous.
             if llm_classify is None:
                 return decision
             llm_decision = await llm_classify(user_input)
-            if llm_decision.confidence < self._modes.router.low_threshold:
+            if llm_decision.confidence < self._config.low_threshold:
                 return RoutingDecision(
                     mode="ambiguous",
                     confidence=llm_decision.confidence,

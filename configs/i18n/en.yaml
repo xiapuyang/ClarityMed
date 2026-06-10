@@ -48,6 +48,16 @@ rag:
     textbooks_en: "MedRAG"
     user_rag: "My Library"
 
+ask_modal:
+  answer_header: "↳ Your answer"
+  answer_question: "  • {question}"
+  answer_value: "    ▶ {value}"
+  declined_header: "User declined to answer questions"
+  declined_question: "  └ · {question}（{options}）"
+  multi_empty: "—"
+  hint_single: "↑↓ move · enter submit · esc cancel"
+  hint_multi: "↑↓ move · space toggle · enter submit · esc cancel"
+
 phi:
   redaction_marker:
     name: "[REDACTED:NAME]"
