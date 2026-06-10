@@ -36,9 +36,13 @@ doc_to_text: |-
 doc_to_target: '{{ ["A", "B", "C", "D"][label] }}'
 
 generation_kwargs:
-  # No ``until`` — reasoning-tuned models (Qwen3, o1, etc.) need to write
-  # their analysis before concluding. A ``\n`` stop would cut off mid-
-  # thought. The filter below pulls the answer out of the final line.
+  # Explicit empty ``until`` — when the key is missing, lm-eval-harness
+  # silently injects ``[fewshot_delimiter]`` (= ``"\n\n"``) as a stop,
+  # which would cut reasoning-tuned models (Qwen3, o1, etc.) off at the
+  # first paragraph break, right before they write "Answer: X". Setting
+  # ``until: []`` keeps the key present so the injection is skipped and
+  # the filter below sees the model's full conclusion.
+  until: []
   max_gen_toks: 2048
   temperature: 0
   do_sample: false

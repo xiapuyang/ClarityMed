@@ -77,12 +77,13 @@ def test_generation_kwargs_pinned_for_letter_answer(medqa_yaml):
     )
     assert gen["temperature"] == 0
     assert gen["do_sample"] is False
-    # No ``until`` — a \n stop would cut reasoning models mid-thought,
-    # and the filter pulls the answer out of the trailing line anyway.
-    assert "until" not in gen, (
-        "drop `until` so reasoning headroom is real; "
-        "the filter handles answer extraction"
+    # ``until`` must be present-but-empty: lm-eval-harness silently injects
+    # ``[fewshot_delimiter]`` (= "\n\n") when the key is missing, which
+    # would cut reasoning models off at the first paragraph break.
+    assert "until" in gen, (
+        "must set `until: []` so lm-eval doesn't inject `[fewshot_delimiter]`"
     )
+    assert gen["until"] == [], "empty list disables stop-sequence injection"
 
 
 def test_filter_list_extracts_letter(medqa_yaml):
