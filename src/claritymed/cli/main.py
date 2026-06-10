@@ -979,6 +979,29 @@ audit_app = typer.Typer(
 )
 app.add_typer(audit_app, name="audit")
 
+# `eval` sub-app — installed only when the `evals` optional extra is
+# present. Importing it pulls in lm-eval transitively (torch, datasets),
+# which we don't want forced on plain `claritymed ask` users. Hidden
+# behind a try/except so the rest of the CLI still works without the
+# extra; missing extra prints a remediation hint at first invocation.
+_eval_import_error: str | None = None
+try:
+    from claritymed.cli.eval import eval_app
+
+    app.add_typer(eval_app, name="eval")
+except ImportError as _exc:  # pragma: no cover — install-time gate
+    _eval_import_error = str(_exc)
+
+    @app.command("eval", hidden=True)
+    def _eval_stub() -> None:
+        """Placeholder when ``uv sync --extra evals`` has not been run."""
+        _stderr(
+            "claritymed eval requires the `evals` extra:\n"
+            "  uv sync --extra evals\n"
+            f"(import failed: {_eval_import_error})"
+        )
+        raise typer.Exit(code=2)
+
 
 @audit_app.command("grep")
 def audit_grep(

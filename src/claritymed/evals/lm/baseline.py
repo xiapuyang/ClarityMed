@@ -59,6 +59,10 @@ class ClaritymedBaselineLM(LM):
         # Per-request wall-clock latency in milliseconds, one entry per
         # ``generate_until`` request in call order. Drained by the runner.
         self.latencies_ms: list[float] = []
+        # Same data keyed by ``Instance.doc_id`` for stable runner→sample
+        # correlation (lm-eval populates ``doc_id`` on each Instance).
+        # Falls back to None when doc_id is unavailable (synthetic tests).
+        self.latencies_ms_by_doc_id: dict[int, float] = {}
 
     # ------------------------------------------------------------------
     # The only request type our task YAMLs use.
@@ -78,6 +82,8 @@ class ClaritymedBaselineLM(LM):
             finally:
                 elapsed_ms = (time.perf_counter_ns() - t0) / 1_000_000
                 self.latencies_ms.append(elapsed_ms)
+                if req.doc_id is not None:
+                    self.latencies_ms_by_doc_id[req.doc_id] = elapsed_ms
 
             completions.append(self._truncate(text, until, max_gen_toks))
         return completions

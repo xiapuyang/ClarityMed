@@ -80,6 +80,16 @@ AuditKind = Literal[
     #          hits (entity count), chars_in, chars_out (on success),
     #          error (on failure).
     "scrub.privacy_filter",
+    # Evaluation runs (lm-evaluation-harness). One pair (started/completed)
+    # per `claritymed eval` invocation; ``eval.run.failed`` replaces the
+    # ``completed`` event when the underlying simple_evaluate raises.
+    # payload (started): provider_id, model_name, task_id, limit
+    # payload (completed): provider_id, task_id, n_questions, accuracy,
+    #                      output_path, duration_s
+    # payload (failed): provider_id, task_id, error_type, message
+    "eval.run.started",
+    "eval.run.completed",
+    "eval.run.failed",
 ]
 
 
