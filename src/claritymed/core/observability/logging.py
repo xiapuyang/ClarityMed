@@ -24,6 +24,7 @@ from claritymed.context import language_ctx, request_id_ctx, user_id_ctx
 APP_LOGGER = "claritymed"
 ACCESS_LOGGER = "claritymed.access"
 AUDIT_LOGGER = "claritymed.audit"
+LLM_LOGGER = "claritymed.llm"
 
 APP_FMT = (
     "%(asctime)s [%(levelname)s] [%(request_id)s][%(user_id)s] "
@@ -82,6 +83,16 @@ def _reset_logger(name: str) -> logging.Logger:
     return logger
 
 
+def _configured_file_level() -> int:
+    """Resolve file log level: CLARITYMED_LOG_LEVEL env > app.yaml logging.level > DEBUG."""
+    level_str = (
+        os.environ.get("CLARITYMED_LOG_LEVEL")
+        or _cfg.load_yaml("app.yaml").get("logging", {}).get("level")
+        or "DEBUG"
+    )
+    return getattr(logging, str(level_str).upper(), logging.DEBUG)
+
+
 def setup_logging(
     script_name: str,
     console_level: int | None = logging.INFO,
@@ -89,11 +100,14 @@ def setup_logging(
     """Configure all three loggers. Idempotent — clears handlers first."""
     _cfg.ensure_runtime_dirs()
     log_dir = _cfg.LOG_DIR
+    file_level = _configured_file_level()
 
     app = _reset_logger(APP_LOGGER)
-    app.setLevel(logging.DEBUG)
+    app.setLevel(file_level)
     app.propagate = False
-    app.addHandler(_file_handler(log_dir, "app.log", APP_FMT, 5 * 1024 * 1024, 5))
+    handler = _file_handler(log_dir, "app.log", APP_FMT, 5 * 1024 * 1024, 5)
+    handler.setLevel(file_level)
+    app.addHandler(handler)
 
     if console_level is not None:
         ch = logging.StreamHandler()
@@ -105,11 +119,12 @@ def setup_logging(
         )
         app.addHandler(ch)
 
-    # access and audit loggers are configured by their getters on demand,
-    # but we tear them down here so a re-call of setup_logging() does not
-    # leave duplicate handlers from a previous run.
+    # access, audit, and llm loggers are configured by their getters on
+    # demand, but we tear them down here so a re-call of setup_logging()
+    # does not leave duplicate handlers from a previous run.
     _reset_logger(ACCESS_LOGGER)
     _reset_logger(AUDIT_LOGGER)
+    _reset_logger(LLM_LOGGER)
 
     for noisy in NOISY_LOGGERS:
         logging.getLogger(noisy).setLevel(logging.WARNING)

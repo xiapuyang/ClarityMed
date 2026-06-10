@@ -44,17 +44,23 @@ if TYPE_CHECKING:
 def build_model(provider: ProviderConfig) -> "Model":
     """Construct a pydantic-ai ``Model`` from a catalog entry."""
     if provider.base_url is None:
-        return infer_model(provider.model)
+        model = infer_model(provider.model)
+    else:
+        api_key = _resolve_api_key(provider)
 
-    api_key = _resolve_api_key(provider)
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.ollama import OllamaProvider
 
-    from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.ollama import OllamaProvider
+        model = OpenAIChatModel(
+            provider.model,
+            provider=OllamaProvider(base_url=provider.base_url, api_key=api_key),
+        )
 
-    return OpenAIChatModel(
-        provider.model,
-        provider=OllamaProvider(base_url=provider.base_url, api_key=api_key),
-    )
+    if os.environ.get("CLARITYMED_DEBUG"):
+        from claritymed.core.observability.llm_logger import LoggingModel
+
+        return LoggingModel(model)
+    return model
 
 
 def build_model_settings(provider: ProviderConfig) -> ModelSettings | None:
