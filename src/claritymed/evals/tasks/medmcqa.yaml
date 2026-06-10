@@ -1,0 +1,63 @@
+# MedMCQA — Indian medical-entrance 4-option English MCQA.
+#
+# Schema (openlifescienceai/medmcqa):
+#   question               question stem
+#   opa, opb, opc, opd     options A..D
+#   cop                    int 0..3 — correct option index
+#   choice_type            "single" or "multi"
+#
+# We score on ``validation`` (4,183 labelled questions). The dataset's
+# ``test`` split has no labels (it's the leaderboard hold-out), exactly
+# as in lm-eval's bundled medmcqa task. ``cop`` already encodes one
+# correct letter even for multi-choice rows in this HF release, so we
+# don't filter them out — keeps the eval set comparable to the bundled
+# lm-eval baseline and to published numbers.
+#
+# Scoring mode is ``generate_until`` (not loglikelihood) for the same
+# provider-neutrality reason as ``medqa.yaml`` (R4).
+
+task: medmcqa
+dataset_path: openlifescienceai/medmcqa
+test_split: validation
+training_split: train
+validation_split: validation
+output_type: generate_until
+
+doc_to_text: |-
+  Question: {{question}}
+  (A) {{opa}}
+  (B) {{opb}}
+  (C) {{opc}}
+  (D) {{opd}}
+  Answer with a single letter (A, B, C, or D).
+  Answer:
+
+doc_to_target: '{{ ["A", "B", "C", "D"][cop] }}'
+
+generation_kwargs:
+  # See medqa.yaml for the rationale on ``until: []`` and ``max_gen_toks``.
+  until: []
+  max_gen_toks: 2048
+  temperature: 0
+  do_sample: false
+
+filter_list:
+  # Same regex/take_first chain as medqa.yaml — MedMCQA shares the
+  # single-letter-A-to-D answer shape, so the extraction logic is
+  # identical down to ``group_select: -1``.
+  - name: extract_letter
+    filter:
+      - function: regex
+        regex_pattern: '(?i)(?:answer(?:\s+is)?[:\s]*\(?([A-D])\)?|\(([A-D])\)|(?<!\w)([A-D])(?!\w))'
+        group_select: -1
+      - function: take_first
+
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+
+metadata:
+  version: 1.0
