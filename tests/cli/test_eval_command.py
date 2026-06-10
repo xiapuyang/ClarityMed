@@ -126,28 +126,38 @@ def test_eval_medqa_omits_provider_falls_back_to_catalog_default(tmp_path, monke
 
 
 # ---------------------------------------------------------------------------
-# --with-rag is parked until Phase 2
+# --with-rag (Phase 2) — swaps the LM adapter and tags the JSONL filename
 # ---------------------------------------------------------------------------
 
 
-def test_with_rag_exits_non_zero_until_phase_2(monkeypatch):
-    # Even with a stub runner injected, --with-rag must short-circuit before
-    # calling the runner.
-    called = {"hit": False}
+def test_with_rag_swaps_adapter_and_tags_output(tmp_path, monkeypatch):
+    """``--with-rag`` constructs the runner with ``ClaritymedRagLM`` and
+    ``run_tag="with-rag"`` so the JSONL filename is paired by ``eval delta``."""
+    from claritymed.evals.lm.rag import ClaritymedRagLM
 
-    class _Should_Not_Run:
-        def run(self, *a, **kw):
-            called["hit"] = True
-            raise AssertionError("runner should not be invoked under --with-rag")
+    captured: dict[str, Any] = {}
 
-    monkeypatch.setattr(
-        "claritymed.cli.eval.LmEvalRunner", lambda *a, **kw: _Should_Not_Run()
-    )
+    class _StubRunner:
+        def run(self, provider, task_id, limit):
+            captured["provider_id"] = provider.id
+            captured["task_id"] = task_id
+            captured["limit"] = limit
+            return _stub_run_result(tmp_path)
+
+    def _record_factory(*args, **kwargs):
+        captured["lm_factory"] = kwargs.get("lm_factory")
+        captured["run_tag"] = kwargs.get("run_tag")
+        return _StubRunner()
+
+    monkeypatch.setattr("claritymed.cli.eval.LmEvalRunner", _record_factory)
     result = runner.invoke(
-        app, ["eval", "medqa", "--provider", "ollama", "--with-rag", "--limit", "1"]
+        app,
+        ["eval", "medqa", "--provider", "ollama", "--with-rag", "--limit", "1"],
     )
-    assert result.exit_code == 2
-    assert called["hit"] is False
+    assert result.exit_code == 0, result.stdout
+    assert captured["lm_factory"] is ClaritymedRagLM
+    assert captured["run_tag"] == "with-rag"
+    assert captured["provider_id"] == "ollama"
 
 
 # ---------------------------------------------------------------------------

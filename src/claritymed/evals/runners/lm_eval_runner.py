@@ -55,11 +55,18 @@ class LmEvalRunner:
         self,
         output_dir: Path | str | None = None,
         lm_factory: Callable[["ProviderConfig"], "LM"] | None = None,
+        *,
+        run_tag: str | None = None,
     ) -> None:
         self.output_dir = Path(output_dir) if output_dir else _DEFAULT_OUTPUT_DIR
         self._lm_factory: Callable[["ProviderConfig"], "LM"] = (
             lm_factory or ClaritymedBaselineLM
         )
+        # Filename infix that distinguishes runs of the same (provider,
+        # task) pair: ``None`` (baseline) → ``<pid>_<task>_<ts>.jsonl``;
+        # ``"with-rag"`` → ``<pid>_<task>_with-rag_<ts>.jsonl``. The
+        # delta reporter (Unit 7) joins on this distinction.
+        self._run_tag = run_tag
 
     def run(
         self,
@@ -76,6 +83,7 @@ class LmEvalRunner:
                 "model_name": provider.model,
                 "task_id": task_id,
                 "limit": limit,
+                "run_tag": self._run_tag,
             },
         )
         lm = self._lm_factory(provider)
@@ -171,7 +179,8 @@ class LmEvalRunner:
         """Write one JSONL row per sample. Returns the file path."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         ts = started_at.strftime("%Y%m%dT%H%M%SZ")
-        path = self.output_dir / f"{provider.id}_{task_id}_{ts}.jsonl"
+        tag = f"_{self._run_tag}" if self._run_tag else ""
+        path = self.output_dir / f"{provider.id}_{task_id}{tag}_{ts}.jsonl"
         rid = request_id_ctx.get() or "unknown"
         latency_by_doc = getattr(lm, "latencies_ms_by_doc_id", {}) or {}
         latency_list = getattr(lm, "latencies_ms", []) or []

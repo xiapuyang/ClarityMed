@@ -10,17 +10,30 @@ Mirrors the shape of ``ask`` / ``ingest`` / ``rag``:
    other commands use, so ``--provider`` flags behave identically.
 3. Hand off to ``LmEvalRunner``; the runner prints its own summary table.
 
-Phase 2 (Unit 6) wires ``--with-rag`` to ``ClaritymedRagLM``. Until then
-the flag parses and fails loud so callers know the feature is on the way.
+``--with-rag`` swaps the baseline adapter for ``ClaritymedRagLM`` and
+tags the output filename with ``_with-rag`` so ``eval delta`` can join
+the two runs by provider+task pair.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import typer
 from rich.console import Console
 
 from claritymed.cli.entry import inject_context
+from claritymed.core.observability.audit import audit_event
 from claritymed.errors import UnknownProviderError
+from claritymed.evals.lm.rag import ClaritymedRagLM
+from claritymed.evals.reporting.delta import (
+    DeltaReportError,
+    build_delta_report,
+    find_latest_pair,
+    render_delta_markdown,
+    report_audit_payload,
+    write_delta_markdown,
+)
 from claritymed.evals.runners.lm_eval_runner import LmEvalRunner
 from claritymed.stores.models import pick_reachable_provider, resolve_provider
 
@@ -49,26 +62,107 @@ def eval_medqa(
     with_rag: bool = typer.Option(
         False,
         "--with-rag",
-        help="Phase 2: route through AskService. Currently raises NotImplementedError.",
+        help="Route through AskService (PHI guard + retrieval + LLM) instead of "
+        "the bare model. Output filename gets a _with-rag suffix so "
+        "`eval delta` can pair the runs.",
     ),
 ) -> None:
     """Score the configured provider on MedQA-USMLE (4-option English MCQA)."""
-    command_label = f"eval.medqa provider={provider_id or 'default'}"
+    arm = "with-rag" if with_rag else "baseline"
+    command_label = f"eval.medqa provider={provider_id or 'default'} arm={arm}"
     with inject_context(
         user_id="eval",
         language="en",
         command=command_label,
     ):
-        if with_rag:
-            raise typer.Exit(
-                _emit_error(
-                    "--with-rag arrives in Phase 2 (Unit 6 of the evals plan). "
-                    "Run without --with-rag for the baseline arm."
-                )
-            )
-
         provider = _resolve_for_eval(provider_id)
-        LmEvalRunner().run(provider, task_id="medqa", limit=limit)
+        if with_rag:
+            runner = LmEvalRunner(
+                lm_factory=ClaritymedRagLM,
+                run_tag="with-rag",
+            )
+        else:
+            runner = LmEvalRunner()
+        runner.run(provider, task_id="medqa", limit=limit)
+
+
+@eval_app.command("delta")
+def eval_delta(
+    task_id: str = typer.Option(
+        ...,
+        "--task",
+        "-t",
+        help="Task id (e.g. medqa) — used to pair the baseline and with-rag JSONLs.",
+    ),
+    provider_id: str = typer.Option(
+        ...,
+        "--provider",
+        "-p",
+        help="Catalog id whose runs are being compared.",
+    ),
+    baseline_path: Path | None = typer.Option(
+        None,
+        "--baseline",
+        exists=True,
+        readable=True,
+        help="Explicit baseline JSONL. Default: latest run for (provider, task).",
+    ),
+    rag_path: Path | None = typer.Option(
+        None,
+        "--rag",
+        exists=True,
+        readable=True,
+        help="Explicit with-rag JSONL. Default: latest run for (provider, task).",
+    ),
+    results_dir: Path = typer.Option(
+        Path("data") / "evals" / "results",
+        "--results-dir",
+        help="Where to look for default JSONLs and where to drop the report.",
+    ),
+) -> None:
+    """Compare baseline vs RAG runs for one (provider, task) pair.
+
+    Picks the latest baseline + with-rag JSONL by mtime when explicit
+    paths are omitted; renders a markdown table to stdout and persists
+    the full report under ``data/evals/results/``.
+    """
+    command_label = f"eval.delta provider={provider_id} task={task_id}"
+    with inject_context(
+        user_id="eval",
+        language="en",
+        command=command_label,
+    ):
+        try:
+            if baseline_path is None or rag_path is None:
+                latest_baseline, latest_rag = find_latest_pair(
+                    provider_id=provider_id,
+                    task_id=task_id,
+                    results_dir=results_dir,
+                )
+                baseline_path = baseline_path or latest_baseline
+                rag_path = rag_path or latest_rag
+            report = build_delta_report(
+                provider_id=provider_id,
+                task_id=task_id,
+                baseline_path=baseline_path,
+                rag_path=rag_path,
+            )
+        except DeltaReportError as exc:
+            raise typer.Exit(_emit_error(str(exc))) from exc
+
+        md_path, sidecar = write_delta_markdown(report, output_dir=results_dir)
+        _console.print(render_delta_markdown(report))
+        _console.print(f"[dim]report: {md_path}[/dim]")
+        if sidecar is not None:
+            _console.print(f"[dim]regressions overflow: {sidecar}[/dim]")
+        audit_event(
+            "eval.delta.completed",
+            payload={
+                **report_audit_payload(report),
+                "report_path": str(md_path),
+                "regressions_sidecar": str(sidecar) if sidecar else None,
+            },
+        )
 
 
 def _resolve_for_eval(provider_id: str | None):

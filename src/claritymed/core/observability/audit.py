@@ -90,6 +90,12 @@ AuditKind = Literal[
     "eval.run.started",
     "eval.run.completed",
     "eval.run.failed",
+    # Delta report comparing a baseline and a with-rag run of the same
+    # (provider, task). One row per `claritymed eval delta` invocation.
+    # payload: provider_id, task_id, n_questions, baseline_accuracy,
+    #          rag_accuracy, delta, regression_count, gain_count,
+    #          baseline_path, rag_path, report_path, regressions_sidecar
+    "eval.delta.completed",
 ]
 
 
