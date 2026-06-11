@@ -21,7 +21,7 @@ from sqlalchemy import event
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from claritymed.context import user_id_ctx
-from claritymed.core.schemas import Allergy, Profile
+from claritymed.core.schemas import Allergy, Condition, Medication, Profile
 from claritymed.errors import UserIdMismatch
 from claritymed.stores.paths import user_db_path, user_root, validate_user_id
 
@@ -180,3 +180,95 @@ class ProfileStore:
             session.add(row)
             session.commit()
         return allergy
+
+    # --- Condition (Unit 6: save_condition tool) ---------------------
+
+    def list_conditions(self) -> list[Condition]:
+        with Session(self.engine) as session:
+            stmt = select(ConditionRow).where(ConditionRow.user_id == self.user_id)
+            rows = session.exec(stmt).all()
+        return [
+            Condition(
+                display=r.display,
+                code=r.code,
+                onset_date=r.onset_date.date() if r.onset_date else None,
+            )
+            for r in rows
+        ]
+
+    def add_condition(self, condition: Condition, *, owner_user_id: str) -> Condition:
+        """Append one condition row. Used by ``save_condition`` (Unit 6)."""
+        if owner_user_id != self.user_id:
+            raise UserIdMismatch(
+                f"add_condition called for {owner_user_id!r} on store {self.user_id!r}"
+            )
+        from datetime import datetime as _dt
+
+        onset = condition.onset_date
+        onset_dt = _dt(onset.year, onset.month, onset.day) if onset else None
+        row = ConditionRow(
+            user_id=self.user_id,
+            display=condition.display,
+            code=condition.code,
+            onset_date=onset_dt,
+        )
+        with Session(self.engine) as session:
+            session.add(row)
+            session.commit()
+        return condition
+
+    # --- Medication (Unit 6: save_medication tool) -------------------
+
+    def list_medications(self) -> list[Medication]:
+        with Session(self.engine) as session:
+            stmt = select(MedicationRow).where(MedicationRow.user_id == self.user_id)
+            rows = session.exec(stmt).all()
+        return [
+            Medication(
+                display=r.display,
+                code=r.code,
+                dose=r.dose,
+                frequency=r.frequency,
+            )
+            for r in rows
+        ]
+
+    def add_medication(
+        self, medication: Medication, *, owner_user_id: str
+    ) -> Medication:
+        """Append one medication row. Used by ``save_medication`` (Unit 6)."""
+        if owner_user_id != self.user_id:
+            raise UserIdMismatch(
+                f"add_medication called for {owner_user_id!r} on store {self.user_id!r}"
+            )
+        row = MedicationRow(
+            user_id=self.user_id,
+            display=medication.display,
+            code=medication.code,
+            dose=medication.dose,
+            frequency=medication.frequency,
+        )
+        with Session(self.engine) as session:
+            session.add(row)
+            session.commit()
+        return medication
+
+    # --- Profile field updates (Unit 6: update_profile_field tool) ---
+
+    def update_profile_field(self, field: str, value, *, owner_user_id: str) -> Profile:
+        """Set one ``Profile`` field; returns the updated profile.
+
+        The Patient schema's validators do the coercion (``birth_date``
+        from ISO string, ``weight_kg`` from int/str). Storage validates
+        only the field name — Pydantic enforces value bounds.
+        """
+        if owner_user_id != self.user_id:
+            raise UserIdMismatch(
+                f"update_profile_field called for {owner_user_id!r} on store {self.user_id!r}"
+            )
+        if field not in Profile.model_fields:
+            raise ValueError(f"unknown profile field: {field!r}")
+        current = self.get_profile() or Profile()
+        # ``model_copy`` validates the change against the field's bounds.
+        updated = current.model_copy(update={field: value})
+        return self.upsert_profile(updated, owner_user_id=owner_user_id)

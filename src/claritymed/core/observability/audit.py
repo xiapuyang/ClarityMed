@@ -39,6 +39,32 @@ AuditKind = Literal[
     # *before* the inner Model is invoked. Payload: layer_triggered,
     # part_type.
     "phi.leak_detected",
+    # Tool dispatcher (Unit 6+7) — single PHI write gate. Every tool
+    # call funnels through and produces exactly one of:
+    #   tool.always_allowed — a SettingsStore rule covers the call.
+    #   tool.approval.granted / .denied / .modified — user-side decision.
+    #   tool.auto_approved — headless CLI --auto-approve (severity=high).
+    #   tool.<name> — actual write succeeded; payload carries non-PHI fields.
+    #   tool.rule_evicted — settings.rules cap reached, oldest evicted.
+    #   tool.rule_expired — TTL'd allow-rule lapsed at match time.
+    #   tool.cancelled_by_shutdown — TUI dismissed mid-modal.
+    "tool.always_allowed",
+    "tool.approval.granted",
+    "tool.approval.denied",
+    "tool.approval.modified",
+    "tool.auto_approved",
+    "tool.save_record",
+    "tool.save_medication",
+    "tool.save_allergy",
+    "tool.save_condition",
+    "tool.update_profile_field",
+    "tool.save_to_library",
+    "tool.delete_record",
+    "tool.delete_record.qdrant_failed",
+    "tool.rule_evicted",
+    "tool.rule_expired",
+    "tool.cancelled_by_shutdown",
+    "settings.rules.load_failed",
     # tools
     "tool_invoke",
     "tool_result",
