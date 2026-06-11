@@ -145,8 +145,11 @@ def _install(endpoint: str) -> None:
     exporter = OTLPSpanExporter(
         endpoint=f"{endpoint.rstrip('/')}/v1/traces",
         headers=headers or None,
+        timeout=3,
     )
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(
+        BatchSpanProcessor(exporter, export_timeout_millis=3000)
+    )
 
     trace.set_tracer_provider(provider)
 
