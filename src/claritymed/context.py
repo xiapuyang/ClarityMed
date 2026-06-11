@@ -13,11 +13,14 @@ reason this lives at the package root rather than under ``core/``.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 REQUEST_ID_PATTERN = re.compile(r"^[0-9]{14}[0-9A-F]{8}$")
 USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
@@ -112,7 +115,10 @@ def _attach_baggage(request_id: str, user_id: str) -> object | None:
         ctx = baggage.set_baggage(BAGGAGE_REQUEST_ID, request_id, context=ctx)
         ctx = baggage.set_baggage(BAGGAGE_USER_ID, user_id, context=ctx)
         return otel_context.attach(ctx)
+    except ImportError:
+        return None
     except Exception:  # noqa: BLE001
+        logger.warning("OTel baggage attach failed", exc_info=True)
         return None
 
 
@@ -121,8 +127,10 @@ def _detach_baggage(token: object) -> None:
         from opentelemetry import context as otel_context
 
         otel_context.detach(token)
-    except Exception:  # noqa: BLE001
+    except ImportError:
         pass
+    except Exception:  # noqa: BLE001
+        logger.warning("OTel baggage detach failed", exc_info=True)
 
 
 def attach_session_baggage(session_id: str) -> object | None:
@@ -143,7 +151,10 @@ def attach_session_baggage(session_id: str) -> object | None:
         ctx = otel_context.get_current()
         ctx = baggage.set_baggage(BAGGAGE_SESSION_ID, session_id, context=ctx)
         return otel_context.attach(ctx)
+    except ImportError:
+        return None
     except Exception:  # noqa: BLE001
+        logger.warning("OTel session baggage attach failed", exc_info=True)
         return None
 
 

@@ -75,6 +75,9 @@ AuditKind = Literal[
     #          chars (on success), error (on failure),
     #          fallback (bool, true when image default failed).
     "ocr.extract",
+    # Regex scrub — one event per scrub() call that had at least one hit.
+    # payload: rule_hits (dict[rule_name, count]).
+    "scrub.regex",
     # Privacy-filter model inference — one event per _layer_model call.
     # payload: backend ("onnx"|"torch"), status ("ok"|"error"), duration_ms,
     #          hits (entity count), chars_in, chars_out (on success),

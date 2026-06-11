@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -13,33 +12,22 @@ from claritymed.context import (
     reset_context,
 )
 from claritymed.core.observability.audit import AuditEvent, audit_event
-from claritymed.core.observability.logging import setup_logging
 
 
-def _audit_path(tmp_path: Path) -> Path:
-    return tmp_path / "logs" / "audit.log"
+def test_happy_event_round_trips_via_json(caplog):
+    import logging
 
-
-def _read_lines(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    return [line for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def test_happy_event_round_trips_via_json(tmp_path):
-    setup_logging("test", console_level=None)
     tokens = apply_context("20260606222522A1B2C3D4", "alice", "en")
     try:
-        ev = audit_event("retrieval", payload={"chunks": ["a", "b"]})
+        with caplog.at_level(logging.INFO, logger="claritymed.audit"):
+            ev = audit_event("retrieval", payload={"chunks": ["a", "b"]})
     finally:
         reset_context(tokens)
     assert ev.kind == "retrieval"
 
-    line = _read_lines(_audit_path(tmp_path))[-1]
-    # The audit format wraps the JSON message with the formatter prefix; the
-    # JSON itself is the trailing portion after the bracketed labels.
-    payload_json = line.split("] ", 3)[-1]
-    parsed = json.loads(payload_json)
+    audit_records = [r for r in caplog.records if r.name == "claritymed.audit"]
+    assert audit_records, "No claritymed.audit records captured"
+    parsed = json.loads(audit_records[-1].getMessage())
     assert parsed["kind"] == "retrieval"
     assert parsed["payload"] == {"chunks": ["a", "b"]}
     assert parsed["user_id"] == "alice"
@@ -64,17 +52,21 @@ def test_invalid_kind_rejected_at_construction():
         )
 
 
-def test_one_line_per_event(tmp_path):
-    setup_logging("test", console_level=None)
+def test_one_line_per_event(caplog):
+    import logging
+
     tokens = apply_context("20260606222522A1B2C3D4", "alice", "en")
     try:
-        for i in range(20):
-            audit_event("tool_invoke", payload={"i": i})
+        with caplog.at_level(logging.INFO, logger="claritymed.audit"):
+            for i in range(20):
+                audit_event("tool_invoke", payload={"i": i})
     finally:
         reset_context(tokens)
-    lines = _read_lines(_audit_path(tmp_path))
-    # Each line must parse independently.
-    for line in lines[-20:]:
-        payload_json = line.split("] ", 3)[-1]
-        parsed = json.loads(payload_json)
+
+    audit_records = [r for r in caplog.records if r.name == "claritymed.audit"]
+    assert len(audit_records) == 20, (
+        f"Expected 20 audit records, got {len(audit_records)}"
+    )
+    for record in audit_records:
+        parsed = json.loads(record.getMessage())
         assert parsed["kind"] == "tool_invoke"

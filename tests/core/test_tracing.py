@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from claritymed.core.observability.tracing import (
+    _is_local_endpoint,
     is_configured,
     reset_for_testing,
     setup_tracing,
@@ -64,6 +65,22 @@ def test_endpoint_set_installs_provider_once(monkeypatch: pytest.MonkeyPatch):
     # Subsequent calls do not re-install — multiple CLI / TUI boots are safe.
     assert setup_tracing() is True
     assert install_calls == ["http://localhost:6006"]
+
+
+@pytest.mark.parametrize(
+    "endpoint,expected",
+    [
+        ("http://localhost:6006", True),
+        ("http://localhost:6006/v1/traces", True),
+        ("http://127.0.0.1:6006", True),
+        ("http://[::1]:6006", True),
+        ("https://app.phoenix.arize.com", False),
+        ("http://10.0.0.1:6006", False),
+        ("http://my-internal-phoenix:6006", False),
+    ],
+)
+def test_is_local_endpoint(endpoint, expected):
+    assert _is_local_endpoint(endpoint) is expected
 
 
 def test_install_failure_is_swallowed_so_main_flow_keeps_running(

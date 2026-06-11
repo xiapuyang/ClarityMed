@@ -238,6 +238,27 @@ def test_apply_spans_unknown_label_uses_generic():
     assert "[REDACTED]" in result
 
 
+def test_apply_spans_private_date_not_redacted():
+    """Dates are clinical context (onset, appointment) — they must not be scrubbed."""
+    text = "Symptoms started on January 15, 2024."
+    spans = [{"entity_group": "private_date", "start": 20, "end": 36}]
+    result = ScrubService._apply_spans(text, spans)
+    assert result == text  # unchanged
+
+
+def test_apply_spans_date_skipped_but_other_labels_still_applied():
+    """_SKIP_LABELS exemption is label-specific — other entities in the same pass are redacted."""
+    text = "Alice seen on January 15."
+    spans = [
+        {"entity_group": "private_person", "start": 0, "end": 5},
+        {"entity_group": "private_date", "start": 14, "end": 24},
+    ]
+    result = ScrubService._apply_spans(text, spans)
+    assert "Alice" not in result
+    assert "[REDACTED:PERSON]" in result
+    assert "January 15" in result  # date preserved
+
+
 # ---------------------------------------------------------------------------
 # Model layer — integration via injected mock pipeline
 # ---------------------------------------------------------------------------
@@ -253,6 +274,23 @@ def test_model_layer_scrubs_name():
     assert "Alice" not in scrubbed
     assert "[REDACTED:PERSON]" in scrubbed
     assert report.model_hits == 1
+
+
+def test_model_layer_populates_hit_types_in_report():
+    """model_hit_types on ScrubReport reflects per-label counts from the pipeline."""
+
+    class _MockPipeline:
+        def __call__(self, text):
+            return [
+                {"entity_group": "private_person", "start": 0, "end": 5},
+                {"entity_group": "private_email", "start": 10, "end": 28},
+                {"entity_group": "private_person", "start": 30, "end": 35},
+            ]
+
+    svc = _service_model_enabled(_MockPipeline())
+    _, report = svc.scrub("Alice at bob@example.com and Carol")
+    assert report.model_hit_types == {"private_person": 2, "private_email": 1}
+    assert report.model_hits == 3
 
 
 def test_model_layer_failure_falls_back_to_regex():
@@ -317,8 +355,32 @@ def _patch_audit(monkeypatch) -> list:
     return captured
 
 
+def test_regex_layer_emits_audit_on_hits(monkeypatch):
+    """scrub() emits scrub.regex audit event when regex layer finds PII."""
+    captured = _patch_audit(monkeypatch)
+
+    svc = _service_regex_only()
+    svc.scrub("call me at 13554760115 or email me@example.com")
+
+    regex_events = [e for e in captured if e["kind"] == "scrub.regex"]
+    assert len(regex_events) == 1
+    hits = regex_events[0]["payload"]["rule_hits"]
+    assert hits["phone_cn"] == 1
+    assert hits["email"] == 1
+
+
+def test_regex_layer_no_audit_when_no_hits(monkeypatch):
+    """scrub() does not emit scrub.regex when no PII is found."""
+    captured = _patch_audit(monkeypatch)
+
+    svc = _service_regex_only()
+    svc.scrub("My hemoglobin is 105.")
+
+    assert not any(e["kind"] == "scrub.regex" for e in captured)
+
+
 def test_model_layer_emits_audit_on_success(monkeypatch):
-    """_layer_model emits scrub.privacy_filter with status=ok."""
+    """_layer_model emits scrub.privacy_filter with status=ok and typed hit_types."""
     captured = _patch_audit(monkeypatch)
 
     class _MockPipeline:
@@ -333,6 +395,7 @@ def test_model_layer_emits_audit_on_success(monkeypatch):
     assert ev["kind"] == "scrub.privacy_filter"
     assert ev["payload"]["status"] == "ok"
     assert ev["payload"]["hits"] == 1
+    assert ev["payload"]["hit_types"] == {"private_person": 1}
     assert "duration_ms" in ev["payload"]
     assert "chars_in" in ev["payload"]
     assert "chars_out" in ev["payload"]

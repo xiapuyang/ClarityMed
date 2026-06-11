@@ -22,6 +22,19 @@ from pathlib import Path
 from claritymed import config as _cfg
 from claritymed.context import language_ctx, request_id_ctx, user_id_ctx
 
+
+def _in_test_mode() -> bool:
+    """True when running under pytest.
+
+    pytest sets PYTEST_CURRENT_TEST for the duration of each test.  In test
+    mode the lazy logger getters below skip file-handler creation and leave
+    ``propagate=True`` so pytest's caplog fixture can capture records without
+    any file I/O.  E2e tests that need to verify the full disk-write path
+    should install the file handler explicitly via ``_install_file_handler``.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
 APP_LOGGER = "claritymed"
 ACCESS_LOGGER = "claritymed.access"
 AUDIT_LOGGER = "claritymed.audit"
@@ -155,10 +168,13 @@ def get_access_logger() -> logging.Logger:
     logger = logging.getLogger(ACCESS_LOGGER)
     if not logger.handlers:
         logger.setLevel(logging.INFO)
-        logger.propagate = False
-        logger.addHandler(
-            _file_handler(_cfg.LOG_DIR, "access.log", ACCESS_FMT, 10 * 1024 * 1024, 10)
-        )
+        if not _in_test_mode():
+            logger.propagate = False
+            logger.addHandler(
+                _file_handler(
+                    _cfg.LOG_DIR, "access.log", ACCESS_FMT, 10 * 1024 * 1024, 10
+                )
+            )
     return logger
 
 
@@ -170,10 +186,13 @@ def get_audit_logger() -> logging.Logger:
     logger = logging.getLogger(AUDIT_LOGGER)
     if not logger.handlers:
         logger.setLevel(logging.INFO)
-        logger.propagate = False
-        logger.addHandler(
-            _file_handler(_cfg.LOG_DIR, "audit.log", AUDIT_FMT, 20 * 1024 * 1024, 20)
-        )
+        if not _in_test_mode():
+            logger.propagate = False
+            logger.addHandler(
+                _file_handler(
+                    _cfg.LOG_DIR, "audit.log", AUDIT_FMT, 20 * 1024 * 1024, 20
+                )
+            )
     return logger
 
 
@@ -182,8 +201,38 @@ def get_llm_logger() -> logging.Logger:
     logger = logging.getLogger(LLM_LOGGER)
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
-        logger.propagate = False
-        logger.addHandler(
-            _file_handler(_cfg.LOG_DIR, "llm.log", "%(message)s", 20 * 1024 * 1024, 5)
-        )
+        if not _in_test_mode():
+            logger.propagate = False
+            logger.addHandler(
+                _file_handler(
+                    _cfg.LOG_DIR, "llm.log", "%(message)s", 20 * 1024 * 1024, 5
+                )
+            )
     return logger
+
+
+def install_test_file_handlers(log_dir: Path, *, propagate: bool = True) -> None:
+    """Add RotatingFileHandlers for the lazy loggers pointing to *log_dir*.
+
+    In test mode _in_test_mode() skips file-handler creation so pytest's caplog
+    fixture works. Call this from e2e fixtures that need on-disk log output for
+    post-run inspection.
+
+    propagate=True (default): records also reach caplog via the logger hierarchy.
+    propagate=False: simulates production isolation — useful in tests that verify
+        audit records do not bleed into app.log.
+
+    Idempotent: skips loggers that already have a RotatingFileHandler.
+    """
+    for name, filename, fmt, max_bytes, backup_count in (
+        (AUDIT_LOGGER, "audit.log", AUDIT_FMT, 20 * 1024 * 1024, 20),
+        (ACCESS_LOGGER, "access.log", ACCESS_FMT, 10 * 1024 * 1024, 10),
+        (LLM_LOGGER, "llm.log", "%(message)s", 20 * 1024 * 1024, 5),
+    ):
+        lg = logging.getLogger(name)
+        if not any(isinstance(h, RotatingFileHandler) for h in lg.handlers):
+            lg.setLevel(logging.DEBUG)
+            lg.propagate = propagate
+            lg.addHandler(
+                _file_handler(log_dir, filename, fmt, max_bytes, backup_count)
+            )

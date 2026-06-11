@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ _API_KEY_ENV = "PHOENIX_API_KEY"
 _SERVICE_NAME_ENV = "OTEL_SERVICE_NAME"
 _DEFAULT_SERVICE_NAME = "claritymed"
 _SCRUB_DISABLE_ENV = "CLARITYMED_TRACE_PHI_SCRUB_DISABLE"
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Attribute keys (or key prefixes) OpenInference writes that may carry
 # PHI in their values. We pin to OI's documented attribute names rather
@@ -95,6 +97,11 @@ def reset_for_testing() -> None:
         _configured = False
 
 
+def _is_local_endpoint(endpoint: str) -> bool:
+    """Return True when the endpoint resolves to a loopback address."""
+    return (urlparse(endpoint).hostname or "").lower() in _LOCAL_HOSTS
+
+
 def _install(endpoint: str) -> None:
     # Imports are local so the rest of the codebase doesn't pay the OTel
     # import cost when tracing is off.
@@ -125,7 +132,9 @@ def _install(endpoint: str) -> None:
     # has populated input/output attributes, but before the
     # BatchSpanProcessor below picks the span up for export.
     if os.environ.get(_SCRUB_DISABLE_ENV, "").lower() not in ("1", "true", "yes"):
-        provider.add_span_processor(PhiScrubSpanProcessor())
+        provider.add_span_processor(
+            PhiScrubSpanProcessor(model_enabled=not _is_local_endpoint(endpoint))
+        )
 
     # OTLP HTTP is what self-hosted Phoenix accepts on /v1/traces. Batch
     # processor so streaming latency isn't taxed by export.
@@ -206,27 +215,25 @@ def _phi_scrub_processor_class():
     class _PhiScrubSpanProcessor(SpanProcessor):
         """Strip / redact PHI from OI-written attributes pre-export.
 
-        Uses a regex-only ``ScrubService`` (privacy_filter disabled) so
-        the per-span scrub stays cheap. Running the ONNX privacy filter
-        inline inside ``on_end`` for every span attribute would dwarf
-        the actual LLM cost when tracing is on; the model layer is the
-        right home for user-input scrub, not telemetry side-channels.
+        When ``model_enabled`` is False (localhost endpoint) only the regex
+        layer runs — cheap, no model load. When True (remote endpoint) the
+        privacy_filter setting from safety.yaml is respected so unstructured
+        PHI (names, addresses) is also caught before spans leave the host.
         """
 
-        def __init__(self) -> None:
-            # Read the same safety.yaml regex rules the orchestrator uses,
-            # but build a ScrubService with privacy_filter disabled so
-            # this on_end path stays cheap. The model layer's right
-            # home is user-input scrub, not telemetry side-channels.
+        def __init__(self, model_enabled: bool) -> None:
             try:
                 from claritymed import config as _cfg
 
                 _cfg.reload_configs()
                 phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
+                pf_config = phi_raw.get("privacy_filter", {})
+                if not model_enabled:
+                    pf_config = {"enabled": False}
                 cfg = ScrubConfig.model_validate(
                     {
                         "free_text_patterns": phi_raw.get("free_text_patterns", []),
-                        "privacy_filter": {"enabled": False},
+                        "privacy_filter": pf_config,
                     }
                 )
                 self._scrub = ScrubService(cfg)
@@ -280,13 +287,13 @@ def _is_phi_attr_key(key: str) -> bool:
     return any(key.startswith(prefix) for prefix in PHI_SCRUB_ATTR_PREFIXES)
 
 
-def PhiScrubSpanProcessor():  # noqa: N802 — factory mimics a class name on purpose
+def PhiScrubSpanProcessor(model_enabled: bool = False):  # noqa: N802 — factory mimics a class name on purpose
     """Construct a PHI scrub span processor.
 
     Hidden behind a factory for the same reason as ``BaggageSpanProcessor``
     — OTel SDK import is deferred to install time.
     """
-    return _phi_scrub_processor_class()()
+    return _phi_scrub_processor_class()(model_enabled=model_enabled)
 
 
 __all__ = [

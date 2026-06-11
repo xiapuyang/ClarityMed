@@ -74,13 +74,13 @@ def _silence_fd2():
 
 
 def _emit_scrub_audit(payload: dict) -> None:
-    """Emit scrub.privacy_filter audit event; silently skips if context is unset."""
+    """Emit scrub.privacy_filter audit event."""
     try:
         from claritymed.core.observability.audit import audit_event
 
         audit_event("scrub.privacy_filter", payload)
-    except Exception:  # MissingContextError or anything else  # noqa: BLE001
-        logger.debug("scrub.privacy_filter audit skipped (no request context)")
+    except Exception:  # noqa: BLE001
+        logger.warning("scrub.privacy_filter audit failed", exc_info=True)
 
 
 # HF entity_group label → our [REDACTED:X] placeholder
@@ -90,10 +90,14 @@ _LABEL_MAP: dict[str, str] = {
     "private_email": "[REDACTED:EMAIL]",
     "private_phone": "[REDACTED:PHONE]",
     "private_url": "[REDACTED:URL]",
-    "private_date": "[REDACTED:DATE]",
     "account_number": "[REDACTED:ACCOUNT]",
     "secret": "[REDACTED:SECRET]",
 }
+
+# Labels detected by the model that should NOT be redacted.
+# Dates are clinical context (appointment dates, symptom onset), not PHI that
+# needs scrubbing — redacting them makes answers medically useless.
+_SKIP_LABELS: frozenset[str] = frozenset({"private_date"})
 
 
 def _patch_tqdm_lock() -> None:
@@ -114,7 +118,10 @@ def _patch_tqdm_lock() -> None:
 
         tqdm.tqdm.set_lock(threading.RLock())
     except Exception:  # noqa: BLE001
-        pass
+        logger.warning(
+            "tqdm lock patch failed; multiprocessing may fail during model load",
+            exc_info=True,
+        )
 
 
 class _OnnxNerPipeline:
@@ -293,6 +300,7 @@ class ScrubReport(BaseModel):
 
     rule_hits: dict[str, int] = Field(default_factory=dict)
     model_hits: int = 0
+    model_hit_types: dict[str, int] = Field(default_factory=dict)
     model_failed: bool = False
     text_len_before: int = 0
     text_len_after: int = 0
@@ -344,14 +352,26 @@ class ScrubService:
         original_len = len(text)
         scrubbed, rule_hits = self._layer_regex(text)
 
+        if rule_hits:
+            try:
+                from claritymed.core.observability.audit import audit_event
+
+                audit_event("scrub.regex", {"rule_hits": rule_hits})
+            except Exception:  # noqa: BLE001
+                logger.warning("scrub.regex audit failed", exc_info=True)
+
         model_hits = 0
+        model_hit_types: dict[str, int] = {}
         model_failed = False
         if self._config.privacy_filter.enabled:
-            scrubbed, model_hits, model_failed = self._layer_model(scrubbed)
+            scrubbed, model_hits, model_failed, model_hit_types = self._layer_model(
+                scrubbed
+            )
 
         return scrubbed, ScrubReport(
             rule_hits=rule_hits,
             model_hits=model_hits,
+            model_hit_types=model_hit_types,
             model_failed=model_failed,
             text_len_before=original_len,
             text_len_after=len(scrubbed),
@@ -475,8 +495,8 @@ class ScrubService:
                 text = new_text
         return text, rule_hits
 
-    def _layer_model(self, text: str) -> tuple[str, int, bool]:
-        """Run privacy-filter pipeline. Returns ``(text, hits, failed)``.
+    def _layer_model(self, text: str) -> tuple[str, int, bool, dict[str, int]]:
+        """Run privacy-filter pipeline. Returns ``(text, hits, failed, hit_types)``.
 
         ``failed`` is True when the model layer was supposed to run but
         either the pipeline could not be constructed (None) or inference
@@ -488,23 +508,29 @@ class ScrubService:
         backend = "onnx" if self._config.privacy_filter.onnx_file else "torch"
         if pipe is None:
             _emit_scrub_audit({"status": "skipped", "backend": backend})
-            return text, 0, True
+            return text, 0, True, {}
         t0 = time.perf_counter()
         try:
             spans = pipe(text)
             duration_ms = int((time.perf_counter() - t0) * 1000)
+            hit_types: dict[str, int] = {}
+            for span in spans:
+                label = span.get("entity_group", "unknown")
+                if label not in _SKIP_LABELS:
+                    hit_types[label] = hit_types.get(label, 0) + 1
             scrubbed = self._apply_spans(text, spans)
             _emit_scrub_audit(
                 {
                     "status": "ok",
                     "backend": backend,
                     "duration_ms": duration_ms,
-                    "hits": len(spans),
+                    "hits": sum(hit_types.values()),
+                    "hit_types": hit_types,
                     "chars_in": len(text),
                     "chars_out": len(scrubbed),
                 }
             )
-            return scrubbed, len(spans), False
+            return scrubbed, sum(hit_types.values()), False, hit_types
         except Exception:
             duration_ms = int((time.perf_counter() - t0) * 1000)
             _emit_scrub_audit(
@@ -515,7 +541,7 @@ class ScrubService:
                 }
             )
             logger.exception("privacy-filter scrub failed; using regex-only output")
-            return text, 0, True
+            return text, 0, True, {}
 
     def _get_pipeline(self) -> Any:
         """Return the cached pipeline (ONNX or PyTorch), or None if unavailable."""
@@ -646,6 +672,8 @@ class ScrubService:
             return text
         for span in sorted(spans, key=lambda s: s["start"], reverse=True):
             label = span["entity_group"]
+            if label in _SKIP_LABELS:
+                continue
             placeholder = _LABEL_MAP.get(label, REDACTED)
             text = text[: span["start"]] + placeholder + text[span["end"] :]
         return text

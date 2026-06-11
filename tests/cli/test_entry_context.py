@@ -60,30 +60,43 @@ def test_invalid_env_lang_warns_and_falls_back(monkeypatch, tmp_path):
     assert "ja" in text  # warning message references the rejected value
 
 
-def test_audit_events_around_block(tmp_path):
-    setup_logging("test", console_level=None)
-    with inject_context(user_id="alice", language="en"):
-        pass
-    audit_path = tmp_path / "logs" / "audit.log"
-    lines = audit_path.read_text(encoding="utf-8").splitlines()
+def test_audit_events_around_block(caplog):
+    import logging
+
+    # Do NOT call setup_logging() — it sets claritymed.propagate=False,
+    # which breaks caplog. _isolate_runtime already set propagate=True.
+    with caplog.at_level(logging.INFO, logger="claritymed.audit"):
+        with inject_context(user_id="alice", language="en"):
+            pass
+
+    audit_records = [r for r in caplog.records if r.name == "claritymed.audit"]
     kinds = []
-    for line in lines:
-        if line.strip():
-            payload_json = line.split("] ", 3)[-1]
-            kinds.append(json.loads(payload_json)["kind"])
+    for record in audit_records:
+        try:
+            kinds.append(json.loads(record.getMessage())["kind"])
+        except (json.JSONDecodeError, KeyError):
+            pass
     assert "request_start" in kinds
     assert "request_end" in kinds
 
 
-def test_audit_event_on_exception(tmp_path):
-    setup_logging("test", console_level=None)
+def test_audit_event_on_exception(caplog):
+    import logging
+
+    # Do NOT call setup_logging() — it sets claritymed.propagate=False,
+    # which breaks caplog. _isolate_runtime already set propagate=True.
     try:
-        with inject_context(user_id="alice", language="en"):
-            raise RuntimeError("boom")
+        with caplog.at_level(logging.INFO, logger="claritymed.audit"):
+            with inject_context(user_id="alice", language="en"):
+                raise RuntimeError("boom")
     except RuntimeError:
         pass
-    text = (tmp_path / "logs" / "audit.log").read_text(encoding="utf-8")
-    assert '"status":"exception"' in text  # pydantic JSON has no space after colon
+
+    audit_records = [r for r in caplog.records if r.name == "claritymed.audit"]
+    messages = [r.getMessage() for r in audit_records]
+    assert any('"status":"exception"' in m for m in messages), (
+        f"No exception audit event found: {messages}"
+    )
 
 
 # --- check_user_exists ----------------------------------------------------

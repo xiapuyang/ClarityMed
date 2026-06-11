@@ -268,7 +268,7 @@ class LoggingModel:
             response = stream.get()
             usage = stream.usage
         except Exception:
-            get_llm_logger().debug(
+            get_llm_logger().warning(
                 "llm_logger: post-stream state read failed", exc_info=True
             )
             response = None

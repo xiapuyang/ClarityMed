@@ -17,9 +17,15 @@ import pytest
 
 # Load provider API keys and overrides from ~/.claritymed/.env before any
 # fixture or test runs — mirrors what the CLI does in _bootstrap_once().
+from claritymed import config as _cfg
 from claritymed.config import load_env_file
 
 load_env_file()
+
+# Snapshot the session-level log root before _isolate_runtime redirects LOG_DIR
+# to a per-test tmp_path.  All e2e tests write their logs here so a developer
+# can inspect them after a run without hunting through temp directories.
+_E2E_LOG_DIR = _cfg.LOG_DIR / "e2e"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -27,6 +33,19 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "local: tests that require live local services; excluded from CI",
     )
+
+
+@pytest.fixture(autouse=True)
+def _install_e2e_log_handlers() -> None:
+    """Write e2e test logs to logs/e2e/ for post-run inspection.
+
+    Runs after _isolate_runtime clears all handlers.  propagate=True keeps
+    pytest's caplog fixture working so tests can still assert via caplog while
+    the log files accumulate in _E2E_LOG_DIR for manual inspection.
+    """
+    from claritymed.core.observability.logging import install_test_file_handlers
+
+    install_test_file_handlers(_E2E_LOG_DIR)
 
 
 def _service_up(url: str) -> bool:

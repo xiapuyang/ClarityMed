@@ -65,7 +65,12 @@ def test_setup_logging_is_idempotent(tmp_path):
 
 
 def test_three_loggers_do_not_propagate(tmp_path):
+    from claritymed.core.observability.logging import install_test_file_handlers
+
     setup_logging("test", console_level=None)
+    # Simulate production isolation: propagate=False so audit/access records
+    # stay in their own files and do not bleed into app.log.
+    install_test_file_handlers(tmp_path / "logs", propagate=False)
     audit = get_audit_logger()
     access = get_access_logger()
     audit.info("audit-only")
@@ -81,7 +86,11 @@ def test_three_loggers_do_not_propagate(tmp_path):
 
 
 def test_audit_logger_includes_language(tmp_path):
-    setup_logging("test", console_level=None)
+    from claritymed.core.observability.logging import install_test_file_handlers
+
+    # Use file-based assertion: ClarityMedFormatter injects [zh] and request_id
+    # at format time; caplog stores raw records and never calls the formatter.
+    install_test_file_handlers(tmp_path / "logs", propagate=False)
     tokens = apply_context("20260606222522DEADBEEF", "alice", "zh")
     try:
         get_audit_logger().info("trace")
@@ -116,7 +125,7 @@ def test_context_vars_isolated_across_concurrent_tasks(tmp_path):
         assert marker in text, f"missing isolation marker for user{i}"
 
 
-async def test_middleware_assigns_request_id_and_resets_context(tmp_path):
+async def test_middleware_assigns_request_id_and_resets_context(caplog):
     """Integration: starlette middleware + httpx AsyncClient pair."""
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
@@ -124,7 +133,8 @@ async def test_middleware_assigns_request_id_and_resets_context(tmp_path):
 
     from claritymed.core.observability.middleware import ContextMiddleware
 
-    setup_logging("test", console_level=None)
+    # No setup_logging() — it sets claritymed.propagate=False, breaking caplog.
+    # _isolate_runtime already set propagate=True on all claritymed.* loggers.
 
     async def endpoint(request):
         return JSONResponse({"ok": True})
@@ -133,19 +143,26 @@ async def test_middleware_assigns_request_id_and_resets_context(tmp_path):
     app.add_middleware(ContextMiddleware)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        # Forged id is rejected and replaced.
-        r1 = await client.get("/", headers={"X-Request-ID": "deadbeef"})
-        assert r1.status_code == 200
-        replaced = r1.headers["X-Request-ID"]
-        assert len(replaced) == 22
+    with caplog.at_level(logging.INFO, logger="claritymed.audit"):
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t"
+        ) as client:
+            # Forged id is rejected and replaced.
+            r1 = await client.get("/", headers={"X-Request-ID": "deadbeef"})
+            assert r1.status_code == 200
+            replaced = r1.headers["X-Request-ID"]
+            assert len(replaced) == 22
 
-        # Valid id is echoed.
-        r2 = await client.get("/", headers={"X-Request-ID": "20260606222522DEADBEEF"})
-        assert r2.headers["X-Request-ID"] == "20260606222522DEADBEEF"
+            # Valid id is echoed.
+            r2 = await client.get(
+                "/", headers={"X-Request-ID": "20260606222522DEADBEEF"}
+            )
+            assert r2.headers["X-Request-ID"] == "20260606222522DEADBEEF"
 
-    audit_text = _read(tmp_path / "logs" / "audit.log")
-    assert '"x_request_id_rejected":true' in audit_text
+    audit_msgs = " ".join(
+        r.getMessage() for r in caplog.records if r.name == "claritymed.audit"
+    )
+    assert '"x_request_id_rejected":true' in audit_msgs
     # ContextVar reset after the request.
     assert request_id_ctx.get() is None
 

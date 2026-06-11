@@ -36,13 +36,13 @@ def _provider_label(provider: OcrProvider) -> str:
 
 
 def _emit_audit(payload: dict[str, Any]) -> None:
-    """Emit ocr.extract audit event; silently skips if context is unset."""
+    """Emit ocr.extract audit event."""
     try:
         from claritymed.core.observability.audit import audit_event
 
         audit_event("ocr.extract", payload)
-    except Exception:  # MissingContextError or anything else
-        logger.debug("ocr audit skipped (no request context or audit error)")
+    except Exception:  # noqa: BLE001
+        logger.warning("ocr.extract audit failed", exc_info=True)
 
 
 class RoutingOcrProvider(OcrProvider):
