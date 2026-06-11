@@ -34,14 +34,18 @@ def _provider(**over) -> ProviderConfig:
 
 def test_no_base_url_uses_infer_model_for_anthropic(monkeypatch):
     """Stock anthropic entry: infer_model picks AnthropicModel and reads
-    ANTHROPIC_API_KEY itself — we do nothing."""
+    ANTHROPIC_API_KEY itself — we do nothing.
+
+    Unit 5 wraps cloud-kind providers in ``PhiAssertionModel(LoggingModel(…))``;
+    unwrap two layers before checking the base type.
+    """
     from pydantic_ai.models.anthropic import AnthropicModel
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     m = build_model(
         _provider(kind="cloud", model="anthropic:claude-sonnet-4-5", base_url=None)
     )
-    assert isinstance(m, AnthropicModel)
+    assert isinstance(_unwrap_phi_logging(m), AnthropicModel)
 
 
 def test_no_base_url_uses_infer_model_for_openai(monkeypatch):
@@ -49,7 +53,19 @@ def test_no_base_url_uses_infer_model_for_openai(monkeypatch):
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     m = build_model(_provider(kind="cloud", model="openai:gpt-4o", base_url=None))
-    assert isinstance(m, OpenAIChatModel)
+    assert isinstance(_unwrap_phi_logging(m), OpenAIChatModel)
+
+
+def _unwrap_phi_logging(model):
+    """Cloud providers wrap base → LoggingModel → PhiAssertionModel; peel."""
+    from claritymed.core.observability.llm_logger import LoggingModel
+    from claritymed.core.phi.assertion_model import PhiAssertionModel
+
+    if isinstance(model, PhiAssertionModel):
+        model = model._inner  # noqa: SLF001
+    if isinstance(model, LoggingModel):
+        model = model._inner  # noqa: SLF001
+    return model
 
 
 def test_missing_cloud_key_surfaces_pydantic_ai_error(monkeypatch):

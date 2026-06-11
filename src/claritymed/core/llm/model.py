@@ -42,7 +42,20 @@ if TYPE_CHECKING:
 
 
 def build_model(provider: ProviderConfig) -> "Model":
-    """Construct a pydantic-ai ``Model`` from a catalog entry."""
+    """Construct a pydantic-ai ``Model`` from a catalog entry.
+
+    Wrap order (outer → inner) for ``kind == "cloud"`` providers:
+
+        PhiAssertionModel(LoggingModel(BaseModel))
+
+    The assertion fires *before* logging, so a refused call never lands
+    in ``llm.log`` as a side channel. ``LoggingModel`` is unconditional
+    in cloud paths regardless of ``CLARITYMED_DEBUG`` so the wrap-order
+    invariant always holds; logger level controls volume.
+
+    Local providers still respect the ``CLARITYMED_DEBUG`` env gate to
+    keep cold paths cheap.
+    """
     if provider.base_url is None:
         model = infer_model(provider.model)
     else:
@@ -56,11 +69,20 @@ def build_model(provider: ProviderConfig) -> "Model":
             provider=OllamaProvider(base_url=provider.base_url, api_key=api_key),
         )
 
-    if os.environ.get("CLARITYMED_DEBUG") == "1":
-        from claritymed.core.observability.llm_logger import LoggingModel
+    # Local providers: log-only-on-debug for backward compatibility.
+    if provider.kind != "cloud":
+        if os.environ.get("CLARITYMED_DEBUG") == "1":
+            from claritymed.core.observability.llm_logger import LoggingModel
 
-        return LoggingModel(model)
-    return model
+            return LoggingModel(model)
+        return model
+
+    # Cloud providers: layer-3 PHI defense wraps everything, with
+    # LoggingModel unconditionally in the middle so wrap order holds.
+    from claritymed.core.observability.llm_logger import LoggingModel
+    from claritymed.core.phi.assertion_model import PhiAssertionModel
+
+    return PhiAssertionModel(LoggingModel(model))
 
 
 def build_model_settings(provider: ProviderConfig) -> ModelSettings | None:

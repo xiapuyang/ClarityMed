@@ -34,6 +34,11 @@ AuditKind = Literal[
     "redflag_trigger",
     "phi_guard_block",
     "phi_guard_allow",
+    # Layer-3 PHI defense (PhiAssertionModel). Fires when a cloud-bound
+    # message stream contained PHI that the guard scrubber detected,
+    # *before* the inner Model is invoked. Payload: layer_triggered,
+    # part_type.
+    "phi.leak_detected",
     # tools
     "tool_invoke",
     "tool_result",
