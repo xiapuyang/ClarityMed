@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App
-from textual.widgets import Button
+from textual.widgets import Button, OptionList
 
 from claritymed.cli.tui.modals import (
     ApprovalModal,
@@ -159,8 +159,7 @@ async def test_provider_modal_cancel_dismisses_with_none(monkeypatch):
     app = _ModalHostApp(ProviderModal(current_provider_id="local_llm"))
     async with app.run_test() as pilot:
         await pilot.pause()
-        modal = app.screen
-        modal.query_one("#cancel", Button).press()
+        await pilot.press("escape")
         await pilot.pause()
     assert app.result is None
 
@@ -174,8 +173,9 @@ async def test_provider_modal_selects_provider(monkeypatch):
     app = _ModalHostApp(ProviderModal(current_provider_id="local_llm"))
     async with app.run_test() as pilot:
         await pilot.pause()
-        modal = app.screen
-        modal.query_one("#p_cloud_llm", Button).press()
+        # current is local_llm (index 0); move down to cloud_llm (index 1)
+        await pilot.press("down")
+        await pilot.press("enter")
         await pilot.pause()
     assert app.result == "cloud_llm"
 
@@ -189,8 +189,9 @@ async def test_provider_modal_marks_current_provider_selected(monkeypatch):
     app = _ModalHostApp(ProviderModal(current_provider_id="local_llm"))
     async with app.run_test() as pilot:
         await pilot.pause()
-        btn = app.screen.query_one("#p_local_llm", Button)
-        assert "selected" in btn.classes
+        picker = app.screen.query_one("#picker", OptionList)
+        # current provider (local_llm) is at index 0 and should be pre-highlighted
+        assert picker.highlighted == 0
 
 
 @pytest.mark.asyncio
