@@ -86,6 +86,7 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
+    "textual-dev>=1.8.0",
 ]
 
 [tool.pytest.ini_options]
