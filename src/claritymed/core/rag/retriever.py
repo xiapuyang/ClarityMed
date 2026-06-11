@@ -64,6 +64,16 @@ class HybridRetriever:
         system_parent_store: ParentStore,
         user_store_factory: Callable[[str], Awaitable[RagCollectionStore | None]],
         user_parent_store_factory: Callable[[str], ParentStore | None],
+        # Unit 4: optional PHI-side store + parent store. ``None`` keeps the
+        # legacy single-collection behavior so existing test fixtures don't
+        # need to wire a second store; production paths get both wired by
+        # the retriever factory.
+        user_phi_store_factory: (
+            Callable[[str], Awaitable[RagCollectionStore | None]] | None
+        ) = None,
+        user_phi_parent_store_factory: (
+            Callable[[str], ParentStore | None] | None
+        ) = None,
         rerank_top_k: int = 5,
     ) -> None:
         self._embedder = embedder
@@ -74,6 +84,8 @@ class HybridRetriever:
         self._system_parent_store = system_parent_store
         self._user_store = user_store_factory
         self._user_parent_store_factory = user_parent_store_factory
+        self._user_phi_store = user_phi_store_factory
+        self._user_phi_parent_store_factory = user_phi_parent_store_factory
         self._rerank_top_k = rerank_top_k
 
     # --- public API ----------------------------------------------------
@@ -125,6 +137,14 @@ class HybridRetriever:
         ]
         if user_store is not None:
             coroutines.append(_search(f"user_rag_{user_id}", user_store))
+        # Unit 4: query the PHI collection alongside the library one.
+        # Same RRF + rerank pipeline; the layer-2 filter (in
+        # ``filter_chunks_for_provider``) drops can_cloud=False chunks
+        # when the caller asks for cloud-safe results.
+        if self._user_phi_store is not None:
+            user_phi_store = await self._user_phi_store(user_id)
+            if user_phi_store is not None:
+                coroutines.append(_search(f"user_phi_{user_id}", user_phi_store))
         batches = await asyncio.gather(*coroutines)
         all_hits: list[tuple[str, QdrantHit]] = [
             hit for batch in batches for hit in batch
@@ -195,12 +215,20 @@ class HybridRetriever:
     def _to_retrieved_chunk(self, collection: str, hit: QdrantHit) -> RetrievedChunk:
         payload = hit.payload
         rerank_score = payload.pop("__rerank_score", None)
-        is_phi = bool(payload.get("is_phi", collection.startswith("user_rag_")))
-        can_cloud = bool(
-            payload.get("can_cloud", not collection.startswith("user_rag_"))
+        is_user_owned = collection.startswith("user_rag_") or collection.startswith(
+            "user_phi_"
         )
+        # PHI collection always defaults is_phi=True regardless of payload;
+        # library defaults False unless the payload explicitly carries it.
+        default_is_phi = collection.startswith("user_phi_")
+        is_phi = bool(payload.get("is_phi", default_is_phi))
+        # PHI collection defaults can_cloud=False (the structural defense);
+        # library defaults to True for system content and to the payload
+        # for user content. Layer-2 filter relies on this default.
+        default_can_cloud = not is_user_owned
+        can_cloud = bool(payload.get("can_cloud", default_can_cloud))
         source: Literal["system_rag", "user_rag"] = (
-            "user_rag" if collection.startswith("user_rag_") else "system_rag"
+            "user_rag" if is_user_owned else "system_rag"
         )
         return RetrievedChunk(
             text=hit.text,
@@ -230,6 +258,13 @@ class HybridRetriever:
     ) -> str | None:
         if not collection or not parent_id:
             return None
+        if collection.startswith("user_phi_"):
+            # PHI parents live in a separate docstore JSON to keep the two
+            # collections physically distinct end-to-end.
+            if self._user_phi_parent_store_factory is None:
+                return None
+            phi_store = self._user_phi_parent_store_factory(user_id)
+            return phi_store.get_text(parent_id) if phi_store else None
         if collection.startswith("user_rag_"):
             user_store = self._user_parent_store_factory(user_id)
             return user_store.get_text(parent_id) if user_store else None

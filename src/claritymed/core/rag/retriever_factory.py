@@ -53,7 +53,9 @@ from claritymed.core.rag.schemas import RetrievalConfig, load_retrieval_config
 from claritymed.core.rag.terms.factory import build_term_service
 from claritymed.stores.paths import (
     shared_parent_docstore_path,
+    user_parent_docstore_library_path,
     user_parent_docstore_path,
+    user_parent_docstore_phi_path,
     user_rag_qdrant_dir,
 )
 
@@ -112,6 +114,12 @@ def build_hybrid_retriever(
         system_parent_store=system_parent_store,
         user_store_factory=_make_user_store_factory(embedder),
         user_parent_store_factory=_make_user_parent_store_factory(),
+        # Unit 4: dual collections per user. PHI store factory mirrors the
+        # library one but targets ``user_phi_<id>`` + its own parent
+        # docstore. Shares the per-user AsyncQdrantClient with the library
+        # factory (Qdrant local-mode requires one client per dir).
+        user_phi_store_factory=_make_user_phi_store_factory(embedder),
+        user_phi_parent_store_factory=_make_user_phi_parent_store_factory(),
         rerank_top_k=cfg.user_rag.rerank_k,
     )
 
@@ -171,3 +179,63 @@ def _make_user_parent_store_factory():
         return ParentStore(path)
 
     return factory
+
+
+# --- Unit 4: PHI side factories ----------------------------------------
+#
+# Mirrors the library factories above but points at the PHI collection
+# (``user_phi_<id>``) and the PHI parent docstore. AsyncQdrantClient is
+# shared per-user so both library + PHI live in one local-mode file lock.
+
+
+def _make_user_phi_store_factory(embedder: "Embedder"):
+    """Per-user PHI store factory; shares ``AsyncQdrantClient`` with library.
+
+    Returns ``None`` when either the user's qdrant dir or the
+    ``user_phi_<id>`` collection doesn't exist yet (fresh install, no
+    records ingested) so retrieval gracefully degrades to library +
+    system collections only.
+    """
+    clients: dict[str, AsyncQdrantClient] = {}
+
+    async def factory(user_id: str) -> RagCollectionStore | None:
+        user_dir = user_rag_qdrant_dir(user_id)
+        if not user_dir.exists():
+            return None
+        if user_id not in clients:
+            clients[user_id] = AsyncQdrantClient(path=str(user_dir))
+        aclient = clients[user_id]
+        name = f"user_phi_{user_id}"
+        if not await aclient.collection_exists(name):
+            return None
+        return RagCollectionStore(
+            aclient=aclient,
+            collection_name=name,
+            dense_dim=embedder.dimension,
+        )
+
+    return factory
+
+
+def _make_user_phi_parent_store_factory():
+    def factory(user_id: str) -> ParentStore | None:
+        # Try the new dedicated PHI parent docstore first, fall back to
+        # the legacy single docstore. Unit 4 is additive — older user
+        # data that wrote everything to the single docstore still
+        # resolves until they re-ingest.
+        for path in (
+            user_parent_docstore_phi_path(user_id),
+            user_parent_docstore_path(user_id),
+        ):
+            if path.exists():
+                return ParentStore(path)
+        return None
+
+    return factory
+
+
+# Reserved for the future clean break. Re-exported here so callers (Unit
+# 6 tool dispatcher, the headless CLI rag-add wrapper) can import a
+# stable name even before the user_rag → user_library_rag rename lands.
+def user_library_parent_docstore_path(user_id):
+    return user_parent_docstore_library_path(user_id)
