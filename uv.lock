@@ -461,6 +461,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "arize-phoenix-client" },
+    { name = "filelock" },
     { name = "llama-index-core" },
     { name = "llama-index-vector-stores-qdrant" },
     { name = "onnxruntime" },
@@ -512,6 +513,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'evals'", specifier = ">=2.20" },
     { name = "deepeval", marker = "extra == 'e2e'", specifier = ">=4.0" },
     { name = "fastapi", marker = "extra == 'rag-server'", specifier = ">=0.115" },
+    { name = "filelock", specifier = ">=3.13,<4" },
     { name = "flagembedding", marker = "extra == 'rag-server'", specifier = ">=1.3" },
     { name = "httpx", marker = "extra == 'e2e'", specifier = ">=0.28.1" },
     { name = "llama-index-core", specifier = ">=0.14.22" },

@@ -5,6 +5,11 @@ description = "Patient-facing medical Q&A with structured uncertainty propagatio
 requires-python = ">=3.11"
 dependencies = [
     "arize-phoenix-client>=2.7.0",
+    # Cross-platform advisory file lock (fcntl on POSIX, msvcrt on Windows).
+    # Used by manifest_store / blob_store / settings_store / session_attachments
+    # for multi-process write safety. Drop-in replacement for the fcntl.flock
+    # we sketched in the brainstorm; ~30KB pure-Python, MIT.
+    "filelock>=3.13,<4",
     "llama-index-core>=0.14.22",
     "llama-index-vector-stores-qdrant>=0.10.1",
     "openinference-instrumentation-pydantic-ai>=0.1.16",
