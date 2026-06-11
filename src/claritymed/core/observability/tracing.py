@@ -146,19 +146,13 @@ def _install(cfg: TracingConfig) -> None:
     # Scrub PHI from OI-written attributes *before* the exporter sees the
     # batch. Gate follows the same resolve_phi_kind logic as service clients:
     # localhost → None (no processor), remote → PhiOutboundGate.
+    # If ScrubService init fails for a remote endpoint, let the exception
+    # propagate — setup_tracing() will catch it and skip tracing entirely
+    # rather than exporting spans without PHI scrubbing.
     from claritymed.core.phi.outbound_gate import make_outbound_gate, resolve_phi_kind
 
-    kind = resolve_phi_kind(cfg.phi_kind, cfg.endpoint)
-    gate = None
-    if kind == "cloud":
-        try:
-            gate = make_outbound_gate(kind)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "ScrubService init failed; exporting spans without PHI scrubbing"
-            )
-    if gate is not None:
-        provider.add_span_processor(PhiScrubSpanProcessor(gate))
+    gate = make_outbound_gate(resolve_phi_kind(cfg.phi_kind, cfg.endpoint))
+    provider.add_span_processor(PhiScrubSpanProcessor(gate))
 
     # OTLP HTTP is what self-hosted Phoenix accepts on /v1/traces. Batch
     # processor so streaming latency isn't taxed by export.
@@ -246,13 +240,15 @@ def _phi_scrub_processor_class():
         testability are unified across all outbound boundaries.
         """
 
-        def __init__(self, gate) -> None:
+        def __init__(self, gate=None) -> None:
             self._gate = gate
 
         def on_start(self, span, parent_context=None):  # noqa: D401, ARG002
             return
 
         def on_end(self, span):  # noqa: D401
+            if self._gate is None:
+                return
             attrs = getattr(span, "_attributes", None)
             if not attrs:
                 return

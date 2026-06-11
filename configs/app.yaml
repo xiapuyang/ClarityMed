@@ -30,6 +30,6 @@ access_log:
 tracing:
   enabled: false
   endpoint: http://localhost:6006
-  api_key_env: null
+  api_key_env: PHOENIX_API_KEY
   phi_kind: null
   service_name: claritymed
