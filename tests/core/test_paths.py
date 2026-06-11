@@ -74,3 +74,102 @@ def test_data_and_shared_disjoint():
     shared = _cfg.SHARED_DIR.resolve()
     assert not data.is_relative_to(shared)
     assert not shared.is_relative_to(data)
+
+
+# --- v1 PHI storage helpers --------------------------------------------
+
+
+def test_user_records_dir_with_category():
+    assert (
+        paths.user_records_dir("alice", "exam-reports")
+        == _cfg.DATA_DIR / "users" / "alice" / "records" / "exam-reports"
+    )
+
+
+def test_user_records_dir_without_category():
+    assert (
+        paths.user_records_dir("alice") == _cfg.DATA_DIR / "users" / "alice" / "records"
+    )
+
+
+def test_user_record_dir_composes_three_levels():
+    p = paths.user_record_dir("alice", "exam-reports", "2026-06-11-ab12cd34")
+    assert p.name == "2026-06-11-ab12cd34"
+    assert p.parent.name == "exam-reports"
+    assert p.parent.parent.name == "records"
+
+
+def test_user_record_dir_rejects_traversal_slug():
+    with pytest.raises(ValueError):
+        paths.user_record_dir("alice", "exam-reports", "..evil")
+
+
+def test_user_record_dir_rejects_traversal_category():
+    with pytest.raises(ValueError):
+        paths.user_record_dir("alice", "../etc", "x")
+
+
+def test_user_library_dir_mirrors_records():
+    assert (
+        paths.user_library_dir("alice", "papers")
+        == _cfg.DATA_DIR / "users" / "alice" / "library" / "papers"
+    )
+
+
+def test_user_blob_dir_is_two_level_cas():
+    sha = "ab" + "0" * 62
+    p = paths.user_blob_dir("alice", sha)
+    assert p == paths.user_blobs_dir("alice") / "ab" / sha
+
+
+def test_user_blob_path_rejects_non_hex_sha():
+    with pytest.raises(ValueError):
+        paths.user_blob_path("alice", "not-a-sha", "pdf")
+
+
+def test_user_blob_path_rejects_wrong_length_sha():
+    with pytest.raises(ValueError):
+        paths.user_blob_path("alice", "ab" * 31, "pdf")
+
+
+def test_user_blob_path_rejects_bad_extension():
+    with pytest.raises(ValueError):
+        paths.user_blob_path("alice", "a" * 64, "")
+    with pytest.raises(ValueError):
+        paths.user_blob_path("alice", "a" * 64, ".pdf")
+    with pytest.raises(ValueError):
+        paths.user_blob_path("alice", "a" * 64, "sub/dir")
+
+
+def test_user_session_attachments_path():
+    sid = "1234-uuid"
+    assert (
+        paths.user_session_attachments_path("alice", sid)
+        == _cfg.DATA_DIR / "users" / "alice" / "session" / sid / "attachments.json"
+    )
+
+
+def test_user_session_dir_rejects_traversal():
+    with pytest.raises(ValueError):
+        paths.user_session_dir("alice", "../etc")
+
+
+def test_user_audit_payload_path():
+    rid = "20260611000000ABCDEF12"
+    assert (
+        paths.user_audit_payload_path("alice", rid)
+        == _cfg.DATA_DIR / "users" / "alice" / "audit_payloads" / f"{rid}.json"
+    )
+
+
+def test_user_audit_payload_path_rejects_traversal_request_id():
+    with pytest.raises(ValueError):
+        paths.user_audit_payload_path("alice", "../etc/passwd")
+
+
+def test_user_parent_docstores_are_distinct():
+    """PHI and library docstore JSON files must be physically separate."""
+    phi = paths.user_parent_docstore_phi_path("alice")
+    lib = paths.user_parent_docstore_library_path("alice")
+    assert phi != lib
+    assert phi.parent == lib.parent == paths.user_root("alice")

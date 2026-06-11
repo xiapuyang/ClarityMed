@@ -151,3 +151,15 @@ def test_real_store_loads_without_error():
     assert en.strip()
     assert zh.strip()
     assert en != zh  # bilingual content really differs
+
+
+def test_tool_proposal_prompt_loads_both_languages():
+    """The new ``tool_proposal`` system fragment ships with en + zh from
+    Unit 0 because ``ask_agent`` includes it from day one."""
+    reg = PromptRegistry()
+    assert "tool_proposal" in reg.list()
+    en = reg.get("tool_proposal", language="en")
+    zh = reg.get("tool_proposal", language="zh")
+    assert "save_record" in en
+    assert "save_record" in zh
+    assert en != zh

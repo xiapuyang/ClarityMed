@@ -28,6 +28,11 @@ USER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 request_id_ctx: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
 user_id_ctx: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
 language_ctx: ContextVar[Optional[str]] = ContextVar("language", default=None)
+# A TUI launch / API session id (uuid4). Shared by ``ChatSession`` (which writes
+# ``sessions/<sid>.jsonl``) and the new ``SessionAttachments`` store (which
+# writes ``session/<sid>/attachments.json``). Same id across both so
+# ``/resume <id>`` rehydrates the attachments tray as well as the chat log.
+session_id_ctx: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
 
 
 class MissingContextError(RuntimeError):

@@ -67,3 +67,14 @@ phi:
     id: "[REDACTED:ID]"
     mrn: "[REDACTED:MRN]"
     address: "[REDACTED:ADDR]"
+
+# Typed-exception display strings. The error class itself names *what* went
+# wrong; these strings answer *what should the user do about it* in their
+# language. Keep messages short and free of internal jargon.
+errors:
+  revision_conflict: "This record was changed by another process. Reload and try again."
+  unknown_sha256: "That file is not attached to this session. Re-upload or pick from the library."
+  phi_leak_detected: "PHI defense engaged: this cloud call was refused to keep personal health information on your machine."
+  ocr_failed: "Could not extract text from the attachment. You can save the record without OCR or retry from the library view."
+  record_not_found: "No record at that path. It may have been deleted from another session."
+  path_outside_user_domain: "That path is outside your data directory. The action was refused."

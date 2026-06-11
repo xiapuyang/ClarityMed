@@ -126,3 +126,99 @@ class EmbedderUnreachableError(RuntimeError):
 
 class RerankerUnreachableError(RuntimeError):
     """Reranker server returned non-2xx, timed out, or sent a bad shape."""
+
+
+# --- v1 PHI storage + tool dispatcher errors ---------------------------
+#
+# The single PHI write gate (ToolDispatcher) and the per-event manifest
+# storage layer add a handful of typed exceptions that the orchestrator,
+# CLI, and TUI all branch on rather than parse error messages.
+
+
+class NonRetryableLLMError(RuntimeError):
+    """Marker base — pydantic-ai's retry loop must not re-issue the call.
+
+    Any LLM-pipeline exception that's deterministic in the *input* (PHI
+    leak, schema-incompatible structured output, etc.) should subclass
+    this so the framework's retry handler short-circuits and the audit
+    log gets one event per actual failure, not one per retry.
+    """
+
+
+class RevisionConflict(RuntimeError):
+    """Optimistic-lock failure on ``ManifestStore.update``.
+
+    Caller supplied ``expected_revision`` that did not match the on-disk
+    manifest's current revision. The classic concurrent-edit race; the
+    safe response is to re-read and retry with a fresh expected revision.
+    """
+
+
+class UnknownSha256(ValueError):
+    """A tool referenced a sha256 not present in the user's blob universe.
+
+    Checked at ``ToolDispatcher.gate`` step 2: every sha in tool args must
+    be in (current session attachments ∪ ``blobs/<sha>/`` on disk ∪ any
+    manifest under the current user's records/library). Cross-user sha
+    resolution always fails — the third set is scoped to the auth'd uid.
+    """
+
+
+class PhiLeakDetected(NonRetryableLLMError):
+    """``PhiAssertionModel`` (layer 3) refused an outbound cloud call.
+
+    A cloud-bound message stream contained PHI (chunk marker or content
+    heuristic hit). Non-retryable so pydantic-ai's retry loop terminates
+    rather than re-issuing the same prompt and re-tripping the assertion
+    in a flood of audit rows.
+    """
+
+
+class RecordNotFound(LookupError):
+    """``ManifestStore.read`` was asked for a slug that does not exist."""
+
+
+class PathOutsideUserDomain(PermissionError):
+    """``record_path`` (or similar) escaped the current user's data root.
+
+    Detected by resolving both the supplied path and the user's records
+    root and asserting ``resolved.is_relative_to(root)``. Catches both
+    ``../`` traversal and symlink escape — the latter via an explicit
+    ``os.lstat`` symlink check at the final path component.
+    """
+
+
+class OcrFailed(RuntimeError):
+    """Eager-OCR worker exhausted its provider chain without text.
+
+    Distinct from ``OcrProviderError`` (single-provider failure): this is
+    the chain-level "no provider can read this blob" outcome. The blob's
+    ``ocr.json`` is still written with ``status="failed"`` so the UI can
+    surface state without re-running OCR.
+    """
+
+
+class ApprovalDenied(PermissionError):
+    """User denied a tool's approval modal.
+
+    Bubbles out of ``ToolDispatcher.gate`` as a typed exception so the
+    LLM gets a structured tool error rather than a swallowed silence.
+    """
+
+
+class OcrProviderError(RuntimeError):
+    """One OCR provider failed to extract.
+
+    Recoverable at the routing layer (n-ary fallback): the next provider
+    in the chain is tried. Raised by the per-provider ``extract`` impl.
+    """
+
+
+class MinerUNotAllowed(OcrProviderError):
+    """Constructing the MinerU provider requires explicit env opt-in.
+
+    MinerU is a cloud SaaS (mineru.net); it never belongs on the PHI
+    path. The env gate (``CLARITYMED_ALLOW_MINERU=1``) is for regression
+    testing only — ``is_local = False`` keeps PHI chains structurally
+    safe even when the env is set.
+    """

@@ -1,0 +1,160 @@
+"""Tool-args pydantic schemas.
+
+The seven LLM-callable ingest tools each have a frozen args contract here.
+``ToolDispatcher`` validates against the right schema before any approval
+check; ``ApprovalModal`` reads ``model_json_schema()`` to render the
+per-field ``modify_args`` form; the headless CLI parses JSON straight into
+these models.  One source of truth for each tool's argument shape — no
+drift between LLM, modal, and CLI.
+
+Why ``extra="forbid"``: an LLM hallucinating a field gets a ValidationError
+at the boundary, not a silent dropped value inside the tool body.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from claritymed.core.schemas.records import ExtractedLab
+from claritymed.core.schemas.patient import AllergySeverity, AllergySource
+
+
+class AttachmentRef(BaseModel):
+    """Reference to a CAS blob from inside a tool's args.
+
+    Distinct from ``records.Attachment``: that one is what lands in the
+    manifest (full metadata + ocr_status). This one is what the LLM emits
+    in a tool call — sha + filename are mandatory, mime/size are populated
+    by the tool body from the blob itself (so the LLM can't lie about the
+    file type to dodge an approval rule).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    filename: str = Field(min_length=1, max_length=255)
+
+
+class SaveRecordArgs(BaseModel):
+    """``save_record`` — one PHI event written to records/<category>/<slug>/."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    category: str = Field(min_length=1, max_length=64)
+    kind: str = Field(min_length=1, max_length=64)
+    # See ``records.Manifest.event_date`` — same rename to avoid shadowing
+    # ``datetime.date`` with a same-named field.
+    event_date: date | None = Field(default=None, alias="date")
+    title: str = Field(min_length=1, max_length=256)
+    provider: str | None = Field(default=None, max_length=128)
+    attachments: list[AttachmentRef] = Field(default_factory=list)
+    extracted_labs: list[ExtractedLab] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class SaveMedicationArgs(BaseModel):
+    """``save_medication`` — one medication upserted to profile.db."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=128)
+    code: str | None = Field(default=None, max_length=64)
+    dose: str | None = Field(default=None, max_length=64)
+    frequency: str | None = Field(default=None, max_length=64)
+
+
+class SaveAllergyArgs(BaseModel):
+    """``save_allergy`` — one allergy upserted to profile.db.
+
+    Allergy severity and source reuse the existing patient-schema literals
+    so the tool can't smuggle in a value that ``ProfileStore.add_allergy``
+    refuses; one validation path instead of two.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    substance: str = Field(min_length=1, max_length=128)
+    severity: AllergySeverity
+    source: AllergySource
+
+
+class SaveConditionArgs(BaseModel):
+    """``save_condition`` — one condition upserted to profile.db."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    display: str = Field(min_length=1, max_length=128)
+    code: str | None = Field(default=None, max_length=64)
+    onset_date: date | None = None
+
+
+# Fields that ``update_profile_field`` is allowed to touch. Hardcoded rather
+# than read from ``Profile.model_fields`` because the LLM should never be
+# trusted to update structural metadata (``created_at``, ``user_id``).
+ProfileField = Literal["sex", "weight_kg", "height_cm", "birth_date"]
+
+
+class UpdateProfileFieldArgs(BaseModel):
+    """``update_profile_field`` — one Profile column write.
+
+    ``value`` is intentionally permissive (str/float/None) at the boundary;
+    the tool body coerces to the target column type via the Patient schema
+    so the LLM can pass ``"60"`` instead of ``60.0`` without rejection.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: ProfileField
+    value: str | float | None = None
+
+
+class SaveToLibraryArgs(BaseModel):
+    """``save_to_library`` — one library entry under library/<category>/<slug>/.
+
+    ``public=True`` is the only path that flips the underlying chunk's
+    ``can_cloud`` flag. Default ``False`` keeps the user's curated material
+    local-only unless they explicitly opt in.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=256)
+    attachments: list[AttachmentRef] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = Field(default=None, ge=1800, le=2200)
+    tags: list[str] = Field(default_factory=list)
+    public: bool = False
+
+
+class DeleteRecordArgs(BaseModel):
+    """``delete_record`` — remove records/<category>/<slug>/ + Qdrant chunks.
+
+    ``confirm_kind`` is the second-channel anti-mistake check: the LLM must
+    pass the same ``kind`` field the manifest already declares, so a
+    misrouted ``delete_record`` for the wrong record_path raises rather
+    than silently destroying data.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    record_path: str = Field(min_length=1)
+    confirm_kind: str = Field(min_length=1, max_length=64)
+
+
+# Registry mapping tool name → args model. Used by ToolDispatcher to look up
+# the right validator without N if-branches. Keeping this dict in sync with
+# the seven tool implementations is the single drift point — one new tool =
+# one new model + one new dict entry.
+TOOL_ARG_SCHEMAS: dict[str, type[BaseModel]] = {
+    "save_record": SaveRecordArgs,
+    "save_medication": SaveMedicationArgs,
+    "save_allergy": SaveAllergyArgs,
+    "save_condition": SaveConditionArgs,
+    "update_profile_field": UpdateProfileFieldArgs,
+    "save_to_library": SaveToLibraryArgs,
+    "delete_record": DeleteRecordArgs,
+}
