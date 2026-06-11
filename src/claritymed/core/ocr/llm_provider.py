@@ -29,10 +29,19 @@ class LLMOcrProvider(OcrProvider):
 
     Any model that supports ``BinaryContent`` image/document inputs works
     (GPT-4o, Claude Sonnet, Qwen-VL, etc.).
+
+    ``is_local`` is set per-instance (via the constructor) because the same
+    ``LLMOcrProvider`` class wraps both local vision models (Qwen-VL via
+    Ollama / MLX) and cloud vision models (GPT-4o). Callers thread the
+    real locality from the provider config; default ``True`` keeps the
+    PHI-safe failure mode (drop from chain) when locality is unknown.
     """
 
-    def __init__(self, model: "Model") -> None:
+    def __init__(self, model: "Model", *, is_local: bool = True) -> None:
         self._model = model
+        # Override the class attribute on this instance so chain composers
+        # see the right locality without us needing two subclasses.
+        self.is_local = is_local
 
     async def extract_text(self, path: Path) -> str:
         """Send *path* to the LLM and return extracted text.

@@ -16,7 +16,17 @@ class OcrProvider(ABC):
 
     Every implementation must raise ``OcrError`` (or a subclass) on
     unrecoverable failures so callers can handle them uniformly.
+
+    Subclasses set ``is_local`` (class attribute) to declare whether the
+    provider keeps PHI on the machine. The chain composer
+    (``RoutingOcrProvider``) uses this flag to filter chains under
+    ``phi_policy="local-only"``: cloud providers are dropped from the
+    PHI chain regardless of what ``ocr.yaml`` lists. Default ``True``
+    because new providers should explicitly opt out of PHI safety, not
+    accidentally get treated as cloud.
     """
+
+    is_local: bool = True
 
     @abstractmethod
     async def extract_text(self, path: Path) -> str:

@@ -10,6 +10,10 @@ dependencies = [
     # for multi-process write safety. Drop-in replacement for the fcntl.flock
     # we sketched in the brainstorm; ~30KB pure-Python, MIT.
     "filelock>=3.13,<4",
+    # Local PDF text extraction (the digital-PDF first leg of the PHI OCR
+    # chain). Sub-100ms for typical reports, no model load. AGPLv3 —
+    # acknowledged at plan time; self-hosted distribution stance.
+    "pymupdf>=1.24,<2",
     "llama-index-core>=0.14.22",
     "llama-index-vector-stores-qdrant>=0.10.1",
     "openinference-instrumentation-pydantic-ai>=0.1.16",
@@ -65,6 +69,20 @@ e2e = [
 evals = [
     "lm-eval>=0.4.5,<0.5",
     "datasets>=2.20",
+]
+# Local OCR for scanned / messy PDFs — second leg of the chain after
+# pymupdf. marker-pdf is best-in-class but pulls PyTorch (~2 GB), so it is
+# behind an optional extra. License: GPL-3.0-or-later (acknowledged at
+# plan time alongside the pymupdf AGPL question).
+ocr-scanned = [
+    "marker-pdf>=0.2",
+]
+# Office formats (.docx / .pptx / .xlsx) — last leg of the document chain.
+# Pure-Python wrapper around the pandoc binary; ``pypandoc-binary`` ships
+# the binary alongside the wheel for installs that don't have pandoc on
+# PATH. Optional because most users never need it.
+ocr-office = [
+    "pypandoc-binary>=1.13",
 ]
 
 [project.scripts]

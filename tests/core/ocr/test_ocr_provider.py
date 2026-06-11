@@ -494,7 +494,7 @@ async def test_routing_emits_audit_on_success(tmp_path: Path):
 
 
 async def test_routing_emits_audit_with_fallback_flag(tmp_path: Path):
-    """audit event marks fallback=True and encodes both provider names."""
+    """audit event marks fallback=True and lists every provider tried."""
     fake = tmp_path / "scan.png"
     fake.write_bytes(b"data")
 
@@ -514,7 +514,10 @@ async def test_routing_emits_audit_with_fallback_flag(tmp_path: Path):
     ev = captured[0]
     assert ev["status"] == "ok"
     assert ev["fallback"] is True
-    assert "→" in ev["provider"]
+    # New audit shape: chain_tried lists every step; chain_succeeded names
+    # the one that won.
+    assert len(ev["chain_tried"]) >= 2
+    assert ev["chain_succeeded"] == ev["chain_tried"][-1]
 
 
 async def test_routing_emits_audit_on_error(tmp_path: Path):

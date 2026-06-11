@@ -37,7 +37,17 @@ class MineRUOcrProvider(OcrProvider):
 
     Supports all MineRU-accepted file types: PDF, Doc/Docx, PPT/PPTx,
     Xls/Xlsx, and images (PNG, JPG, JPEG, WebP, GIF, BMP).
+
+    MineRU is a cloud SaaS (mineru.net); ``is_local = False`` is the
+    structural defense that keeps it out of any chain composed with
+    ``phi_policy="local-only"``. Constructing it ALSO requires explicit
+    env opt-in (``CLARITYMED_ALLOW_MINERU=1``) so a stale ``ocr.yaml``
+    listing ``mineru`` in a chain fails fast at startup with a clear
+    error rather than silently making a cloud hop mid-extract.
     """
+
+    is_local = False
+    """Cloud SaaS — never PHI-safe; chain composer filters it out."""
 
     def __init__(
         self,
@@ -48,6 +58,22 @@ class MineRUOcrProvider(OcrProvider):
         poll_timeout: float = 300.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        # Env gate. PHI paths are already protected by ``is_local = False``
+        # at chain-composition time; this second check makes sure that
+        # nothing — including a developer's stray `MineRUOcrProvider(...)`
+        # call from a notebook — constructs the provider without a clear
+        # acknowledgement.
+        import os
+
+        if os.environ.get("CLARITYMED_ALLOW_MINERU") != "1":
+            from claritymed.errors import MinerUNotAllowed
+
+            raise MinerUNotAllowed(
+                "MinerU is a cloud SaaS (mineru.net); set "
+                "CLARITYMED_ALLOW_MINERU=1 to acknowledge this and enable "
+                "testing. PHI paths always remain blocked via "
+                "is_local=False."
+            )
         self._api_key = api_key
         self._model_version = model_version
         self._poll_interval = poll_interval
