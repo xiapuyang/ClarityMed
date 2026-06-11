@@ -176,8 +176,8 @@ class ClarityMedApp(App):
                 faulthandler.register(signal.SIGUSR1, file=sys.__stderr__)
             except Exception:  # noqa: BLE001
                 pass
-        # Boot tracing first turn — no-op when PHOENIX_COLLECTOR_ENDPOINT
-        # is unset, so headless tests and offline runs stay untouched.
+        # Boot tracing first turn — no-op when tracing.enabled is false
+        # in app.yaml, so headless tests and offline runs stay untouched.
         setup_tracing()
         status = self.query_one(StatusBar)
         status.user_id = self._initial_user_id

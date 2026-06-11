@@ -90,7 +90,7 @@ def inject_context(
         logger.warning(t("ui.cli.user_required", lang=lang))
 
     # Idempotent — every CLI invocation calls this; only the first one
-    # with PHOENIX_COLLECTOR_ENDPOINT set actually installs the provider.
+    # with tracing.enabled: true in app.yaml actually installs the provider.
     setup_tracing()
 
     tokens = apply_context(rid, uid, lang)

@@ -10,3 +10,26 @@ logging:
 
 access_log:
   skip_prefixes: ["/api/health", "/favicon"]
+
+# --- OpenTelemetry / Phoenix tracing ------------------------------------
+# Opt-in: set enabled: true to install the global TracerProvider and
+# start sending spans to Phoenix. Off by default so CI and offline
+# sessions never generate surprise traffic.
+#
+# endpoint:    OTLP collector URL. Default points at a local Phoenix
+#              instance started with `uvx arize-phoenix serve` or Docker.
+# api_key_env: name of an env var holding the Bearer token (e.g.
+#              PHOENIX_API_KEY). Omit or null for unauthenticated local
+#              Phoenix. The key value is never written here — only the
+#              env var name.
+# phi_kind:    null (auto-detect from endpoint URL), "local" (no scrub),
+#              or "cloud" (force PHI scrubbing). Auto-detect treats
+#              localhost / 127.0.0.1 / ::1 as local and everything else
+#              as cloud, which is secure by default for remote endpoints.
+# service_name: OTel resource SERVICE_NAME shown in Phoenix UI.
+tracing:
+  enabled: false
+  endpoint: http://localhost:6006
+  api_key_env: null
+  phi_kind: null
+  service_name: claritymed

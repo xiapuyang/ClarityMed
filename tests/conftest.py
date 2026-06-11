@@ -22,16 +22,6 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["CLARITYMED_SHARED_DIR"] = str(root / "shared")
     os.environ["CLARITYMED_LOG_DIR"] = str(root / "logs")
 
-    # Strip tracing triggers from the dev's shell — otherwise TUI smoke
-    # tests (App.on_mount calls setup_tracing()) would install a real
-    # OTLP exporter and Agent.instrument_all(), and every later test's
-    # ``Agent.run`` would upload spans to the dev's local Phoenix. Tests
-    # that exercise tracing itself (tests/core/test_tracing.py) re-set
-    # the env via ``monkeypatch.setenv`` per-test, so scope is restored
-    # cleanly.
-    os.environ.pop("PHOENIX_COLLECTOR_ENDPOINT", None)
-    os.environ.pop("PHOENIX_API_KEY", None)
-
 
 @pytest.fixture(autouse=True)
 def _isolate_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

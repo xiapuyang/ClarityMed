@@ -1,15 +1,15 @@
 """OpenTelemetry tracing — sends spans to a self-hosted Phoenix instance.
 
-``setup_tracing()`` is the one entry point. It reads
-``PHOENIX_COLLECTOR_ENDPOINT`` from the environment; if unset, the
+``setup_tracing()`` is the one entry point. It reads ``tracing:`` from
+``configs/app.yaml``; when ``enabled`` is ``false`` (the default) the
 function returns silently and nothing about the process changes. This is
 the CI / offline / opt-in path — no test, no shell session, no notebook
 gets surprise traffic.
 
-When the env var is set, we configure a global ``TracerProvider``,
-attach ``OpenInferenceSpanProcessor`` (in-place enrichment with OI
-semantic conventions — model, prompt, response, token counts, cache
-hits), and an OTLP HTTP exporter pointed at Phoenix. Finally we call
+When ``enabled: true``, we configure a global ``TracerProvider``, attach
+``OpenInferenceSpanProcessor`` (in-place enrichment with OI semantic
+conventions — model, prompt, response, token counts, cache hits), and an
+OTLP HTTP exporter pointed at Phoenix. Finally we call
 ``Agent.instrument_all()`` so every pydantic-ai run / model_call /
 tool_call automatically becomes a span — no per-call wiring.
 
@@ -23,23 +23,23 @@ logic as the embedder and reranker service clients:
   ``PhiScrubSpanProcessor``, which scrubs OI-written attributes before
   ``BatchSpanProcessor`` picks them up for export.
 
-Set ``CLARITYMED_TRACE_PHI_SCRUB_DISABLE=1`` to skip the processor even
-for remote endpoints (emergency override only).
+``phi_kind`` can override auto-detection: set ``"local"`` to skip scrubbing
+even for a remote endpoint, or ``"cloud"`` to force scrubbing on localhost
+(unusual, but supported).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
-
-_ENDPOINT_ENV = "PHOENIX_COLLECTOR_ENDPOINT"
-_API_KEY_ENV = "PHOENIX_API_KEY"
-_SERVICE_NAME_ENV = "OTEL_SERVICE_NAME"
-_DEFAULT_SERVICE_NAME = "claritymed"
-_SCRUB_DISABLE_ENV = "CLARITYMED_TRACE_PHI_SCRUB_DISABLE"
 
 # Attribute keys (or key prefixes) OpenInference writes that may carry
 # PHI in their values. We pin to OI's documented attribute names rather
@@ -65,25 +65,41 @@ _lock = threading.Lock()
 _configured: bool = False
 
 
+class TracingConfig(BaseModel):
+    """Schema for the ``tracing:`` section in ``configs/app.yaml``."""
+
+    enabled: bool = False
+    endpoint: str = "http://localhost:6006"
+    api_key_env: str | None = None
+    phi_kind: Literal["local", "cloud"] | None = None
+    service_name: str = "claritymed"
+
+
+def _load_config() -> TracingConfig:
+    from claritymed.config import load_yaml
+
+    return TracingConfig.model_validate(load_yaml("app.yaml").get("tracing", {}))
+
+
 def setup_tracing() -> bool:
-    """Configure global tracing if a Phoenix endpoint is set.
+    """Configure global tracing if enabled in ``configs/app.yaml``.
 
     Returns ``True`` if tracing was installed (or was already installed
-    by a prior call), ``False`` if no endpoint is configured. Multiple
-    callers in the same process (CLI entry, TUI mount, web boot) can
-    call this freely — the underlying setup runs at most once.
+    by a prior call), ``False`` if disabled. Multiple callers in the same
+    process (CLI entry, TUI mount, web boot) can call this freely —
+    the underlying setup runs at most once.
     """
     global _configured
-    endpoint = os.environ.get(_ENDPOINT_ENV, "").strip()
-    if not endpoint:
+    cfg = _load_config()
+    if not cfg.enabled:
         return False
     with _lock:
         if _configured:
             return True
         try:
-            _install(endpoint)
+            _install(cfg)
             _configured = True
-            logger.info("tracing installed -> %s", endpoint)
+            logger.info("tracing installed -> %s", cfg.endpoint)
             return True
         except Exception:  # noqa: BLE001
             logger.exception("failed to install tracing; continuing without it")
@@ -101,9 +117,11 @@ def reset_for_testing() -> None:
         _configured = False
 
 
-def _install(endpoint: str) -> None:
+def _install(cfg: TracingConfig) -> None:
     # Imports are local so the rest of the codebase doesn't pay the OTel
     # import cost when tracing is off.
+    import os
+
     from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
     from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -112,8 +130,7 @@ def _install(endpoint: str) -> None:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from pydantic_ai import Agent
 
-    service_name = os.environ.get(_SERVICE_NAME_ENV, _DEFAULT_SERVICE_NAME)
-    resource = Resource.create({SERVICE_NAME: service_name})
+    resource = Resource.create({SERVICE_NAME: cfg.service_name})
     provider = TracerProvider(resource=resource)
 
     # Copy our baggage (request_id / user_id) onto every span as the first
@@ -127,43 +144,31 @@ def _install(endpoint: str) -> None:
     provider.add_span_processor(OpenInferenceSpanProcessor())
 
     # Scrub PHI from OI-written attributes *before* the exporter sees the
-    # batch. on_end runs in span-finish order, after OI's instrumentation
-    # has populated input/output attributes, but before the
-    # BatchSpanProcessor below picks the span up for export.
-    #
-    # Gate follows the same resolve_phi_kind logic as the service clients:
+    # batch. Gate follows the same resolve_phi_kind logic as service clients:
     # localhost → None (no processor), remote → PhiOutboundGate.
-    scrub_disabled = os.environ.get(_SCRUB_DISABLE_ENV, "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    if not scrub_disabled:
-        from claritymed.core.phi.outbound_gate import (
-            make_outbound_gate,
-            resolve_phi_kind,
-        )
+    from claritymed.core.phi.outbound_gate import make_outbound_gate, resolve_phi_kind
 
-        kind = resolve_phi_kind(None, endpoint)
-        gate = None
-        if kind == "cloud":
-            try:
-                gate = make_outbound_gate(kind)
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "ScrubService init failed; exporting spans without PHI scrubbing"
-                )
-        if gate is not None:
-            provider.add_span_processor(PhiScrubSpanProcessor(gate))
+    kind = resolve_phi_kind(cfg.phi_kind, cfg.endpoint)
+    gate = None
+    if kind == "cloud":
+        try:
+            gate = make_outbound_gate(kind)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "ScrubService init failed; exporting spans without PHI scrubbing"
+            )
+    if gate is not None:
+        provider.add_span_processor(PhiScrubSpanProcessor(gate))
 
     # OTLP HTTP is what self-hosted Phoenix accepts on /v1/traces. Batch
     # processor so streaming latency isn't taxed by export.
     headers: dict[str, str] = {}
-    api_key = os.environ.get(_API_KEY_ENV, "").strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if cfg.api_key_env:
+        api_key = os.environ.get(cfg.api_key_env, "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
     exporter = OTLPSpanExporter(
-        endpoint=f"{endpoint.rstrip('/')}/v1/traces",
+        endpoint=f"{cfg.endpoint.rstrip('/')}/v1/traces",
         headers=headers or None,
         timeout=3,
     )
@@ -294,6 +299,7 @@ __all__ = [
     "PHI_SCRUB_ATTR_KEYS",
     "PHI_SCRUB_ATTR_PREFIXES",
     "PhiScrubSpanProcessor",
+    "TracingConfig",
     "is_configured",
     "reset_for_testing",
     "setup_tracing",

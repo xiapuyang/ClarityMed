@@ -31,8 +31,18 @@ uv run claritymed prompts pull [NAME] [--dry-run] \
 
 ## Observability — Phoenix tracing
 
-Tracing 是 opt-in：设了 `PHOENIX_COLLECTOR_ENDPOINT` 就上，没设就完全 no-op
-（CI / 离线 / headless test 零影响）。
+Tracing 是 opt-in：`configs/app.yaml` 里 `tracing.enabled: true` 就上，默认
+`false` 完全 no-op（CI / 离线 / headless test 零影响）。
+
+```yaml
+# configs/app.yaml
+tracing:
+  enabled: true
+  endpoint: http://localhost:6006   # 默认，可改成远端 Phoenix
+  api_key_env: null                 # 远端鉴权时填 env var 名，如 PHOENIX_API_KEY
+  phi_kind: null                    # null=自动检测；local/cloud 可手动覆盖
+  service_name: claritymed
+```
 
 ```bash
 # 本地起 Phoenix（任选其一）
@@ -40,8 +50,6 @@ docker run -p 6006:6006 arizephoenix/phoenix:latest
 # 或
 uvx arize-phoenix serve
 
-# 跑应用时指向它
-export PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
 uv run claritymed tui
 ```
 
@@ -58,10 +66,10 @@ span 带三个 baggage attribute：
 → Phoenix 里搜某个 `trace_id` 能定位到对应的 audit 行；反过来 grep audit.log 拿
 到 `claritymed.session_id` 也能在 Phoenix 里 group by 对话。
 
-**PHI 提醒**：pydantic-ai 的 OpenInference instrumentation 默认把 prompt / response
-全部塞进 span。Phoenix 本地跑没问题。**绝对不要**把 `PHOENIX_COLLECTOR_ENDPOINT`
-指向第三方 SaaS endpoint —— PHI 会出域。需要 SaaS 时必须先在
-`OpenInferenceSpanProcessor` 之前包一道 PHI scrubber。
+**PHI 提醒**：`phi_kind: null`（默认）时 localhost endpoint → 不 scrub，远端
+endpoint → 自动启用 PHI scrubbing。**绝对不要**把 `endpoint` 指向第三方 SaaS
+且同时把 `phi_kind` 设成 `local` —— PHI 会出域。远端 Phoenix 的 `phi_kind` 留
+`null` 即可，auto-detect 会兜底。
 
 ## Prompts workflow
 
