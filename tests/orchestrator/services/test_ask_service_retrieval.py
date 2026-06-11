@@ -294,8 +294,8 @@ def test_format_sources_uses_i18n_display_label_for_system_rag():
     """Sources line format: ``[N] <title> · <i18n display label>``.
 
     The label is looked up from ``configs/i18n/<lang>.yaml`` under
-    ``rag.collection.<collection_name>``. statpearls_en → "StatPearls",
-    textbooks_en → "MedRAG" — adding a new corpus only needs an i18n
+    ``rag.collection.<collection_name>``. statpearls_en → "MedRAG-StatPearls",
+    textbooks_en → "MedRAG-Textbooks" — adding a new corpus only needs an i18n
     entry, no code change.
     """
     chunk = RetrievedChunk(
@@ -314,10 +314,10 @@ def test_format_sources_uses_i18n_display_label_for_system_rag():
         doc_title="StatPearls: Iron Deficiency Anemia",
     )
     block_en = AskService._format_sources([chunk], lang="en")
-    assert " · StatPearls" in block_en
+    assert " · MedRAG-StatPearls" in block_en
     # Brand names match across languages, so zh resolves to the same string.
     block_zh = AskService._format_sources([chunk], lang="zh")
-    assert " · StatPearls" in block_zh
+    assert " · MedRAG-StatPearls" in block_zh
 
 
 def test_format_sources_zh_translates_user_library_label():
@@ -389,7 +389,7 @@ def test_format_sources_no_title_shows_only_corpus_label():
     assert chunk.source_uri is None
     assert chunk.doc_title is None
     block = AskService._format_sources([chunk], lang="en")
-    assert "- [1] StatPearls" in block
+    assert "- [1] MedRAG-StatPearls" in block
     assert " · " not in block
 
 

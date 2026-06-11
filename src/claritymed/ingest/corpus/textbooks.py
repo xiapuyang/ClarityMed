@@ -23,6 +23,8 @@ from claritymed.core.rag.chunking.base import RawDocument
 
 logger = logging.getLogger(__name__)
 
+# FROZEN: this string is the Qdrant collection name on disk. Renaming it
+# requires a data migration — do not change it without migrating the index.
 COLLECTION_NAME = "textbooks_en"
 LANGUAGE = "en"
 

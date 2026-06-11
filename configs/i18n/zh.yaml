@@ -38,8 +38,9 @@ rag:
   collection:
     # 与 en.yaml 同结构。StatPearls / MedRAG 是品牌名两侧一致，
     # user_rag 用中文 label，避免暴露 user_rag_<id> 这种内部标识。
-    statpearls_en: "StatPearls"
-    textbooks_en: "MedRAG"
+    # Keys must match FROZEN Qdrant collection names — change display values only.
+    statpearls_en: "MedRAG-StatPearls"
+    textbooks_en: "MedRAG-Textbooks"
     user_rag: "我的资料库"
 
 ask_modal:

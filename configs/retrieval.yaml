@@ -180,6 +180,8 @@ system_rag:
   # from any medical content.
   score_threshold: 0.4
   collections:
+    # FROZEN: collection names below are Qdrant index names on disk.
+    # Renaming requires a data migration — do not change without migrating.
     - name: statpearls_en
       language: en
       cross_lingual: true

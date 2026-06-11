@@ -44,8 +44,9 @@ rag:
     # StatPearls / MedRAG are brand names — same in en and zh — but we
     # still maintain them here so adding a new collection only touches
     # i18n yaml, never Python code.
-    statpearls_en: "StatPearls"
-    textbooks_en: "MedRAG"
+    # Keys must match FROZEN Qdrant collection names — change display values only.
+    statpearls_en: "MedRAG-StatPearls"
+    textbooks_en: "MedRAG-Textbooks"
     user_rag: "My Library"
 
 ask_modal:
