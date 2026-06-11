@@ -101,6 +101,35 @@ def _is_context_overflow(message: str) -> bool:
     return any(marker in lowered for marker in _OVERFLOW_MARKERS)
 
 
+_MIME_BY_EXT: dict[str, str] = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+    "txt": "text/plain",
+    "md": "text/markdown",
+}
+
+
+def _guess_mime(ext: str) -> str:
+    """ext (without leading dot) → MIME, falling back to octet-stream.
+
+    Local table beats ``mimetypes.guess_type`` here because the latter
+    needs a filename and we only have the bare extension at paste time.
+    """
+    return _MIME_BY_EXT.get(ext.lower(), "application/octet-stream")
+
+
+def _ocr_step_name(sha256: str) -> str:
+    """Stable per-blob step name so push_start / push_complete pair up.
+
+    The short sha keeps the panel readable while still being unique per
+    blob — two pasted images get two distinct rows."""
+    return f"ocr:{sha256[:8]}"
+
+
 class ClarityMedApp(App):
     """Top-level Textual application."""
 
@@ -110,6 +139,7 @@ class ClarityMedApp(App):
         Binding("shift+tab", "cycle_mode", "Cycle mode", show=True),
         Binding("escape", "cancel_stream", "Cancel", show=False),
         Binding("ctrl+c", "quit", "Quit", show=True),
+        Binding("ctrl+v", "paste_clipboard", "Paste", show=True),
         Binding("f2", "toggle_steps", "Steps", show=True),
         Binding("f3", "pick_provider", "Provider", show=True),
     ]
@@ -154,6 +184,10 @@ class ClarityMedApp(App):
         # Track the active user_id at App level (not via StatusBar query) so
         # on_unmount runs after Textual has already torn down child widgets.
         self._current_user_id: str = self._initial_user_id
+        # OcrWorker is lazy-built on first paste — see ``_ensure_ocr_worker``.
+        # Headless / one-shot tests never construct one, so we avoid paying
+        # the provider-chain build cost on every mount.
+        self._ocr_worker = None
 
     # ----- layout ---------------------------------------------------------
 
@@ -252,10 +286,24 @@ class ClarityMedApp(App):
         self.call_from_thread(loading.remove)
 
     def on_unmount(self) -> None:
-        # No-op: ask-mode turns are persisted in real time by AskService
-        # via ``ChatSession.append_assistant`` after each turn. ingest/rag
-        # turns are transient UI feedback, not chat history, so nothing
-        # needs flushing here.
+        # Persistence: ask-mode turns are flushed in real time by AskService
+        # via ``ChatSession.append_assistant`` after each turn. ingest / rag
+        # turns are transient UI feedback, not chat history. The only thing
+        # we own beyond the event loop is the OcrWorker — its background
+        # task gets cancelled here so a half-finished extraction doesn't
+        # leak past app exit.
+        worker = getattr(self, "_ocr_worker", None)
+        if worker is not None:
+            try:
+                import asyncio
+
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(worker.stop())
+                else:
+                    loop.run_until_complete(worker.stop())
+            except Exception:  # noqa: BLE001
+                logger.exception("OcrWorker stop failed during unmount")
         return
 
     # ----- mode + placeholder ---------------------------------------------
@@ -809,6 +857,217 @@ class ClarityMedApp(App):
         except Exception as exc:  # noqa: BLE001
             logger.warning("provider kind lookup failed: %s", exc)
             return "?"
+
+    # ----- clipboard paste -----------------------------------------------
+
+    def action_paste_clipboard(self) -> None:
+        """Ctrl+V handler — routes clipboard content by type.
+
+        ImageBytes / FilePath → blob + SessionAttachments + OCR enqueue.
+        Small text → inserted into the Input. Large text → placeholder.
+        Empty → toast hint. All exceptions become toasts so a broken
+        platform helper never crashes the TUI.
+        """
+        from claritymed.cli.tui.paste import (
+            Empty,
+            FilePath,
+            ImageBytes,
+            LargeText,
+            SmallText,
+            read_clipboard,
+        )
+
+        try:
+            content = read_clipboard()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("clipboard read failed: %s", exc)
+            self._toast("Clipboard read failed", kind="error")
+            return
+
+        if isinstance(content, Empty):
+            self._toast("Clipboard is empty", kind="info")
+            return
+        if isinstance(content, ImageBytes):
+            self._ingest_clipboard_bytes(content.bytes, ext=content.ext)
+            return
+        if isinstance(content, FilePath):
+            try:
+                data = content.path.read_bytes()
+            except OSError as exc:
+                self._toast(f"Could not read {content.path.name}: {exc}", kind="error")
+                return
+            ext = content.path.suffix.lstrip(".") or "bin"
+            self._ingest_clipboard_bytes(
+                data,
+                ext=ext,
+                display_name=content.path.name,
+            )
+            return
+        if isinstance(content, LargeText):
+            self._toast(
+                f"Large clipboard text ({len(content.text)} chars) inserted",
+                kind="info",
+            )
+            self._insert_into_input(content.text)
+            return
+        if isinstance(content, SmallText):
+            self._insert_into_input(content.text)
+            return
+
+    def _ingest_clipboard_bytes(
+        self,
+        data: bytes,
+        *,
+        ext: str,
+        display_name: str | None = None,
+    ) -> None:
+        """Store bytes in the CAS blob pool, register on SessionAttachments,
+        enqueue an OCR job. All side effects are loud-on-failure: a missing
+        chat_session, missing OcrWorker, or a write error becomes an error
+        toast rather than silently dropping the paste."""
+        from claritymed.orchestrator.services.ocr_worker import OcrJob
+        from claritymed.orchestrator.services.session_attachments import (
+            SessionAttachments,
+        )
+        from claritymed.stores.blob_store import BlobStore
+
+        if self._chat_session is None:
+            self._toast("No active chat session for paste", kind="error")
+            return
+
+        user_id = self._current_user_id
+        session_id = self._chat_session.session_id
+        try:
+            blob_store = BlobStore(user_id)
+            sha = blob_store.store(data, ext)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("blob store failed")
+            self._toast(f"Could not store pasted blob: {exc}", kind="error")
+            return
+
+        filename = display_name or f"clipboard.{ext}"
+        mime = _guess_mime(ext)
+        try:
+            SessionAttachments(user_id, session_id).add(
+                sha256=sha,
+                filename=filename,
+                mime=mime,
+                size=len(data),
+                source="paste",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("session attachment add failed")
+            self._toast(f"Attachment register failed: {exc}", kind="error")
+            return
+
+        worker = self._ensure_ocr_worker()
+        if worker is None:
+            self._toast(
+                f"Pasted {filename} ({len(data)} B); OCR worker unavailable",
+                kind="warning",
+            )
+            return
+
+        blob_dir = blob_store.dir(sha)
+        content_path = next(
+            (
+                p
+                for p in blob_dir.iterdir()
+                if p.name.startswith("content.") and not p.name.endswith(".tmp")
+            ),
+            None,
+        )
+        if content_path is None:
+            self._toast("Stored blob has no content file", kind="error")
+            return
+        # Visible feedback: a chat-history line plus a ToolSteps row.
+        # The chat-history line is appended via _session_turns so resume
+        # sees it too — toasts disappear and would leave the user without
+        # any trace that the attachment exists.
+        try:
+            conv = self.query_one(Conversation)
+            conv.add_system_turn(f"📎 attached {filename}  (OCR queued)")
+            self._session_turns.append(
+                ChatTurn(role="system", text=f"attached {filename} (OCR queued)")
+            )
+        except NoMatches:
+            pass  # widgets not mounted yet (very early paste)
+        try:
+            steps = self.query_one(ToolSteps)
+            tool_label = _ocr_step_name(sha)
+            steps.push_start(tool_label, args_preview=filename)
+        except NoMatches:
+            pass
+
+        worker.enqueue(
+            OcrJob(
+                user_id=user_id,
+                session_id=session_id,
+                sha256=sha,
+                blob_path=content_path,
+                is_phi=True,
+            )
+        )
+        self._toast(f"Pasted {filename}; OCR queued", kind="info")
+
+    def _insert_into_input(self, text: str) -> None:
+        """Splice ``text`` at the Input cursor; non-destructive."""
+        try:
+            bar = self.query_one(InputBar)
+        except NoMatches:
+            return
+        from textual.widgets import Input
+
+        inp = bar.query_one("#input", Input)
+        current = inp.value
+        pos = inp.cursor_position
+        new_value = current[:pos] + text + current[pos:]
+        bar._suppress_next_value = new_value
+        inp.value = new_value
+        inp.cursor_position = pos + len(text)
+
+    def _ensure_ocr_worker(self):
+        """Lazy-build the OcrWorker so headless tests that never paste
+        avoid the cost of constructing an OCR provider chain. Returns
+        ``None`` if provider construction fails — the caller surfaces a
+        toast."""
+        worker = getattr(self, "_ocr_worker", None)
+        if worker is not None:
+            return worker
+        try:
+            from claritymed.core.ocr.factory import make_ocr_provider
+            from claritymed.orchestrator.services.ocr_worker import OcrWorker
+
+            provider = make_ocr_provider()
+            worker = OcrWorker(provider, listener=self._on_ocr_completed)
+            worker.start()
+            self._ocr_worker = worker
+            return worker
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("OCR worker build failed: %s", exc)
+            self._ocr_worker = None
+            return None
+
+    def _on_ocr_completed(self, completion) -> None:
+        """OcrWorker listener — flips the ToolSteps row to ✓ when the job
+        finishes. OcrWorker runs the listener on an ``asyncio.Task`` on
+        the same event loop as the App, so direct widget access is safe
+        (no ``call_from_thread`` marshal needed)."""
+        tool_label = _ocr_step_name(completion.sha256)
+        if completion.status == "done":
+            summary = f"{completion.provider or 'ocr'} ✓"
+        elif completion.status == "empty":
+            summary = "no text extracted"
+        elif completion.status == "failed":
+            summary = f"failed: {completion.reason or 'unknown'}"
+        else:
+            summary = completion.status
+        try:
+            steps = self.query_one(ToolSteps)
+            steps.push_complete(tool_label, summary=summary)
+        except NoMatches:
+            # App is tearing down; widgets gone.
+            pass
 
     # ----- cancellation + toasts -----------------------------------------
 

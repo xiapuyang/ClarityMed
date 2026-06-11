@@ -35,8 +35,10 @@ OcrStatus = Literal["pending", "done", "empty", "failed", "timeout"]
 
 # Source flag — where the attachment came from. Used by the TUI to render the
 # correct chip glyph and by audit rows. Free-form choice rather than enum so
-# new channels can be added without a migration.
-AttachmentSource = Literal["paste", "upload", "slash_command", "cli"]
+# new channels can be added without a migration. ``drag_drop`` is reserved
+# for the future Textual drag-drop handler; the literal accepts it today so
+# adding the handler doesn't require touching every callsite.
+AttachmentSource = Literal["paste", "drag_drop", "upload", "slash_command", "cli"]
 
 
 class Attachment(BaseModel):

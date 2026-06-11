@@ -70,11 +70,60 @@ def test_save_medication_persists(dispatcher, _ctx):
     assert any(m.display == "metformin" for m in rows)
 
 
+def test_save_medication_round_trips_dates(dispatcher, _ctx):
+    save_medication(
+        {
+            "name": "aspirin",
+            "onset_date": "2020-01-01",
+            "end_date": "2022-06-15",
+        },
+        dispatcher=dispatcher,
+    )
+    [asp] = [
+        m for m in ProfileStore("alice").list_medications() if m.display == "aspirin"
+    ]
+    assert asp.onset_date.isoformat() == "2020-01-01"
+    assert asp.end_date.isoformat() == "2022-06-15"
+
+
+def test_save_allergy_round_trips_dates(dispatcher, _ctx):
+    save_allergy(
+        {
+            "substance": "shellfish",
+            "severity": "moderate",
+            "source": "self_report",
+            "onset_date": "2015-07-04",
+        },
+        dispatcher=dispatcher,
+    )
+    [sh] = [
+        a for a in ProfileStore("alice").list_allergies() if a.substance == "shellfish"
+    ]
+    assert sh.onset_date.isoformat() == "2015-07-04"
+    assert sh.end_date is None
+
+
 def test_save_condition_persists(dispatcher, _ctx):
     out = save_condition({"display": "Hypertension"}, dispatcher=dispatcher)
     assert out == {"ok": True}
     rows = ProfileStore("alice").list_conditions()
     assert any(c.display == "Hypertension" for c in rows)
+
+
+def test_save_condition_persists_end_date(dispatcher, _ctx):
+    """end_date null = still ongoing; populated = resolved."""
+    save_condition(
+        {
+            "display": "bronchitis",
+            "onset_date": "2024-01-01",
+            "end_date": "2024-02-15",
+        },
+        dispatcher=dispatcher,
+    )
+    rows = ProfileStore("alice").list_conditions()
+    [bron] = [c for c in rows if c.display == "bronchitis"]
+    assert bron.onset_date.isoformat() == "2024-01-01"
+    assert bron.end_date.isoformat() == "2024-02-15"
 
 
 def test_update_profile_field_changes_weight(dispatcher, _ctx):
@@ -91,6 +140,39 @@ def test_update_profile_field_rejects_invalid_field(dispatcher, _ctx):
         update_profile_field(
             {"field": "created_at", "value": "x"}, dispatcher=dispatcher
         )
+
+
+def test_update_profile_field_writes_passive_geo_field(dispatcher, _ctx):
+    """Residence (proactive) and current_occupation (passive) both round-trip."""
+    update_profile_field(
+        {"field": "residence", "value": "Shanghai"}, dispatcher=dispatcher
+    )
+    update_profile_field(
+        {"field": "current_occupation", "value": "nurse"}, dispatcher=dispatcher
+    )
+    p = ProfileStore("alice").get_profile()
+    assert p.residence == "Shanghai"
+    assert p.current_occupation == "nurse"
+
+
+def test_update_profile_field_audit_tags_solicitation(dispatcher, _ctx, monkeypatch):
+    """Every update_profile_field audit row carries proactive|passive."""
+    captured: list[tuple[str, dict]] = []
+
+    def _capture(kind, payload):
+        captured.append((kind, payload))
+
+    monkeypatch.setattr(
+        "claritymed.orchestrator.features.ingest_tools_plugin.audit_event",
+        _capture,
+    )
+    update_profile_field({"field": "weight_kg", "value": 70.0}, dispatcher=dispatcher)
+    update_profile_field(
+        {"field": "marital_status", "value": "married"}, dispatcher=dispatcher
+    )
+    by_field = {p["field"]: p for _, p in captured}
+    assert by_field["weight_kg"]["solicitation"] == "proactive"
+    assert by_field["marital_status"]["solicitation"] == "passive"
 
 
 def test_save_record_writes_manifest(dispatcher, _ctx):

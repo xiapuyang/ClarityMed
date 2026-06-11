@@ -57,7 +57,13 @@ class SaveRecordArgs(BaseModel):
 
 
 class SaveMedicationArgs(BaseModel):
-    """``save_medication`` — one medication upserted to profile.db."""
+    """``save_medication`` — one medication upserted to profile.db.
+
+    ``onset_date`` is when the patient started; ``end_date`` is when it was
+    discontinued. Null end_date is the canonical "currently taking" encoding —
+    null is *not* "unknown", so leave both null when the source is silent
+    rather than inferring "they probably still take it".
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -65,6 +71,8 @@ class SaveMedicationArgs(BaseModel):
     code: str | None = Field(default=None, max_length=64)
     dose: str | None = Field(default=None, max_length=64)
     frequency: str | None = Field(default=None, max_length=64)
+    onset_date: date | None = None
+    end_date: date | None = None
 
 
 class SaveAllergyArgs(BaseModel):
@@ -73,6 +81,9 @@ class SaveAllergyArgs(BaseModel):
     Allergy severity and source reuse the existing patient-schema literals
     so the tool can't smuggle in a value that ``ProfileStore.add_allergy``
     refuses; one validation path instead of two.
+
+    ``onset_date`` is when the allergy was first noticed; ``end_date`` (rare)
+    means the allergy has been resolved — most allergies stay null here.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -80,36 +91,60 @@ class SaveAllergyArgs(BaseModel):
     substance: str = Field(min_length=1, max_length=128)
     severity: AllergySeverity
     source: AllergySource
+    onset_date: date | None = None
+    end_date: date | None = None
 
 
 class SaveConditionArgs(BaseModel):
-    """``save_condition`` — one condition upserted to profile.db."""
+    """``save_condition`` — one condition upserted to profile.db.
+
+    ``end_date`` is the resolved date; null means still ongoing. Duration is
+    derived in app code from ``onset_date`` + ``end_date``; we deliberately do
+    not let the LLM persist a separate free-text duration string, since a
+    structured date pair is easier to reason over.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     display: str = Field(min_length=1, max_length=128)
     code: str | None = Field(default=None, max_length=64)
     onset_date: date | None = None
+    end_date: date | None = None
 
 
 # Fields that ``update_profile_field`` is allowed to touch. Hardcoded rather
 # than read from ``Profile.model_fields`` because the LLM should never be
 # trusted to update structural metadata (``created_at``, ``user_id``).
-ProfileField = Literal["sex", "weight_kg", "height_cm", "birth_date"]
+# The two tiers (proactive vs passive) are intentionally listed together —
+# the gate that "do not solicit passive fields" lives in the prompt, not in
+# the schema; both tiers are storable when the user volunteers a value.
+ProfileField = Literal[
+    "sex",
+    "weight_kg",
+    "height_cm",
+    "birth_date",
+    "residence",
+    "birthplace",
+    "marital_status",
+    "has_children",
+    "current_occupation",
+    "past_occupations",
+]
 
 
 class UpdateProfileFieldArgs(BaseModel):
     """``update_profile_field`` — one Profile column write.
 
-    ``value`` is intentionally permissive (str/float/None) at the boundary;
-    the tool body coerces to the target column type via the Patient schema
-    so the LLM can pass ``"60"`` instead of ``60.0`` without rejection.
+    ``value`` is intentionally permissive (str/float/bool/None) at the
+    boundary; the tool body coerces to the target column type via the
+    Patient schema so the LLM can pass ``"60"`` instead of ``60.0`` without
+    rejection.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     field: ProfileField
-    value: str | float | None = None
+    value: str | float | bool | None = None
 
 
 class SaveToLibraryArgs(BaseModel):

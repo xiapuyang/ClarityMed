@@ -23,7 +23,7 @@ from typing import Any
 from claritymed.context import get_context_or_raise
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.audit_payloads import write_payload
-from claritymed.core.schemas import Allergy, Condition, Medication
+from claritymed.core.schemas import Allergy, Condition, Medication, solicitation_for
 from claritymed.core.schemas.tools import (
     DeleteRecordArgs,
     SaveAllergyArgs,
@@ -98,6 +98,8 @@ def save_medication(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict
         code=parsed.code,
         dose=parsed.dose,
         frequency=parsed.frequency,
+        onset_date=parsed.onset_date,
+        end_date=parsed.end_date,
     )
     ProfileStore(user_id).add_medication(medication, owner_user_id=user_id)
     audit_event(
@@ -120,6 +122,8 @@ def save_allergy(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
         substance=parsed.substance,
         severity=parsed.severity,
         source=parsed.source,
+        onset_date=parsed.onset_date,
+        end_date=parsed.end_date,
     )
     ProfileStore(user_id).add_allergy(allergy, owner_user_id=user_id)
     audit_event(
@@ -142,6 +146,7 @@ def save_condition(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
         display=parsed.display,
         code=parsed.code,
         onset_date=parsed.onset_date,
+        end_date=parsed.end_date,
     )
     ProfileStore(user_id).add_condition(condition, owner_user_id=user_id)
     audit_event(
@@ -163,9 +168,15 @@ def update_profile_field(args: dict[str, Any], *, dispatcher: ToolDispatcher) ->
     ProfileStore(user_id).update_profile_field(
         parsed.field, parsed.value, owner_user_id=user_id
     )
+    # Tag the audit row with the field's solicitation tier so post-hoc eval
+    # can flag the model proactively asking for passive fields (anti-pattern).
     audit_event(
         "tool.update_profile_field",
-        {"tool_name": "update_profile_field", "field": parsed.field},
+        {
+            "tool_name": "update_profile_field",
+            "field": parsed.field,
+            "solicitation": solicitation_for(parsed.field),
+        },
     )
     write_payload(
         user_id,

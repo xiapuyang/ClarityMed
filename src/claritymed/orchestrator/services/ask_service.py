@@ -234,13 +234,28 @@ class AskService:
         # cache the registry once instead of paying disk + Pydantic
         # validation cost on each ``run()``.
         self._prompt_registry = None
+
         # Plugins are stateless w.r.t. turn data — built once at startup.
         # Test paths can inject a pre-built list to assert dispatch
         # without going through the factory.
+        # AttachmentsFeature needs the session_id at turn time; bind a
+        # closure over the (potentially-late-bound) ``_chat_session`` ref
+        # so a session swapped in after construction is picked up.
+        def _current_session_id() -> str | None:
+            return (
+                self._chat_session.session_id
+                if self._chat_session is not None
+                else None
+            )
+
         self._features = (
             features
             if features is not None
-            else build_features(rag_mode=rag_mode, rag_strategy=strategy)
+            else build_features(
+                rag_mode=rag_mode,
+                rag_strategy=strategy,
+                get_session_id=_current_session_id,
+            )
         )
         # Snapshot per-feature modes for the audit row; the LLM-facing
         # tool list is computed per-turn from ``as_tool``.

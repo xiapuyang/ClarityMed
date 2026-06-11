@@ -42,6 +42,11 @@
 --   severity     Reaction severity. Enum at the app layer:
 --                mild | moderate | severe | anaphylactic.
 --   source       Provenance of the entry. Enum: self_report | clinical_record.
+--   onset_date   Optional date the allergy was first noticed / first reacted.
+--                Stored as DATETIME in UTC (midnight).
+--   end_date     Optional date the allergy was resolved (rare). NULL means
+--                still active. App layer enforces end_date >= onset_date and
+--                end_date <= today.
 --   create_time  Row creation timestamp (UTC, set by the ORM at INSERT).
 --   update_time  Last mutation timestamp (UTC, refreshed by the ORM on write).
 -- ============================================================================
@@ -51,6 +56,8 @@ CREATE TABLE allergy (
 	substance VARCHAR NOT NULL,
 	severity VARCHAR NOT NULL,
 	source VARCHAR NOT NULL,
+	onset_date DATETIME,
+	end_date DATETIME,
 	create_time DATETIME NOT NULL,
 	update_time DATETIME NOT NULL,
 	PRIMARY KEY (id)
@@ -58,6 +65,11 @@ CREATE TABLE allergy (
 
 -- Every query filters by user_id, so this is the hot-path index.
 CREATE INDEX ix_allergy_user_id ON allergy (user_id);
+
+-- Composite for "currently active" (WHERE user_id=? AND end_date IS NULL) and
+-- "recent N" (ORDER BY end_date) lookups — both share the prefix and SQLite
+-- scans the index either direction without a separate DESC index.
+CREATE INDEX ix_allergy_user_end_date ON allergy (user_id, end_date);
 
 
 -- ============================================================================
@@ -72,6 +84,9 @@ CREATE INDEX ix_allergy_user_id ON allergy (user_id);
 --   code         Optional coded identifier (ICD-10 / SNOMED). Nullable until
 --                the ingest pipeline can resolve a code.
 --   onset_date   Optional date the condition began. Stored as DATETIME in UTC.
+--   end_date     Optional resolved date. NULL means the condition is still
+--                ongoing — duration is derived in app code from onset_date and
+--                end_date, never persisted. App layer enforces end_date >= onset.
 --   create_time  Row creation timestamp (UTC).
 --   update_time  Last mutation timestamp (UTC).
 -- ============================================================================
@@ -81,12 +96,16 @@ CREATE TABLE condition (
 	display VARCHAR NOT NULL,
 	code VARCHAR,
 	onset_date DATETIME,
+	end_date DATETIME,
 	create_time DATETIME NOT NULL,
 	update_time DATETIME NOT NULL,
 	PRIMARY KEY (id)
 );
 
 CREATE INDEX ix_condition_user_id ON condition (user_id);
+
+-- Composite for "currently active" + "recent N" — see allergy table.
+CREATE INDEX ix_condition_user_end_date ON condition (user_id, end_date);
 
 
 -- ============================================================================
@@ -101,6 +120,10 @@ CREATE INDEX ix_condition_user_id ON condition (user_id);
 --   code         Optional coded identifier (RxNorm / ATC). Nullable.
 --   dose         Optional dose string (e.g. "500 mg"). Free text; no parsing.
 --   frequency    Optional cadence (e.g. "twice daily"). Free text; no parsing.
+--   onset_date   Optional date the patient started this medication. DATETIME.
+--   end_date     Optional date the medication was discontinued. NULL is the
+--                canonical "currently taking" encoding; the composite index
+--                covers the active-meds query.
 --   create_time  Row creation timestamp (UTC).
 --   update_time  Last mutation timestamp (UTC).
 -- ============================================================================
@@ -111,6 +134,8 @@ CREATE TABLE medication (
 	code VARCHAR,
 	dose VARCHAR,
 	frequency VARCHAR,
+	onset_date DATETIME,
+	end_date DATETIME,
 	create_time DATETIME NOT NULL,
 	update_time DATETIME NOT NULL,
 	PRIMARY KEY (id)
@@ -118,25 +143,44 @@ CREATE TABLE medication (
 
 CREATE INDEX ix_medication_user_id ON medication (user_id);
 
+-- Composite for "currently taking" + "recent N" — see allergy table.
+CREATE INDEX ix_medication_user_end_date ON medication (user_id, end_date);
+
 
 -- ============================================================================
 -- Table: profile
---   Singleton biometric basics for the user (one row per database). Pydantic
---   contract: claritymed.core.schemas.patient.Profile.
+--   Singleton biometric + biographical basics for the user (one row per
+--   database). Pydantic contract: claritymed.core.schemas.patient.Profile.
 --
 --   We store birth_date rather than age because age drifts every birthday;
 --   a stored birth_date is stable for life and age is derived in code.
 --
+--   Two solicitation tiers (enforced at the Pydantic layer, not the DB):
+--     - Proactive: sex, weight_kg, height_cm, birth_date, residence,
+--       birthplace. The agent may ask for these when missing.
+--     - Passive: marital_status, has_children, current_occupation,
+--       past_occupations. Recorded only if the user volunteers — the
+--       agent must not solicit them.
+--
 -- Columns:
---   id           Surrogate primary key.
---   user_id      Owner of this row. UNIQUE — at most one profile per DB.
---                Indexed (the unique index is the user_id lookup index).
---   sex          Optional. Enum at the app layer: female | male | intersex | unknown.
---   weight_kg    Optional. Float, app-layer bounds (0, 500].
---   height_cm    Optional. Float, app-layer bounds (0, 300].
---   birth_date   Optional. DATE; app layer rejects future dates.
---   create_time  Row creation timestamp (UTC).
---   update_time  Last mutation timestamp (UTC, refreshed on every upsert).
+--   id                  Surrogate primary key.
+--   user_id             Owner of this row. UNIQUE — at most one profile per
+--                       DB. Indexed (the unique index doubles as lookup).
+--   sex                 Optional. Enum at app layer: female | male | intersex
+--                       | unknown.
+--   weight_kg           Optional. Float, app-layer bounds (0, 500].
+--   height_cm           Optional. Float, app-layer bounds (0, 300].
+--   birth_date          Optional. DATE; app layer rejects future dates.
+--   residence           Optional free text (city / region). Endemic exposure.
+--   birthplace          Optional free text. Early-life exposure history.
+--   marital_status      Optional. Enum at app layer: single | partnered |
+--                       married | divorced | widowed.
+--   has_children        Optional boolean.
+--   current_occupation  Optional free text.
+--   past_occupations    Optional free text, comma-separated. Occupational
+--                       exposure history.
+--   create_time         Row creation timestamp (UTC).
+--   update_time         Last mutation timestamp (UTC, refreshed on upsert).
 -- ============================================================================
 CREATE TABLE profile (
 	id INTEGER NOT NULL,
@@ -145,6 +189,12 @@ CREATE TABLE profile (
 	weight_kg FLOAT,
 	height_cm FLOAT,
 	birth_date DATE,
+	residence VARCHAR,
+	birthplace VARCHAR,
+	marital_status VARCHAR,
+	has_children BOOLEAN,
+	current_occupation VARCHAR,
+	past_occupations VARCHAR,
 	create_time DATETIME NOT NULL,
 	update_time DATETIME NOT NULL,
 	PRIMARY KEY (id)

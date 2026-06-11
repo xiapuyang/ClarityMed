@@ -24,12 +24,17 @@ from claritymed.core.schemas.models import (
     ThinkingLevel,
 )
 from claritymed.core.schemas.patient import (
+    PASSIVE_PROFILE_FIELDS,
+    PROACTIVE_PROFILE_FIELDS,
     Allergy,
     Condition,
     LongitudinalRecord,
+    MaritalStatus,
     Medication,
     Patient,
     Profile,
+    Solicitation,
+    solicitation_for,
 )
 from claritymed.core.schemas.request import RequestContext
 from claritymed.core.schemas.uncertainty import (
@@ -57,14 +62,18 @@ __all__ = [
     "LabPanel",
     "LabValue",
     "LongitudinalRecord",
+    "MaritalStatus",
     "Medication",
     "ModelMetadata",
     "ModelsConfig",
+    "PASSIVE_PROFILE_FIELDS",
+    "PROACTIVE_PROFILE_FIELDS",
     "Patient",
     "PredictionSet",
     "Profile",
     "ProviderConfig",
     "ProviderKind",
+    "Solicitation",
     "QualityReport",
     "RedFlag",
     "ReferenceRange",
@@ -74,4 +83,5 @@ __all__ = [
     "UncertaintyResult",
     "UncertaintySource",
     "UncertaintyType",
+    "solicitation_for",
 ]

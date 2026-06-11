@@ -461,3 +461,246 @@ async def test_on_mount_faulthandler_exception_silenced(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.pause()
         app.query_one(StatusBar)  # mount completed despite faulthandler failure
+
+
+# ---- clipboard paste action ---------------------------------------------
+
+
+def _patch_clipboard(monkeypatch, content):
+    """Force ``read_clipboard`` to return ``content`` for this test."""
+    monkeypatch.setattr(
+        "claritymed.cli.tui.paste.read_clipboard", lambda: content, raising=True
+    )
+
+
+class _SyncOcrWorker:
+    """Stand-in for OcrWorker that records enqueues without spawning a task."""
+
+    def __init__(self) -> None:
+        self.enqueued = []
+
+    def enqueue(self, job) -> None:
+        self.enqueued.append(job)
+
+    def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_paste_image_routes_through_blob_and_session(monkeypatch):
+    """ImageBytes → BlobStore.store + SessionAttachments row + OCR enqueue."""
+    from claritymed.cli.tui.paste import ImageBytes
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+    from claritymed.stores.blob_store import BlobStore
+
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=b"fake-png-bytes", ext="png"))
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Skip real OCR provider construction by pre-seeding the slot.
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        # Blob landed: the sha is whatever sha256(b"fake-png-bytes") resolves to.
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.filename == "clipboard.png"
+        assert row.mime == "image/png"
+        # Blob is on disk under the per-user CAS pool.
+        assert BlobStore("alice").path(row.sha256, "png").exists()
+        # OCR job was enqueued with matching identifiers.
+        assert len(fake_worker.enqueued) == 1
+        job = fake_worker.enqueued[0]
+        assert job.user_id == "alice"
+        assert job.sha256 == row.sha256
+
+
+@pytest.mark.asyncio
+async def test_paste_small_text_inserts_into_input(monkeypatch):
+    from claritymed.cli.tui.paste import SmallText
+
+    _patch_clipboard(monkeypatch, SmallText(text="hello world"))
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_paste_clipboard()
+        await pilot.pause()
+        assert "hello world" in app.query_one(InputBar).value()
+
+
+@pytest.mark.asyncio
+async def test_paste_empty_clipboard_emits_toast(monkeypatch):
+    from claritymed.cli.tui.paste import Empty
+
+    _patch_clipboard(monkeypatch, Empty())
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Action should run without exception even though there's nothing to do.
+        app.action_paste_clipboard()
+        await pilot.pause()
+        # Input is unchanged.
+        assert app.query_one(InputBar).value() == ""
+
+
+@pytest.mark.asyncio
+async def test_paste_file_path_routes_through_blob_and_session(monkeypatch, tmp_path):
+    from claritymed.cli.tui.paste import FilePath
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+
+    sample = tmp_path / "report.pdf"
+    sample.write_bytes(b"%PDF-1.4 fake")
+    _patch_clipboard(monkeypatch, FilePath(path=sample))
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert len(rows) == 1
+        assert rows[0].filename == "report.pdf"
+        assert rows[0].mime == "application/pdf"
+        assert len(fake_worker.enqueued) == 1
+
+
+@pytest.mark.asyncio
+async def test_paste_clipboard_read_failure_emits_toast(monkeypatch):
+    """An exception from ``read_clipboard`` becomes an error toast, not a crash."""
+
+    def _boom():
+        raise RuntimeError("xclip segfault")
+
+    monkeypatch.setattr("claritymed.cli.tui.paste.read_clipboard", _boom, raising=True)
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_paste_clipboard()  # must not raise
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_paste_adds_chat_history_and_tool_step(monkeypatch):
+    """Image paste must add a visible system turn AND a ToolSteps row.
+
+    Toasts disappear; the chat-history line is what the user sees if they
+    scroll back or resume the session. The ToolSteps row is the progress
+    indicator that flips to ✓ when OCR finishes."""
+    from claritymed.cli.tui.paste import ImageBytes
+
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=b"png-bytes", ext="png"))
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        # _session_turns must carry the attachment line.
+        system_turns = [t for t in app._session_turns if t.role == "system"]
+        assert any("attached clipboard.png" in t.text for t in system_turns)
+
+        # ToolSteps has a ⟳ row for the OCR job.
+        steps = app.query_one(ToolSteps)
+        active_keys = list(steps._active.keys())
+        assert any(k.startswith("ocr:") for k in active_keys), active_keys
+
+
+@pytest.mark.asyncio
+async def test_ocr_completed_marks_tool_step_done(monkeypatch):
+    """The OcrWorker listener flips the ToolSteps row to ✓ on completion.
+
+    Drives ``_on_ocr_completed`` directly to verify the status → summary
+    branching (done / empty / failed / unknown all reach the same widget
+    call path)."""
+    from claritymed.cli.tui.paste import ImageBytes
+    from claritymed.orchestrator.services.ocr_worker import OcrCompleted
+
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=b"png-bytes", ext="png"))
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = _SyncOcrWorker()
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        # Grab the sha by inspecting the active steps key.
+        steps = app.query_one(ToolSteps)
+        [step_key] = [k for k in steps._active.keys() if k.startswith("ocr:")]
+        sha_prefix = step_key.split(":", 1)[1]
+
+        # Simulate worker completion for that sha.
+        app._on_ocr_completed(
+            OcrCompleted(
+                user_id="alice",
+                session_id=app._chat_session.session_id,
+                sha256=sha_prefix + "0" * (64 - len(sha_prefix)),
+                status="done",
+                provider="PyMuPDFOcrProvider",
+            )
+        )
+        await pilot.pause()
+        # Row moved from _active to completed (no longer in _active).
+        assert step_key not in steps._active
+
+
+@pytest.mark.asyncio
+async def test_ocr_completed_failed_status_renders_reason(monkeypatch):
+    from claritymed.orchestrator.services.ocr_worker import OcrCompleted
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        steps = app.query_one(ToolSteps)
+        sha = "a" * 64
+        steps.push_start(f"ocr:{sha[:8]}", args_preview="x.png")
+        app._on_ocr_completed(
+            OcrCompleted(
+                user_id="alice",
+                session_id=app._chat_session.session_id,
+                sha256=sha,
+                status="failed",
+                reason="tesseract missing",
+            )
+        )
+        await pilot.pause()
+        # Step row content should mention the failure reason.
+        from textual.widgets import Static
+
+        statics = list(steps.query(Static))
+        assert any("tesseract missing" in str(s.renderable) for s in statics)
+
+
+@pytest.mark.asyncio
+async def test_paste_without_chat_session_emits_toast(monkeypatch):
+    """No active session → paste refused with an error toast, not a crash."""
+    from claritymed.cli.tui.paste import ImageBytes
+
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=b"abc", ext="png"))
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._chat_session = None
+        app.action_paste_clipboard()
+        await pilot.pause()
+        # Did not crash. _session_turns has no attachment row.
+        assert all("attached" not in t.text for t in app._session_turns)

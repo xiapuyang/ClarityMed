@@ -8,7 +8,7 @@ to ``tool`` would mask the rollout.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from claritymed.core.features.base import FeaturePlugin
 
@@ -20,6 +20,7 @@ def build_features(
     *,
     rag_mode: str = "tool",
     rag_strategy: "RagStrategy | None" = None,
+    get_session_id: Callable[[], str | None] | None = None,
 ) -> list[FeaturePlugin]:
     """Instantiate plugins from per-feature config.
 
@@ -28,6 +29,11 @@ def build_features(
         rag_strategy: Pre-built RAG strategy (``None`` when
             ``rag.enabled=false``); the RagFeature is still added so the
             tool can emit ``RAG disabled`` events for visibility.
+        get_session_id: When set, enables ``AttachmentsFeature`` so OCR'd
+            paste / upload text is splice-injected into the prompt. ``None``
+            (the default) skips the plugin entirely — headless one-shot
+            paths (CLI ``ask``, evals) have no session_id and would only
+            get a no-op block.
 
     Raises:
         NotImplementedError: any active feature requests ``agentic`` mode.
@@ -37,6 +43,10 @@ def build_features(
     plugins: list[FeaturePlugin] = [
         RagFeature(mode=rag_mode, strategy=rag_strategy),  # type: ignore[arg-type]
     ]
+    if get_session_id is not None:
+        from claritymed.core.attachments_feature import AttachmentsFeature
+
+        plugins.append(AttachmentsFeature(get_session_id=get_session_id))
 
     agentic = [p for p in plugins if p.mode == "agentic"]
     if agentic:
