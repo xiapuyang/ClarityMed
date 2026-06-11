@@ -29,12 +29,15 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from claritymed.core.rag.embedding.base import Embedder, SparseVector
 from claritymed.errors import EmbedderUnreachableError, MissingApiKeyError
+
+if TYPE_CHECKING:
+    from claritymed.core.phi.outbound_gate import OutboundTextGate
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,7 @@ class BgeM3HttpEmbedder(Embedder):
         timeout_s: int = DEFAULT_TIMEOUT_S,
         api_key_env: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        scrub_gate: "OutboundTextGate | None" = None,
     ) -> None:
         if not base_url:
             raise ValueError("BgeM3HttpEmbedder requires base_url")
@@ -63,6 +67,7 @@ class BgeM3HttpEmbedder(Embedder):
         self._timeout_s = timeout_s
         self._api_key = self._resolve_api_key(api_key_env)
         self._transport = transport  # tests inject MockTransport here
+        self._scrub_gate = scrub_gate
         # Lazy-initialised on first request and reused for the embedder's
         # lifetime. Building a new AsyncClient per call (the prior
         # behaviour) paid TCP+TLS setup on every retrieval — 3-6 client
@@ -89,6 +94,8 @@ class BgeM3HttpEmbedder(Embedder):
     async def embed_dense(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        if self._scrub_gate:
+            texts = self._scrub_gate.scrub_batch(texts)
         out: list[list[float]] = []
         for batch in self._batched(texts):
             out.extend(await self._post_dense(batch))
@@ -97,6 +104,8 @@ class BgeM3HttpEmbedder(Embedder):
     async def embed_sparse(self, texts: list[str]) -> list[SparseVector]:
         if not texts:
             return []
+        if self._scrub_gate:
+            texts = self._scrub_gate.scrub_batch(texts)
         out: list[SparseVector] = []
         for batch in self._batched(texts):
             out.extend(await self._post_sparse(batch))

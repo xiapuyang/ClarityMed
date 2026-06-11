@@ -188,7 +188,9 @@ class ClaritymedRagLM(LM):
             model_name=str(self._provider.model),
             strategy=self._strategy,
             provider_config=self._provider,
-            translation_service=make_translation_provider(model),
+            translation_service=make_translation_provider(
+                model, phi_kind=self._provider.kind
+            ),
             rag_mode=self._rag_mode,
         )
 

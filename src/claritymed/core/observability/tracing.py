@@ -13,12 +13,18 @@ hits), and an OTLP HTTP exporter pointed at Phoenix. Finally we call
 ``Agent.instrument_all()`` so every pydantic-ai run / model_call /
 tool_call automatically becomes a span — no per-call wiring.
 
-PHI note: pydantic-ai instrumentation puts the user prompt and the
-assistant response into the span. Phoenix runs locally by default
-(``docker run arizephoenix/phoenix`` or ``uvx arize-phoenix serve``)
-so PHI does not leave the host. If a SaaS Phoenix endpoint is ever
-configured, wrap ``OpenInferenceSpanProcessor`` with a PHI scrubber
-before the exporter — do not export raw PHI to a third party.
+PHI scrubbing uses the same ``OutboundTextGate`` / ``resolve_phi_kind``
+logic as the embedder and reranker service clients:
+
+* Localhost Phoenix (``localhost``, ``127.0.0.1``, ``::1``) → no gate →
+  spans are exported as-is.  PHI stays on the local host, same as the
+  embedder/reranker case.
+* Remote Phoenix → ``PhiOutboundGate`` is injected into
+  ``PhiScrubSpanProcessor``, which scrubs OI-written attributes before
+  ``BatchSpanProcessor`` picks them up for export.
+
+Set ``CLARITYMED_TRACE_PHI_SCRUB_DISABLE=1`` to skip the processor even
+for remote endpoints (emergency override only).
 """
 
 from __future__ import annotations
@@ -26,7 +32,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +40,6 @@ _API_KEY_ENV = "PHOENIX_API_KEY"
 _SERVICE_NAME_ENV = "OTEL_SERVICE_NAME"
 _DEFAULT_SERVICE_NAME = "claritymed"
 _SCRUB_DISABLE_ENV = "CLARITYMED_TRACE_PHI_SCRUB_DISABLE"
-_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Attribute keys (or key prefixes) OpenInference writes that may carry
 # PHI in their values. We pin to OI's documented attribute names rather
@@ -97,11 +101,6 @@ def reset_for_testing() -> None:
         _configured = False
 
 
-def _is_local_endpoint(endpoint: str) -> bool:
-    """Return True when the endpoint resolves to a loopback address."""
-    return (urlparse(endpoint).hostname or "").lower() in _LOCAL_HOSTS
-
-
 def _install(endpoint: str) -> None:
     # Imports are local so the rest of the codebase doesn't pay the OTel
     # import cost when tracing is off.
@@ -131,10 +130,31 @@ def _install(endpoint: str) -> None:
     # batch. on_end runs in span-finish order, after OI's instrumentation
     # has populated input/output attributes, but before the
     # BatchSpanProcessor below picks the span up for export.
-    if os.environ.get(_SCRUB_DISABLE_ENV, "").lower() not in ("1", "true", "yes"):
-        provider.add_span_processor(
-            PhiScrubSpanProcessor(model_enabled=not _is_local_endpoint(endpoint))
+    #
+    # Gate follows the same resolve_phi_kind logic as the service clients:
+    # localhost → None (no processor), remote → PhiOutboundGate.
+    scrub_disabled = os.environ.get(_SCRUB_DISABLE_ENV, "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not scrub_disabled:
+        from claritymed.core.phi.outbound_gate import (
+            make_outbound_gate,
+            resolve_phi_kind,
         )
+
+        kind = resolve_phi_kind(None, endpoint)
+        gate = None
+        if kind == "cloud":
+            try:
+                gate = make_outbound_gate(kind)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "ScrubService init failed; exporting spans without PHI scrubbing"
+                )
+        if gate is not None:
+            provider.add_span_processor(PhiScrubSpanProcessor(gate))
 
     # OTLP HTTP is what self-hosted Phoenix accepts on /v1/traces. Batch
     # processor so streaming latency isn't taxed by export.
@@ -204,7 +224,7 @@ def BaggageSpanProcessor():  # noqa: N802 — factory mimics a class name on pur
 
 
 def _phi_scrub_processor_class():
-    """Return the PhiScrubSpanProcessor class, importing OTel + PhiGuard lazily.
+    """Return the PhiScrubSpanProcessor class, importing OTel lazily.
 
     The class scrubs attributes OpenInference set during span lifetime
     by mutating ``span._attributes`` on ``on_end``. The mutation is safe
@@ -213,44 +233,21 @@ def _phi_scrub_processor_class():
     """
     from opentelemetry.sdk.trace import SpanProcessor
 
-    from claritymed.core.scrub.service import ScrubConfig, ScrubService
-
     class _PhiScrubSpanProcessor(SpanProcessor):
         """Strip / redact PHI from OI-written attributes pre-export.
 
-        When ``model_enabled`` is False (localhost endpoint) only the regex
-        layer runs — cheap, no model load. When True (remote endpoint) the
-        privacy_filter setting from safety.yaml is respected so unstructured
-        PHI (names, addresses) is also caught before spans leave the host.
+        Accepts an ``OutboundTextGate`` — the same primitive used by the
+        embedder / reranker service clients — so scrubbing logic and
+        testability are unified across all outbound boundaries.
         """
 
-        def __init__(self, model_enabled: bool) -> None:
-            try:
-                from claritymed import config as _cfg
-
-                _cfg.reload_configs()
-                phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
-                pf_config = phi_raw.get("privacy_filter", {})
-                if not model_enabled:
-                    pf_config = {"enabled": False}
-                cfg = ScrubConfig.model_validate(
-                    {
-                        "free_text_patterns": phi_raw.get("free_text_patterns", []),
-                        "privacy_filter": pf_config,
-                    }
-                )
-                self._scrub = ScrubService(cfg)
-            except Exception:  # noqa: BLE001
-                logger.exception("ScrubService init failed; scrubber inert")
-                self._scrub = None
+        def __init__(self, gate) -> None:
+            self._gate = gate
 
         def on_start(self, span, parent_context=None):  # noqa: D401, ARG002
             return
 
         def on_end(self, span):  # noqa: D401
-            scrub = self._scrub
-            if scrub is None:
-                return
             attrs = getattr(span, "_attributes", None)
             if not attrs:
                 return
@@ -261,14 +258,7 @@ def _phi_scrub_processor_class():
                     value = attrs[key]
                     if not isinstance(value, str) or not value:
                         continue
-                    scrubbed, report = scrub.scrub(value)
-                    # Replace whenever ANY rule fired (model layer is
-                    # disabled for spans, so model_hits is always 0 —
-                    # the check stays explicit so a future re-enable
-                    # of the model layer would still substitute when
-                    # only the model layer matched).
-                    if report.rule_hits or report.model_hits:
-                        attrs[key] = scrubbed
+                    attrs[key] = self._gate.scrub(value)
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "PHI scrub failed on span %s", getattr(span, "name", "?")
@@ -290,13 +280,13 @@ def _is_phi_attr_key(key: str) -> bool:
     return any(key.startswith(prefix) for prefix in PHI_SCRUB_ATTR_PREFIXES)
 
 
-def PhiScrubSpanProcessor(model_enabled: bool = False):  # noqa: N802 — factory mimics a class name on purpose
-    """Construct a PHI scrub span processor.
+def PhiScrubSpanProcessor(gate):  # noqa: N802 — factory mimics a class name on purpose
+    """Construct a PHI scrub span processor around an ``OutboundTextGate``.
 
     Hidden behind a factory for the same reason as ``BaggageSpanProcessor``
     — OTel SDK import is deferred to install time.
     """
-    return _phi_scrub_processor_class()(model_enabled=model_enabled)
+    return _phi_scrub_processor_class()(gate=gate)
 
 
 __all__ = [

@@ -7,6 +7,7 @@ directly so they don't need to redirect the YAML loader.
 
 from __future__ import annotations
 
+from claritymed.core.phi.outbound_gate import make_outbound_gate, resolve_phi_kind
 from claritymed.core.rag.embedding.base import Embedder
 from claritymed.core.rag.embedding.bge_m3 import BgeM3HttpEmbedder
 from claritymed.core.rag.schemas import EmbedderConfig, load_retrieval_config
@@ -38,6 +39,9 @@ def build_embedder(config: EmbedderConfig | None = None) -> Embedder:
             batch_size=entry.batch_size,
             timeout_s=entry.timeout_s,
             api_key_env=entry.api_key_env,
+            scrub_gate=make_outbound_gate(
+                resolve_phi_kind(entry.phi_kind, entry.base_url)
+            ),
         )
     raise UnknownEmbedderError(
         f"build_embedder has no factory branch for id={entry.id!r}"

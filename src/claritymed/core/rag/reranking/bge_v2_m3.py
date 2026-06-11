@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from claritymed.core.rag.reranking.base import RerankHit, Reranker
 from claritymed.errors import MissingApiKeyError, RerankerUnreachableError
+
+if TYPE_CHECKING:
+    from claritymed.core.phi.outbound_gate import OutboundTextGate
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,7 @@ class BgeRerankerV2M3HttpReranker(Reranker):
         timeout_s: int = DEFAULT_TIMEOUT_S,
         api_key_env: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        scrub_gate: "OutboundTextGate | None" = None,
     ) -> None:
         if not base_url:
             raise ValueError("BgeRerankerV2M3HttpReranker requires base_url")
@@ -54,6 +58,7 @@ class BgeRerankerV2M3HttpReranker(Reranker):
         self._timeout_s = timeout_s
         self._api_key = self._resolve_api_key(api_key_env)
         self._transport = transport
+        self._scrub_gate = scrub_gate
         # Shared AsyncClient — lazy on first use, reused across all
         # batches and turns. Building a new client per batch was paying
         # TCP/TLS setup for every retrieval round trip.
@@ -80,6 +85,9 @@ class BgeRerankerV2M3HttpReranker(Reranker):
             return []
         if top_k <= 0:
             raise ValueError(f"top_k must be positive, got {top_k}")
+        if self._scrub_gate:
+            query = self._scrub_gate.scrub(query)
+            docs = self._scrub_gate.scrub_batch(docs)
 
         all_hits: list[RerankHit] = []
         # Rerank batches independently then merge — TEI accepts an unbounded

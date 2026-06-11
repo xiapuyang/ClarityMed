@@ -147,7 +147,7 @@ def test_eval_run_omits_provider_falls_back_to_catalog_default(tmp_path, monkeyp
     )
     result = runner.invoke(app, ["eval", "run", "medqa", "--limit", "1"])
     assert result.exit_code == 0, result.stdout
-    assert captured["provider_id"] == "ollama"  # repo catalog default
+    assert captured["provider_id"] == "omlx"  # repo catalog default
 
 
 # ---------------------------------------------------------------------------

@@ -97,7 +97,9 @@ def ask(
                 model_name=provider.model,
                 strategy=strategy,
                 provider_config=provider,
-                translation_service=make_translation_provider(model),
+                translation_service=make_translation_provider(
+                    model, phi_kind=provider.kind
+                ),
                 rag_mode=mode_name,
             )
 

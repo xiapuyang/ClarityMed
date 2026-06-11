@@ -25,6 +25,8 @@ from claritymed.core.translation.base import (
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
+    from claritymed.core.phi.outbound_gate import OutboundTextGate
+
 logger = logging.getLogger(__name__)
 
 # Registry keys for translation prompts. The language argument to
@@ -52,8 +54,13 @@ class LLMTranslationProvider(TranslationProvider):
     separately; mixing the two would inflate token cost with no benefit.
     """
 
-    def __init__(self, model: "Model") -> None:
+    def __init__(
+        self,
+        model: "Model",
+        scrub_gate: "OutboundTextGate | None" = None,
+    ) -> None:
         self._model = model
+        self._scrub_gate = scrub_gate
 
     async def translate_query(self, query: str, *, target_lang: Language) -> str:
         """Rewrite an input into a focused clinical search query in ``target_lang``.
@@ -108,6 +115,9 @@ class LLMTranslationProvider(TranslationProvider):
         prompt_name: str = _PROMPT_NAME,
     ) -> str:
         """Shared LLM translation call. Raises on failure — callers handle fallback."""
+        if self._scrub_gate:
+            text = self._scrub_gate.scrub(text)
+
         from pydantic_ai import Agent
 
         from claritymed.core.observability.steps import step

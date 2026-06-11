@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from claritymed.core.phi.outbound_gate import make_outbound_gate, resolve_phi_kind
 from claritymed.core.rag.reranking.base import Reranker
 from claritymed.core.rag.reranking.bge_v2_m3 import BgeRerankerV2M3HttpReranker
 from claritymed.core.rag.schemas import RerankerConfig, load_retrieval_config
@@ -33,6 +34,9 @@ def build_reranker(config: RerankerConfig | None = None) -> Reranker:
             batch_size=entry.batch_size,
             timeout_s=entry.timeout_s,
             api_key_env=entry.api_key_env,
+            scrub_gate=make_outbound_gate(
+                resolve_phi_kind(entry.phi_kind, entry.base_url)
+            ),
         )
     raise UnknownRerankerError(
         f"build_reranker has no factory branch for id={entry.id!r}"

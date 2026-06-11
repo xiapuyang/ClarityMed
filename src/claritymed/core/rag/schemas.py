@@ -239,6 +239,7 @@ class EmbedderEntry(BaseModel):
     batch_size: int = Field(default=32, ge=1)
     timeout_s: int = Field(default=30, ge=1)
     api_key_env: str | None = None
+    phi_kind: Literal["local", "cloud"] | None = None
 
 
 class EmbedderConfig(BaseModel):
@@ -270,6 +271,7 @@ class RerankerEntry(BaseModel):
     batch_size: int = Field(default=32, ge=1)
     timeout_s: int = Field(default=30, ge=1)
     api_key_env: str | None = None
+    phi_kind: Literal["local", "cloud"] | None = None
 
 
 class RerankerConfig(BaseModel):

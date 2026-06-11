@@ -22,12 +22,23 @@ if TYPE_CHECKING:
     from claritymed.core.translation.base import TranslationProvider
 
 
-def make_translation_provider(model: "Model") -> "TranslationProvider":
+def make_translation_provider(
+    model: "Model",
+    phi_kind: str = "local",
+) -> "TranslationProvider":
     """Build the configured translation provider.
+
+    Args:
+        model: The pydantic-ai Model used for translation calls.
+        phi_kind: ``"cloud"`` activates PHI scrubbing of input text before
+            each translation call; ``"local"`` (default) skips scrubbing.
+            Pass the resolved ``ProviderConfig.kind`` so translation inherits
+            the same PHI policy as the main LLM.
 
     Falls back to ``LLMTranslationProvider`` if the config cannot be read,
     so a missing or malformed ``translation`` section never breaks startup.
     """
+    from claritymed.core.phi.outbound_gate import make_outbound_gate
     from claritymed.core.translation.llm_provider import LLMTranslationProvider
 
     provider_id = "llm"
@@ -39,7 +50,7 @@ def make_translation_provider(model: "Model") -> "TranslationProvider":
         pass
 
     if provider_id == "llm":
-        return LLMTranslationProvider(model)
+        return LLMTranslationProvider(model, scrub_gate=make_outbound_gate(phi_kind))
     raise ValueError(
         f"Unknown translation.provider={provider_id!r} in retrieval.yaml. "
         "Supported values: 'llm'."
