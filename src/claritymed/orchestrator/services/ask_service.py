@@ -35,7 +35,7 @@ from claritymed.core.observability.latency import LatencyTrace, build_step_recor
 from claritymed.core.observability.latency import usage_dict as _usage_dict
 from claritymed.core.observability.logging import get_access_logger
 from claritymed.core.observability.tool_announce import detect_announcement
-from claritymed.core.phi.guard import PhiGuard
+from claritymed.core.phi.guard import PhiGuard, get_default_guard
 from claritymed.orchestrator.agents import make_ask_agent
 from claritymed.orchestrator.agents.ask_deps import AskDeps
 
@@ -229,7 +229,7 @@ class AskService:
         tool_approval_channel: "ToolApprovalChannel | None" = None,
     ) -> None:
         self._model = model
-        self._guard = guard or PhiGuard.from_config()
+        self._guard = guard or get_default_guard()
         self._language = language
         self._chat_session = chat_session
         self._provider_id = provider_id
@@ -418,16 +418,10 @@ class AskService:
 
         Decision mapping:
 
-        * ``once``                 → ``ToolApproved(override_args=None)``
-        * ``always_tool``          → persist ``allow`` rule (empty
-          pattern, default TTL) + ``ToolApproved``.
-        * ``always_pattern``       → persist ``allow`` rule whose
-          pattern is the strict-equality subset of the args (opaque
-          keys stripped by ``SettingsStore``) + ``ToolApproved``.
-        * ``modify``               → ``ToolApproved`` with the user's
-          edited args when the modal returned them, otherwise the
-          original args (v1 modal returns no edits — graceful degrade).
-        * ``deny``                 → ``ToolDenied``.
+        * ``once``         → ``ToolApproved``.
+        * ``always_tool``  → persist ``allow`` rule (empty pattern,
+          default TTL) + ``ToolApproved``.
+        * ``deny``         → ``ToolDenied``.
 
         Deny rules are evaluated here (not in ``approval_required_func``)
         so the audit row carries the matched rule id, and so the user
@@ -564,7 +558,6 @@ class AskService:
                 continue
 
             kind = decision.decision
-            override = decision.modified_args
             if kind == "deny":
                 approvals[call.tool_call_id] = ToolDenied(
                     message="User denied this tool call."
@@ -574,13 +567,13 @@ class AskService:
                     {"user_id": user_id, "tool_name": tool_name},
                 )
                 summary = "denied"
-            elif kind in ("once", "modify"):
-                approvals[call.tool_call_id] = ToolApproved(override_args=override)
+            elif kind == "once":
+                approvals[call.tool_call_id] = ToolApproved()
                 audit_event(
                     "tool.approval.granted",
-                    {"user_id": user_id, "tool_name": tool_name, "scope": kind},
+                    {"user_id": user_id, "tool_name": tool_name, "scope": "once"},
                 )
-                summary = f"approved ({kind})"
+                summary = "approved (once)"
             elif kind == "always_tool":
                 try:
                     rule = store.add_rule(tool_name, {}, action="allow")
@@ -595,24 +588,8 @@ class AskService:
                     )
                 except Exception:  # noqa: BLE001
                     logger.exception("failed to persist always_tool rule")
-                approvals[call.tool_call_id] = ToolApproved(override_args=override)
+                approvals[call.tool_call_id] = ToolApproved()
                 summary = "approved (always_tool)"
-            elif kind == "always_pattern":
-                try:
-                    rule = store.add_rule(tool_name, args, action="allow")
-                    audit_event(
-                        "tool.approval.granted",
-                        {
-                            "user_id": user_id,
-                            "tool_name": tool_name,
-                            "scope": "always_pattern",
-                            "rule_id": rule.id,
-                        },
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("failed to persist always_pattern rule")
-                approvals[call.tool_call_id] = ToolApproved(override_args=override)
-                summary = "approved (always_pattern)"
             else:  # pragma: no cover — Decision Literal covers all branches
                 approvals[call.tool_call_id] = ToolDenied(
                     message=f"Unknown decision: {kind!r}"
@@ -1188,8 +1165,11 @@ class AskService:
                     except Exception:  # noqa: BLE001
                         logger.exception("failed to build per-step records")
             except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "_producer: agent.run raised %s: %s", type(exc).__name__, exc
+                logger.error(
+                    "_producer: agent.run raised %s: %s",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
                 )
                 result["had_error"] = True
                 await out.put(

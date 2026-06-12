@@ -135,7 +135,7 @@ def rule_list(
             console.print("[dim]no active rules[/dim]")
             return
         table = Table(title="Approval rules")
-        for col in ("id", "tool", "action", "pattern", "ttl_days", "expires_at"):
+        for col in ("id", "tool", "action", "pattern", "ttl_hours", "expires_at"):
             table.add_column(col)
         for r in rules:
             table.add_row(
@@ -143,7 +143,7 @@ def rule_list(
                 r.tool,
                 r.action,
                 json.dumps(r.args_pattern, sort_keys=True),
-                str(r.ttl_days),
+                str(r.ttl_hours),
                 r.expires_at.isoformat(),
             )
         console.print(table)

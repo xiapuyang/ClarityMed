@@ -8,7 +8,7 @@ without grokking a separate format. Each rule binds:
 * ``args_pattern`` — a strict-subset-equality match against the args
   dict; ``sha256`` / ``record_path`` / ``attachments`` are never part
   of a pattern (always re-prompt regardless of rule).
-* ``ttl_days`` — TTL window in days. ``granted_at`` + ``ttl_days``
+* ``ttl_hours`` — TTL window in hours. ``granted_at`` + ``ttl_hours``
   derive ``expires_at`` at write time.
 
 Key invariants:
@@ -37,6 +37,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from claritymed.config import tool_approval_rule_ttl_hours
 from claritymed.core.locks import file_lock
 from claritymed.core.observability.audit import audit_event
 from claritymed.stores.paths import user_settings_path, validate_user_id
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 # decision. A rule grant covers a *shape* of call, not a specific blob.
 _OPAQUE_PATTERN_KEYS = frozenset({"sha256", "record_path", "attachments"})
 _RULES_PER_TOOL_CAP = 20
-_DEFAULT_TTL_DAYS = 7
+_DEFAULT_TTL_HOURS = 24  # overridden at call time by tool_approval_rule_ttl_hours()
 
 
 def _utcnow() -> datetime:
@@ -64,7 +65,7 @@ class ApprovalRule(BaseModel):
     action: Literal["allow", "deny"] = "allow"
     args_pattern: dict[str, Any] = Field(default_factory=dict)
     granted_at: datetime
-    ttl_days: int = Field(ge=1, le=30)
+    ttl_hours: int = Field(ge=1, le=720)
     expires_at: datetime
 
     def matches(self, tool: str, args: dict[str, Any]) -> bool:
@@ -139,10 +140,12 @@ class SettingsStore:
         tool: str,
         args_pattern: dict[str, Any],
         *,
-        ttl_days: int = _DEFAULT_TTL_DAYS,
+        ttl_hours: int | None = None,
         action: Literal["allow", "deny"] = "allow",
     ) -> ApprovalRule:
         """Persist a rule. Replace-on-duplicate; evict oldest above cap."""
+        if ttl_hours is None:
+            ttl_hours = tool_approval_rule_ttl_hours()
         now = _utcnow()
         rule = ApprovalRule(
             id=str(uuid.uuid4()),
@@ -152,8 +155,8 @@ class SettingsStore:
                 k: v for k, v in args_pattern.items() if k not in _OPAQUE_PATTERN_KEYS
             },
             granted_at=now,
-            ttl_days=ttl_days,
-            expires_at=now + timedelta(days=ttl_days),
+            ttl_hours=ttl_hours,
+            expires_at=now + timedelta(hours=ttl_hours),
         )
 
         with file_lock(self._lock_path()):

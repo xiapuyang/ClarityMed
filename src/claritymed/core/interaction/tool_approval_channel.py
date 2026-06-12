@@ -32,23 +32,14 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from claritymed.core.interaction.prompt_channel import InteractiveChannelUnavailable
 
-Decision = Literal["once", "always_tool", "always_pattern", "modify", "deny"]
+Decision = Literal["once", "always_tool", "deny"]
 
 
 @dataclass(frozen=True)
 class ApprovalDecision:
-    """The user's response to one tool-approval prompt.
-
-    ``modified_args`` is set only when ``decision == "modify"`` and the
-    UI supports the per-field edit form (v1 of the TUI modal returns
-    ``None`` — the field UI ships post-Unit-7). Downstream
-    ``AskService`` treats ``modify`` with ``None`` as "approve once
-    with original args", since the user committed to running the call
-    but didn't actually edit anything.
-    """
+    """The user's response to one tool-approval prompt."""
 
     decision: Decision
-    modified_args: dict[str, Any] | None = None
 
 
 @runtime_checkable

@@ -21,6 +21,9 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["CLARITYMED_DATA_DIR"] = str(root / "data")
     os.environ["CLARITYMED_SHARED_DIR"] = str(root / "shared")
     os.environ["CLARITYMED_LOG_DIR"] = str(root / "logs")
+    # Route unit-test traces to a separate Phoenix project so they don't
+    # pollute the production project. e2e/conftest.py overrides to "claritymed-e2e".
+    os.environ.setdefault("CLARITYMED_TRACE_PROJECT", "claritymed-pytest")
 
 
 @pytest.fixture(autouse=True)

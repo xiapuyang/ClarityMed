@@ -171,6 +171,21 @@ def load_env_file(path: Path | None = None) -> dict[str, str]:
     return applied
 
 
+_DEFAULT_TOOL_APPROVAL_TTL_HOURS = 24
+
+
+def tool_approval_rule_ttl_hours() -> int:
+    """Return the TTL (in hours) for always-allow tool approval rules.
+
+    Read from ``app.yaml`` ``tool_approval.rule_ttl_hours``.
+    Falls back to ``_DEFAULT_TOOL_APPROVAL_TTL_HOURS`` when missing.
+    """
+    val = load_yaml("app.yaml").get("tool_approval", {}).get("rule_ttl_hours")
+    if val is None:
+        return _DEFAULT_TOOL_APPROVAL_TTL_HOURS
+    return int(val)
+
+
 def reload_configs() -> None:
     """Invalidate the YAML cache. Test helper / admin hot-reload entry."""
     load_yaml.cache_clear()

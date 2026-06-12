@@ -37,6 +37,17 @@ paste:
 #              localhost / 127.0.0.1 / ::1 as local and everything else
 #              as cloud, which is secure by default for remote endpoints.
 # service_name: OTel resource SERVICE_NAME shown in Phoenix UI.
+# project_name: Phoenix project to route spans into (default: "claritymed").
+#               Override with CLARITYMED_TRACE_PROJECT env var — test conftest
+#               files use this to route pytest → "claritymed-pytest" and
+#               e2e → "claritymed-e2e" without touching this file.
+# --- Tool approval rules ------------------------------------------------
+# rule_ttl_hours: how long an "always allow" rule stays active before the
+# user is prompted again. Range: 1–720 (1 hour to 30 days).
+tool_approval:
+  rule_ttl_hours: 24
+
+# --- OpenTelemetry / Phoenix tracing ------------------------------------
 tracing:
   enabled: true
   endpoint: http://localhost:6006

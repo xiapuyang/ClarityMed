@@ -57,6 +57,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "local: tests that require live local services; excluded from CI",
     )
+    # Override the unit-test project set by the parent conftest so e2e
+    # traces land in their own Phoenix project ("claritymed-e2e").
+    import os
+
+    os.environ["CLARITYMED_TRACE_PROJECT"] = "claritymed-e2e"
 
 
 @pytest.fixture(scope="session", autouse=True)

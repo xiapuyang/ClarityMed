@@ -73,6 +73,23 @@ class TracingConfig(BaseModel):
     api_key_env: str | None = None
     phi_kind: Literal["local", "cloud"] | None = None
     service_name: str = "claritymed"
+    project_name: str = "claritymed"
+
+
+def _resolve_project_name(cfg_name: str) -> str:
+    """Pick the Phoenix project name for this process.
+
+    Priority order:
+    1. ``CLARITYMED_TRACE_PROJECT`` env var (set by conftest for test runs)
+    2. ``cfg_name`` from ``configs/app.yaml`` (production default)
+
+    Conftest files are responsible for setting the env var *before* the
+    first ``setup_tracing()`` call, which is why this is read at install
+    time rather than at config-load time.
+    """
+    import os
+
+    return os.environ.get("CLARITYMED_TRACE_PROJECT") or cfg_name
 
 
 def _load_config() -> TracingConfig:
@@ -123,6 +140,9 @@ def _install(cfg: TracingConfig) -> None:
     import os
 
     from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
+    from openinference.semconv.resource import (
+        ResourceAttributes as OIResourceAttributes,
+    )
     from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
@@ -130,7 +150,13 @@ def _install(cfg: TracingConfig) -> None:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from pydantic_ai import Agent
 
-    resource = Resource.create({SERVICE_NAME: cfg.service_name})
+    project_name = _resolve_project_name(cfg.project_name)
+    resource = Resource.create(
+        {
+            SERVICE_NAME: cfg.service_name,
+            OIResourceAttributes.PROJECT_NAME: project_name,
+        }
+    )
     provider = TracerProvider(resource=resource)
 
     # Copy our baggage (request_id / user_id) onto every span as the first
@@ -156,16 +182,18 @@ def _install(cfg: TracingConfig) -> None:
 
     # OTLP HTTP is what self-hosted Phoenix accepts on /v1/traces. Batch
     # processor so streaming latency isn't taxed by export.
-    headers: dict[str, str] = {}
+    # Phoenix reads `x-project-name` header (FastAPI param: x_project_name).
+    headers: dict[str, str] = {"x-project-name": project_name}
     if cfg.api_key_env:
         api_key = os.environ.get(cfg.api_key_env, "").strip()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
     exporter = OTLPSpanExporter(
         endpoint=f"{cfg.endpoint.rstrip('/')}/v1/traces",
-        headers=headers or None,
+        headers=headers,
         timeout=3,
     )
+    logger.info("tracing project -> %s", project_name)
     provider.add_span_processor(
         BatchSpanProcessor(exporter, export_timeout_millis=3000)
     )

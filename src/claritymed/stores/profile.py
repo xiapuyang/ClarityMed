@@ -337,9 +337,9 @@ class ProfileStore:
     def update_profile_field(self, field: str, value, *, owner_user_id: str) -> Profile:
         """Set one ``Profile`` field; returns the updated profile.
 
-        The Patient schema's validators do the coercion (``birth_date``
-        from ISO string, ``weight_kg`` from int/str). Storage validates
-        only the field name — Pydantic enforces value bounds.
+        Uses ``model_validate`` (not ``model_copy``) so Pydantic's coercion
+        runs on the incoming value — e.g. ISO string → ``date`` for
+        ``birth_date``, str/int → ``float`` for ``weight_kg``.
         """
         if owner_user_id != self.user_id:
             raise UserIdMismatch(
@@ -348,6 +348,7 @@ class ProfileStore:
         if field not in Profile.model_fields:
             raise ValueError(f"unknown profile field: {field!r}")
         current = self.get_profile() or Profile()
-        # ``model_copy`` validates the change against the field's bounds.
-        updated = current.model_copy(update={field: value})
+        data = current.model_dump(mode="python")
+        data[field] = value
+        updated = Profile.model_validate(data)
         return self.upsert_profile(updated, owner_user_id=owner_user_id)

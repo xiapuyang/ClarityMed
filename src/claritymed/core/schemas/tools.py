@@ -9,17 +9,70 @@ drift between LLM, modal, and CLI.
 
 Why ``extra="forbid"``: an LLM hallucinating a field gets a ValidationError
 at the boundary, not a silent dropped value inside the tool body.
+
+LLM output tolerance
+--------------------
+``ToolArgsBase`` (shared base for all seven schemas) strips extra keys whose
+value is ``None`` before Pydantic validates.  This handles a common small-model
+behaviour: passing explicit ``null`` for every optional arg the model doesn't
+intend to set, which would otherwise trip ``extra="forbid"``.
+
+For tools that use a ``field``/``value`` wrapper (currently only
+``update_profile_field``), call ``_normalize_field_value(data, valid_keys)``
+inside a ``model_validator(mode="before")`` to reshape the shorthand form
+``{"birth_date": "1989-01-01"}`` → ``{"field": "birth_date", "value": "1989-01-01"}``.
 """
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from claritymed.core.schemas.records import ExtractedLab
 from claritymed.core.schemas.patient import AllergySeverity, AllergySource
+
+
+def _normalize_field_value(
+    data: object,
+    valid_keys: frozenset[str],
+) -> object:
+    """Reshape ``{field_name: value}`` → ``{"field": field_name, "value": value}``.
+
+    Detects a lone key from ``valid_keys`` and promotes it to the canonical
+    ``field``/``value`` structure.  No-op when ``"field"`` is already present
+    or when the input is not a plain dict.  Reusable by any tool that wraps a
+    domain-specific field name in a generic ``field``/``value`` pair.
+    """
+    if not isinstance(data, dict) or "field" in data:
+        return data
+    matches = [k for k in data if k in valid_keys]
+    if len(matches) == 1:
+        return {"field": matches[0], "value": data[matches[0]]}
+    return data
+
+
+class ToolArgsBase(BaseModel):
+    """Shared base for all tool arg schemas.
+
+    Strips extra keys with ``None`` values before Pydantic validates the
+    schema.  Small LLMs often emit every optional argument explicitly as
+    ``null``; without this, ``extra="forbid"`` would reject calls that are
+    semantically correct.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_null_extras(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        known: set[str] = set(cls.model_fields)
+        for f in cls.model_fields.values():
+            alias: Any = getattr(f, "alias", None)
+            if alias:
+                known.add(alias)
+        return {k: v for k, v in data.items() if k in known or v is not None}
 
 
 class AttachmentRef(BaseModel):
@@ -38,7 +91,7 @@ class AttachmentRef(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
 
 
-class SaveRecordArgs(BaseModel):
+class SaveRecordArgs(ToolArgsBase):
     """``save_record`` — one PHI event written to records/<category>/<slug>/."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -72,7 +125,7 @@ class SaveRecordArgs(BaseModel):
     notes: str | None = None
 
 
-class SaveMedicationArgs(BaseModel):
+class SaveMedicationArgs(ToolArgsBase):
     """``save_medication`` — one medication upserted to profile.db.
 
     ``onset_date`` is when the patient started; ``end_date`` is when it was
@@ -101,7 +154,7 @@ class SaveMedicationArgs(BaseModel):
     end_date: date | None = None
 
 
-class SaveAllergyArgs(BaseModel):
+class SaveAllergyArgs(ToolArgsBase):
     """``save_allergy`` — one allergy upserted to profile.db.
 
     Allergy severity and source reuse the existing patient-schema literals
@@ -123,7 +176,7 @@ class SaveAllergyArgs(BaseModel):
     end_date: date | None = None
 
 
-class SaveConditionArgs(BaseModel):
+class SaveConditionArgs(ToolArgsBase):
     """``save_condition`` — one condition upserted to profile.db.
 
     ``end_date`` is the resolved date; null means still ongoing. Duration is
@@ -164,13 +217,33 @@ ProfileField = Literal[
 ]
 
 
-class UpdateProfileFieldArgs(BaseModel):
+_PROFILE_FIELD_KEYS: frozenset[str] = frozenset(
+    {
+        "sex",
+        "weight_kg",
+        "height_cm",
+        "birth_date",
+        "residence",
+        "birthplace",
+        "marital_status",
+        "has_children",
+        "current_occupation",
+        "past_occupations",
+    }
+)
+
+
+class UpdateProfileFieldArgs(ToolArgsBase):
     """``update_profile_field`` — one Profile column write.
 
     ``value`` is intentionally permissive (str/float/bool/None) at the
     boundary; the tool body coerces to the target column type via the
     Patient schema so the LLM can pass ``"60"`` instead of ``60.0`` without
     rejection.
+
+    Accepts the shorthand form ``{"birth_date": "1989-01-01"}`` in addition
+    to the canonical ``{"field": "birth_date", "value": "1989-01-01"}`` via
+    ``_normalize_field_value``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -181,8 +254,13 @@ class UpdateProfileFieldArgs(BaseModel):
         examples=[72.5, "Berlin", True, "1990-04-22"],
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, data: object) -> object:
+        return _normalize_field_value(data, _PROFILE_FIELD_KEYS)
 
-class SaveToLibraryArgs(BaseModel):
+
+class SaveToLibraryArgs(ToolArgsBase):
     """``save_to_library`` — one library entry under library/<category>/<slug>/.
 
     ``public=True`` is the only path that flips the underlying chunk's
@@ -207,7 +285,7 @@ class SaveToLibraryArgs(BaseModel):
     public: bool = False
 
 
-class DeleteRecordArgs(BaseModel):
+class DeleteRecordArgs(ToolArgsBase):
     """``delete_record`` — remove records/<category>/<slug>/ + Qdrant chunks.
 
     ``confirm_kind`` is the second-channel anti-mistake check: the LLM must

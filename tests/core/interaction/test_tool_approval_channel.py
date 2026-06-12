@@ -12,15 +12,19 @@ from claritymed.core.interaction import (
 )
 
 
-def test_approval_decision_defaults():
+def test_approval_decision_once():
     decision = ApprovalDecision(decision="once")
     assert decision.decision == "once"
-    assert decision.modified_args is None
 
 
-def test_approval_decision_with_overrides():
-    decision = ApprovalDecision(decision="modify", modified_args={"name": "X"})
-    assert decision.modified_args == {"name": "X"}
+def test_approval_decision_always_tool():
+    decision = ApprovalDecision(decision="always_tool")
+    assert decision.decision == "always_tool"
+
+
+def test_approval_decision_deny():
+    decision = ApprovalDecision(decision="deny")
+    assert decision.decision == "deny"
 
 
 def test_headless_channel_implements_protocol():

@@ -367,3 +367,36 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - `README.md` —— 至少一段话说项目是什么 + 如何启动
 - `LICENSE` —— 真要开源前再选（默认 MIT）；不急但别忘
 - `.gitignore` —— `data/`、`logs/`、`.env`、`*.tgz`、个人导入数据全屏蔽
+
+## Log Level Rules
+
+**级别选择：**
+
+| 情形 | 级别 |
+|------|------|
+| 影响用户的未预期异常（`had_error=True`、请求失败、数据写入失败） | `ERROR` + `exc_info=True` |
+| 预期失败路径但调用方仍会感知（modal 崩溃、channel unavailable、规则未命中） | `WARNING` |
+| 正常流程里的关键节点（请求开始/结束、工具调用结果） | `INFO` |
+| 内部状态追踪、性能计时、调试细节 | `DEBUG` |
+
+**规则：**
+- `except` 块里的 `logger.debug/info` 只允许出现在"已知且良性的异常路径"（如 graceful teardown）。凡是会导致 `had_error=True`、发出 `Error` 事件、或让用户看到错误消息的 except 块，必须用 `logger.error(..., exc_info=True)`。
+- 重新 `raise` 前的日志可以降一级（`warning`），因为上层还会处理；但不能降到 `debug`。
+
+## Pydantic model_copy vs model_validate
+
+**`model_copy(update={field: value})` 不跑 validators**，直接把 `value` 原值写进字段。如果 `value` 是字符串而字段类型是 `date`/`datetime`/`Decimal` 等，Pydantic 不会 coerce，SQLAlchemy 写库时就会报 `TypeError`。
+
+**需要 coerce 时必须用 `model_validate`：**
+
+```python
+# 错误 — model_copy 不 coerce
+updated = current.model_copy(update={field: value})
+
+# 正确 — model_validate 跑完整 validator 链
+data = current.model_dump(mode="python")
+data[field] = value
+updated = MyModel.model_validate(data)
+```
+
+适用场景：任何从外部来的值（LLM 输出、用户输入、API 请求）写入 Pydantic 模型的 date/datetime/Decimal/Enum 字段时，都走 `model_validate`，不走 `model_copy(update=...)`。

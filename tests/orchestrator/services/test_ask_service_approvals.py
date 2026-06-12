@@ -108,21 +108,6 @@ async def test_resolve_deny_returns_tool_denied(_ctx):
     assert isinstance(results.approvals["c1"], ToolDenied)
 
 
-async def test_resolve_modify_passes_overridden_args(_ctx):
-    channel = _StubChannel(
-        ApprovalDecision(decision="modify", modified_args={"substance": "amoxicillin"})
-    )
-    service = _make_service(channel)
-    deferred = DeferredToolRequests(
-        approvals=[_call_part("save_allergy", {"substance": "penicillin"})]
-    )
-    out: asyncio.Queue = asyncio.Queue()
-    results = await service._resolve_approvals(deferred, "test", out)
-    decision = results.approvals["c1"]
-    assert isinstance(decision, ToolApproved)
-    assert decision.override_args == {"substance": "amoxicillin"}
-
-
 async def test_resolve_always_tool_persists_rule(_ctx):
     channel = _StubChannel(ApprovalDecision(decision="always_tool"))
     service = _make_service(channel)
@@ -134,22 +119,6 @@ async def test_resolve_always_tool_persists_rule(_ctx):
 
     rules = SettingsStore("test").list_rules()
     assert any(r.tool == "save_allergy" and r.action == "allow" for r in rules)
-
-
-async def test_resolve_always_pattern_persists_rule(_ctx):
-    channel = _StubChannel(ApprovalDecision(decision="always_pattern"))
-    service = _make_service(channel)
-    deferred = DeferredToolRequests(
-        approvals=[_call_part("save_allergy", {"substance": "penicillin"})]
-    )
-    out: asyncio.Queue = asyncio.Queue()
-    await service._resolve_approvals(deferred, "test", out)
-
-    rules = SettingsStore("test").list_rules()
-    pattern_rule = next(
-        r for r in rules if r.tool == "save_allergy" and r.action == "allow"
-    )
-    assert pattern_rule.args_pattern == {"substance": "penicillin"}
 
 
 async def test_resolve_existing_deny_rule_short_circuits(_ctx):

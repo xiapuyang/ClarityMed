@@ -3,8 +3,8 @@
 Wraps ``ToolApprovalModal`` behind the orchestrator-facing channel
 protocol. ``AskService`` calls ``await channel.request(...)`` for each
 ``DeferredToolRequests.approvals`` entry; we push the modal and wait
-for the user to dismiss it with one of the five decisions
-(``once`` / ``always_tool`` / ``always_pattern`` / ``modify`` / ``deny``).
+for the user to dismiss it with one of the three decisions
+(``once`` / ``always_tool`` / ``deny``).
 
 Modal dismissed with ``None`` is treated as ``deny`` — Textual hands
 back ``None`` for stack-pop on app shutdown or programmatic dismiss
@@ -70,7 +70,7 @@ class TextualToolApprovalChannel:
                 getattr(result, "decision", None),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug(
+            logger.warning(
                 "TextualToolApprovalChannel.request: push_screen_wait RAISED %s: %s",
                 type(exc).__name__,
                 exc,

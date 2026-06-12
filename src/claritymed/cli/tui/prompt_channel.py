@@ -68,7 +68,7 @@ class TextualPromptChannel:
                 (time.monotonic() - _t0) * 1000,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug(
+            logger.warning(
                 "TextualPromptChannel.ask: push_screen_wait RAISED after %.0fms %s: %s",
                 (time.monotonic() - _t0) * 1000,
                 type(exc).__name__,

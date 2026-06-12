@@ -114,8 +114,11 @@ class HybridRetriever:
         active_collections = router_trace.selected
         # 3. embedding
         t_embed = time.monotonic()
-        dense_vecs = await self._embedder.embed_dense([expanded])
-        sparse_vecs = await self._embedder.embed_sparse([expanded])
+        try:
+            dense_vecs = await self._embedder.embed_dense([expanded])
+            sparse_vecs = await self._embedder.embed_sparse([expanded])
+        except Exception as exc:
+            raise RuntimeError(f"embedder: {exc}") from exc
         embed_ms = int((time.monotonic() - t_embed) * 1000)
         if not dense_vecs or not sparse_vecs:
             return self._empty_bundle(active_collections, expanded, embed_ms)
@@ -145,7 +148,10 @@ class HybridRetriever:
             user_phi_store = await self._user_phi_store(user_id)
             if user_phi_store is not None:
                 coroutines.append(_search(f"user_phi_{user_id}", user_phi_store))
-        batches = await asyncio.gather(*coroutines)
+        try:
+            batches = await asyncio.gather(*coroutines)
+        except Exception as exc:
+            raise RuntimeError(f"qdrant: {exc}") from exc
         all_hits: list[tuple[str, QdrantHit]] = [
             hit for batch in batches for hit in batch
         ]
@@ -203,6 +209,8 @@ class HybridRetriever:
         except RerankerUnreachableError as exc:
             logger.warning("reranker fail-soft: %s", exc)
             return hits[: self._rerank_top_k], True
+        except Exception as exc:
+            raise RuntimeError(f"reranker: {exc}") from exc
         ordered: list[tuple[str, QdrantHit]] = []
         for rh in rerank_hits:
             col, hit = hits[rh.index]

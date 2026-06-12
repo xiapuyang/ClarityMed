@@ -205,9 +205,9 @@ class Conversation(VerticalScroll):
         self._active_assistant = None
         if finalized is not None and markdown_text:
             try:
-                finalized.remove()
                 md = AssistantMarkdown(markdown_text)
-                self.mount(md)
+                self.mount(md, before=finalized)
+                finalized.remove()
                 self.scroll_end(animate=False)
             except Exception:  # noqa: BLE001 — fall through to raw bubble
                 pass
