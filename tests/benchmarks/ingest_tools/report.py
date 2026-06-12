@@ -88,15 +88,19 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
          margin: 18px; color: #1a1a1a; }}
   h1 {{ font-size: 18px; margin: 0 0 4px; }}
   .sub {{ color: #666; font-size: 12px; margin-bottom: 14px; }}
-  .filters {{ background: #f5f5f7; padding: 10px 12px; border-radius: 8px;
-              margin-bottom: 14px; }}
-  .filter-row {{ display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
-                 margin-bottom: 6px; }}
-  .filter-row label {{ font-weight: 600; font-size: 12px; }}
-  .filter-row select {{ font: inherit; padding: 3px 6px; }}
-  .filter-row .pill {{ background: #fff; border: 1px solid #ccc; padding: 2px 8px;
-                       border-radius: 12px; margin-right: 4px; cursor: pointer; }}
-  .filter-row .pill.on {{ background: #007aff; color: #fff; border-color: #007aff; }}
+  .filters {{ background: #f5f5f7; padding: 12px 16px; border-radius: 8px;
+              margin-bottom: 14px;
+              display: grid; grid-template-columns: 160px 1fr;
+              row-gap: 8px; column-gap: 14px; align-items: center; }}
+  .filters > label {{ font-weight: 600; font-size: 12px; color: #555;
+                      text-align: right; }}
+  .filters .chips {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
+  .filters .pill {{ background: #fff; border: 1px solid #ccc; padding: 2px 10px;
+                    border-radius: 12px; cursor: pointer; font-size: 12px; }}
+  .filters .pill.on {{ background: #007aff; color: #fff; border-color: #007aff; }}
+  .filters .pair {{ display: flex; gap: 10px; align-items: center; }}
+  .filters .pair > label {{ font-weight: 600; font-size: 12px; color: #555; }}
+  .filters select {{ font: inherit; padding: 3px 6px; }}
   .card-row {{ display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }}
   .card {{ background: #fff; border: 1px solid #e0e0e3; border-radius: 8px;
            padding: 10px 14px; min-width: 130px; }}
@@ -104,11 +108,16 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .card .lbl {{ font-size: 11px; color: #666; text-transform: uppercase;
                 letter-spacing: 0.5px; }}
   table {{ border-collapse: collapse; width: 100%; font-size: 13px;
-           margin-bottom: 24px; }}
-  th, td {{ padding: 5px 8px; text-align: left; border-bottom: 1px solid #eee; }}
-  th {{ background: #fafafa; font-weight: 600; cursor: pointer;
+           margin-bottom: 24px; border: 1px solid #d8d8dc;
+           border-radius: 6px; overflow: hidden; }}
+  th, td {{ padding: 6px 10px; text-align: left;
+            border-right: 1px solid #ececef;
+            border-bottom: 1px solid #ececef; }}
+  th:last-child, td:last-child {{ border-right: 0; }}
+  tbody tr:last-child td {{ border-bottom: 0; }}
+  th {{ background: #f5f5f7; font-weight: 600; cursor: pointer;
         position: sticky; top: 0; }}
-  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  th.num, td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
   tr:hover {{ background: #f8f8fa; }}
   .bar {{ display: inline-block; height: 8px; background: #007aff; vertical-align: middle;
           border-radius: 2px; }}
@@ -127,19 +136,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <code>{trials_path}</code></div>
 
 <div class="filters">
-  <div class="filter-row">
-    <label>Model:</label> <span id="f-model"></span>
-  </div>
-  <div class="filter-row">
-    <label>User lang:</label> <span id="f-lang"></span>
-    <label style="margin-left: 14px;">Tool prompt lang:</label> <span id="f-tpl"></span>
-  </div>
-  <div class="filter-row">
-    <label>Tier:</label> <span id="f-tier"></span>
-    <label style="margin-left: 14px;">Expected behavior:</label> <span id="f-eb"></span>
-  </div>
-  <div class="filter-row">
-    <label>Group by:</label>
+  <label>Model:</label> <span class="chips" id="f-model"></span>
+  <label>User lang:</label> <span class="chips" id="f-lang"></span>
+  <label>Tool prompt lang:</label> <span class="chips" id="f-tpl"></span>
+  <label>Tier:</label> <span class="chips" id="f-tier"></span>
+  <label>Expected behavior:</label> <span class="chips" id="f-eb"></span>
+  <label>Group by:</label>
+  <div class="pair">
     <select id="groupby">
       <option value="model">model</option>
       <option value="case_name">case</option>
@@ -149,7 +152,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       <option value="tool_prompt_lang">tool_prompt_lang</option>
       <option value="outcome">outcome</option>
     </select>
-    <label style="margin-left: 14px;">Then by:</label>
+    <label>Then by:</label>
     <select id="groupby2">
       <option value="">(none)</option>
       <option value="model">model</option>
