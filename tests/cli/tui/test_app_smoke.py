@@ -1186,3 +1186,145 @@ async def test_paste_without_chat_session_emits_toast(monkeypatch):
         await pilot.pause()
         # Did not crash. _session_turns has no attachment row.
         assert all("attached" not in t.text for t in app._session_turns)
+
+
+@pytest.mark.asyncio
+async def test_paste_image_oversize_rejected_before_blob_store(monkeypatch):
+    """ImageBytes larger than paste.max_file_size_mb is rejected at the
+    entry point — no blob is written, no SessionAttachments row is added,
+    no OCR is enqueued. The user sees an error toast instead."""
+    from claritymed.cli.tui.paste import ImageBytes
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    # Force a tiny 1KB cap so test bytes don't have to be huge.
+    payload = b"x" * 2048
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=payload, ext="png"))
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._max_paste_bytes_cache = 1024
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert rows == []
+        assert fake_worker.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_paste_file_path_oversize_rejected_before_read(monkeypatch, tmp_path):
+    """FilePath that stat()s above the cap is rejected without
+    read_bytes() — protects the event loop from a multi-second read."""
+    from claritymed.cli.tui.paste import FilePath
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+
+    sample = tmp_path / "huge.pdf"
+    sample.write_bytes(b"%PDF " + b"x" * 4096)
+    _patch_clipboard(monkeypatch, FilePath(path=sample))
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._max_paste_bytes_cache = 1024
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert rows == []
+        assert fake_worker.enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_drag_drop_oversize_rejected_before_read(tmp_path):
+    """on_paste sizes each dropped path via stat() and skips oversize
+    ones — the file is never read into memory and no row is added."""
+    from textual import events
+
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+
+    big = tmp_path / "huge.pdf"
+    big.write_bytes(b"%PDF " + b"y" * 8192)
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._max_paste_bytes_cache = 1024
+        app._ocr_worker = _SyncOcrWorker()
+        app.on_paste(events.Paste(str(big)))
+        await pilot.pause()
+
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_paste_image_pushes_upload_step_row(monkeypatch):
+    """Successful paste leaves a completed ✓ upload row in the right
+    panel — visible record that the bytes landed."""
+    from claritymed.cli.tui.paste import ImageBytes
+    from textual.widgets import Static
+
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=b"ok-bytes", ext="png"))
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        steps = app.query_one(ToolSteps)
+        rendered = [str(s.renderable) for s in steps.query(Static)]
+        upload_rows = [r for r in rendered if "upload:#" in r]
+        # Exactly one upload row, marked complete (✓), referencing the sha.
+        assert len(upload_rows) == 1
+        assert upload_rows[0].startswith("✓ upload:#")
+        assert "sha:" in upload_rows[0]
+
+
+@pytest.mark.asyncio
+async def test_upload_modal_rejects_oversize_file(tmp_path, monkeypatch):
+    """/upload modal stat()s the file before read_text(); oversize files
+    surface an error inline without dismissing the modal."""
+    from claritymed.cli.tui.modals import UploadModal
+
+    sample = tmp_path / "big.md"
+    sample.write_bytes(b"y" * 4096)
+    # Shrink the cap globally so the read never runs.
+    monkeypatch.setattr("claritymed.config.paste_max_file_size_bytes", lambda: 1024)
+
+    class _Host(__import__("textual.app", fromlist=["App"]).App):
+        def __init__(self):
+            super().__init__()
+            self.result = "<unset>"
+
+        def on_mount(self):
+            self.push_screen(
+                UploadModal(initial_path=str(sample)),
+                lambda v: setattr(self, "result", v),
+            )
+
+    from textual.widgets import Button, Static
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        modal.query_one("#confirm", Button).press()
+        await pilot.pause()
+        # Modal stayed up (no dismiss with payload).
+        assert app.result == "<unset>"
+        err = modal.query_one("#error", Static)
+        assert "too large" in str(err.renderable).lower()

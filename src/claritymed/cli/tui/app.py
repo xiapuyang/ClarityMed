@@ -132,6 +132,18 @@ def _ocr_step_name(sha256: str) -> str:
     return f"ocr:{sha256[:8]}"
 
 
+def _human_size(size: int) -> str:
+    """Render a byte count as B / KB / MB for toasts and step rows.
+
+    Used in size-limit toasts and the upload step's ``args_preview`` so
+    users see a recognisable magnitude rather than raw byte counts."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 # Ghostty 1.1.0+ joins multi-file drops with a single space; iTerm2 uses
 # newlines. Within a path, spaces are shell-escaped as ``\ `` so a bare
 # space only separates files when followed by an absolute-path marker
@@ -305,6 +317,13 @@ class ClarityMedApp(App):
         # Headless / one-shot tests never construct one, so we avoid paying
         # the provider-chain build cost on every mount.
         self._ocr_worker = None
+        # Per-app monotonic counter so each ingest gets a unique upload row
+        # in ToolSteps; using the counter (not the sha) lets us push the
+        # ``⟳`` row BEFORE hashing the bytes.
+        self._upload_seq: int = 0
+        # Cached paste size limit — re-read on demand via _max_paste_bytes()
+        # so config edits take effect on next app start, not mid-session.
+        self._max_paste_bytes_cache: int | None = None
 
     # ----- layout ---------------------------------------------------------
 
@@ -1048,6 +1067,17 @@ class ClarityMedApp(App):
                 event.prevent_default()
             return
         for path in paths:
+            # stat() first so we never spend a multi-second read on a
+            # file we'd reject anyway. Skip oversize early — the toast
+            # in _size_check_or_reject tells the user why nothing
+            # appeared in the input.
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                self._toast(f"Could not stat {path.name}: {exc}", kind="error")
+                continue
+            if not self._size_check_or_reject(size, path.name):
+                continue
             try:
                 data = path.read_bytes()
             except OSError as exc:
@@ -1086,9 +1116,20 @@ class ClarityMedApp(App):
             self._toast("Clipboard is empty", kind="info")
             return
         if isinstance(content, ImageBytes):
+            if not self._size_check_or_reject(
+                len(content.bytes), f"clipboard image (.{content.ext})"
+            ):
+                return
             self._ingest_clipboard_bytes(content.bytes, ext=content.ext)
             return
         if isinstance(content, FilePath):
+            try:
+                size = content.path.stat().st_size
+            except OSError as exc:
+                self._toast(f"Could not stat {content.path.name}: {exc}", kind="error")
+                return
+            if not self._size_check_or_reject(size, content.path.name):
+                return
             try:
                 data = content.path.read_bytes()
             except OSError as exc:
@@ -1123,6 +1164,8 @@ class ClarityMedApp(App):
         enqueue an OCR job. All side effects are loud-on-failure: a missing
         chat_session, missing OcrWorker, or a write error becomes an error
         toast rather than silently dropping the paste."""
+        import time
+
         from claritymed.orchestrator.services.ocr_worker import OcrJob
         from claritymed.orchestrator.services.session_attachments import (
             SessionAttachments,
@@ -1142,6 +1185,33 @@ class ClarityMedApp(App):
         if not gate_ok:
             return
 
+        # Defense-in-depth: entry points (on_paste, action_paste_clipboard)
+        # already gate on size, but a future code path that hands us bytes
+        # directly would slip past — keep the cheap len() check here.
+        filename = display_name or f"clipboard.{ext}"
+        if not self._size_check_or_reject(len(data), filename):
+            return
+
+        # Push the "uploading" row before any heavy work so the user sees
+        # it as soon as the bytes start landing on disk. Counter-based
+        # label so we don't need the sha yet. Row flips to ✓ once the
+        # blob + session attach succeed; on failure, it flips to ✓ with
+        # a "failed: …" summary so a row never gets stranded as ⟳.
+        upload_label = self._next_upload_label()
+        upload_t0 = time.monotonic()
+        size_label = _human_size(len(data))
+        try:
+            steps = self.query_one(ToolSteps)
+            steps.push_start(upload_label, args_preview=f"{filename} ({size_label})")
+        except NoMatches:
+            pass
+        logger.info(
+            "upload start filename=%s size=%d ext=%s",
+            filename,
+            len(data),
+            ext,
+        )
+
         user_id = self._current_user_id
         session_id = self._chat_session.session_id
         try:
@@ -1149,10 +1219,10 @@ class ClarityMedApp(App):
             sha = blob_store.store(data, ext)
         except Exception as exc:  # noqa: BLE001
             logger.exception("blob store failed")
+            self._finalize_upload_step(upload_label, summary=f"store failed: {exc}")
             self._toast(f"Could not store pasted blob: {exc}", kind="error")
             return
 
-        filename = display_name or f"clipboard.{ext}"
         mime = _guess_mime(ext)
         try:
             SessionAttachments(user_id, session_id).add(
@@ -1164,8 +1234,25 @@ class ClarityMedApp(App):
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("session attachment add failed")
+            self._finalize_upload_step(upload_label, summary=f"attach failed: {exc}")
             self._toast(f"Attachment register failed: {exc}", kind="error")
             return
+
+        # Success path: flip ⟳ → ✓ with elapsed ms and the resolved sha
+        # so the row tells the user "this many bytes landed under this id".
+        upload_duration_ms = int((time.monotonic() - upload_t0) * 1000)
+        self._finalize_upload_step(
+            upload_label,
+            duration_ms=upload_duration_ms,
+            summary=f"sha:{sha[:8]} ({size_label})",
+        )
+        logger.info(
+            "upload complete filename=%s size=%d sha=%s duration_ms=%d",
+            filename,
+            len(data),
+            sha[:8],
+            upload_duration_ms,
+        )
 
         # Resolve the on-disk content file before any UI side effect, so
         # we fail loud if the blob dir is empty for any reason.
@@ -1380,6 +1467,63 @@ class ClarityMedApp(App):
             logger.warning("%s audit failed", event, exc_info=True)
         finally:
             reset_context(tokens)
+
+    def _max_paste_bytes(self) -> int:
+        """Cached ``paste.max_file_size_mb`` from app.yaml, in bytes."""
+        if self._max_paste_bytes_cache is None:
+            self._max_paste_bytes_cache = _cfg.paste_max_file_size_bytes()
+        return self._max_paste_bytes_cache
+
+    def _size_check_or_reject(self, size: int, label: str) -> bool:
+        """Reject oversized files at the entry point, before any disk read.
+
+        Returns ``True`` when the size is within the configured ceiling.
+        On rejection, emits an error toast and a warning log line so the
+        user gets immediate feedback and operators can see the rejected
+        attempt in ``app.log``. The toast text uses human-friendly sizes
+        (KB / MB) so the limit is readable.
+        """
+        limit = self._max_paste_bytes()
+        if size <= limit:
+            return True
+        self._toast(
+            f"File too large: {label} is {_human_size(size)} "
+            f"(limit {_human_size(limit)}). Skipped.",
+            kind="error",
+        )
+        logger.warning(
+            "upload rejected (oversize): label=%s size=%d limit=%d",
+            label,
+            size,
+            limit,
+        )
+        return False
+
+    def _next_upload_label(self) -> str:
+        """Return a unique ``upload:#N`` label for the ToolSteps row.
+
+        Counter-based instead of sha-based so we can push the ``⟳`` row
+        BEFORE hashing the bytes — two concurrent uploads still resolve
+        to distinct rows."""
+        self._upload_seq += 1
+        return f"upload:#{self._upload_seq}"
+
+    def _finalize_upload_step(
+        self,
+        upload_label: str,
+        *,
+        duration_ms: int = 0,
+        summary: str = "",
+    ) -> None:
+        """Flip the upload ``⟳`` row to ``✓``.
+
+        Tolerates a missing ToolSteps widget (app tearing down) so paste
+        teardown never crashes on a NoMatches lookup."""
+        try:
+            steps = self.query_one(ToolSteps)
+            steps.push_complete(upload_label, duration_ms=duration_ms, summary=summary)
+        except NoMatches:
+            pass
 
     def _is_text_extension(self, ext: str) -> bool:
         """Cached lookup against ``OcrConfig.text_extensions``.

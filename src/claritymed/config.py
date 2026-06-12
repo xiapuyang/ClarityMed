@@ -35,6 +35,7 @@ SHARED_DIR = Path(os.environ.get("CLARITYMED_SHARED_DIR", CLARITYMED_HOME / "sha
 LOG_DIR = Path(os.environ.get("CLARITYMED_LOG_DIR", CLARITYMED_HOME / "logs"))
 
 DEFAULT_LANG_FALLBACK = "en"
+DEFAULT_PASTE_MAX_FILE_SIZE_MB = 20
 
 
 def ensure_runtime_dirs() -> None:
@@ -71,6 +72,19 @@ def default_lang() -> str:
         load_yaml("app.yaml").get("i18n", {}).get("default_lang")
         or DEFAULT_LANG_FALLBACK
     )
+
+
+def paste_max_file_size_bytes() -> int:
+    """Max bytes accepted by a single drag-drop / Ctrl+V / /upload entry.
+
+    Read from ``app.yaml`` ``paste.max_file_size_mb`` and converted to
+    bytes. Falls back to ``DEFAULT_PASTE_MAX_FILE_SIZE_MB`` when missing
+    so an unconfigured install still has a sensible ceiling.
+    """
+    mb = load_yaml("app.yaml").get("paste", {}).get("max_file_size_mb")
+    if mb is None:
+        mb = DEFAULT_PASTE_MAX_FILE_SIZE_MB
+    return int(float(mb) * 1024 * 1024)
 
 
 def supported_langs() -> tuple[str, ...]:

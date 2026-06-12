@@ -11,6 +11,16 @@ logging:
 access_log:
   skip_prefixes: ["/api/health", "/favicon"]
 
+# --- Paste / drag-drop / /upload size cap -------------------------------
+# Hard ceiling on a single attachment's size, applied at every ingest
+# entry point (Ctrl+V, terminal drag-drop, /upload). Oversized files are
+# rejected before any disk read so the UI never blocks on a multi-second
+# read of a 1GB blob. Set to a higher number if you regularly paste large
+# scans; PHI scrubbing and OCR latency both grow super-linearly past
+# ~50MB so go cautiously.
+paste:
+  max_file_size_mb: 20
+
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 # Opt-in: set enabled: true to install the global TracerProvider and
 # start sending spans to Phoenix. Off by default so CI and offline
