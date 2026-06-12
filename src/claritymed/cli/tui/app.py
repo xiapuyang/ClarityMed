@@ -35,7 +35,6 @@ from claritymed.cli.tui.widgets import (
     Conversation,
     InputBar,
     StatusBar,
-    Toast,
     ToolSteps,
 )
 from claritymed.context import (
@@ -1669,12 +1668,17 @@ class ClarityMedApp(App):
         self._session_turns.append(ChatTurn(role="assistant", text="", cancelled=True))
 
     def _toast(self, text: str, kind: str = "info") -> None:
+        # Use Textual's built-in notify() — it handles layering, stacking
+        # and dismissal correctly. Our previous home-grown Toast widget
+        # rendered at 0×0 because ``dock: bottom`` + ``width/height: auto``
+        # collapsed to zero on the Screen, so users never saw the toast.
         # Errors stay visible longer than info/success — a user dropping
-        # an unsupported file or hitting a paste failure needs time to
-        # read the message and decide what to do, whereas an "OCR queued"
-        # confirmation can dismiss faster.
-        ttl = 8.0 if kind == "error" else 4.0
-        self.mount(Toast(text, kind=kind, ttl=ttl))
+        # an unsupported file needs time to read the message; an "OCR
+        # queued" confirmation can dismiss faster.
+        severity_map = {"info": "information", "warning": "warning", "error": "error"}
+        severity = severity_map.get(kind, "information")
+        timeout = 8.0 if kind == "error" else 4.0
+        self.notify(text, severity=severity, timeout=timeout)
 
 
 def run() -> None:

@@ -695,6 +695,46 @@ async def test_paste_unsupported_ext_rejected_before_blob_or_attachment(
 
 
 @pytest.mark.asyncio
+async def test_paste_unsupported_ext_surfaces_visible_toast(monkeypatch, tmp_path):
+    """Regression: the rejection path must produce a real notification.
+
+    The previous home-grown Toast widget rendered at 0x0 because
+    ``dock: bottom`` + ``width/height: auto`` collapsed on the Screen,
+    so the audit log got the ``filetype.detect outcome=rejected`` line
+    but the user saw nothing. We now route through Textual's
+    ``App.notify()`` — assert the notification is queued with the
+    expected message, severity, and the longer 8 s timeout reserved
+    for errors.
+    """
+    from claritymed.cli.tui.paste import FilePath
+
+    sample = tmp_path / "doc.dvi"
+    sample.write_bytes(b"\xf7\x02fakedvi" + b"\x00" * 64)
+    _patch_clipboard(monkeypatch, FilePath(path=sample))
+    monkeypatch.setattr("claritymed.core.filetype.detector.detect", lambda _data: None)
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        notifications = list(app._notifications)
+        rejections = [
+            n for n in notifications if "Unsupported file type for OCR" in n.message
+        ]
+        assert len(rejections) == 1, (
+            f"expected exactly one rejection notification, got: "
+            f"{[n.message for n in notifications]}"
+        )
+        assert "doc.dvi" in rejections[0].message
+        assert rejections[0].severity == "error"
+        assert rejections[0].timeout == 8.0
+
+
+@pytest.mark.asyncio
 async def test_paste_magika_recovers_extension_for_mislabeled_file(
     monkeypatch, tmp_path
 ):
