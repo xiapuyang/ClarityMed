@@ -174,6 +174,64 @@ async def test_message_count_grows_across_turns():
 # ---------------------------------------------------------------------------
 
 
+async def test_cancel_in_foreign_context_emits_cancelled_audit(monkeypatch):
+    """Cancelling the stream after the caller resets its ContextVars must
+    still emit the ``mode.cancelled`` audit row.
+
+    Regression: the TUI worker's finally calls reset_context() before the
+    service generator is aclose()'d by asyncio's finalizer. The aclose may
+    fire in a context where request_id / user_id / language are unset, so
+    audit_event() in _run_scoped's finally raised MissingContextError and
+    the broad except logged "failed to persist cancelled turn for user ...".
+
+    The fix rehydrates ContextVars from values captured at the top of
+    _run_scoped. We reproduce the foreign-context cancellation by driving
+    _run_scoped directly: pull one event so the generator suspends past
+    the captures, reset the caller's ContextVars, then aclose. The finally
+    must still successfully emit the cancellation audit row.
+    """
+    from claritymed.context import (
+        apply_context,
+        new_request_id,
+        reset_context,
+    )
+    from claritymed.orchestrator.services import ask_service as ask_mod
+
+    real_audit_event = ask_mod.audit_event
+    captured: list[str] = []
+
+    def tracking_audit_event(event, payload=None):
+        result = real_audit_event(event, payload)
+        captured.append(event)
+        return result
+
+    monkeypatch.setattr(ask_mod, "audit_event", tracking_audit_event)
+
+    session = ChatSession.new("alice")
+    service = AskService(
+        model=TestModel(custom_output_text="partial answer"),
+        chat_session=session,
+    )
+
+    # Drive _run_scoped directly to avoid nested-generator finalization
+    # ordering issues — aclose() on the outer run() generator does not
+    # synchronously close nested ``async for`` generators, so we'd never
+    # see _run_scoped's finally during the test body.
+    tokens = apply_context(new_request_id(), "alice", "en")
+    stream = service._run_scoped("a question", user_id="alice")
+    await stream.__anext__()
+    # Caller clears its ContextVars before the generator finalizes,
+    # mirroring _run_stream's reset_context(per_turn) on cancel.
+    reset_context(tokens)
+    await stream.aclose()
+
+    assert "mode.cancelled" in captured, (
+        "mode.cancelled audit row never emitted — audit_event likely raised "
+        "MissingContextError inside _run_scoped's finally and the broad except "
+        "swallowed it. Captured events: " + repr(captured)
+    )
+
+
 async def test_resume_reconstructs_history_for_new_service_instance():
     """ChatSession.resume() must rebuild history so a new AskService instance
     (e.g. after a provider switch) picks up where the previous one left off.

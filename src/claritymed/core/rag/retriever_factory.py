@@ -45,7 +45,11 @@ from qdrant_client import AsyncQdrantClient
 
 from claritymed.core.rag.embedding.factory import build_embedder
 from claritymed.core.rag.parent_store import ParentStore
-from claritymed.core.rag.qdrant_store import RagCollectionStore, build_qdrant_client
+from claritymed.core.rag.qdrant_store import (
+    RagCollectionStore,
+    build_qdrant_client,
+    open_local_qdrant_client,
+)
 from claritymed.core.rag.reranking.factory import build_reranker
 from claritymed.core.rag.retriever import HybridRetriever
 from claritymed.core.rag.routing.factory import build_router
@@ -157,7 +161,7 @@ def _make_user_store_factory(embedder: "Embedder"):
         if not user_dir.exists():
             return None
         if user_id not in clients:
-            clients[user_id] = AsyncQdrantClient(path=str(user_dir))
+            clients[user_id] = open_local_qdrant_client(user_dir)
         aclient = clients[user_id]
         name = _user_collection_name(user_id)
         if not await aclient.collection_exists(name):
@@ -203,7 +207,7 @@ def _make_user_phi_store_factory(embedder: "Embedder"):
         if not user_dir.exists():
             return None
         if user_id not in clients:
-            clients[user_id] = AsyncQdrantClient(path=str(user_dir))
+            clients[user_id] = open_local_qdrant_client(user_dir)
         aclient = clients[user_id]
         name = f"user_phi_{user_id}"
         if not await aclient.collection_exists(name):

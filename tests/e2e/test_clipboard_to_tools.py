@@ -1,10 +1,10 @@
-"""End-to-end: clipboard paste → OCR → AttachmentsFeature prompt
-injection → seven ingest tools writing through to the store.
+"""End-to-end: clipboard paste → OCR → inline placeholder expansion →
+seven ingest tools writing through to the store.
 
 The TUI's Ctrl+V handler, the OcrWorker pipeline, the AttachmentsFeature
 plugin, and each of the seven LLM-callable ingest tools each have their
 own focused tests. This file stitches them together: one paste, one OCR
-pass, one feature pre-invoke, then a deterministic walk through every
+pass, one placeholder expansion, then a deterministic walk through every
 tool in INGEST_TOOLS.
 
 **OCR is REAL, not mocked.** The PDF leg uses ``PyMuPDFOcrProvider`` —
@@ -74,7 +74,7 @@ class _StubOcrProvider(OcrProvider):
     Real providers are gated on tesseract / mineru / a cloud LLM; an E2E
     that depends on any of those would flake on CI and on a fresh dev
     box. The stub keeps the data shape (multi-line markdown) so the
-    AttachmentsFeature renderer is exercised the same way it would be
+    placeholder-expansion path is exercised the same way it would be
     against the production text path."""
 
     is_local = True
@@ -116,7 +116,8 @@ def _make_pdf_with_text(path: Path, text: str) -> None:
 
 async def test_pdf_paste_flows_through_real_pymupdf_ocr(_ctx, tmp_path):
     """Build a real PDF, run PyMuPDFOcrProvider against it, verify the
-    AttachmentsFeature picks up the actual extracted text.
+    AttachmentsFeature inlines the actual extracted text into the
+    placeholder position.
 
     This is the load-bearing test for "OCR works": no stub provider,
     no canned response — if PyMuPDF stops shipping or its API breaks,
@@ -155,7 +156,7 @@ async def test_pdf_paste_flows_through_real_pymupdf_ocr(_ctx, tmp_path):
     finally:
         await worker.stop()
 
-    # Real text round-trips end to end into the AttachmentsFeature block.
+    # Real text round-trips end to end into the inline <file> tag.
     assert blob_store.ocr_done(sha)
     row = SessionAttachments(_USER_ID, _SESSION_ID).get(sha)
     assert row.ocr_status == "done"
@@ -170,13 +171,13 @@ async def test_pdf_paste_flows_through_real_pymupdf_ocr(_ctx, tmp_path):
         deps = _Deps()
         scrubbed = ""
 
-    block = await feature.pre_invoke(_Ctx())
-    assert "report.pdf" in block
+    out = await feature.expand_placeholders(f"[File sha:{sha[:8]}]", _Ctx())
+    assert f'<file sha="{sha}">' in out
     # The exact text we wrote to the PDF is what the LLM would see in
     # the prompt — strict equality on a substring proves the real OCR
     # path is wired correctly, not just that we got some text back.
-    assert "hypertension since 2020" in block
-    assert "lisinopril" in block
+    assert "hypertension since 2020" in out
+    assert "lisinopril" in out
 
 
 async def test_paste_image_flows_through_ocr_into_attachments_feature(_ctx):
@@ -220,7 +221,8 @@ async def test_paste_image_flows_through_ocr_into_attachments_feature(_ctx):
     assert row is not None
     assert row.ocr_status == "done"
 
-    # Feature pre_invoke includes the OCR text under an English header.
+    # Feature inlines the OCR text into the placeholder position; the
+    # surrounding user text is preserved verbatim.
     feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
 
     class _Deps:
@@ -229,16 +231,19 @@ async def test_paste_image_flows_through_ocr_into_attachments_feature(_ctx):
 
     class _Ctx:
         deps = _Deps()
-        scrubbed = "test question"
+        scrubbed = ""
 
-    block = await feature.pre_invoke(_Ctx())
-    assert "Attachments (extracted by OCR):" in block
-    assert "clipboard.png" in block
-    assert "penicillin" in block  # from _OCR_TEXT
+    out = await feature.expand_placeholders(
+        f"test question [Image sha:{sha[:8]}]", _Ctx()
+    )
+    assert "test question " in out
+    assert f'<image sha="{sha}">' in out
+    assert "penicillin" in out  # from _OCR_TEXT
 
 
 async def test_attachments_feature_skips_when_no_session_id(_ctx):
-    """``None`` from the callback disables the feature without errors."""
+    """``None`` from the callback disables the feature without errors —
+    placeholders pass through unchanged."""
     feature = AttachmentsFeature(get_session_id=lambda: None)
 
     class _Deps:
@@ -250,6 +255,8 @@ async def test_attachments_feature_skips_when_no_session_id(_ctx):
         scrubbed = ""
 
     assert await feature.pre_invoke(_Ctx()) == ""
+    text = "Hello [Image sha:deadbeef]"
+    assert await feature.expand_placeholders(text, _Ctx()) == text
 
 
 def test_build_features_includes_attachments_when_session_id_provided():

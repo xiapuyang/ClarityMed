@@ -595,15 +595,20 @@ async def test_paste_clipboard_read_failure_emits_toast(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_paste_adds_chat_history_and_tool_step(monkeypatch):
-    """Image paste must add a visible system turn AND a ToolSteps row.
+async def test_paste_inserts_sha_placeholder_and_tool_step(monkeypatch):
+    """Image paste inserts ``[Image sha:<8-char>]`` at the input cursor
+    AND pushes a ToolSteps row. No chat-history line — the right pane
+    carries the OCR status. The sha label matches AttachmentsFeature's
+    ``(sha <8>)`` form so the user/jsonl/LLM all see the same identifier.
+    """
+    import hashlib
 
-    Toasts disappear; the chat-history line is what the user sees if they
-    scroll back or resume the session. The ToolSteps row is the progress
-    indicator that flips to ✓ when OCR finishes."""
     from claritymed.cli.tui.paste import ImageBytes
+    from claritymed.cli.tui.widgets.input_bar import InputBar
 
-    _patch_clipboard(monkeypatch, ImageBytes(bytes=b"png-bytes", ext="png"))
+    payload = b"png-bytes"
+    sha = hashlib.sha256(payload).hexdigest()
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=payload, ext="png"))
 
     fake_worker = _SyncOcrWorker()
     app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
@@ -613,14 +618,107 @@ async def test_paste_adds_chat_history_and_tool_step(monkeypatch):
         app.action_paste_clipboard()
         await pilot.pause()
 
-        # _session_turns must carry the attachment line.
+        assert app.query_one(InputBar).value() == f"[Image sha:{sha[:8]}]"
+        # No system turn for the attachment — chat history is intentionally clean.
         system_turns = [t for t in app._session_turns if t.role == "system"]
-        assert any("attached clipboard.png" in t.text for t in system_turns)
-
+        assert not any("attached" in t.text for t in system_turns), [
+            t.text for t in system_turns
+        ]
         # ToolSteps has a ⟳ row for the OCR job.
         steps = app.query_one(ToolSteps)
         active_keys = list(steps._active.keys())
         assert any(k.startswith("ocr:") for k in active_keys), active_keys
+
+
+@pytest.mark.asyncio
+async def test_paste_two_distinct_images_get_two_sha_placeholders(monkeypatch):
+    """Different image bytes hash to different shas → distinct placeholders.
+    Same image pasted twice would just append the same sha label twice —
+    that's fine, the AttachmentsFeature row is dedup'd on sha.
+    """
+    import hashlib
+
+    from claritymed.cli.tui.paste import ImageBytes
+    from claritymed.cli.tui.widgets.input_bar import InputBar
+
+    payload_a = b"png-bytes-A"
+    payload_b = b"png-bytes-B"
+    sha_a = hashlib.sha256(payload_a).hexdigest()[:8]
+    sha_b = hashlib.sha256(payload_b).hexdigest()[:8]
+
+    contents = iter(
+        [
+            ImageBytes(bytes=payload_a, ext="png"),
+            ImageBytes(bytes=payload_b, ext="png"),
+        ]
+    )
+    monkeypatch.setattr(
+        "claritymed.cli.tui.paste.read_clipboard",
+        lambda: next(contents),
+        raising=True,
+    )
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+        app.action_paste_clipboard()
+        await pilot.pause()
+        assert (
+            app.query_one(InputBar).value() == f"[Image sha:{sha_a}][Image sha:{sha_b}]"
+        )
+
+
+@pytest.mark.asyncio
+async def test_paste_still_inserts_placeholder_when_ocr_worker_unavailable(monkeypatch):
+    """OCR factory failure (e.g. mineru gated) must not swallow the paste.
+    The placeholder still lands in the input — only the right-pane row is
+    skipped because there is no worker to track.
+    """
+    import hashlib
+
+    from claritymed.cli.tui.paste import ImageBytes
+    from claritymed.cli.tui.widgets.input_bar import InputBar
+
+    payload = b"png-bytes"
+    sha = hashlib.sha256(payload).hexdigest()
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=payload, ext="png"))
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "_ensure_ocr_worker", lambda: None)
+        app.action_paste_clipboard()
+        await pilot.pause()
+        assert app.query_one(InputBar).value() == f"[Image sha:{sha[:8]}]"
+
+
+@pytest.mark.asyncio
+async def test_paste_pdf_uses_file_sha_placeholder(monkeypatch, tmp_path):
+    """Non-image attachments get ``[File sha:<8>]`` so the user/jsonl/LLM
+    can tell image vs file at a glance while still keyed on sha."""
+    import hashlib
+
+    from claritymed.cli.tui.paste import FilePath
+    from claritymed.cli.tui.widgets.input_bar import InputBar
+
+    payload = b"%PDF-1.4 fake"
+    sample = tmp_path / "report.pdf"
+    sample.write_bytes(payload)
+    sha = hashlib.sha256(payload).hexdigest()
+    _patch_clipboard(monkeypatch, FilePath(path=sample))
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+        assert app.query_one(InputBar).value() == f"[File sha:{sha[:8]}]"
 
 
 @pytest.mark.asyncio

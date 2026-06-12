@@ -63,6 +63,15 @@ HISTORY_BUDGET_BYTES = 80_000
 # stay coherent even with a pathologically long single turn.
 HISTORY_MIN_KEEP = 4
 
+# How long to wait for in-flight OCR jobs to finish at turn start before
+# proceeding with whatever status the attachment has. Caps the worst-case
+# user wait at ~1 minute — local LLM OCR on a 30B+ model can take 20-40s
+# per image; cloud paths are sub-10s. Past the cap the inline placeholder
+# expansion renders ``ocr_status="pending"`` and the turn continues so a
+# single stuck provider can't dead-end the chat.
+OCR_AWAIT_TIMEOUT_S = 60.0
+OCR_AWAIT_POLL_S = 0.25
+
 
 # Matches the exact splice ``_compose_prompt`` emits when an Evidence
 # block is present. Anchoring on both the ``Evidence (cite by [n]):``
@@ -292,7 +301,21 @@ class AskService:
                 yield ev
 
     async def _run_scoped(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
-        from claritymed.context import attach_session_baggage, detach_session_baggage
+        from claritymed.context import (
+            apply_context,
+            attach_session_baggage,
+            detach_session_baggage,
+            language_ctx,
+            request_id_ctx,
+        )
+
+        # Capture for the finally block. When the TUI cancels mid-stream, the
+        # consumer's finally runs reset_context() before this generator is
+        # aclose()'d by asyncio's finalizer — which fires in a different task
+        # context where our ContextVars are unset. We rehydrate from these
+        # captures so audit_event() in the cancellation path still works.
+        captured_rid = request_id_ctx.get()
+        captured_lang = language_ctx.get() or self._language
 
         # PHI scrub only for cloud-bound turns.
         # scrub_free_text loads the ONNX session on first call (can take
@@ -458,6 +481,12 @@ class AskService:
             # paired with an empty assistant reply rather than a
             # dangling user message. Best-effort: the chat session may
             # already be closed.
+            #
+            # Rehydrate ContextVars from captures if the consumer's reset
+            # already fired. We don't bother resetting after — the alien
+            # context this runs in (asyncio finalizer) is discarded anyway.
+            if request_id_ctx.get() is None and captured_rid:
+                apply_context(captured_rid, user_id, captured_lang)
             if not finalized and self._chat_session is not None:
                 try:
                     self._chat_session.append_assistant(
@@ -502,6 +531,40 @@ class AskService:
         from pydantic_ai import UsageLimits
 
         turn_ctx = TurnContext(scrubbed=scrubbed, deps=deps)
+
+        # Wait for any in-flight OCR jobs in this session to finish before
+        # the prompt envelope is assembled. Without this the user can paste
+        # an image, hit Enter immediately, and the inline placeholder
+        # expansion renders ``ocr_status="pending"`` to the LLM — which
+        # then answers without the extracted text. The LLM almost always
+        # then says "I can't read the image", forcing the user to retry
+        # by hand. Capped at OCR_AWAIT_S so a truly stuck provider can't
+        # block the turn forever.
+        if self._chat_session is not None:
+            await self._await_pending_ocr(user_id, self._chat_session.session_id)
+
+        # Substitute attachment placeholders in the user's input with
+        # inline ``<image sha="...">OCR</image>`` tags BEFORE any
+        # downstream feature sees the text. RagFeature's deterministic
+        # pre_invoke embeds ``ctx.scrubbed`` directly into the retrieval
+        # query rewrite call; if the placeholder were still raw at that
+        # point the retriever would see ``[Image sha:abcd1234]`` instead
+        # of the OCR'd content and the LLM-side query rewriter would
+        # hallucinate a query from the placeholder text.
+        #
+        # Only placeholders the user kept in their text get expanded —
+        # session attachments with no matching placeholder this turn
+        # stay out of the prompt so "delete the placeholder" is a
+        # meaningful UI gesture.
+        from claritymed.core.attachments_feature import AttachmentsFeature
+
+        attachments_feature = next(
+            (f for f in self._features if isinstance(f, AttachmentsFeature)),
+            None,
+        )
+        if attachments_feature is not None:
+            scrubbed = await attachments_feature.expand_placeholders(scrubbed, turn_ctx)
+            turn_ctx = TurnContext(scrubbed=scrubbed, deps=deps)
 
         # Deterministic pre-invoke: ordered concatenation so a future
         # plugin can rely on stable layout (e.g. vision findings always
@@ -602,52 +665,76 @@ class AskService:
                     return scrubbed
 
                 history_scrub = _history_scrub
-            stream_kwargs: dict = {
+            # ``run_stream`` would stop the agent graph at the first model
+            # output matching ``output_type`` (``str``) — meaning when the
+            # model emits intermediate text *together with* a tool call in
+            # one response, the text is treated as final and the tool call
+            # is silently dropped. That broke ``ask_user_question``: the
+            # modal never opened on Ollama-style local models that emit
+            # "为了更准确地评估…" + ``ask_user_question(…)`` in the same
+            # message. Use ``run`` with an ``event_stream_handler`` so the
+            # graph runs to completion (tools execute) while text deltas
+            # still stream live to the UI.
+            from pydantic_ai.messages import (
+                PartDeltaEvent,
+                PartStartEvent,
+                TextPart,
+                TextPartDelta,
+            )
+
+            async def _handle_events(_ctx, events) -> None:  # noqa: ANN001
+                async for event in events:
+                    text: str | None = None
+                    if isinstance(event, PartStartEvent) and isinstance(
+                        event.part, TextPart
+                    ):
+                        text = event.part.content
+                    elif isinstance(event, PartDeltaEvent) and isinstance(
+                        event.delta, TextPartDelta
+                    ):
+                        text = event.delta.content_delta
+                    if not text:
+                        continue
+                    if st["t_first_token"] is None:
+                        st["t_first_token"] = time.perf_counter()
+                        ttft_ms = int((st["t_first_token"] - st["t_start"]) * 1000)
+                        logger.debug("_producer: FIRST TOKEN ttft=%dms", ttft_ms)
+                        await out.put(LlmFirstToken(ttft_ms=ttft_ms))
+                    await out.put(TokenChunk(text=text))
+
+            run_kwargs: dict = {
                 "deps": deps,
                 "message_history": (
                     _sanitize_history_for_llm(message_history, scrub=history_scrub)
                     if message_history
                     else None
                 ),
+                "event_stream_handler": _handle_events,
             }
             if any_tool:
-                stream_kwargs["usage_limits"] = UsageLimits(request_limit=5)
+                run_kwargs["usage_limits"] = UsageLimits(request_limit=5)
             try:
-                logger.debug("_producer: ENTER agent.run_stream")
-                async with agent.run_stream(prompt, **stream_kwargs) as stream:
-                    logger.debug(
-                        "_producer: agent.run_stream context entered, iterating stream_text"
+                logger.debug("_producer: ENTER agent.run")
+                run_result = await agent.run(prompt, **run_kwargs)
+                logger.debug("_producer: agent.run returned")
+                result["final_text"] = run_result.output
+                try:
+                    result["messages_json"] = run_result.all_messages_json()
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to capture pydantic-ai messages")
+                try:
+                    result["usage"] = run_result.usage
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to capture pydantic-ai usage")
+                try:
+                    result["steps"] = build_step_records(
+                        list(run_result.new_messages())
                     )
-                    async for chunk in stream.stream_text(delta=True):
-                        if chunk:
-                            if st["t_first_token"] is None:
-                                st["t_first_token"] = time.perf_counter()
-                                ttft_ms = int(
-                                    (st["t_first_token"] - st["t_start"]) * 1000
-                                )
-                                logger.debug(
-                                    "_producer: FIRST TOKEN ttft=%dms", ttft_ms
-                                )
-                                await out.put(LlmFirstToken(ttft_ms=ttft_ms))
-                            await out.put(TokenChunk(text=chunk))
-                    result["final_text"] = await stream.get_output()
-                    try:
-                        result["messages_json"] = stream.all_messages_json()
-                    except Exception:  # noqa: BLE001
-                        logger.exception("failed to capture pydantic-ai messages")
-                    try:
-                        result["usage"] = stream.usage
-                    except Exception:  # noqa: BLE001
-                        logger.exception("failed to capture pydantic-ai usage")
-                    try:
-                        result["steps"] = build_step_records(
-                            list(stream.new_messages())
-                        )
-                    except Exception:  # noqa: BLE001
-                        logger.exception("failed to build per-step records")
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to build per-step records")
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
-                    "_producer: agent.run_stream raised %s: %s", type(exc).__name__, exc
+                    "_producer: agent.run raised %s: %s", type(exc).__name__, exc
                 )
                 result["had_error"] = True
                 await out.put(
@@ -733,6 +820,59 @@ class AskService:
         if result["had_error"]:
             return
         yield Done(final=result["final_text"])
+
+    async def _await_pending_ocr(self, user_id: str, session_id: str) -> None:
+        """Block until every ``pending`` attachment in the session reaches a
+        terminal OCR status (``done`` / ``empty`` / ``failed``).
+
+        Polls the on-disk sentinel via ``BlobStore.ocr_done`` rather than
+        subscribing to ``OcrCompleted`` events because (a) the worker is
+        owned by the TUI app, not AskService — wiring an event channel
+        across that boundary would mean threading a queue through three
+        layers; (b) the sentinel is the same source of truth
+        ``SessionAttachments.mark_ocr_status`` writes to, so polling
+        observes exactly what the next
+        ``AttachmentsFeature.expand_placeholders`` call would see anyway.
+
+        Capped at ``OCR_AWAIT_TIMEOUT_S``. On timeout we just return —
+        the inline placeholder expansion still renders
+        ``ocr_status="pending"`` so the LLM sees the state explicitly.
+        """
+        from claritymed.orchestrator.services.session_attachments import (
+            SessionAttachments,
+        )
+        from claritymed.stores.blob_store import BlobStore
+
+        try:
+            rows = SessionAttachments(user_id, session_id).list()
+        except Exception:  # noqa: BLE001
+            logger.exception("ocr-await: session attachments unreadable")
+            return
+
+        pending_shas = [r.sha256 for r in rows if r.ocr_status == "pending"]
+        if not pending_shas:
+            return
+
+        blob_store = BlobStore(user_id)
+        deadline = time.monotonic() + OCR_AWAIT_TIMEOUT_S
+        logger.info(
+            "ocr-await: waiting on %d pending blob(s) (timeout=%.0fs)",
+            len(pending_shas),
+            OCR_AWAIT_TIMEOUT_S,
+        )
+        while pending_shas:
+            pending_shas = [s for s in pending_shas if not blob_store.ocr_done(s)]
+            if not pending_shas:
+                logger.info("ocr-await: all pending blobs settled")
+                return
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "ocr-await: timed out with %d still pending: %s",
+                    len(pending_shas),
+                    [s[:8] for s in pending_shas],
+                )
+                return
+            await asyncio.sleep(OCR_AWAIT_POLL_S)
 
     def _finalize_turn(self, user_id: str, result: dict, deps: AskDeps) -> None:
         """Audit + chat-session persistence after the stream closes."""

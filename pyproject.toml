@@ -34,6 +34,13 @@ dependencies = [
     "transformers>=4.40",
     "onnxruntime>=1.17",
     "typer>=0.26.7",
+    # macOS-only: NSPasteboard access for the Ctrl+V screenshot path.
+    # Without it _read_macos falls back to ``osascript "the clipboard as
+    # text"`` which can't read image bytes — pasting a screenshot
+    # silently produces nothing and CoreGraphics' jp2 stderr noise bleeds
+    # into the Textual render.
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "scipy>=1.17.1",
 ]
 
 [project.optional-dependencies]

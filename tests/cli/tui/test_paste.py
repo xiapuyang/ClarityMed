@@ -7,8 +7,12 @@ tree and exercise the platform readers' empty/missing-tool paths.
 
 from __future__ import annotations
 
+import builtins
+import logging
+import subprocess
 from pathlib import Path
 
+import claritymed.cli.tui.paste as paste_mod
 from claritymed.cli.tui.paste import (
     Empty,
     FilePath,
@@ -62,3 +66,66 @@ def test_read_clipboard_returns_a_clipboard_content():
     """End-to-end smoke — whatever the system returns is a valid type."""
     out = read_clipboard()
     assert isinstance(out, (ImageBytes, FilePath, LargeText, SmallText, Empty))
+
+
+def test_macos_warns_once_when_appkit_missing(monkeypatch, caplog):
+    """Without pyobjc the image leg is silently broken; a one-time WARNING
+    in app.log is the only signal a user has that screenshot paste will
+    never work. Regression guard against the dep dropping off pyproject.
+    """
+    # Force the AppKit import inside _read_macos to fail.
+    real_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "AppKit":
+            raise ImportError("forced for test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    # Reset the module-level guard so the warning fires this run.
+    monkeypatch.setattr(paste_mod, "_warned_no_appkit", False)
+    # Make osascript fallback deterministic — clipboard is empty.
+    monkeypatch.setattr(
+        paste_mod.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="", stderr=""),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="claritymed.cli.tui.paste"):
+        out = paste_mod._read_macos()
+
+    assert isinstance(out, Empty)
+    assert any(
+        "pyobjc-framework-Cocoa not importable" in r.message for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_macos_osascript_stderr_is_captured(monkeypatch):
+    """osascript's stderr (where CoreGraphics writes the jp2 noise) must
+    not bleed into the parent terminal. Verify subprocess.run is invoked
+    with capture_output=True so stderr stays inside the subprocess.
+    """
+    # Force AppKit unavailable so we hit the osascript branch.
+    real_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "AppKit":
+            raise ImportError("forced for test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    monkeypatch.setattr(paste_mod, "_warned_no_appkit", True)  # silence the warning
+
+    captured: dict = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="some text", stderr="")
+
+    monkeypatch.setattr(paste_mod.subprocess, "run", _fake_run)
+
+    paste_mod._read_macos()
+
+    assert captured["cmd"][0] == "osascript"
+    assert captured["kwargs"].get("capture_output") is True, captured["kwargs"]

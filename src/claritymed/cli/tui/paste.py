@@ -19,7 +19,9 @@ a status-bar hint upstream.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -97,13 +99,47 @@ def classify_text(text: str) -> ClipboardContent:
 # --- macOS --------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def _silence_fd_stderr():
+    """Temporarily redirect fd 2 to /dev/null.
+
+    macOS CoreGraphics ImageIO writes ``cannot create jp2 color space,
+    fallback to sRGB`` to stderr when canonicalising screenshot PNGs
+    pulled off NSPasteboard. The message is cosmetic but bleeds into
+    Textual's alternate-screen render and flashes as garbled text in
+    the chat area. Redirecting fd 2 captures the noise; sys.stderr
+    (the Python file object) is left alone so the LazyStderrHandler
+    and other Python-level loggers keep working.
+    """
+    saved = os.dup(2)
+    try:
+        with open(os.devnull, "wb") as devnull:
+            os.dup2(devnull.fileno(), 2)
+            yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+
+
+_warned_no_appkit = False
+
+
 def _read_macos() -> ClipboardContent:
-    # Prefer pyobjc when available; fall back to osascript.
+    """NSPasteboard via pyobjc when present; osascript text-only fallback.
+
+    pyobjc (``pyobjc-framework-Cocoa``) is a hard darwin dep — the image
+    path needs ``NSPasteboard.dataForType_``. If the import still fails
+    in some unusual install, log a one-time warning so the user can
+    diagnose silent screenshot-paste failures instead of staring at
+    "Clipboard is empty" toasts.
+    """
+    global _warned_no_appkit
     try:
         from AppKit import NSPasteboard  # type: ignore
 
         pb = NSPasteboard.generalPasteboard()
-        png_data = pb.dataForType_("public.png")
+        with _silence_fd_stderr():
+            png_data = pb.dataForType_("public.png")
         if png_data is not None:
             return ImageBytes(bytes=bytes(png_data), ext="png")
         text = pb.stringForType_("public.utf8-plain-text")
@@ -111,14 +147,26 @@ def _read_macos() -> ClipboardContent:
             return classify_text(str(text))
         return Empty()
     except ImportError:
-        pass
+        if not _warned_no_appkit:
+            logger.warning(
+                "pyobjc-framework-Cocoa not importable; falling back to "
+                "osascript. Screenshot paste will silently return Empty "
+                "until you run: uv sync"
+            )
+            _warned_no_appkit = True
 
     # Fallback: osascript can read text; image bytes require pyobjc.
+    # ``capture_output`` keeps CoreGraphics' "cannot create jp2 color
+    # space" stderr noise from bleeding into the Textual terminal when
+    # the clipboard holds an image and we ask for it as text.
     try:
-        text = subprocess.check_output(
-            ["osascript", "-e", "the clipboard as text"], text=True
+        result = subprocess.run(
+            ["osascript", "-e", "the clipboard as text"],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        return classify_text(text)
+        return classify_text(result.stdout)
     except subprocess.CalledProcessError:
         return Empty()
 

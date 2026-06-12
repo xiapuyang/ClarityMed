@@ -58,6 +58,8 @@ ask_modal:
   multi_empty: "—"
   hint_single: "↑↓ move · enter submit · esc cancel"
   hint_multi: "↑↓ move · space toggle · enter submit · esc cancel"
+  badge_single: "Single"
+  badge_multi: "Multi"
 
 phi:
   redaction_marker:

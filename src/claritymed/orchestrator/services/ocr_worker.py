@@ -113,7 +113,15 @@ class OcrWorker:
         while True:
             ctx, job = await self._queue.get()
             try:
-                completion = await self._extract(ctx, job)
+                # asyncio.Task(context=ctx) propagates the captured
+                # request_id / user_id / language into every audit_event
+                # the OCR provider emits. Without it the call fires
+                # seconds after the request returned and audit_event
+                # silently dies on MissingContextError.
+                task = asyncio.get_running_loop().create_task(
+                    self._extract(job), context=ctx
+                )
+                completion = await task
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
@@ -128,7 +136,7 @@ class OcrWorker:
             await self._emit(completion)
             self._queue.task_done()
 
-    async def _extract(self, ctx, job: OcrJob) -> OcrCompleted:
+    async def _extract(self, job: OcrJob) -> OcrCompleted:
         # Skip if the sentinel is already on disk — same blob hashed
         # twice, only OCR once.
         blob_store = BlobStore(job.user_id)
@@ -143,6 +151,12 @@ class OcrWorker:
         try:
             text = await self._provider.extract_text(job.blob_path)
         except OcrError as exc:
+            logger.warning(
+                "ocr provider error for %s (%s): %s",
+                job.sha256[:8],
+                job.blob_path.name,
+                exc,
+            )
             self._write_sentinel(
                 blob_store,
                 job.sha256,

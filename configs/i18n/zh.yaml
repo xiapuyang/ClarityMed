@@ -52,6 +52,8 @@ ask_modal:
   multi_empty: "—"
   hint_single: "↑↓ 选择 · enter 提交 · esc 取消"
   hint_multi: "↑↓ 移动 · space 勾选 · enter 提交 · esc 取消"
+  badge_single: "单选"
+  badge_multi: "多选"
 
 phi:
   redaction_marker:

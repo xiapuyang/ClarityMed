@@ -50,10 +50,20 @@ def make_ocr_provider() -> OcrProvider:
             phi_policy=cfg.phi_policy,
         )
 
-    document_provider = _build_provider(cfg.document_provider, cfg)
-    image_default = _build_provider(cfg.image.default, cfg)
+    # Legacy mode: same tolerance as chain mode. A slot that fails to
+    # construct becomes None and the routing layer raises a clear
+    # ``no OCR providers available`` for that file kind at extract time
+    # instead of killing the whole factory at startup — so a missing
+    # MineRU env-gate can no longer block pasted screenshots that would
+    # route to ``image.default``.
+    document_provider = _safe_build(
+        cfg.document_provider, cfg, slot="document_provider"
+    )
+    image_default = _safe_build(cfg.image.default, cfg, slot="image.default")
     image_fallback = (
-        _build_provider(cfg.image.fallback, cfg) if cfg.image.fallback else None
+        _safe_build(cfg.image.fallback, cfg, slot="image.fallback")
+        if cfg.image.fallback
+        else None
     )
 
     return RoutingOcrProvider(
@@ -61,6 +71,35 @@ def make_ocr_provider() -> OcrProvider:
         image_default=image_default,
         image_fallback=image_fallback,
     )
+
+
+def _safe_build(name: str | None, cfg, *, slot: str) -> OcrProvider | None:
+    """Construct a legacy-mode slot; swallow expected skip reasons.
+
+    ``MinerUNotAllowed`` (env-gate) and ``ImportError`` (missing optional
+    extra) are the only failures that turn into ``None`` here — matches
+    ``_build_chain``'s tolerance. Everything else propagates so genuine
+    config bugs still surface loudly.
+    """
+    if name is None:
+        return None
+    try:
+        return _build_provider(name, cfg)
+    except MinerUNotAllowed:
+        logger.info(
+            "ocr legacy: skipping %s=%r — CLARITYMED_ALLOW_MINERU not set",
+            slot,
+            name,
+        )
+        return None
+    except ImportError as exc:
+        logger.info(
+            "ocr legacy: skipping %s=%r — optional dep not installed (%s)",
+            slot,
+            name,
+            exc,
+        )
+        return None
 
 
 def _build_chain(entries, cfg) -> list[OcrProvider]:

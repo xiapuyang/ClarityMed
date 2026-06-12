@@ -604,6 +604,54 @@ def test_make_ocr_provider_missing_mineru_token_raises(monkeypatch):
         make_ocr_provider()
 
 
+def test_make_ocr_provider_legacy_skips_mineru_when_envgate_missing(
+    monkeypatch, caplog
+):
+    """Legacy mode must not blow up the whole factory when one slot's
+    provider can't be constructed.
+
+    Regression: previously a missing ``CLARITYMED_ALLOW_MINERU`` env-gate
+    on ``document_provider: mineru`` would crash ``make_ocr_provider()``
+    entirely, leaving image paste (which routes to ``image.default``)
+    with no worker. The factory now mirrors chain mode and treats
+    ``MinerUNotAllowed`` / ``ImportError`` as per-slot skips.
+    """
+    import logging
+
+    import claritymed.core.schemas.ocr as _schema
+
+    # Override the autouse fixture: simulate a user who set the token but
+    # not the explicit ALLOW gate. MineRU construction will raise
+    # MinerUNotAllowed; the inline LLM slot must still construct.
+    monkeypatch.delenv("CLARITYMED_ALLOW_MINERU", raising=False)
+    monkeypatch.setenv("MINERU_API_TOKEN", "sk-test")
+    monkeypatch.setattr(
+        _schema,
+        "load_ocr_config",
+        lambda: OcrConfig(
+            document_provider="mineru",
+            image=ImageOcrConfig(default="llm", fallback="mineru"),
+            mineru=MineRUOcrConfig(),
+            llm=LLMOcrConfig(model="qwen-vl:7b", base_url="http://127.0.0.1:11434/v1"),
+        ),
+    )
+    from claritymed.core.ocr.factory import make_ocr_provider
+
+    with caplog.at_level(logging.INFO, logger="claritymed.core.ocr.factory"):
+        provider = make_ocr_provider()
+
+    assert isinstance(provider, RoutingOcrProvider)
+    # document_provider (mineru) was skipped → empty document chain.
+    assert provider._document_chain == []
+    # image.default (llm) survived; image.fallback (mineru) was skipped.
+    assert len(provider._image_chain) == 1
+    # Skip reasons were logged so an operator can diagnose without
+    # tailing app.log mid-paste.
+    skip_msgs = [r.message for r in caplog.records if "skipping" in r.message]
+    assert any("document_provider" in m for m in skip_msgs), skip_msgs
+    assert any("image.fallback" in m for m in skip_msgs), skip_msgs
+
+
 def test_make_ocr_provider_missing_llm_section_raises(monkeypatch):
     import claritymed.core.schemas.ocr as _schema
 

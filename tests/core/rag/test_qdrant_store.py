@@ -213,3 +213,111 @@ def test_build_qdrant_client_reads_api_key_from_env(monkeypatch):
         api_key_env="QDRANT_CLOUD_KEY",
     )
     assert "Remote" in type(client._client).__name__
+
+
+# ---------------------------------------------------------------------------
+# open_local_qdrant_client — stale-lock recovery
+# ---------------------------------------------------------------------------
+
+
+def test_open_local_qdrant_client_clean_dir(tmp_path):
+    """No stale lock present → construction succeeds first try."""
+    from claritymed.core.rag.qdrant_store import open_local_qdrant_client
+
+    user_dir = tmp_path / "qdrant"
+    user_dir.mkdir()
+    client = open_local_qdrant_client(user_dir)
+    assert client is not None
+
+
+def test_open_local_qdrant_client_removes_stale_lock(tmp_path, monkeypatch, caplog):
+    """A leftover .lock with no process holding it gets cleaned and the
+    second AsyncQdrantClient(path=...) call succeeds.
+
+    Regression: prior to the recovery helper, a crashed TUI left a lock
+    file that bricked every subsequent run with ``already accessed by
+    another instance`` until the user manually rm'd the file.
+    """
+    import logging
+
+    import claritymed.core.rag.qdrant_store as mod
+
+    user_dir = tmp_path / "qdrant"
+    user_dir.mkdir()
+    lock_file = user_dir / ".lock"
+    lock_file.write_text("tmp lock file")
+
+    # Pretend the first construct fails with the qdrant "already accessed"
+    # signal; the second succeeds (after the helper deletes the stale lock).
+    call_count = {"n": 0}
+
+    class _FakeClient:
+        pass
+
+    def _fake_async_qdrant_client(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError(
+                f"Storage folder {user_dir} is already accessed by another "
+                f"instance of Qdrant client."
+            )
+        return _FakeClient()
+
+    monkeypatch.setattr(mod, "AsyncQdrantClient", _fake_async_qdrant_client)
+    # No process holds the lock.
+    monkeypatch.setattr(mod, "_lock_is_held_by_another_process", lambda _: False)
+
+    with caplog.at_level(logging.WARNING, logger="claritymed.core.rag.qdrant_store"):
+        client = mod.open_local_qdrant_client(user_dir)
+
+    assert isinstance(client, _FakeClient)
+    assert call_count["n"] == 2  # one failed + one retry
+    assert not lock_file.exists()  # stale lock deleted
+    assert any("stale lock" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]
+
+
+def test_open_local_qdrant_client_refuses_when_lock_truly_held(tmp_path, monkeypatch):
+    """If lsof confirms another process holds the lock, propagate the
+    original error with an actionable hint — never silently nuke a real
+    lock that some live process is depending on.
+    """
+    import claritymed.core.rag.qdrant_store as mod
+
+    user_dir = tmp_path / "qdrant"
+    user_dir.mkdir()
+    lock_file = user_dir / ".lock"
+    lock_file.write_text("tmp lock file")
+
+    def _fake_async_qdrant_client(*args, **kwargs):
+        raise RuntimeError(
+            f"Storage folder {user_dir} is already accessed by another "
+            f"instance of Qdrant client."
+        )
+
+    monkeypatch.setattr(mod, "AsyncQdrantClient", _fake_async_qdrant_client)
+    monkeypatch.setattr(mod, "_lock_is_held_by_another_process", lambda _: True)
+
+    with pytest.raises(RuntimeError, match="Another process holds"):
+        mod.open_local_qdrant_client(user_dir)
+
+    assert lock_file.exists()  # never touched
+
+
+def test_open_local_qdrant_client_other_runtime_error_propagates(tmp_path, monkeypatch):
+    """Only ``already accessed`` triggers recovery — unrelated RuntimeError
+    must bubble up unchanged so genuine bugs aren't masked.
+    """
+    import claritymed.core.rag.qdrant_store as mod
+
+    user_dir = tmp_path / "qdrant"
+    user_dir.mkdir()
+
+    def _fake_async_qdrant_client(*args, **kwargs):
+        raise RuntimeError("disk corrupted")
+
+    monkeypatch.setattr(mod, "AsyncQdrantClient", _fake_async_qdrant_client)
+
+    with pytest.raises(RuntimeError, match="disk corrupted"):
+        mod.open_local_qdrant_client(user_dir)

@@ -35,14 +35,20 @@ if TYPE_CHECKING:
     from pydantic_ai.models import ModelRequestParameters, StreamedResponse
     from pydantic_ai.settings import ModelSettings
 
-_TEXT_LIMIT = 2000
-_ARG_LIMIT = 400
-_USER_LIMIT = 300
-_SYS_LIMIT = 120
+
+def _safe(text: str) -> str:
+    """Strip newlines and neutralise REQ-boundary lookalikes.
+
+    Model output is logged verbatim with no length cap, so a malicious or
+    confused model could otherwise inject a fake ``==== REQ ====`` line
+    that downstream log parsers would treat as a real boundary. Stripping
+    newlines and collapsing 4+ ``=`` runs to 3 keeps the log safe to grep.
+    """
+    return text.replace("\n", " ").replace("====", "===")
 
 
 def _fmt_messages(messages: list[ModelMessage]) -> str:
-    """Return a compact, human-readable summary of the message history."""
+    """Return a human-readable summary of the message history (full content)."""
     from pydantic_ai.messages import (
         ModelRequest,
         SystemPromptPart,
@@ -56,41 +62,28 @@ def _fmt_messages(messages: list[ModelMessage]) -> str:
             continue
         for part in msg.parts:
             if isinstance(part, SystemPromptPart):
-                text = str(part.content).replace("\n", " ")[:_SYS_LIMIT]
-                lines.append(
-                    f"  sys: {text}{'…' if len(str(part.content)) > _SYS_LIMIT else ''}"
-                )
+                lines.append(f"  sys: {_safe(str(part.content))}")
             elif isinstance(part, UserPromptPart):
-                text = str(part.content).replace("\n", " ")[:_USER_LIMIT]
-                lines.append(f"  user: {text}")
+                lines.append(f"  user: {_safe(str(part.content))}")
             elif isinstance(part, ToolReturnPart):
-                content = str(part.content).replace("\n", " ")[:200]
-                lines.append(f"  tool_result({part.tool_name}): {content}")
+                lines.append(
+                    f"  tool_result({part.tool_name}): {_safe(str(part.content))}"
+                )
     return "\n".join(lines)
 
 
 def _fmt_response(response: Any) -> str:
-    """Format ModelResponse parts for the log.
-
-    Newlines in text/tool-call payloads are stripped so a model output
-    cannot inject fake ``==== REQ ====`` boundary markers into the log.
-    """
+    """Format ModelResponse parts for the log (full content, no length cap)."""
     from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 
     lines: list[str] = []
     for part in getattr(response, "parts", []):
         if isinstance(part, TextPart):
-            text = part.content.replace("\n", " ")
-            shown = text[:_TEXT_LIMIT]
-            suffix = (
-                f" [{len(text) - _TEXT_LIMIT} more]" if len(text) > _TEXT_LIMIT else ""
-            )
-            lines.append(f"  text: {shown}{suffix}")
+            lines.append(f"  text: {_safe(part.content)}")
         elif isinstance(part, ToolCallPart):
-            args = str(part.args).replace("\n", " ")[:_ARG_LIMIT]
-            lines.append(f"  tool_call: {part.tool_name}({args})")
+            lines.append(f"  tool_call: {part.tool_name}({_safe(str(part.args))})")
         elif isinstance(part, ThinkingPart):
-            lines.append(f"  thinking: [{len(part.content)} chars]")
+            lines.append(f"  thinking: {_safe(part.content)}")
     return "\n".join(lines) if lines else "  (no parts)"
 
 

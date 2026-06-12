@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
@@ -41,6 +43,71 @@ logger = logging.getLogger(__name__)
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
+
+
+def open_local_qdrant_client(user_dir: Path) -> AsyncQdrantClient:
+    """Open path-mode AsyncQdrantClient with stale-lock recovery.
+
+    Qdrant's local mode writes ``user_dir/.lock`` on open and removes it
+    on close. A crashed TUI leaves the file behind; the next
+    ``AsyncQdrantClient(path=...)`` raises ``"already accessed by another
+    instance"`` even when no process is alive — the user has to manually
+    ``rm .lock`` to get unstuck. Defeats unattended use (cron, scheduled
+    sync) which is why we handle it here.
+
+    Recovery is conservative: only delete the lock if ``lsof`` confirms
+    no other process holds it open. When ``lsof`` is unavailable or some
+    process *is* holding it, the original error propagates with an
+    actionable hint instead of unsafely nuking a real lock.
+    """
+    try:
+        return AsyncQdrantClient(path=str(user_dir))
+    except RuntimeError as exc:
+        if "already accessed" not in str(exc):
+            raise
+        lock_file = user_dir / ".lock"
+        if not lock_file.exists():
+            # Race: lock vanished between qdrant's check and ours. Just retry.
+            return AsyncQdrantClient(path=str(user_dir))
+        if _lock_is_held_by_another_process(lock_file):
+            raise RuntimeError(
+                f"{exc}\n"
+                f"Another process holds {lock_file}. Stop the other "
+                f"claritymed instance, or if you're sure none is running, "
+                f"manually: rm {lock_file}"
+            ) from exc
+        logger.warning(
+            "qdrant: stale lock at %s (no process holds it); removing and retrying.",
+            lock_file,
+        )
+        lock_file.unlink(missing_ok=True)
+        return AsyncQdrantClient(path=str(user_dir))
+
+
+def _lock_is_held_by_another_process(lock_file: Path) -> bool:
+    """True iff lsof reports any pid (other than ours) holding lock_file open.
+
+    Conservative default: when lsof is unavailable, returns True so we
+    refuse to delete rather than risk nuking a real lock.
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "-t", str(lock_file)],
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.warning(
+            "lsof unavailable (%s); cannot confirm qdrant lock state, "
+            "treating as held to avoid unsafe deletion.",
+            exc,
+        )
+        return True
+    my_pid = str(os.getpid())
+    others = [p for p in result.stdout.decode().split() if p and p != my_pid]
+    return bool(others)
+
 
 # RRF fusion balances dense + sparse at the engine. Per-stream prefetch
 # limit is larger than the final limit so the fusion has enough candidates

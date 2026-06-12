@@ -69,6 +69,12 @@ class QuestionModal(ModalScreen[AskUserQuestionResult | None]):
         padding: 0 1;
         margin-right: 1;
     }
+    QuestionModal #header-row Label.chip-mode {
+        background: $boost;
+        color: $text-muted;
+        padding: 0 1;
+        margin-right: 1;
+    }
     QuestionModal #question-text {
         margin-bottom: 1;
     }
@@ -114,6 +120,12 @@ class QuestionModal(ModalScreen[AskUserQuestionResult | None]):
         with Vertical():
             with Horizontal(id="header-row"):
                 yield Label(q.header, classes="chip")
+                badge_key = (
+                    "ask_modal.badge_multi"
+                    if q.multi_select
+                    else "ask_modal.badge_single"
+                )
+                yield Label(t(badge_key), classes="chip-mode")
                 yield Label(
                     f"{self._page + 1} / {len(self._payload.questions)}",
                     id="progress",

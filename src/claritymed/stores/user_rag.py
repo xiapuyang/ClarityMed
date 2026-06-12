@@ -338,9 +338,11 @@ def make_user_rag_store(user_id: str) -> UserRagStore:
     from claritymed.core.rag.embedding.factory import build_embedder
     from claritymed.stores.paths import user_rag_qdrant_dir
 
+    from claritymed.core.rag.qdrant_store import open_local_qdrant_client
+
     user_dir = user_rag_qdrant_dir(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
-    aclient = AsyncQdrantClient(path=str(user_dir))
+    aclient = open_local_qdrant_client(user_dir)
     return UserRagStore(
         aclient=aclient,
         embedder=build_embedder(),

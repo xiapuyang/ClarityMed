@@ -960,14 +960,8 @@ class ClarityMedApp(App):
             self._toast(f"Attachment register failed: {exc}", kind="error")
             return
 
-        worker = self._ensure_ocr_worker()
-        if worker is None:
-            self._toast(
-                f"Pasted {filename} ({len(data)} B); OCR worker unavailable",
-                kind="warning",
-            )
-            return
-
+        # Resolve the on-disk content file before any UI side effect, so
+        # we fail loud if the blob dir is empty for any reason.
         blob_dir = blob_store.dir(sha)
         content_path = next(
             (
@@ -980,18 +974,26 @@ class ClarityMedApp(App):
         if content_path is None:
             self._toast("Stored blob has no content file", kind="error")
             return
-        # Visible feedback: a chat-history line plus a ToolSteps row.
-        # The chat-history line is appended via _session_turns so resume
-        # sees it too — toasts disappear and would leave the user without
-        # any trace that the attachment exists.
-        try:
-            conv = self.query_one(Conversation)
-            conv.add_system_turn(f"📎 attached {filename}  (OCR queued)")
-            self._session_turns.append(
-                ChatTurn(role="system", text=f"attached {filename} (OCR queued)")
+
+        # Input-bar placeholder. The 8-char prefix is what the user
+        # sees while editing and what's persisted to chat_session.jsonl;
+        # ``AttachmentsFeature.expand_placeholders`` swaps it for the
+        # inline ``<image sha="<full sha>">OCR</image>`` form only at
+        # prompt-assembly time, so the wire layer always carries the
+        # full sha for downstream tool reference.
+        is_image = _guess_mime(ext).startswith("image/")
+        placeholder_kind = "Image" if is_image else "File"
+        placeholder = f"[{placeholder_kind} sha:{sha[:8]}]"
+        self._insert_into_input(placeholder)
+
+        worker = self._ensure_ocr_worker()
+        if worker is None:
+            self._toast(
+                f"Pasted {filename}; OCR unavailable — see ~/.claritymed/logs/app.log",
+                kind="warning",
             )
-        except NoMatches:
-            pass  # widgets not mounted yet (very early paste)
+            return
+
         try:
             steps = self.query_one(ToolSteps)
             tool_label = _ocr_step_name(sha)
@@ -1058,8 +1060,14 @@ class ClarityMedApp(App):
             summary = f"{completion.provider or 'ocr'} ✓"
         elif completion.status == "empty":
             summary = "no text extracted"
+            logger.info("OCR empty for %s", completion.sha256[:8])
         elif completion.status == "failed":
             summary = f"failed: {completion.reason or 'unknown'}"
+            logger.warning(
+                "OCR failed for %s: %s",
+                completion.sha256[:8],
+                completion.reason or "unknown",
+            )
         else:
             summary = completion.status
         try:
