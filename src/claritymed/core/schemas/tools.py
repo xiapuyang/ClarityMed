@@ -43,16 +43,32 @@ class SaveRecordArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    category: str = Field(min_length=1, max_length=64)
-    kind: str = Field(min_length=1, max_length=64)
+    category: str = Field(
+        min_length=1,
+        max_length=64,
+        examples=["checkups", "labs", "imaging", "vaccinations"],
+    )
+    kind: str = Field(
+        min_length=1,
+        max_length=64,
+        examples=["checkup", "lab_report", "imaging_study", "vaccination"],
+    )
     # See ``records.Manifest.event_date`` — same rename to avoid shadowing
     # ``datetime.date`` with a same-named field.
-    event_date: date | None = Field(default=None, alias="date")
-    title: str = Field(min_length=1, max_length=256)
+    event_date: date | None = Field(
+        default=None,
+        alias="date",
+        examples=["2026-03-12"],
+    )
+    title: str = Field(
+        min_length=1,
+        max_length=256,
+        examples=["Annual checkup", "Lipid panel — Dr. Chen"],
+    )
     provider: str | None = Field(default=None, max_length=128)
     attachments: list[AttachmentRef] = Field(default_factory=list)
     extracted_labs: list[ExtractedLab] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list, examples=[["routine", "fasting"]])
     notes: str | None = None
 
 
@@ -67,11 +83,21 @@ class SaveMedicationArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=128)
+    name: str = Field(
+        min_length=1,
+        max_length=128,
+        examples=["metformin", "lisinopril"],
+    )
     code: str | None = Field(default=None, max_length=64)
-    dose: str | None = Field(default=None, max_length=64)
-    frequency: str | None = Field(default=None, max_length=64)
-    onset_date: date | None = None
+    dose: str | None = Field(
+        default=None, max_length=64, examples=["500 mg", "10 mg", "1 puff"]
+    )
+    frequency: str | None = Field(
+        default=None,
+        max_length=64,
+        examples=["twice daily", "every 8 hours", "as needed"],
+    )
+    onset_date: date | None = Field(default=None, examples=["2024-01-15"])
     end_date: date | None = None
 
 
@@ -88,7 +114,9 @@ class SaveAllergyArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    substance: str = Field(min_length=1, max_length=128)
+    substance: str = Field(
+        min_length=1, max_length=128, examples=["penicillin", "peanut"]
+    )
     severity: AllergySeverity
     source: AllergySource
     onset_date: date | None = None
@@ -106,7 +134,11 @@ class SaveConditionArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    display: str = Field(min_length=1, max_length=128)
+    display: str = Field(
+        min_length=1,
+        max_length=128,
+        examples=["type 2 diabetes", "asthma", "hypertension"],
+    )
     code: str | None = Field(default=None, max_length=64)
     onset_date: date | None = None
     end_date: date | None = None
@@ -144,7 +176,10 @@ class UpdateProfileFieldArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     field: ProfileField
-    value: str | float | bool | None = None
+    value: str | float | bool | None = Field(
+        default=None,
+        examples=[72.5, "Berlin", True, "1990-04-22"],
+    )
 
 
 class SaveToLibraryArgs(BaseModel):
@@ -157,11 +192,18 @@ class SaveToLibraryArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    title: str = Field(min_length=1, max_length=256)
+    title: str = Field(
+        min_length=1,
+        max_length=256,
+        examples=[
+            "2024 Hypertension Guideline",
+            "Harrison's — Chapter 271",
+        ],
+    )
     attachments: list[AttachmentRef] = Field(default_factory=list)
-    authors: list[str] = Field(default_factory=list)
-    year: int | None = Field(default=None, ge=1800, le=2200)
-    tags: list[str] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list, examples=[["Jameson", "Loscalzo"]])
+    year: int | None = Field(default=None, ge=1800, le=2200, examples=[2024])
+    tags: list[str] = Field(default_factory=list, examples=[["textbook"]])
     public: bool = False
 
 
@@ -176,8 +218,10 @@ class DeleteRecordArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    record_path: str = Field(min_length=1)
-    confirm_kind: str = Field(min_length=1, max_length=64)
+    record_path: str = Field(min_length=1, examples=["checkups/2026-03-12-annual"])
+    confirm_kind: str = Field(
+        min_length=1, max_length=64, examples=["checkup", "lab_report"]
+    )
 
 
 # Registry mapping tool name → args model. Used by ToolDispatcher to look up

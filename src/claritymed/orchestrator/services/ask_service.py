@@ -372,6 +372,22 @@ class AskService:
             result = dispatcher.gate(tool_def.name, args)
             return not result.allowed
 
+        def _resolve_tool_prompt_language() -> str:
+            """Pick the language for the seven tool descriptions.
+
+            Order: ``CLARITYMED_TOOL_PROMPT_LANG`` env (en / zh) wins,
+            then the per-turn user language. The env override decouples
+            tool-prompt language from chat language, letting operators
+            A/B which language the model handles tool calls better in —
+            an EN tool description with a ZH conversation is a valid
+            configuration, since the model only reads the description
+            once at agent construction.
+            """
+            override = os.environ.get("CLARITYMED_TOOL_PROMPT_LANG", "").strip().lower()
+            if override in ("en", "zh"):
+                return override
+            return self._language
+
         def _factory() -> "FeaturePlugin":
             dispatcher = ToolDispatcher(
                 session_attachments=_session_shas,
@@ -381,7 +397,7 @@ class AskService:
             return IngestToolsFeature(
                 dispatcher=dispatcher,
                 approval_required_func=_approval_required,
-                language=self._language,
+                language=_resolve_tool_prompt_language(),
             )
 
         return _factory

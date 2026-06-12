@@ -184,22 +184,56 @@ def require_local_services() -> None:
         )
 
 
-@pytest.fixture(scope="session")
-def e2e_provider_id() -> str:
-    """Return the first usable LLM provider id; skip the test if none found.
+def _resolve_e2e_provider_ids() -> list[str]:
+    """Pick the set of providers e2e should run against.
 
-    Delegates to ``stores.models.pick_reachable_provider`` so production
-    code (e.g. ``claritymed eval``) and this fixture agree on what
-    "reachable" means — without one drifting from the other.
+    Order:
+    * ``CLARITYMED_E2E_PROVIDERS=omlx,deepseek`` (comma-separated catalog
+      ids) — explicit opt-in for a multi-provider matrix run.
+    * Otherwise: the single local provider ``pick_reachable_provider``
+      finds (the historical default). Returns ``[]`` when nothing is
+      reachable so the fixture skips cleanly.
+
+    The list is computed once at conftest import time so pytest's
+    parametrize machinery can register all params at collection time.
     """
+    import os
+
+    raw = os.environ.get("CLARITYMED_E2E_PROVIDERS", "").strip()
+    if raw:
+        return [s.strip() for s in raw.split(",") if s.strip()]
     from claritymed.stores.models import pick_reachable_provider
 
-    provider = pick_reachable_provider()
-    if provider is not None:
-        return provider.id
+    p = pick_reachable_provider()
+    return [p.id] if p is not None else []
 
-    pytest.skip(
-        "No LLM provider reachable with valid credentials.\n"
-        "  Start a server (omlx :8000 or ollama :11434) "
-        "and set any required API key env vars."
-    )
+
+_E2E_PROVIDER_IDS: list[str] = _resolve_e2e_provider_ids() or ["__none__"]
+
+
+@pytest.fixture(scope="session", params=_E2E_PROVIDER_IDS)
+def e2e_provider_id(request: pytest.FixtureRequest) -> str:
+    """Return one provider id per parametrize iteration.
+
+    Skips when no provider is reachable / when credentials are missing
+    for the requested id; this keeps a partially-configured matrix
+    (``omlx`` up + ``deepseek`` key unset) from failing the whole run.
+    """
+    pid = request.param
+    if pid == "__none__":
+        pytest.skip(
+            "No LLM provider reachable with valid credentials.\n"
+            "  Start a server (omlx :8000 or ollama :11434) "
+            "and set any required API key env vars, "
+            "or set CLARITYMED_E2E_PROVIDERS=<id>[,<id>...]."
+        )
+
+    from claritymed.stores.models import is_provider_available, load_models
+
+    catalog = {p.id: p for p in load_models().providers}
+    provider = catalog.get(pid)
+    if provider is None:
+        pytest.skip(f"Provider {pid!r} not in configs/models.yaml catalog.")
+    if not is_provider_available(provider):
+        pytest.skip(f"Provider {pid!r} catalog-listed but credentials missing in env.")
+    return pid

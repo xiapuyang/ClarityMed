@@ -223,6 +223,24 @@ CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
 - 中英双语均为必填（validator 强制校验），缺任一语言会在启动时 fail-fast。
 - Phoenix 同步走 `prompts push/pull`，不要手动编辑 Phoenix 侧再回写 YAML。
 
+## E2E provider matrix
+
+`tests/e2e/test_ingest_tools_e2e.py` 默认跑 `pick_reachable_provider()` 选中的本地 provider。要对比多个 provider 在同一组 7 tool 上的表现：
+
+```bash
+CLARITYMED_E2E_PROVIDERS=omlx,deepseek uv run pytest tests/e2e/test_ingest_tools_e2e.py
+```
+
+pytest 会把每个 tool case 都 × 每个 provider 一遍（`[save_allergy-omlx]`、`[save_allergy-deepseek]` …）。某个 provider 没 reachable / 没 API key 时它自己 skip，不会拖崩整轮。
+
+## Tool prompt language override
+
+`CLARITYMED_TOOL_PROMPT_LANG=en|zh` 强制 ingest tool 的 description 用该语言（与用户的 chat 语言解耦）。**不**影响用户回答的语言。用途：A/B 不同语言的 tool description 对同一模型的工具调用准确率，无需改用户偏好。空 / 未设置 → fallback 到当前用户语言。
+
+例子：
+- 中文用户跑 EN tool prompt（看英文 schema 是否更稳）：`CLARITYMED_TOOL_PROMPT_LANG=en uv run claritymed tui`
+- e2e 批跑两种语言对比：`CLARITYMED_TOOL_PROMPT_LANG=en uv run pytest tests/e2e/test_ingest_tools_e2e.py` 然后再跑一次 `=zh`
+
 ## Test user_id convention
 
 测试里写 `data/users/<uid>/` 时**统一**用两个固定 uid，避免污染开发者真实用户目录、也方便 fixture 一把清掉：
