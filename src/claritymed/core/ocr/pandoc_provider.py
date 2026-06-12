@@ -13,7 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,26 @@ class PandocOcrProvider(OcrProvider):
     is_local = True
     """``pandoc`` runs as a local subprocess — no network hop."""
 
-    async def extract_text(self, path: Path) -> str:
+    label = "pandoc"
+    # Common office/text-markup formats pandoc handles well. PDFs go to
+    # pymupdf/marker; images go to llm/mineru — explicitly excluded.
+    supported_extensions = frozenset(
+        {
+            ".doc",
+            ".docx",
+            ".odt",
+            ".rtf",
+            ".epub",
+            ".ppt",
+            ".pptx",
+            ".xls",
+            ".xlsx",
+            ".html",
+            ".htm",
+        }
+    )
+
+    async def extract_text(self, path: Path) -> ExtractResult:
         try:
             text = await asyncio.to_thread(self._extract_sync, path)
         except ImportError as exc:
@@ -38,7 +57,9 @@ class PandocOcrProvider(OcrProvider):
 
         if not text.strip():
             raise OcrError("pypandoc: no text extracted")
-        return text
+        return ExtractResult(
+            text=text, provider_used=self.label, chain_tried=[self.label]
+        )
 
     @staticmethod
     def _extract_sync(path: Path) -> str:

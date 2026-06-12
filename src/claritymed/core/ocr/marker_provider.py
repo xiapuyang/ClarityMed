@@ -21,7 +21,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +32,15 @@ class MarkerOcrProvider(OcrProvider):
     is_local = True
     """PHI-safe by construction — model + execution stay on this machine."""
 
+    label = "marker"
+    supported_extensions = frozenset({".pdf"})
+
     def __init__(self, *, max_pages: int | None = None) -> None:
         # The plan's CPU-mode caveat (~10s/page) is real; allow callers to
         # cap pages on weak hardware. None = use marker's own default.
         self._max_pages = max_pages
 
-    async def extract_text(self, path: Path) -> str:
+    async def extract_text(self, path: Path) -> ExtractResult:
         try:
             text = await asyncio.to_thread(self._extract_sync, path)
         except ImportError as exc:
@@ -54,7 +57,9 @@ class MarkerOcrProvider(OcrProvider):
 
         if not text.strip():
             raise OcrError("marker-pdf: no text extracted")
-        return text
+        return ExtractResult(
+            text=text, provider_used=self.label, chain_tried=[self.label]
+        )
 
     def _extract_sync(self, path: Path) -> str:
         # Lazy: imports cost ~2 s on first call (model load).

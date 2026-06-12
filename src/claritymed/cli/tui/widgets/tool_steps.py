@@ -54,11 +54,25 @@ class ToolSteps(VerticalScroll):
     def on_mount(self) -> None:
         self._active = {}
 
-    def reset(self) -> None:
+    def reset(self, *, preserve_active: bool = False) -> None:
+        """Clear completed rows.
+
+        ``preserve_active=False`` (default) wipes everything — used by
+        /clear and /user where the whole session restarts.
+        ``preserve_active=True`` keeps in-flight rows (``⟳`` widgets
+        still in ``_active``) so per-turn cleanup at the start of a new
+        message doesn't kill an OCR job the user enqueued before
+        submitting. Without this the row reappears as a stray ``✓``
+        when the job completes, because ``push_complete`` can no
+        longer find the original row in ``_active``."""
+        keep = set(self._active.values()) if preserve_active else set()
         for child in list(self.children):
-            child.remove()
-        self._active = {}
-        self.remove_class("has_events")
+            if child not in keep:
+                child.remove()
+        if not preserve_active:
+            self._active = {}
+        if not self._active:
+            self.remove_class("has_events")
 
     def toggle_collapse(self) -> None:
         """Show/hide the panel without clearing content (F2)."""

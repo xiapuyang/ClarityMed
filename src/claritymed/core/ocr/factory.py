@@ -1,21 +1,17 @@
 """Factory for OCR providers.
 
 Reads ``configs/ocr.yaml`` via ``load_ocr_config()`` and returns a
-``RoutingOcrProvider``.
+``RoutingOcrProvider`` built from the configured chains.
 
-Two paths:
-
-* **Chain mode** (``document_chain`` / ``image_chain`` populated):
-  builds each provider in order, filters by ``phi_policy``, hands the
-  list to ``RoutingOcrProvider``. Failed-to-construct providers (missing
-  optional extra, MineRU without env opt-in) are skipped with a logged
-  warning so a partial install still gets a working chain.
-* **Legacy mode** (default): single ``document_provider`` and image
-  default/fallback. Same behavior as before Unit 3 landed.
+Builds each chain entry in order, filters by ``phi_policy``, hands the
+list to ``RoutingOcrProvider``. Failed-to-construct providers (missing
+optional extra, MineRU without env opt-in) are skipped with a logged
+warning so a partial install still gets a working chain.
 
 Adding a new backend:
 
-1. Implement ``OcrProvider`` in a new module under this package.
+1. Implement ``OcrProvider`` in a new module under this package; set
+   ``label`` to the short name used in configs.
 2. Add its id to ``ProviderName`` in ``schemas/ocr.py``.
 3. Add a builder in ``_build_provider`` below.
 4. Update ``configs/ocr.yaml`` docs.
@@ -34,72 +30,26 @@ logger = logging.getLogger(__name__)
 
 def make_ocr_provider() -> OcrProvider:
     """Build a ``RoutingOcrProvider`` from ``configs/ocr.yaml``."""
-    from claritymed.core.ocr.routing_provider import RoutingOcrProvider
+    from claritymed.core.ocr.routing_provider import (
+        _DEFAULT_DOCUMENT_EXTENSIONS,
+        RoutingOcrProvider,
+    )
     from claritymed.core.schemas.ocr import load_ocr_config
 
     cfg = load_ocr_config()
-
-    if cfg.document_chain or cfg.image_chain:
-        # Chain mode. Each provider that fails to construct (missing extra,
-        # MineRU without env opt-in) is skipped — the chain still works.
-        document_chain = _build_chain(cfg.document_chain, cfg)
-        image_chain = _build_chain(cfg.image_chain, cfg)
-        return RoutingOcrProvider(
-            document_chain=document_chain,
-            image_chain=image_chain,
-            phi_policy=cfg.phi_policy,
-        )
-
-    # Legacy mode: same tolerance as chain mode. A slot that fails to
-    # construct becomes None and the routing layer raises a clear
-    # ``no OCR providers available`` for that file kind at extract time
-    # instead of killing the whole factory at startup — so a missing
-    # MineRU env-gate can no longer block pasted screenshots that would
-    # route to ``image.default``.
-    document_provider = _safe_build(
-        cfg.document_provider, cfg, slot="document_provider"
-    )
-    image_default = _safe_build(cfg.image.default, cfg, slot="image.default")
-    image_fallback = (
-        _safe_build(cfg.image.fallback, cfg, slot="image.fallback")
-        if cfg.image.fallback
-        else None
-    )
-
+    document_chain = _build_chain(cfg.document_chain, cfg)
+    image_chain = _build_chain(cfg.image_chain, cfg)
+    # Plain-text extensions (csv/md/txt/...) route to the document chain
+    # so a configured fallback provider — typically MineRU — can still
+    # handle them if the paste fast-path is bypassed. The router's
+    # supports-filter then skips providers that can't read text.
+    document_extensions = _DEFAULT_DOCUMENT_EXTENSIONS | frozenset(cfg.text_extensions)
     return RoutingOcrProvider(
-        document_provider=document_provider,
-        image_default=image_default,
-        image_fallback=image_fallback,
+        document_chain=document_chain,
+        image_chain=image_chain,
+        phi_policy=cfg.phi_policy,
+        document_extensions=document_extensions,
     )
-
-
-def _safe_build(name: str | None, cfg, *, slot: str) -> OcrProvider | None:
-    """Construct a legacy-mode slot; swallow expected skip reasons.
-
-    ``MinerUNotAllowed`` (env-gate) and ``ImportError`` (missing optional
-    extra) are the only failures that turn into ``None`` here — matches
-    ``_build_chain``'s tolerance. Everything else propagates so genuine
-    config bugs still surface loudly.
-    """
-    if name is None:
-        return None
-    try:
-        return _build_provider(name, cfg)
-    except MinerUNotAllowed:
-        logger.info(
-            "ocr legacy: skipping %s=%r — CLARITYMED_ALLOW_MINERU not set",
-            slot,
-            name,
-        )
-        return None
-    except ImportError as exc:
-        logger.info(
-            "ocr legacy: skipping %s=%r — optional dep not installed (%s)",
-            slot,
-            name,
-            exc,
-        )
-        return None
 
 
 def _build_chain(entries, cfg) -> list[OcrProvider]:
@@ -182,19 +132,19 @@ def _make_mineru_provider(cfg) -> OcrProvider:
 def _make_llm_provider(cfg, *, chain_entry=None) -> OcrProvider:
     from claritymed.core.ocr.llm_provider import LLMOcrProvider
 
-    # Chain entries can carry their own provider config inline; this keeps
-    # the legacy top-level ``llm:`` block usable for the single-provider
-    # path and lets chain mode declare multiple distinct LLM entries. A
-    # chain entry that names ``llm`` but supplies neither ``provider_id``
-    # nor ``model`` falls back to the top-level ``llm:`` block.
+    # Chain entries can carry their own provider config inline so a chain
+    # can declare multiple distinct LLM entries (e.g. local vision +
+    # cloud vision). A chain entry that names ``llm`` but supplies neither
+    # ``provider_id`` nor ``model`` falls back to the top-level ``llm:``
+    # block.
     use_chain = chain_entry is not None and (
         chain_entry.provider_id is not None or chain_entry.model is not None
     )
     llm_cfg = chain_entry if use_chain else cfg.llm
     if llm_cfg is None:
         raise ValueError(
-            "ocr.yaml: image.default='llm' requires an 'llm:' section with either "
-            "provider_id or model."
+            "ocr.yaml: 'llm' chain entry requires either an inline "
+            "provider_id/model on the entry or a top-level 'llm:' block."
         )
 
     if llm_cfg.provider_id is not None:

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from claritymed.context import apply_context, reset_context
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 from claritymed.orchestrator.services.ocr_worker import (
     OcrCompleted,
     OcrJob,
@@ -20,15 +20,18 @@ from claritymed.stores.blob_store import BlobStore
 
 class _StubProvider(OcrProvider):
     is_local = True
+    label = "stub"
 
     def __init__(self, *, text: str = "extracted text", raise_with: str | None = None):
         self._text = text
         self._raise = raise_with
 
-    async def extract_text(self, path: Path) -> str:
+    async def extract_text(self, path: Path) -> ExtractResult:
         if self._raise:
             raise OcrError(self._raise)
-        return self._text
+        return ExtractResult(
+            text=self._text, provider_used=self.label, chain_tried=[self.label]
+        )
 
 
 @pytest.fixture
@@ -65,7 +68,17 @@ async def test_extract_done_writes_sentinel(_ctx):
     assert bs.ocr_done(sha)
     sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
     assert sentinel["status"] == "done"
+    # Sentinel records the real leaf provider + the chain that was tried,
+    # not the wrapping RoutingOcrProvider class name. Regression guard:
+    # previously this surfaced as "RoutingOcrProvider" in ocr.json.
+    assert sentinel["provider"] == "stub"
+    assert sentinel["chain_tried"] == ["stub"]
+    # Worker records kind="ocr" + the source extension so the unified
+    # reader knows to look at ocr.md (not content.pdf).
+    assert sentinel["kind"] == "ocr"
+    assert sentinel["ext"] == "pdf"
     assert completions and completions[0].status == "done"
+    assert completions[0].provider == "stub"
     # Row was updated in the session tray.
     row = sa.get(sha)
     assert row is not None

@@ -1,22 +1,12 @@
-"""File-type-aware routing OCR provider.
+"""``RoutingOcrProvider`` — chain-based OCR composer.
 
-Two construction styles supported:
+Routes ``extract_text`` to a list of providers per file kind. The first
+provider that returns text wins; ``OcrError`` from one falls through to
+the next.
 
-* Legacy single-provider mode: ``document_provider`` + ``image_default``
-  + optional ``image_fallback``. Two-step chain at the image layer; one
-  provider at the document layer.
-* Chain mode: ``document_chain`` + ``image_chain`` (each is a
-  ``list[OcrProvider]``). N-ary fallback: the first provider that
-  returns text wins; ``OcrError`` from one means "next provider, please."
-
-Chain mode also accepts ``phi_policy="local-only"`` which filters the
-chains to providers with ``is_local = True`` at composition time. Cloud
-providers (``MineRUOcrProvider``) are filtered out structurally, so a
-buggy ``ocr.yaml`` that puts MineRU on the PHI path becomes "no chain
-applicable" rather than "PHI leaked to mineru.net".
-
-Emits one ``ocr.extract`` audit event per call (best-effort — no-op when
-the request ContextVars are not set, e.g. in unit tests).
+``phi_policy="local-only"`` filters cloud providers (``is_local=False``)
+out of the chain at composition time — defense-in-depth alongside any
+per-provider env gate (e.g. MineRU's ``CLARITYMED_ALLOW_MINERU``).
 """
 
 from __future__ import annotations
@@ -26,25 +16,14 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
-_DOCUMENT_EXTENSIONS = frozenset(
-    {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+_DEFAULT_DOCUMENT_EXTENSIONS = frozenset(
+    {".pdf", ".doc", ".docx", ".odt", ".rtf", ".epub", ".ppt", ".pptx", ".xls", ".xlsx"}
 )
 PhiPolicy = Literal["local-only", "any"]
-
-
-def _provider_label(provider: OcrProvider) -> str:
-    """Short lowercase label derived from class name, e.g. 'mineru' or 'llm'."""
-    name = type(provider).__name__  # e.g. "MineRUOcrProvider"
-    return (
-        name.lower()
-        .replace("ocrprovider", "")
-        .replace("ocr", "")
-        .replace("provider", "")
-    )
 
 
 def _emit_audit(payload: dict[str, Any]) -> None:
@@ -75,68 +54,48 @@ def _filter_chain_for_policy(
 class RoutingOcrProvider(OcrProvider):
     """Routes OCR to different backends based on file type.
 
-    Two construction styles (use one, not both):
-
-    * Legacy: ``document_provider`` + ``image_default`` + optional
-      ``image_fallback``. Single-provider document path; two-step image
-      fallback. Kept for back-compat with existing OCR usage.
-    * Chain: ``document_chain`` + ``image_chain``. Each is a list; the
-      first provider that returns text wins. ``OcrError`` from one
-      means "next provider." Optionally ``phi_policy="local-only"`` to
-      filter cloud providers out at composition time.
+    Each file kind (document vs image) has its own ordered chain. The
+    first provider that returns text wins; ``OcrError`` from one means
+    "next provider." ``phi_policy="local-only"`` filters cloud providers
+    out at composition time.
     """
+
+    label = "routing"
 
     def __init__(
         self,
         *,
-        document_provider: OcrProvider | None = None,
-        image_default: OcrProvider | None = None,
-        image_fallback: OcrProvider | None = None,
         document_chain: list[OcrProvider] | None = None,
         image_chain: list[OcrProvider] | None = None,
         phi_policy: PhiPolicy = "any",
+        document_extensions: frozenset[str] | None = None,
     ) -> None:
-        legacy = (
-            document_provider is not None
-            or image_default is not None
-            or image_fallback is not None
+        if document_chain is None and image_chain is None:
+            raise ValueError(
+                "RoutingOcrProvider: requires document_chain and/or image_chain"
+            )
+
+        self._document_chain = _filter_chain_for_policy(
+            document_chain or [], phi_policy
         )
-        chain = document_chain is not None or image_chain is not None
-        if legacy and chain:
-            raise ValueError(
-                "RoutingOcrProvider: pass either (document_provider/image_default) "
-                "OR (document_chain/image_chain), not both"
-            )
-        if not legacy and not chain:
-            raise ValueError(
-                "RoutingOcrProvider: requires either single-provider args or chain args"
-            )
-
-        # Normalize legacy → chain shape. Internally we walk one list per
-        # file_kind regardless of construction style.
-        if legacy:
-            self._document_chain = (
-                [document_provider] if document_provider is not None else []
-            )
-            self._image_chain = []
-            if image_default is not None:
-                self._image_chain.append(image_default)
-            if image_fallback is not None:
-                self._image_chain.append(image_fallback)
-        else:
-            self._document_chain = _filter_chain_for_policy(
-                document_chain or [], phi_policy
-            )
-            self._image_chain = _filter_chain_for_policy(image_chain or [], phi_policy)
-
+        self._image_chain = _filter_chain_for_policy(image_chain or [], phi_policy)
         self._phi_policy: PhiPolicy = phi_policy
+        # Callers (factory) can widen the document set with text-only
+        # extensions so csv/md/json route to document_chain rather than
+        # image_chain. Defaults preserve the historical behavior.
+        self._document_extensions = (
+            document_extensions
+            if document_extensions is not None
+            else _DEFAULT_DOCUMENT_EXTENSIONS
+        )
 
-    async def extract_text(self, path: Path) -> str:
+    async def extract_text(self, path: Path) -> ExtractResult:
         t0 = time.perf_counter()
         size_bytes = path.stat().st_size if path.exists() else 0
+        ext = path.suffix.lower()
         chain = (
             self._document_chain
-            if path.suffix.lower() in _DOCUMENT_EXTENSIONS
+            if ext in self._document_extensions
             else self._image_chain
         )
 
@@ -152,7 +111,16 @@ class RoutingOcrProvider(OcrProvider):
         tried_labels: list[str] = []
         last_exc: OcrError | None = None
         for provider in chain:
-            label = _provider_label(provider)
+            # Capability filter: a provider that declares it can't handle
+            # this extension is silently skipped and does NOT enter
+            # tried_labels. This keeps chain_tried honest — it reflects
+            # what was actually attempted, not what was structurally
+            # present. ``supported_extensions=None`` means "all extensions"
+            # (e.g. MineRU's catch-all).
+            supported = provider.supported_extensions
+            if supported is not None and ext not in supported:
+                continue
+            label = provider.label
             tried_labels.append(label)
             try:
                 result = await provider.extract_text(path)
@@ -168,14 +136,30 @@ class RoutingOcrProvider(OcrProvider):
                     "chain_succeeded": label,
                     "file": path.name,
                     "size_bytes": size_bytes,
-                    "chars": len(result),
+                    "chars": len(result.text),
                     "duration_ms": duration_ms,
                     "fallback": len(tried_labels) > 1,
                 }
             )
-            return result
+            # Rewrite chain_tried to reflect what *we* walked (failed
+            # leaves + winner), not just what the winning leaf returned.
+            return ExtractResult(
+                text=result.text,
+                provider_used=label,
+                chain_tried=list(tried_labels),
+            )
 
         duration_ms = int((time.perf_counter() - t0) * 1000)
+        # tried_labels may be empty if every provider in the chain
+        # declared the extension unsupported — surface that distinctly
+        # so operators don't chase a phantom OCR failure.
+        if not tried_labels:
+            error_msg = (
+                f"no chain provider supports extension {ext!r} "
+                f"(configured: {[p.label for p in chain]})"
+            )
+        else:
+            error_msg = str(last_exc) if last_exc else "no providers"
         _emit_audit(
             {
                 "status": "error",
@@ -184,10 +168,12 @@ class RoutingOcrProvider(OcrProvider):
                 "file": path.name,
                 "size_bytes": size_bytes,
                 "duration_ms": duration_ms,
-                "error": str(last_exc) if last_exc else "no providers",
+                "error": error_msg,
                 "fallback": len(tried_labels) > 1,
             }
         )
+        if not tried_labels:
+            raise OcrError(error_msg)
         raise OcrError(
             f"all providers exhausted ({tried_labels}); last error: {last_exc}"
         )

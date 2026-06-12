@@ -11,12 +11,12 @@ import httpx
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 from claritymed.core.ocr.llm_provider import LLMOcrProvider
 from claritymed.core.ocr.mineru_provider import MineRUOcrProvider
 from claritymed.core.ocr.routing_provider import RoutingOcrProvider
 from claritymed.core.schemas.ocr import (
-    ImageOcrConfig,
+    ChainEntry,
     LLMOcrConfig,
     MineRUOcrConfig,
     OcrConfig,
@@ -25,29 +25,50 @@ from claritymed.core.schemas.ocr import (
 
 
 # ---------------------------------------------------------------------------
-# Schema: OcrConfig defaults
+# Schema: OcrConfig
 # ---------------------------------------------------------------------------
 
 
-def test_ocr_config_defaults():
-    cfg = OcrConfig()
-    assert cfg.document_provider == "mineru"
-    assert cfg.image.default == "llm"
-    assert cfg.image.fallback == "mineru"
-    assert cfg.mineru is None
-    assert cfg.llm is None
+def test_ocr_config_requires_at_least_one_chain():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="at least one of"):
+        OcrConfig()
 
 
-def test_image_ocr_config_fallback_can_be_disabled():
-    cfg = ImageOcrConfig(fallback=None)
-    assert cfg.fallback is None
+def test_ocr_config_accepts_document_chain_only():
+    cfg = OcrConfig(document_chain=[ChainEntry(name="pymupdf")])
+    assert cfg.document_chain[0].name == "pymupdf"
+    assert cfg.image_chain == []
+
+
+def test_ocr_config_text_extensions_default_populated():
+    cfg = OcrConfig(document_chain=[ChainEntry(name="pymupdf")])
+    # Defaults sourced from _DEFAULT_TEXT_EXTENSIONS.
+    assert ".md" in cfg.text_extensions
+    assert ".csv" in cfg.text_extensions
+    assert all(e.startswith(".") for e in cfg.text_extensions)
+
+
+def test_ocr_config_text_extensions_normalize_case_and_dot():
+    cfg = OcrConfig(
+        document_chain=[ChainEntry(name="pymupdf")],
+        text_extensions=["MD", ".CSV", "json"],
+    )
+    # Lowercase + leading dot — both inserted, both lowercased.
+    assert cfg.text_extensions == [".md", ".csv", ".json"]
 
 
 def test_ocr_config_rejects_extra_fields():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        OcrConfig.model_validate({"document_provider": "mineru", "unknown_key": "oops"})
+        OcrConfig.model_validate(
+            {
+                "document_chain": [{"name": "pymupdf"}],
+                "unknown_key": "oops",
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -108,9 +129,8 @@ def test_llm_ocr_config_rejects_neither():
 
 def test_load_ocr_config_reads_yaml():
     cfg = load_ocr_config()
-    assert cfg.document_provider == "mineru"
-    assert cfg.image.default == "llm"
-    assert cfg.image.fallback == "mineru"
+    assert cfg.document_chain  # populated chain from configs/ocr.yaml
+    assert cfg.image_chain
     assert cfg.mineru is not None
     assert cfg.mineru.api_key_env == "MINERU_API_TOKEN"
     assert cfg.llm is not None
@@ -140,7 +160,9 @@ async def test_llm_ocr_provider_returns_extracted_text(tmp_path: Path):
         custom_output_args={"success": True, "text": "  Blood pressure 120/80  "}
     )
     result = await LLMOcrProvider(model).extract_text(fake)
-    assert result == "Blood pressure 120/80"
+    assert result.text == "Blood pressure 120/80"
+    assert result.provider_used == "llm"
+    assert result.chain_tried == ["llm"]
 
 
 async def test_llm_ocr_provider_raises_on_failure_response(tmp_path: Path):
@@ -263,7 +285,9 @@ async def test_mineru_ocr_provider_returns_markdown(tmp_path: Path):
 
     provider = MineRUOcrProvider("sk-test", poll_interval=0.0, transport=transport)
     result = await provider.extract_text(fake)
-    assert result == "# Report\n\nSome text."
+    assert result.text == "# Report\n\nSome text."
+    assert result.provider_used == "mineru"
+    assert result.chain_tried == ["mineru"]
 
 
 async def test_mineru_ocr_provider_raises_on_missing_file(tmp_path: Path):
@@ -366,58 +390,64 @@ async def test_mineru_ocr_provider_raises_on_bad_zip(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# RoutingOcrProvider
+# RoutingOcrProvider — routing by file kind
 # ---------------------------------------------------------------------------
 
 
-def _noop_provider(text: str = "extracted") -> OcrProvider:
+def _noop_provider(text: str = "extracted", *, label: str = "stub") -> OcrProvider:
     """Return a stub OcrProvider that always returns *text*."""
 
     class _Stub(OcrProvider):
-        async def extract_text(self, path: Path) -> str:
-            return text
+        async def extract_text(self, path: Path) -> ExtractResult:
+            return ExtractResult(text=text, provider_used=label, chain_tried=[label])
 
+    _Stub.label = label
     return _Stub()
 
 
-def _failing_provider(msg: str = "boom") -> OcrProvider:
+def _failing_provider(msg: str = "boom", *, label: str = "fail") -> OcrProvider:
     """Return a stub OcrProvider that always raises OcrError."""
 
     class _Fail(OcrProvider):
-        async def extract_text(self, path: Path) -> str:
+        async def extract_text(self, path: Path) -> ExtractResult:
             raise OcrError(msg)
 
+    _Fail.label = label
     return _Fail()
 
 
 @pytest.mark.parametrize(
     "extension", [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"]
 )
-async def test_routing_sends_documents_to_document_provider(
+async def test_routing_sends_documents_to_document_chain(
     tmp_path: Path, extension: str
 ):
     fake = tmp_path / f"file{extension}"
     fake.write_bytes(b"data")
 
     router = RoutingOcrProvider(
-        document_provider=_noop_provider("doc result"),
-        image_default=_failing_provider("should not be called"),
+        document_chain=[_noop_provider("doc result", label="doc")],
+        image_chain=[_failing_provider("should not be called", label="img")],
     )
-    assert await router.extract_text(fake) == "doc result"
+    result = await router.extract_text(fake)
+    assert result.text == "doc result"
+    assert result.provider_used == "doc"
 
 
 @pytest.mark.parametrize(
     "extension", [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"]
 )
-async def test_routing_sends_images_to_image_default(tmp_path: Path, extension: str):
+async def test_routing_sends_images_to_image_chain(tmp_path: Path, extension: str):
     fake = tmp_path / f"scan{extension}"
     fake.write_bytes(b"data")
 
     router = RoutingOcrProvider(
-        document_provider=_failing_provider("should not be called"),
-        image_default=_noop_provider("image result"),
+        document_chain=[_failing_provider("should not be called", label="doc")],
+        image_chain=[_noop_provider("image result", label="img")],
     )
-    assert await router.extract_text(fake) == "image result"
+    result = await router.extract_text(fake)
+    assert result.text == "image result"
+    assert result.provider_used == "img"
 
 
 async def test_routing_image_falls_back_on_default_error(tmp_path: Path):
@@ -425,36 +455,27 @@ async def test_routing_image_falls_back_on_default_error(tmp_path: Path):
     fake.write_bytes(b"data")
 
     router = RoutingOcrProvider(
-        document_provider=_failing_provider(),
-        image_default=_failing_provider("default failed"),
-        image_fallback=_noop_provider("fallback result"),
+        document_chain=[_failing_provider(label="doc")],
+        image_chain=[
+            _failing_provider("default failed", label="img1"),
+            _noop_provider("fallback result", label="img2"),
+        ],
     )
-    assert await router.extract_text(fake) == "fallback result"
+    result = await router.extract_text(fake)
+    assert result.text == "fallback result"
+    assert result.provider_used == "img2"
+    assert result.chain_tried == ["img1", "img2"]
 
 
-async def test_routing_raises_when_no_fallback_and_default_fails(tmp_path: Path):
+async def test_routing_raises_when_chain_exhausted(tmp_path: Path):
     fake = tmp_path / "scan.png"
     fake.write_bytes(b"data")
 
     router = RoutingOcrProvider(
-        document_provider=_failing_provider(),
-        image_default=_failing_provider("default failed"),
-        image_fallback=None,
+        document_chain=[_failing_provider(label="doc")],
+        image_chain=[_failing_provider("default failed", label="img")],
     )
-    with pytest.raises(OcrError, match="default failed"):
-        await router.extract_text(fake)
-
-
-async def test_routing_fallback_propagates_fallback_error(tmp_path: Path):
-    fake = tmp_path / "scan.png"
-    fake.write_bytes(b"data")
-
-    router = RoutingOcrProvider(
-        document_provider=_failing_provider(),
-        image_default=_failing_provider("default err"),
-        image_fallback=_failing_provider("fallback err"),
-    )
-    with pytest.raises(OcrError, match="fallback err"):
+    with pytest.raises(OcrError, match="all providers exhausted"):
         await router.extract_text(fake)
 
 
@@ -470,20 +491,17 @@ async def test_routing_emits_audit_on_success(tmp_path: Path):
 
     captured: list[dict] = []
 
-    def fake_audit(kind, payload=None):
-        captured.append({"kind": kind, **(payload or {})})
-
     with patch(
         "claritymed.core.ocr.routing_provider._emit_audit",
         side_effect=lambda p: captured.append(p),
     ):
         router = RoutingOcrProvider(
-            document_provider=_failing_provider(),
-            image_default=_noop_provider("hello world"),
+            document_chain=[_failing_provider(label="doc")],
+            image_chain=[_noop_provider("hello world", label="img")],
         )
         result = await router.extract_text(fake)
 
-    assert result == "hello world"
+    assert result.text == "hello world"
     assert len(captured) == 1
     ev = captured[0]
     assert ev["status"] == "ok"
@@ -505,17 +523,18 @@ async def test_routing_emits_audit_with_fallback_flag(tmp_path: Path):
         side_effect=lambda p: captured.append(p),
     ):
         router = RoutingOcrProvider(
-            document_provider=_failing_provider(),
-            image_default=_failing_provider("default err"),
-            image_fallback=_noop_provider("fallback text"),
+            document_chain=[_failing_provider(label="doc")],
+            image_chain=[
+                _failing_provider("default err", label="img1"),
+                _noop_provider("fallback text", label="img2"),
+            ],
         )
         await router.extract_text(fake)
 
     ev = captured[0]
     assert ev["status"] == "ok"
     assert ev["fallback"] is True
-    # New audit shape: chain_tried lists every step; chain_succeeded names
-    # the one that won.
+    # chain_tried lists every step; chain_succeeded names the one that won.
     assert len(ev["chain_tried"]) >= 2
     assert ev["chain_succeeded"] == ev["chain_tried"][-1]
 
@@ -532,8 +551,8 @@ async def test_routing_emits_audit_on_error(tmp_path: Path):
         side_effect=lambda p: captured.append(p),
     ):
         router = RoutingOcrProvider(
-            document_provider=_failing_provider("extraction failed"),
-            image_default=_noop_provider(),
+            document_chain=[_failing_provider("extraction failed", label="doc")],
+            image_chain=[_noop_provider(label="img")],
         )
         with pytest.raises(OcrError):
             await router.extract_text(fake)
@@ -550,12 +569,12 @@ async def test_routing_audit_skips_gracefully_without_context(tmp_path: Path):
     fake.write_bytes(b"data")
 
     router = RoutingOcrProvider(
-        document_provider=_failing_provider(),
-        image_default=_noop_provider("ok"),
+        document_chain=[_failing_provider(label="doc")],
+        image_chain=[_noop_provider("ok", label="img")],
     )
     # No request context set — _emit_audit must not propagate any exception.
     result = await router.extract_text(fake)
-    assert result == "ok"
+    assert result.text == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -563,21 +582,24 @@ async def test_routing_audit_skips_gracefully_without_context(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
+def _chain_cfg(**overrides) -> OcrConfig:
+    """Build a minimal valid OcrConfig with the given chains/llm/mineru."""
+    base = {
+        "document_chain": [ChainEntry(name="mineru")],
+        "image_chain": [ChainEntry(name="llm")],
+        "mineru": MineRUOcrConfig(),
+        "llm": LLMOcrConfig(provider_id="omlx"),
+    }
+    base.update(overrides)
+    return OcrConfig(**base)
+
+
 def test_make_ocr_provider_returns_routing_provider(monkeypatch):
     import claritymed.core.schemas.ocr as _schema
 
     monkeypatch.setenv("MINERU_API_TOKEN", "sk-test")
     monkeypatch.setenv("OMLX_API_KEY", "sk-omlx")
-    monkeypatch.setattr(
-        _schema,
-        "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback="mineru"),
-            mineru=MineRUOcrConfig(),
-            llm=LLMOcrConfig(provider_id="omlx"),
-        ),
-    )
+    monkeypatch.setattr(_schema, "load_ocr_config", _chain_cfg)
     from claritymed.core.ocr.factory import make_ocr_provider
 
     assert isinstance(make_ocr_provider(), RoutingOcrProvider)
@@ -591,12 +613,7 @@ def test_make_ocr_provider_missing_mineru_token_raises(monkeypatch):
     monkeypatch.setattr(
         _schema,
         "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback="mineru"),
-            mineru=MineRUOcrConfig(),
-            llm=LLMOcrConfig(model="openai:gpt-4o"),
-        ),
+        lambda: _chain_cfg(llm=LLMOcrConfig(model="openai:gpt-4o")),
     )
     from claritymed.core.ocr.factory import make_ocr_provider
 
@@ -604,34 +621,28 @@ def test_make_ocr_provider_missing_mineru_token_raises(monkeypatch):
         make_ocr_provider()
 
 
-def test_make_ocr_provider_legacy_skips_mineru_when_envgate_missing(
-    monkeypatch, caplog
-):
-    """Legacy mode must not blow up the whole factory when one slot's
-    provider can't be constructed.
+def test_make_ocr_provider_skips_mineru_when_envgate_missing(monkeypatch, caplog):
+    """Chain construction must not blow up when one entry's provider
+    can't be constructed (e.g. CLARITYMED_ALLOW_MINERU missing).
 
-    Regression: previously a missing ``CLARITYMED_ALLOW_MINERU`` env-gate
-    on ``document_provider: mineru`` would crash ``make_ocr_provider()``
-    entirely, leaving image paste (which routes to ``image.default``)
-    with no worker. The factory now mirrors chain mode and treats
-    ``MinerUNotAllowed`` / ``ImportError`` as per-slot skips.
+    The factory treats ``MinerUNotAllowed`` / ``ImportError`` as per-entry
+    skips, leaving a usable (possibly shorter) chain.
     """
     import logging
 
     import claritymed.core.schemas.ocr as _schema
 
-    # Override the autouse fixture: simulate a user who set the token but
-    # not the explicit ALLOW gate. MineRU construction will raise
-    # MinerUNotAllowed; the inline LLM slot must still construct.
     monkeypatch.delenv("CLARITYMED_ALLOW_MINERU", raising=False)
     monkeypatch.setenv("MINERU_API_TOKEN", "sk-test")
     monkeypatch.setattr(
         _schema,
         "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback="mineru"),
-            mineru=MineRUOcrConfig(),
+        lambda: _chain_cfg(
+            document_chain=[ChainEntry(name="mineru")],
+            image_chain=[
+                ChainEntry(name="llm"),
+                ChainEntry(name="mineru"),
+            ],
             llm=LLMOcrConfig(model="qwen-vl:7b", base_url="http://127.0.0.1:11434/v1"),
         ),
     )
@@ -641,15 +652,12 @@ def test_make_ocr_provider_legacy_skips_mineru_when_envgate_missing(
         provider = make_ocr_provider()
 
     assert isinstance(provider, RoutingOcrProvider)
-    # document_provider (mineru) was skipped → empty document chain.
+    # mineru entry skipped → empty document chain.
     assert provider._document_chain == []
-    # image.default (llm) survived; image.fallback (mineru) was skipped.
+    # image chain: llm kept, mineru skipped.
     assert len(provider._image_chain) == 1
-    # Skip reasons were logged so an operator can diagnose without
-    # tailing app.log mid-paste.
     skip_msgs = [r.message for r in caplog.records if "skipping" in r.message]
-    assert any("document_provider" in m for m in skip_msgs), skip_msgs
-    assert any("image.fallback" in m for m in skip_msgs), skip_msgs
+    assert any("mineru" in m for m in skip_msgs), skip_msgs
 
 
 def test_make_ocr_provider_missing_llm_section_raises(monkeypatch):
@@ -659,16 +667,11 @@ def test_make_ocr_provider_missing_llm_section_raises(monkeypatch):
     monkeypatch.setattr(
         _schema,
         "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback=None),
-            mineru=MineRUOcrConfig(),
-            llm=None,
-        ),
+        lambda: _chain_cfg(llm=None),
     )
     from claritymed.core.ocr.factory import make_ocr_provider
 
-    with pytest.raises(ValueError, match="provider_id or model"):
+    with pytest.raises(ValueError, match="provider_id/model"):
         make_ocr_provider()
 
 
@@ -679,10 +682,7 @@ def test_make_ocr_provider_llm_inline_base_url(monkeypatch):
     monkeypatch.setattr(
         _schema,
         "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback=None),
-            mineru=MineRUOcrConfig(),
+        lambda: _chain_cfg(
             llm=LLMOcrConfig(model="qwen-vl:7b", base_url="http://127.0.0.1:11434/v1"),
         ),
     )
@@ -699,10 +699,7 @@ def test_make_ocr_provider_llm_inline_with_api_key_env(monkeypatch):
     monkeypatch.setattr(
         _schema,
         "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback=None),
-            mineru=MineRUOcrConfig(),
+        lambda: _chain_cfg(
             llm=LLMOcrConfig(
                 model="qwen-vl:7b",
                 base_url="http://127.0.0.1:11434/v1",
@@ -724,10 +721,7 @@ def test_make_ocr_provider_missing_llm_api_key_raises(monkeypatch):
     monkeypatch.setattr(
         _schema,
         "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback=None),
-            mineru=MineRUOcrConfig(),
+        lambda: _chain_cfg(
             llm=LLMOcrConfig(
                 model="qwen-vl:7b",
                 base_url="http://127.0.0.1:11434/v1",
@@ -746,16 +740,7 @@ def test_make_ocr_provider_from_catalog(monkeypatch):
 
     monkeypatch.setenv("MINERU_API_TOKEN", "sk-test")
     monkeypatch.setenv("OMLX_API_KEY", "sk-omlx")
-    monkeypatch.setattr(
-        _schema,
-        "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback=None),
-            mineru=MineRUOcrConfig(),
-            llm=LLMOcrConfig(provider_id="omlx"),
-        ),
-    )
+    monkeypatch.setattr(_schema, "load_ocr_config", _chain_cfg)
     from claritymed.core.ocr.factory import make_ocr_provider
 
     assert isinstance(make_ocr_provider(), RoutingOcrProvider)
@@ -769,12 +754,7 @@ def test_make_ocr_provider_unknown_catalog_id_raises(monkeypatch):
     monkeypatch.setattr(
         _schema,
         "load_ocr_config",
-        lambda: OcrConfig(
-            document_provider="mineru",
-            image=ImageOcrConfig(default="llm", fallback=None),
-            mineru=MineRUOcrConfig(),
-            llm=LLMOcrConfig(provider_id="no-such-provider"),
-        ),
+        lambda: _chain_cfg(llm=LLMOcrConfig(provider_id="no-such-provider")),
     )
     from claritymed.core.ocr.factory import make_ocr_provider
 

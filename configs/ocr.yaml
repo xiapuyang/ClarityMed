@@ -1,15 +1,13 @@
-# OCR service configuration.
+# OCR service configuration — chain mode.
 #
-# Two configuration styles supported (use one, not both):
+# Each file kind (document vs image) has its own ordered provider chain.
+# The first provider that returns text wins; ``OcrError`` from one
+# falls through to the next.
 #
-# 1) Chain mode (new): document_chain / image_chain are ordered lists.
-#    The first provider that returns text wins; OcrError falls through.
-#    phi_policy="local-only" filters cloud providers (is_local=False) out
-#    of the chain at composition time — defense-in-depth alongside the
-#    per-provider env gate (CLARITYMED_ALLOW_MINERU).
-#
-# 2) Legacy single-provider (kept for back-compat): document_provider +
-#    image.default/fallback. Same behavior as before Unit 3.
+# ``phi_policy: local-only`` filters cloud providers (``is_local: false``)
+# out of the chain at composition time — defense-in-depth alongside the
+# per-provider env gate (``CLARITYMED_ALLOW_MINERU``). ``any`` lets cloud
+# providers participate when explicitly listed.
 #
 # Provider names:
 #   pymupdf — local digital-PDF text extraction (no model load).
@@ -20,29 +18,37 @@
 #   llm     — pydantic-ai vision LLM (locality = chain entry's `is_local`
 #             or provider_id catalog kind).
 #   mineru  — MineRU cloud SaaS. Requires both MINERU_API_TOKEN env var
-#             AND CLARITYMED_ALLOW_MINERU=1. is_local=False → structurally
+#             AND CLARITYMED_ALLOW_MINERU=1. is_local=false → structurally
 #             filtered from PHI chains regardless of env.
 
-# Legacy single-provider settings (used when *_chain sections are empty).
-document_provider: mineru
+# Extensions read directly as utf-8 text — they bypass the OCR worker
+# entirely. Paste/ingest writes the file content as the "extraction"
+# and the worker queue stays dedicated to actually-slow extractions.
+text_extensions:
+  - .txt
+  - .md
+  - .csv
+  - .tsv
+  - .json
+  - .log
+  - .xml
+  - .yaml
+  - .yml
 
-image:
-  default: llm
-  fallback: mineru
+phi_policy: local-only
 
-# Chain mode (uncomment to enable):
-# phi_policy: local-only
-# document_chain:
-#   - { name: pymupdf, is_local: true }
-#   - { name: marker, is_local: true, optional_extra: ocr-scanned }
-#   - { name: llm, is_local: true, provider_id: vision-local }
-#   - { name: pandoc, is_local: true, optional_extra: ocr-office }
-# image_chain:
-#   - { name: llm, is_local: true, provider_id: vision-local }
-#   - { name: marker, is_local: true, optional_extra: ocr-scanned }
+document_chain:
+  - { name: pymupdf, is_local: true }
+  - { name: marker,  is_local: true, optional_extra: ocr-scanned }
+  - { name: llm,     is_local: true, provider_id: omlx }
+  - { name: pandoc,  is_local: true, optional_extra: ocr-office }
+  - { name: mineru,  is_local: false }
+image_chain:
+  - { name: llm,    is_local: true, provider_id: omlx }
+  - { name: marker, is_local: true, optional_extra: ocr-scanned }
 
-# MineRU API settings (only used when mineru is in a chain or as a
-# single-provider value). Requires CLARITYMED_ALLOW_MINERU=1 at runtime.
+# MineRU API settings (only used when mineru is in a chain). Requires
+# CLARITYMED_ALLOW_MINERU=1 at runtime.
 mineru:
   api_key_env: MINERU_API_TOKEN
   model_version: vlm     # pipeline | vlm

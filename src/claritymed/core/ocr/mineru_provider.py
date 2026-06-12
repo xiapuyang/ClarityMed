@@ -23,7 +23,7 @@ from pathlib import Path
 
 import httpx
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,11 @@ class MineRUOcrProvider(OcrProvider):
 
     is_local = False
     """Cloud SaaS — never PHI-safe; chain composer filters it out."""
+
+    label = "mineru"
+    # MineRU's API accepts PDF / office / image formats. We leave
+    # ``supported_extensions`` as ``None`` (= all) so it acts as the
+    # catch-all fallback at the end of a chain.
 
     def __init__(
         self,
@@ -86,7 +91,7 @@ class MineRUOcrProvider(OcrProvider):
             kwargs["transport"] = self._transport
         return httpx.AsyncClient(**kwargs)
 
-    async def extract_text(self, path: Path) -> str:
+    async def extract_text(self, path: Path) -> ExtractResult:
         """Upload *path* to MineRU, wait for extraction, return Markdown.
 
         Raises:
@@ -99,7 +104,10 @@ class MineRUOcrProvider(OcrProvider):
             batch_id, file_url = await self._submit(client, path)
             await self._upload(client, file_url, path)
             zip_url = await self._poll(client, batch_id, path.name)
-            return await self._download_markdown(client, zip_url)
+            text = await self._download_markdown(client, zip_url)
+        return ExtractResult(
+            text=text, provider_used=self.label, chain_tried=[self.label]
+        )
 
     async def _submit(self, client: httpx.AsyncClient, path: Path) -> tuple[str, str]:
         """Request a presigned upload URL; return (batch_id, file_url)."""

@@ -580,6 +580,58 @@ async def test_paste_file_path_routes_through_blob_and_session(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_paste_text_file_uses_fast_path_no_ocr_worker(monkeypatch, tmp_path):
+    """Pasting a .csv (text extension) bypasses the OCR worker entirely:
+    the sentinel lands inline with provider='text' and the worker queue
+    stays empty.
+
+    Regression guard: before the fast-path, every paste — including
+    plain-text files — went through the worker chain, wasting an LLM
+    OCR call on something we could read in microseconds.
+    """
+    import json
+
+    from claritymed.cli.tui.paste import FilePath
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+    from claritymed.stores.blob_store import BlobStore
+
+    sample = tmp_path / "data.csv"
+    sample.write_text("col1,col2\n1,2\n3,4\n", encoding="utf-8")
+    _patch_clipboard(monkeypatch, FilePath(path=sample))
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert len(rows) == 1
+        sha = rows[0].sha256
+
+        # Worker queue was NOT touched — the whole point of the fast-path.
+        assert fake_worker.enqueued == []
+
+        # Sentinel landed inline with kind="text" + ext="csv" so the
+        # reader knows to consult content.csv directly.
+        bs = BlobStore("alice")
+        sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+        assert sentinel["status"] == "done"
+        assert sentinel["kind"] == "text"
+        assert sentinel["ext"] == "csv"
+        assert sentinel["provider"] == "text"
+        assert sentinel["chain_tried"] == ["text"]
+        # ocr.md is NOT written — content.csv already has the text.
+        assert not bs.ocr_path(sha).exists()
+        # The unified reader returns the original file contents.
+        assert bs.read_extracted_text(sha).startswith("col1,col2")
+
+
+@pytest.mark.asyncio
 async def test_paste_clipboard_read_failure_emits_toast(monkeypatch):
     """An exception from ``read_clipboard`` becomes an error toast, not a crash."""
 
@@ -592,6 +644,166 @@ async def test_paste_clipboard_read_failure_emits_toast(monkeypatch):
         await pilot.pause()
         app.action_paste_clipboard()  # must not raise
         await pilot.pause()
+
+
+def test_parse_dropped_paths_single(tmp_path):
+    """Bare absolute path → one Path entry."""
+    from claritymed.cli.tui.app import _parse_dropped_paths
+
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"x")
+    assert _parse_dropped_paths(str(f)) == [f]
+
+
+def test_parse_dropped_paths_quoted_and_escaped(tmp_path):
+    """Outer quotes stripped, ``\\ `` un-escaped — matches what Ghostty
+    injects when a path contains spaces."""
+    from claritymed.cli.tui.app import _parse_dropped_paths
+
+    f = tmp_path / "lab report.pdf"
+    f.write_bytes(b"x")
+    quoted = f'"{f}"'
+    escaped = str(f).replace(" ", "\\ ")
+    assert _parse_dropped_paths(quoted) == [f]
+    assert _parse_dropped_paths(escaped) == [f]
+
+
+def test_parse_dropped_paths_multi_space_separated(tmp_path):
+    """Ghostty 1.1+ joins multi-file drops with a single space, but
+    spaces inside a single path are escaped — split only on space when
+    followed by an absolute-path marker."""
+    from claritymed.cli.tui.app import _parse_dropped_paths
+
+    a = tmp_path / "a.pdf"
+    a.write_bytes(b"x")
+    b = tmp_path / "b.png"
+    b.write_bytes(b"y")
+    assert _parse_dropped_paths(f"{a} {b}") == [a, b]
+
+
+def test_parse_dropped_paths_newline_separated(tmp_path):
+    """iTerm2 joins multi-file drops with newlines."""
+    from claritymed.cli.tui.app import _parse_dropped_paths
+
+    a = tmp_path / "a.pdf"
+    a.write_bytes(b"x")
+    b = tmp_path / "b.png"
+    b.write_bytes(b"y")
+    assert _parse_dropped_paths(f"{a}\n{b}") == [a, b]
+
+
+def test_parse_dropped_paths_falls_back_for_non_paths():
+    """Plain text (no file on disk) returns empty so the caller can
+    fall through to the default Input insert-as-text behaviour."""
+    from claritymed.cli.tui.app import _parse_dropped_paths
+
+    assert _parse_dropped_paths("hello world") == []
+    assert _parse_dropped_paths("/nonexistent/path.pdf") == []
+
+
+@pytest.mark.asyncio
+async def test_on_paste_routes_dropped_pdf_to_ingest(tmp_path):
+    """Dragging a PDF into the TUI fires events.Paste with the path text;
+    on_paste should swap that for a [File sha:…] placeholder and enqueue
+    OCR — same outcome as Ctrl+V with FilePath clipboard content."""
+    from textual import events
+
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+
+    pdf = tmp_path / "labs.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.on_paste(events.Paste(str(pdf)))
+        await pilot.pause()
+
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert len(rows) == 1
+        assert rows[0].filename == "labs.pdf"
+        assert rows[0].mime == "application/pdf"
+        assert len(fake_worker.enqueued) == 1
+        # Path text did NOT land in the Input — the placeholder did.
+        assert str(pdf) not in app.query_one(InputBar).value()
+        assert app.query_one(InputBar).value().startswith("[File sha:")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_preserves_in_flight_ocr_row(monkeypatch):
+    """Submitting a message while an OCR job is still ⟳ in-flight must
+    keep that row alive — wiping it makes the right panel collapse and
+    the eventual ✓ row reappears as a stray completion. Regression for
+    the 'right window disappears, then reappears' UX bug."""
+    from claritymed.cli.tui.paste import ImageBytes
+    from claritymed.orchestrator.services.ocr_worker import OcrCompleted
+
+    _patch_clipboard(monkeypatch, ImageBytes(bytes=b"png-bytes", ext="png"))
+
+    app = ClarityMedApp(
+        user_id="alice",
+        language="en",
+        chat_session=_fresh_session(),
+        ask_service_factory=lambda: _StubAskService(["ok"]),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = _SyncOcrWorker()
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        steps = app.query_one(ToolSteps)
+        [step_key] = [k for k in steps._active.keys() if k.startswith("ocr:")]
+        in_flight_widget = steps._active[step_key]
+        assert steps.has_class("has_events")
+
+        # Submit a turn while OCR is still pending. The dispatch path
+        # used to call reset() without preserve_active and wipe the row.
+        # We assert state immediately so the stream worker (kicked off
+        # by dispatch) hasn't had time to add its own rows yet.
+        app._dispatch_to_service("what does the image say?")
+        # In-flight row is still mounted and the panel stays visible.
+        assert step_key in steps._active
+        assert in_flight_widget in steps.children
+        assert steps.has_class("has_events")
+
+        # OCR finishes mid-conversation → ⟳ flips to ✓ in place, not a
+        # second row that re-shows the panel.
+        sha_prefix = step_key.split(":", 1)[1]
+        app._on_ocr_completed(
+            OcrCompleted(
+                user_id="alice",
+                session_id=app._chat_session.session_id,
+                sha256=sha_prefix + "0" * (64 - len(sha_prefix)),
+                status="done",
+                provider="PyMuPDFOcrProvider",
+            )
+        )
+        await pilot.pause()
+        assert step_key not in steps._active
+        # The same widget object got updated in place.
+        assert in_flight_widget in steps.children
+
+
+@pytest.mark.asyncio
+async def test_on_paste_plain_text_falls_through(tmp_path):
+    """Pasted text that isn't a file path leaves the event unhandled so
+    Textual's default Input handler inserts it as normal text."""
+    from textual import events
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ev = events.Paste("not a path, just text")
+        app.on_paste(ev)
+        await pilot.pause()
+        # The handler must not consume non-path pastes — otherwise
+        # ordinary text pastes silently disappear into the void.
+        assert not ev._stop_propagation
 
 
 @pytest.mark.asyncio

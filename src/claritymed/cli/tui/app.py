@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import re
 import signal
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.binding import Binding
@@ -128,6 +130,55 @@ def _ocr_step_name(sha256: str) -> str:
     The short sha keeps the panel readable while still being unique per
     blob — two pasted images get two distinct rows."""
     return f"ocr:{sha256[:8]}"
+
+
+# Ghostty 1.1.0+ joins multi-file drops with a single space; iTerm2 uses
+# newlines. Within a path, spaces are shell-escaped as ``\ `` so a bare
+# space only separates files when followed by an absolute-path marker
+# (``/`` or ``C:\``). Same regex claude-code uses in usePasteHandler.ts.
+_DROP_PATH_SPLIT = re.compile(r" (?=/|[A-Za-z]:\\)")
+
+
+def _strip_outer_quotes(text: str) -> str:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        return text[1:-1]
+    return text
+
+
+def _unescape_shell_path(text: str) -> str:
+    """Reverse ``\\ `` / ``\\(`` shell escapes a terminal injects when it
+    drops a path with spaces or special chars. macOS/Linux only — Windows
+    paths use backslash as a separator, leave them alone."""
+    if not text or "\\" not in text:
+        return text
+    # Two passes so a literal ``\\`` survives — sub the doubled form to a
+    # placeholder, strip remaining single-backslash escapes, then put
+    # literal backslashes back.
+    _SENTINEL = "\x00DBL_BS\x00"
+    return text.replace("\\\\", _SENTINEL).replace("\\", "").replace(_SENTINEL, "\\")
+
+
+def _parse_dropped_paths(text: str) -> list[Path]:
+    """Return absolute Paths the user dropped, or [] if none parsed.
+
+    Splits on Ghostty's space-separator and iTerm2's newline-separator,
+    un-escapes shell escapes, expands ``~``, and keeps only entries that
+    resolve to an existing file. Empty list = treat the paste as text."""
+    candidates: list[str] = []
+    for chunk in _DROP_PATH_SPLIT.split(text.strip()):
+        for line in chunk.split("\n"):
+            line = _strip_outer_quotes(line.strip())
+            if line:
+                candidates.append(_unescape_shell_path(line))
+    paths: list[Path] = []
+    for raw in candidates:
+        try:
+            p = Path(raw).expanduser()
+        except (OSError, ValueError):
+            continue
+        if p.is_file():
+            paths.append(p)
+    return paths
 
 
 class ClarityMedApp(App):
@@ -501,7 +552,11 @@ class ClarityMedApp(App):
         status = self.query_one(StatusBar)
         conv = self.query_one(Conversation)
         steps = self.query_one(ToolSteps)
-        steps.reset()
+        # Preserve any in-flight rows (e.g. a pending OCR job enqueued by
+        # an earlier paste). Wiping them here makes the right panel
+        # collapse mid-turn and re-appear when OCR finishes — bad UX and
+        # the completed row loses its ⟳ → ✓ in-place transition.
+        steps.reset(preserve_active=True)
         conv.add_user_turn(text)
         self._session_turns.append(ChatTurn(role="user", text=text))
         self._refresh_context_chars()
@@ -860,6 +915,34 @@ class ClarityMedApp(App):
 
     # ----- clipboard paste -----------------------------------------------
 
+    def on_paste(self, event: events.Paste) -> None:
+        """App-level handler for bracketed-paste (incl. drag-drop in
+        Ghostty / iTerm2 / WezTerm). When the dropped payload is one or
+        more file paths, route each through ``_ingest_clipboard_bytes``
+        (same code path as Ctrl+V's ``FilePath``) and stop the event so
+        the path string itself never lands in the Input. Anything else
+        bubbles to the focused Input, which inserts it as text.
+        """
+        text = event.text
+        logger.debug(
+            "on_paste: len=%d first=%r",
+            len(text),
+            text[:120] if text else "",
+        )
+        paths = _parse_dropped_paths(text)
+        if not paths:
+            return
+        for path in paths:
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                self._toast(f"Could not read {path.name}: {exc}", kind="error")
+                continue
+            ext = path.suffix.lstrip(".") or "bin"
+            self._ingest_clipboard_bytes(data, ext=ext, display_name=path.name)
+        event.stop()
+        event.prevent_default()
+
     def action_paste_clipboard(self) -> None:
         """Ctrl+V handler — routes clipboard content by type.
 
@@ -986,6 +1069,24 @@ class ClarityMedApp(App):
         placeholder = f"[{placeholder_kind} sha:{sha[:8]}]"
         self._insert_into_input(placeholder)
 
+        # Plain-text fast-path: csv/md/json/... don't need OCR; reading
+        # the file directly is sub-millisecond, so going through the
+        # worker queue and chain machinery is pure overhead. Decode
+        # in-process and write the sentinel inline; downstream prompt
+        # assembly reads ``ocr.md`` the same way it does for real OCR
+        # output.
+        if self._is_text_extension(ext):
+            self._ingest_text_blob(
+                blob_store=blob_store,
+                user_id=user_id,
+                session_id=session_id,
+                sha=sha,
+                ext=ext,
+                content_path=content_path,
+                filename=filename,
+            )
+            return
+
         worker = self._ensure_ocr_worker()
         if worker is None:
             self._toast(
@@ -1001,15 +1102,25 @@ class ClarityMedApp(App):
         except NoMatches:
             pass
 
-        worker.enqueue(
-            OcrJob(
-                user_id=user_id,
-                session_id=session_id,
-                sha256=sha,
-                blob_path=content_path,
-                is_phi=True,
+        # The worker captures ContextVars via copy_context() at enqueue
+        # time so its later audit_event calls (which require request_id /
+        # user_id / language) attribute back to the originating action.
+        # TUI events don't enter inject_context(), so we set the three
+        # vars just for this call and reset immediately after.
+        language = self.query_one(StatusBar).language
+        tokens = apply_context(new_request_id(), user_id, language)
+        try:
+            worker.enqueue(
+                OcrJob(
+                    user_id=user_id,
+                    session_id=session_id,
+                    sha256=sha,
+                    blob_path=content_path,
+                    is_phi=True,
+                )
             )
-        )
+        finally:
+            reset_context(tokens)
         self._toast(f"Pasted {filename}; OCR queued", kind="info")
 
     def _insert_into_input(self, text: str) -> None:
@@ -1027,6 +1138,88 @@ class ClarityMedApp(App):
         bar._suppress_next_value = new_value
         inp.value = new_value
         inp.cursor_position = pos + len(text)
+
+    def _is_text_extension(self, ext: str) -> bool:
+        """Cached lookup against ``OcrConfig.text_extensions``.
+
+        Loading the YAML on every paste is fine (mtime-cached) but we
+        cache the normalized set on the App instance so the lookup is
+        ``O(1)`` and the next OCR-config reload picks up changes only
+        when the App is restarted — paste-time behavior doesn't drift
+        mid-session.
+        """
+        cached = getattr(self, "_text_extensions_cache", None)
+        if cached is None:
+            from claritymed.core.schemas.ocr import load_ocr_config
+
+            try:
+                cfg = load_ocr_config()
+                cached = frozenset(cfg.text_extensions)
+            except Exception:  # noqa: BLE001
+                # If ocr.yaml is bad, fall back to no text fast-path
+                # (everything goes through OCR worker, which surfaces the
+                # config error there).
+                logger.exception("ocr config load failed; text fast-path disabled")
+                cached = frozenset()
+            self._text_extensions_cache = cached
+        return f".{ext.lstrip('.').lower()}" in cached
+
+    def _ingest_text_blob(
+        self,
+        *,
+        blob_store,
+        user_id: str,
+        session_id: str,
+        sha: str,
+        ext: str,
+        content_path,
+        filename: str,
+    ) -> None:
+        """Read the blob as utf-8 text, write the OCR sentinel inline,
+        and fire the same completion path the worker uses.
+
+        Errors=replace decoding: a binary file that slipped into the
+        text-extensions allowlist would otherwise crash here; replacing
+        invalid bytes yields a useful (if ugly) extraction the user can
+        still see, which beats a silent failure.
+        """
+        from claritymed.orchestrator.services.ocr_worker import OcrCompleted
+        from claritymed.orchestrator.services.session_attachments import (
+            SessionAttachments,
+        )
+
+        try:
+            content_bytes = content_path.read_bytes()
+            text = content_bytes.decode("utf-8", errors="replace")
+        except OSError as exc:
+            logger.exception("text fast-path read failed: %s", exc)
+            self._toast(f"Could not read {filename}: {exc}", kind="error")
+            return
+
+        status = "done" if text.strip() else "empty"
+        blob_store.write_ocr_result(
+            sha,
+            status=status,
+            kind="text",
+            ext=ext,
+            provider="text",
+            chain_tried=["text"],
+            reason=None,
+            text=text,
+        )
+        SessionAttachments(user_id, session_id).mark_ocr_status(
+            sha, status, provider="text", reason=None
+        )
+        self._on_ocr_completed(
+            OcrCompleted(
+                user_id=user_id,
+                session_id=session_id,
+                sha256=sha,
+                status=status,
+                provider="text",
+            )
+        )
+        self._toast(f"Pasted {filename}", kind="info")
 
     def _ensure_ocr_worker(self):
         """Lazy-build the OcrWorker so headless tests that never paste

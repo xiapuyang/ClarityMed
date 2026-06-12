@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -37,13 +37,31 @@ class LLMOcrProvider(OcrProvider):
     PHI-safe failure mode (drop from chain) when locality is unknown.
     """
 
+    label = "llm"
+    # Vision LLMs accept PDFs and standard raster images. Office formats
+    # (.docx etc.) and pure text files are excluded so the chain skips
+    # the LLM hop for them.
+    supported_extensions = frozenset(
+        {
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".bmp",
+            ".tiff",
+            ".tif",
+        }
+    )
+
     def __init__(self, model: "Model", *, is_local: bool = True) -> None:
         self._model = model
         # Override the class attribute on this instance so chain composers
         # see the right locality without us needing two subclasses.
         self.is_local = is_local
 
-    async def extract_text(self, path: Path) -> str:
+    async def extract_text(self, path: Path) -> ExtractResult:
         """Send *path* to the LLM and return extracted text.
 
         Raises:
@@ -78,4 +96,6 @@ class LLMOcrProvider(OcrProvider):
 
         text = extraction.text.strip()
         logger.debug("ocr: extracted %d chars from %s", len(text), path.name)
-        return text
+        return ExtractResult(
+            text=text, provider_used=self.label, chain_tried=[self.label]
+        )

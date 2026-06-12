@@ -141,8 +141,13 @@ def _render_inline_tag(blob_store: BlobStore, kind: str, att) -> str:
     sha = att.sha256
     if att.ocr_status == "done":
         try:
-            ocr = blob_store.ocr_path(sha).read_text(encoding="utf-8").strip()
-        except OSError:
+            ocr = blob_store.read_extracted_text(sha).strip()
+        except (OSError, ValueError):
+            # OSError: ocr.md / content.<ext> disappeared between
+            # sentinel write and prompt assembly. ValueError: sentinel
+            # JSON corrupt. Both mean the rendered tag can't carry the
+            # text — fall through to the "missing" attribute so the
+            # model branches on it instead of seeing a torn payload.
             return f'<{tag} sha="{sha}" ocr_status="missing"/>'
         if not ocr:
             return f'<{tag} sha="{sha}" ocr_status="empty"/>'

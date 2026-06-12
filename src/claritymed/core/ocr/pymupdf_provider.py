@@ -17,7 +17,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,10 @@ class PyMuPDFOcrProvider(OcrProvider):
     is_local = True
     """PHI-safe by construction — never leaves the machine."""
 
-    async def extract_text(self, path: Path) -> str:
+    label = "pymupdf"
+    supported_extensions = frozenset({".pdf"})
+
+    async def extract_text(self, path: Path) -> ExtractResult:
         """Run blocking ``fitz`` in a thread; return concatenated text.
 
         Empty extract is treated as a "no text" signal so the routing
@@ -54,7 +57,9 @@ class PyMuPDFOcrProvider(OcrProvider):
             # Scanned PDFs return empty extracts. Signal explicitly so
             # the routing chain falls through to marker / vision-LLM.
             raise OcrError("pymupdf: no text extracted (likely scanned PDF)")
-        return text
+        return ExtractResult(
+            text=text, provider_used=self.label, chain_tried=[self.label]
+        )
 
     @staticmethod
     def _extract_sync(path: Path) -> str:

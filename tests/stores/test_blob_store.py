@@ -72,6 +72,122 @@ def test_ocr_done_false_when_only_partial(tmp_path):
     assert store.ocr_done(sha)
 
 
+def test_write_ocr_result_ocr_kind_writes_md_and_sentinel(tmp_path):
+    """kind=ocr lands both ocr.md + ocr.json; sentinel carries kind/ext."""
+    import json
+
+    store = BlobStore("alice")
+    sha = store.store(b"%PDF fake", "pdf")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="ocr",
+        ext="pdf",
+        provider="pymupdf",
+        chain_tried=["pymupdf"],
+        reason=None,
+        text="extracted body",
+    )
+    assert store.ocr_path(sha).read_text(encoding="utf-8") == "extracted body"
+    sentinel = json.loads(store.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel == {
+        "status": "done",
+        "kind": "ocr",
+        "ext": "pdf",
+        "provider": "pymupdf",
+        "chain_tried": ["pymupdf"],
+        "reason": None,
+        "chars": len("extracted body"),
+    }
+    assert store.ocr_done(sha)
+
+
+def test_write_ocr_result_text_kind_skips_ocr_md(tmp_path):
+    """kind=text writes only the sentinel — content.<ext> already is the
+    extracted text, so duplicating it as ocr.md would waste bytes."""
+    import json
+
+    store = BlobStore("alice")
+    sha = store.store(b"col1,col2\n1,2\n", "csv")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="text",
+        ext="csv",
+        provider="text",
+        chain_tried=["text"],
+        reason=None,
+        text="col1,col2\n1,2\n",
+    )
+    # ocr.md is NOT written — that's the whole point of text kind.
+    assert not store.ocr_path(sha).exists()
+    # Sentinel records kind + ext so readers know to consult content.csv.
+    sentinel = json.loads(store.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["kind"] == "text"
+    assert sentinel["ext"] == "csv"
+    assert store.ocr_done(sha)
+
+
+def test_write_ocr_result_records_failure(tmp_path):
+    """Failure path: empty text, populated reason, no provider. ocr.md
+    is still written (empty) so any stale orphan is overwritten."""
+    import json
+
+    store = BlobStore("alice")
+    sha = store.store(b"some pdf", "pdf")
+    store.write_ocr_result(
+        sha,
+        status="failed",
+        kind="ocr",
+        ext="pdf",
+        provider=None,
+        chain_tried=[],
+        reason="all providers exhausted",
+        text="",
+    )
+    sentinel = json.loads(store.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "failed"
+    assert sentinel["provider"] is None
+    assert sentinel["chain_tried"] == []
+    assert sentinel["chars"] == 0
+
+
+def test_read_extracted_text_text_kind_reads_content_file(tmp_path):
+    """For kind=text, the reader pulls from content.<ext> directly,
+    not from ocr.md (which doesn't exist for text blobs)."""
+    store = BlobStore("alice")
+    payload = "col1,col2\n1,2\n3,4\n"
+    sha = store.store(payload.encode("utf-8"), "csv")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="text",
+        ext="csv",
+        provider="text",
+        chain_tried=["text"],
+        reason=None,
+        text=payload,
+    )
+    assert store.read_extracted_text(sha) == payload
+
+
+def test_read_extracted_text_ocr_kind_reads_ocr_md(tmp_path):
+    """For kind=ocr, the reader pulls from ocr.md (the OCR output)."""
+    store = BlobStore("alice")
+    sha = store.store(b"%PDF fake", "pdf")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="ocr",
+        ext="pdf",
+        provider="pymupdf",
+        chain_tried=["pymupdf"],
+        reason=None,
+        text="OCR output text",
+    )
+    assert store.read_extracted_text(sha) == "OCR output text"
+
+
 def test_exists_filters_partial_writes():
     store = BlobStore("alice")
     sha = store.store(b"abc", "pdf")

@@ -157,7 +157,7 @@ class OcrWorker:
                 reason=cached.get("reason"),
             )
         try:
-            text = await self._provider.extract_text(job.blob_path)
+            result = await self._provider.extract_text(job.blob_path)
         except OcrError as exc:
             logger.warning(
                 "ocr provider error for %s (%s): %s",
@@ -165,11 +165,13 @@ class OcrWorker:
                 job.blob_path.name,
                 exc,
             )
-            self._write_sentinel(
-                blob_store,
+            blob_store.write_ocr_result(
                 job.sha256,
                 status="failed",
+                kind="ocr",
+                ext=job.blob_path.suffix.lstrip("."),
                 provider=None,
+                chain_tried=[],
                 reason=str(exc),
                 text="",
             )
@@ -180,22 +182,23 @@ class OcrWorker:
                 status="failed",
                 reason=str(exc),
             )
-        status: OcrStatus = "done" if text.strip() else "empty"
-        provider_label = type(self._provider).__name__
-        self._write_sentinel(
-            blob_store,
+        status: OcrStatus = "done" if result.text.strip() else "empty"
+        blob_store.write_ocr_result(
             job.sha256,
             status=status,
-            provider=provider_label,
+            kind="ocr",
+            ext=job.blob_path.suffix.lstrip("."),
+            provider=result.provider_used,
+            chain_tried=list(result.chain_tried),
             reason=None,
-            text=text,
+            text=result.text,
         )
         return OcrCompleted(
             user_id=job.user_id,
             session_id=job.session_id,
             sha256=job.sha256,
             status=status,
-            provider=provider_label,
+            provider=result.provider_used,
         )
 
     def _read_cached_sentinel(self, blob_store: BlobStore, sha256: str) -> dict | None:
@@ -215,39 +218,6 @@ class OcrWorker:
                 exc,
             )
             return None
-
-    def _write_sentinel(
-        self,
-        blob_store: BlobStore,
-        sha256: str,
-        *,
-        status: OcrStatus,
-        provider: str | None,
-        reason: str | None,
-        text: str,
-    ) -> None:
-        """Write ocr.md.tmp → rename, then ocr.json.tmp → rename (sentinel)."""
-        ocr_md = blob_store.ocr_path(sha256)
-        ocr_md.parent.mkdir(parents=True, exist_ok=True)
-        tmp_md = ocr_md.with_suffix(".md.tmp")
-        tmp_md.write_text(text or "", encoding="utf-8")
-        tmp_md.replace(ocr_md)
-
-        ocr_json = blob_store.ocr_meta_path(sha256)
-        tmp_json = ocr_json.with_suffix(".json.tmp")
-        tmp_json.write_text(
-            json.dumps(
-                {
-                    "status": status,
-                    "provider": provider,
-                    "reason": reason,
-                    "chars": len(text or ""),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        tmp_json.replace(ocr_json)
 
     async def _emit(self, completion: OcrCompleted) -> None:
         # Update the session-attachments tray (idempotent).

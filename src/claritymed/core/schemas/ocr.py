@@ -2,15 +2,10 @@
 
 ``OcrConfig`` is parsed from ``configs/ocr.yaml``.
 
-Two configuration styles (use one, not both):
-
-* Legacy single-provider: ``document_provider`` (one of mineru/llm) +
-  ``image.default``/``image.fallback``. Kept so the existing image-flow
-  configs continue to work.
-* Chain: ``document_chain`` / ``image_chain`` — ordered lists of
-  ``{name, ...}`` entries. The first provider that returns text wins;
-  ``OcrError`` from one falls through to the next. ``phi_policy``
-  filters cloud providers out at composition time.
+Configuration is chain-only: ``document_chain`` / ``image_chain`` are
+ordered lists of ``{name, ...}`` entries. The first provider that
+returns text wins; ``OcrError`` from one falls through to the next.
+``phi_policy`` filters cloud providers out at composition time.
 
 Provider names:
 
@@ -86,15 +81,6 @@ class MineRUOcrConfig(BaseModel):
     poll_timeout: float = Field(default=300.0, gt=0)
 
 
-class ImageOcrConfig(BaseModel):
-    """Provider routing config for image files."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    default: Literal["llm", "mineru"] = "llm"
-    fallback: Literal["mineru"] | None = "mineru"
-
-
 class ChainEntry(BaseModel):
     """One entry in a provider chain (``document_chain`` / ``image_chain``).
 
@@ -119,27 +105,57 @@ class ChainEntry(BaseModel):
     api_key_env: str | None = Field(default=None, min_length=1, max_length=64)
 
 
-class OcrConfig(BaseModel):
-    """Parsed ``configs/ocr.yaml``.
+_DEFAULT_TEXT_EXTENSIONS: tuple[str, ...] = (
+    ".txt",
+    ".md",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".log",
+    ".xml",
+    ".yaml",
+    ".yml",
+)
 
-    Either the legacy fields or the chain fields are populated; the
-    factory picks the right path. ``phi_policy`` filters chains and is
-    ignored in legacy mode (caller manages cloud/local themselves).
-    """
+
+class OcrConfig(BaseModel):
+    """Parsed ``configs/ocr.yaml`` — chain-only."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # Legacy fields — kept for back-compat with the existing TUI/CLI OCR
-    # path.  Default values match the prior shipping config.
-    document_provider: Literal["mineru", "pymupdf"] = "mineru"
-    image: ImageOcrConfig = Field(default_factory=ImageOcrConfig)
-    # New chain fields.  Empty by default; presence flips the factory to
-    # chain mode.
     document_chain: list[ChainEntry] = Field(default_factory=list)
     image_chain: list[ChainEntry] = Field(default_factory=list)
     phi_policy: PhiPolicy = "any"
+    # Extensions that bypass the OCR worker entirely — the paste handler /
+    # rag CLI reads them as utf-8 text and writes the sentinel inline.
+    # Keeps the worker queue dedicated to actually slow extractions.
+    text_extensions: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_TEXT_EXTENSIONS)
+    )
     mineru: MineRUOcrConfig | None = None
     llm: LLMOcrConfig | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_chain(self) -> "OcrConfig":
+        if not self.document_chain and not self.image_chain:
+            raise ValueError(
+                "ocr.yaml: at least one of document_chain / image_chain must be set."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_text_extensions(self) -> "OcrConfig":
+        """Lowercase + ensure leading dot so caller doesn't need to.
+
+        Pydantic's ``frozen=True`` blocks ``self.text_extensions = ...``;
+        re-route through ``object.__setattr__`` since this is the only
+        in-model normalization and we want callers to read a clean list.
+        """
+        normalized = [
+            (e if e.startswith(".") else f".{e}").lower() for e in self.text_extensions
+        ]
+        object.__setattr__(self, "text_extensions", normalized)
+        return self
 
 
 def load_ocr_config() -> OcrConfig:
@@ -147,4 +163,6 @@ def load_ocr_config() -> OcrConfig:
     from claritymed.config import load_yaml
 
     raw = load_yaml("ocr.yaml")
-    return OcrConfig.model_validate(raw) if raw else OcrConfig()
+    if not raw:
+        raise ValueError("ocr.yaml is missing or empty.")
+    return OcrConfig.model_validate(raw)

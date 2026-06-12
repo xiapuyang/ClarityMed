@@ -71,7 +71,7 @@ def rag_add(
 
                 ocr = make_ocr_provider()
                 try:
-                    text = await ocr.extract_text(file_path)
+                    text = (await ocr.extract_text(file_path)).text
                 except OcrError as exc:
                     logger.error("OCR failed: %s", exc)
                     raise typer.Exit(code=1) from exc

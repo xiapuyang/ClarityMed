@@ -78,9 +78,14 @@ class _StubOcrProvider(OcrProvider):
     against the production text path."""
 
     is_local = True
+    label = "stub-e2e"
 
-    async def extract_text(self, path: Path) -> str:
-        return _OCR_TEXT
+    async def extract_text(self, path: Path):
+        from claritymed.core.ocr.base import ExtractResult
+
+        return ExtractResult(
+            text=_OCR_TEXT, provider_used=self.label, chain_tried=[self.label]
+        )
 
 
 @pytest.fixture

@@ -9,10 +9,14 @@ Sibling files inside the blob directory:
 
 * ``content.<ext>`` — original bytes (written by this module).
 * ``ocr.md`` — extracted markdown text (written by ``OcrWorker``).
-* ``ocr.json`` — completion sentinel ({ status, provider, chain_tried, ... }
-  written by ``OcrWorker``; the *presence* of this file is the
-  "extraction complete" signal, so it must be written last via atomic
-  rename to avoid half-completed states being mistaken for done).
+  For text-kind blobs (csv/md/txt/...) this file is NOT written —
+  the source ``content.<ext>`` already is the text and the sentinel
+  records ``kind: "text"`` so the reader knows to read it directly.
+* ``ocr.json`` — completion sentinel ({ status, kind, ext, provider,
+  chain_tried, ... } written by ``OcrWorker`` or the paste fast-path;
+  the *presence* of this file is the "extraction complete" signal, so
+  it must be written last via atomic rename to avoid half-completed
+  states being mistaken for done).
 
 Writes are atomic-by-rename: bytes go to ``content.<ext>.tmp`` first, then
 ``os.rename`` swaps them in. Idempotent: if ``content.<ext>`` already
@@ -23,6 +27,7 @@ sha without rewriting (the bytes match by construction).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -84,6 +89,94 @@ class BlobStore:
             tmp.unlink(missing_ok=True)
             raise
         return sha
+
+    def write_ocr_result(
+        self,
+        sha256: str,
+        *,
+        status: str,
+        kind: str,
+        ext: str,
+        provider: str | None,
+        chain_tried: list[str],
+        reason: str | None,
+        text: str,
+    ) -> None:
+        """Write the OCR/text-extraction sentinel for this blob.
+
+        ``kind="ocr"``: an ``ocr.md`` file is written alongside the
+        sentinel — the canonical OCR output path. ``kind="text"``: the
+        source ``content.<ext>`` already IS the text, so writing
+        ``ocr.md`` would duplicate the bytes for zero benefit; only the
+        sentinel lands. Readers use :meth:`read_extracted_text` to be
+        oblivious of which case occurred.
+
+        ``ext`` is the source file's extension (without the dot) so the
+        text reader can locate ``content.<ext>`` without scanning the
+        directory.
+
+        Order matters: ``ocr.md`` (when written) lands first, then
+        ``ocr.json`` is the last rename. ``ocr_done`` checks
+        ``ocr.json`` existence only, so a crash between the two leaves
+        an inconsistent-but-recoverable state (``ocr.md`` orphan re-runs
+        cleanly on next extraction).
+        """
+        _validate_sha256(sha256)
+        target_dir = user_blob_dir(self.user_id, sha256)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        if kind == "ocr":
+            ocr_md = self.ocr_path(sha256)
+            tmp_md = ocr_md.with_suffix(".md.tmp")
+            tmp_md.write_text(text or "", encoding="utf-8")
+            tmp_md.replace(ocr_md)
+
+        ocr_json = self.ocr_meta_path(sha256)
+        tmp_json = ocr_json.with_suffix(".json.tmp")
+        tmp_json.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "kind": kind,
+                    "ext": ext,
+                    "provider": provider,
+                    "chain_tried": chain_tried,
+                    "reason": reason,
+                    "chars": len(text or ""),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        tmp_json.replace(ocr_json)
+
+    def read_extracted_text(self, sha256: str) -> str:
+        """Return the extracted-text content for a completed blob.
+
+        Dispatches off the sentinel's ``kind`` so callers don't have
+        to know whether a real OCR pass ran or a text fast-path was
+        used. ``kind="text"`` reads ``content.<ext>`` directly;
+        ``kind="ocr"`` (or any other / missing value for back-compat)
+        reads ``ocr.md``.
+
+        Raises ``FileNotFoundError`` if the sentinel is missing
+        (caller forgot to check :meth:`ocr_done`) or the referenced
+        source file disappeared.
+        """
+        _validate_sha256(sha256)
+        sentinel_path = self.ocr_meta_path(sha256)
+        sentinel = json.loads(sentinel_path.read_text(encoding="utf-8"))
+        if sentinel.get("kind") == "text":
+            ext = sentinel.get("ext", "")
+            source = (
+                self.dir(sha256) / f"content.{ext}" if ext else self.ocr_path(sha256)
+            )
+            # ``errors="replace"`` mirrors the writer side — a binary
+            # file that snuck into the text fast-path still yields
+            # something readable rather than crashing the rendering
+            # pipeline.
+            return source.read_text(encoding="utf-8", errors="replace")
+        return self.ocr_path(sha256).read_text(encoding="utf-8")
 
     # --- read paths (do not assert existence; callers check) ----------
 

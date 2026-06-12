@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 from claritymed.core.ocr.routing_provider import (
     RoutingOcrProvider,
     _filter_chain_for_policy,
@@ -17,25 +17,31 @@ from claritymed.errors import MinerUNotAllowed
 
 class _LocalProvider(OcrProvider):
     is_local = True
+    label = "local"
 
     def __init__(self, *, raise_with: str | None = None, text: str = "local text"):
         self._raise = raise_with
         self._text = text
 
-    async def extract_text(self, path: Path) -> str:
+    async def extract_text(self, path: Path) -> ExtractResult:
         if self._raise:
             raise OcrError(self._raise)
-        return self._text
+        return ExtractResult(
+            text=self._text, provider_used=self.label, chain_tried=[self.label]
+        )
 
 
 class _CloudProvider(OcrProvider):
     is_local = False
+    label = "cloud"
 
     def __init__(self, text: str = "cloud text"):
         self._text = text
 
-    async def extract_text(self, path: Path) -> str:
-        return self._text
+    async def extract_text(self, path: Path) -> ExtractResult:
+        return ExtractResult(
+            text=self._text, provider_used=self.label, chain_tried=[self.label]
+        )
 
 
 def test_filter_chain_drops_cloud_under_local_only():
@@ -55,14 +61,6 @@ def test_chain_mode_requires_at_least_one_set():
         RoutingOcrProvider()
 
 
-def test_chain_mode_rejects_mixed_construction_args():
-    with pytest.raises(ValueError):
-        RoutingOcrProvider(
-            document_provider=_LocalProvider(),
-            document_chain=[_LocalProvider()],
-        )
-
-
 async def test_chain_walks_until_first_success(tmp_path: Path):
     """First provider raises, second succeeds; audit lists both."""
     pdf = tmp_path / "doc.pdf"
@@ -80,7 +78,10 @@ async def test_chain_walks_until_first_success(tmp_path: Path):
         side_effect=lambda p: captured.append(p),
     ):
         result = await router.extract_text(pdf)
-    assert result == "from second"
+    assert result.text == "from second"
+    assert result.provider_used == "local"
+    # Routing returns the full walk, not just the winner.
+    assert result.chain_tried == ["local", "local"]
     assert captured[0]["status"] == "ok"
     assert len(captured[0]["chain_tried"]) == 2
 
@@ -126,6 +127,95 @@ async def test_phi_policy_filters_chain_at_construction(tmp_path: Path):
     # The chain becomes empty → OcrError, not cloud_got_it.
     with pytest.raises(OcrError):
         await router.extract_text(pdf)
+
+
+# --- Supports-filter -------------------------------------------------
+
+
+class _PdfOnlyProvider(OcrProvider):
+    is_local = True
+    label = "pdfonly"
+    supported_extensions = frozenset({".pdf"})
+
+    def __init__(self, *, text: str = "pdf text"):
+        self._text = text
+
+    async def extract_text(self, path: Path) -> ExtractResult:
+        return ExtractResult(
+            text=self._text, provider_used=self.label, chain_tried=[self.label]
+        )
+
+
+async def test_unsupported_provider_skipped_not_in_tried(tmp_path: Path):
+    """A provider whose supported_extensions excludes the input ext is
+    silently skipped and does NOT appear in chain_tried."""
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF")
+    # First provider only handles images; should be skipped on PDF input.
+    img_only = _LocalProvider()
+    img_only.supported_extensions = frozenset({".png"})
+    router = RoutingOcrProvider(
+        document_chain=[img_only, _PdfOnlyProvider(text="winner")],
+        image_chain=[],
+    )
+    result = await router.extract_text(pdf)
+    assert result.text == "winner"
+    # Skipped provider absent from chain_tried — only the winner is recorded.
+    assert result.chain_tried == ["pdfonly"]
+
+
+async def test_all_unsupported_raises_distinct_error(tmp_path: Path):
+    """When every chain provider declares the extension unsupported, the
+    error message names that explicitly so an operator doesn't chase a
+    phantom OCR failure."""
+    csv = tmp_path / "data.csv"
+    csv.write_bytes(b"a,b,c")
+    img_only = _LocalProvider()
+    img_only.supported_extensions = frozenset({".png"})
+    pdf_only = _PdfOnlyProvider()
+    router = RoutingOcrProvider(
+        document_chain=[img_only, pdf_only],
+        image_chain=[],
+        # csv treated as a document so it routes to document_chain.
+        document_extensions=frozenset({".csv"}),
+    )
+    with pytest.raises(OcrError, match="no chain provider supports"):
+        await router.extract_text(csv)
+
+
+async def test_supports_none_treats_as_supports_all(tmp_path: Path):
+    """``supported_extensions=None`` (the base default) must mean "all" —
+    a catch-all provider always gets tried."""
+    weird = tmp_path / "f.unusual"
+    weird.write_bytes(b"x")
+    catchall = _LocalProvider(text="catchall")
+    # supported_extensions stays None on _LocalProvider (inherited from base).
+    router = RoutingOcrProvider(
+        document_chain=[],
+        image_chain=[catchall],
+    )
+    result = await router.extract_text(weird)
+    assert result.text == "catchall"
+    assert result.chain_tried == ["local"]
+
+
+# --- Document extensions widening (for text_extensions) --------------
+
+
+async def test_document_extensions_widened_routes_text_to_document_chain(
+    tmp_path: Path,
+):
+    """When document_extensions includes text-style suffixes, csv/md
+    files route to document_chain instead of image_chain."""
+    md = tmp_path / "note.md"
+    md.write_bytes(b"# hi")
+    router = RoutingOcrProvider(
+        document_chain=[_LocalProvider(text="doc-side")],
+        image_chain=[_LocalProvider(text="image-side")],
+        document_extensions=frozenset({".pdf", ".md"}),
+    )
+    result = await router.extract_text(md)
+    assert result.text == "doc-side"
 
 
 # --- MineRU env-gate -------------------------------------------------

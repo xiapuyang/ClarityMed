@@ -8,7 +8,27 @@ concrete provider directly — they call ``make_ocr_provider()`` from
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class ExtractResult:
+    """Result returned by every ``OcrProvider.extract_text`` call.
+
+    Carries the extracted ``text`` plus enough provenance for the
+    caller to record *which* provider actually produced it and *which*
+    providers were tried first. Leaf providers fill ``provider_used``
+    with their own short label and put just that label in
+    ``chain_tried``. ``RoutingOcrProvider`` returns the winning leaf's
+    result but rewrites ``chain_tried`` to include every leaf it walked
+    through (failed + winner), so the ``ocr.json`` sentinel and audit
+    log can show real fallback behavior.
+    """
+
+    text: str
+    provider_used: str
+    chain_tried: list[str] = field(default_factory=list)
 
 
 class OcrProvider(ABC):
@@ -28,15 +48,28 @@ class OcrProvider(ABC):
 
     is_local: bool = True
 
+    label: str = ""
+    """Short lowercase identifier used in audit logs, sentinels, and
+    chain tracking. Every concrete provider must set this; routing
+    layers and the worker treat it as authoritative."""
+
+    supported_extensions: frozenset[str] | None = None
+    """Lowercase file extensions (with leading dot) this provider can
+    handle. ``None`` means "all extensions" — used by providers like
+    MineRU that accept anything the API supports. Routing layers
+    consult this to skip providers that can't handle the input; a
+    skipped provider does NOT count as having been tried."""
+
     @abstractmethod
-    async def extract_text(self, path: Path) -> str:
-        """Extract all text from *path* and return it as a plain string.
+    async def extract_text(self, path: Path) -> ExtractResult:
+        """Extract all text from *path*.
 
         Args:
             path: Absolute or relative path to a PDF or image file.
 
         Returns:
-            Extracted text.  May be empty for blank pages.
+            ``ExtractResult`` with the extracted text plus the leaf
+            label and the (single-element for leaves) chain_tried list.
 
         Raises:
             OcrError: If extraction fails and the caller should surface it.
