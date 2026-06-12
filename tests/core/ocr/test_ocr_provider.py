@@ -524,7 +524,12 @@ async def test_routing_emits_audit_on_success(tmp_path: Path):
     assert len(captured) == 1
     ev = captured[0]
     assert ev["status"] == "ok"
-    assert ev["file"] == "scan.png"
+    # Field was renamed from ``file`` to ``blob_filename`` to make
+    # room for an honest ``original_filename`` field carrying the
+    # user-facing name. The on-disk blob name (``content.<ext>``
+    # for production, ``scan.png`` for these fake tmp_path fixtures)
+    # remains here for ops correlation.
+    assert ev["blob_filename"] == "scan.png"
     assert ev["chars"] == len("hello world")
     assert ev["duration_ms"] >= 0
     assert ev["fallback"] is False

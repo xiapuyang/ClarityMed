@@ -11,6 +11,7 @@ per-provider env gate (e.g. MineRU's ``CLARITYMED_ALLOW_MINERU``).
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import time
 from pathlib import Path
@@ -21,6 +22,38 @@ from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 logger = logging.getLogger(__name__)
 
 PhiPolicy = Literal["local-only", "any"]
+
+
+_current_original_filename: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_original_filename", default=None
+)
+"""Per-call hint set by the OCR worker so the routing-layer audit
+event can record the user-facing filename instead of just the CAS
+``content.<ext>`` blob name.
+
+Threading this via ``contextvars`` keeps the ``OcrProvider.extract_text``
+signature unchanged — none of the 6 leaf providers need to learn about
+a parameter they never use. The worker sets it for the duration of one
+extraction and resets in ``finally``."""
+
+
+def set_original_filename(name: str | None):
+    """Set the audit hint; returns the reset token (use in ``finally``).
+
+    Use as::
+
+        token = set_original_filename(job.original_filename)
+        try:
+            await provider.extract_text(path)
+        finally:
+            _current_original_filename.reset(token)
+    """
+    return _current_original_filename.set(name)
+
+
+def reset_original_filename(token) -> None:
+    """Reset the audit hint via the token returned by ``set_original_filename``."""
+    _current_original_filename.reset(token)
 
 
 def _derive_document_extensions(chain: list[OcrProvider]) -> frozenset[str]:
@@ -56,6 +89,19 @@ def _emit_audit(payload: dict[str, Any]) -> None:
         audit_event("ocr.extract", payload)
     except Exception:  # noqa: BLE001
         logger.warning("ocr.extract audit failed", exc_info=True)
+
+
+def _with_filename(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach the worker-supplied ``original_filename`` to *payload* if set.
+
+    Returns a new dict (rather than mutating in place) so audit shape
+    stays referentially transparent for tests that compare event
+    payloads literally.
+    """
+    name = _current_original_filename.get()
+    if name is None:
+        return payload
+    return {**payload, "original_filename": name}
 
 
 def _filter_chain_for_policy(
@@ -147,17 +193,19 @@ class RoutingOcrProvider(OcrProvider):
                 continue
             duration_ms = int((time.perf_counter() - t0) * 1000)
             _emit_audit(
-                {
-                    "status": "ok",
-                    "provider": label,
-                    "chain_tried": tried_labels,
-                    "chain_succeeded": label,
-                    "file": path.name,
-                    "size_bytes": size_bytes,
-                    "chars": len(result.text),
-                    "duration_ms": duration_ms,
-                    "fallback": len(tried_labels) > 1,
-                }
+                _with_filename(
+                    {
+                        "status": "ok",
+                        "provider": label,
+                        "chain_tried": tried_labels,
+                        "chain_succeeded": label,
+                        "blob_filename": path.name,
+                        "size_bytes": size_bytes,
+                        "chars": len(result.text),
+                        "duration_ms": duration_ms,
+                        "fallback": len(tried_labels) > 1,
+                    }
+                )
             )
             # Rewrite chain_tried to reflect what *we* walked (failed
             # leaves + winner), not just what the winning leaf returned.
@@ -179,16 +227,18 @@ class RoutingOcrProvider(OcrProvider):
         else:
             error_msg = str(last_exc) if last_exc else "no providers"
         _emit_audit(
-            {
-                "status": "error",
-                "provider": tried_labels[-1] if tried_labels else "unknown",
-                "chain_tried": tried_labels,
-                "file": path.name,
-                "size_bytes": size_bytes,
-                "duration_ms": duration_ms,
-                "error": error_msg,
-                "fallback": len(tried_labels) > 1,
-            }
+            _with_filename(
+                {
+                    "status": "error",
+                    "provider": tried_labels[-1] if tried_labels else "unknown",
+                    "chain_tried": tried_labels,
+                    "blob_filename": path.name,
+                    "size_bytes": size_bytes,
+                    "duration_ms": duration_ms,
+                    "error": error_msg,
+                    "fallback": len(tried_labels) > 1,
+                }
+            )
         )
         if not tried_labels:
             raise OcrError(error_msg)

@@ -101,6 +101,7 @@ class BlobStore:
         chain_tried: list[str],
         reason: str | None,
         text: str,
+        original_filename: str | None = None,
     ) -> None:
         """Write the OCR/text-extraction sentinel for this blob.
 
@@ -115,12 +116,24 @@ class BlobStore:
         text reader can locate ``content.<ext>`` without scanning the
         directory.
 
+        ``original_filename`` is the user-facing name at first ingest
+        (clipboard.png, 化验单.png, "Lab Report 2026.pdf", ...). It is
+        sanitized and stored under first-write-wins semantics — if an
+        earlier sentinel already carried a name, keep it. The blob CAS
+        deduplicates by bytes, so the *same* blob can be re-uploaded
+        under different display names; ``SessionAttachments`` is the
+        per-upload authority for naming, and this field is just a
+        disaster-recovery anchor pointing at "what the user first
+        called this blob."
+
         Order matters: ``ocr.md`` (when written) lands first, then
         ``ocr.json`` is the last rename. ``ocr_done`` checks
         ``ocr.json`` existence only, so a crash between the two leaves
         an inconsistent-but-recoverable state (``ocr.md`` orphan re-runs
         cleanly on next extraction).
         """
+        from claritymed.core.filetype.safe_filename import safe_filename
+
         _validate_sha256(sha256)
         target_dir = user_blob_dir(self.user_id, sha256)
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -131,24 +144,48 @@ class BlobStore:
             tmp_md.write_text(text or "", encoding="utf-8")
             tmp_md.replace(ocr_md)
 
+        existing_name = self._existing_original_filename(sha256)
+        safe_name = existing_name or safe_filename(original_filename)
+
         ocr_json = self.ocr_meta_path(sha256)
         tmp_json = ocr_json.with_suffix(".json.tmp")
+        payload: dict = {
+            "status": status,
+            "kind": kind,
+            "ext": ext,
+            "provider": provider,
+            "chain_tried": chain_tried,
+            "reason": reason,
+            "chars": len(text or ""),
+        }
+        if safe_name is not None:
+            payload["original_filename"] = safe_name
         tmp_json.write_text(
-            json.dumps(
-                {
-                    "status": status,
-                    "kind": kind,
-                    "ext": ext,
-                    "provider": provider,
-                    "chain_tried": chain_tried,
-                    "reason": reason,
-                    "chars": len(text or ""),
-                },
-                indent=2,
-            ),
+            # ensure_ascii=False keeps CJK / emoji / accented names readable
+            # on disk — the audit and recovery story leans on people
+            # grepping these files, not on machines parsing them.
+            json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
         tmp_json.replace(ocr_json)
+
+    def _existing_original_filename(self, sha256: str) -> str | None:
+        """Return the prior sentinel's ``original_filename``, if any.
+
+        Powers first-write-wins. Silent on every failure mode (missing
+        file, malformed JSON, missing key) — the rewrite path will
+        either supply a fresh name or write ``None``; we never raise
+        from this read.
+        """
+        path = self.ocr_meta_path(sha256)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        name = data.get("original_filename") if isinstance(data, dict) else None
+        return name if isinstance(name, str) and name else None
 
     def read_extracted_text(self, sha256: str) -> str:
         """Return the extracted-text content for a completed blob.

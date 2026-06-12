@@ -1126,6 +1126,7 @@ class ClarityMedApp(App):
                     sha256=sha,
                     blob_path=content_path,
                     is_phi=True,
+                    original_filename=filename,
                 )
             )
         finally:
@@ -1332,6 +1333,7 @@ class ClarityMedApp(App):
             chain_tried=["text"],
             reason=None,
             text=text,
+            original_filename=filename,
         )
         SessionAttachments(user_id, session_id).mark_ocr_status(
             sha, status, provider="text", reason=None

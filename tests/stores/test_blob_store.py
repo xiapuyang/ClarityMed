@@ -237,3 +237,113 @@ def test_disk_full_simulation_cleans_tmp(monkeypatch):
     sha = hashlib.sha256(b"will fail").hexdigest()
     assert not store.path(sha, "pdf").exists()
     assert not store.path(sha, "pdf").with_suffix(".pdf.tmp").exists()
+
+
+# --- original_filename in ocr.json (disaster-recovery anchor) -------
+
+
+def test_ocr_sentinel_carries_original_filename(tmp_path):
+    """A paste-supplied filename lands in ``ocr.json`` so disaster
+    recovery from the blob CAS alone has a name to show the user."""
+    import json
+
+    store = BlobStore("alice")
+    sha = store.store(b"%PDF fake", "pdf")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="ocr",
+        ext="pdf",
+        provider="pymupdf",
+        chain_tried=["pymupdf"],
+        reason=None,
+        text="extracted body",
+        original_filename="Lab Report 2026.pdf",
+    )
+    sentinel = json.loads(store.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["original_filename"] == "Lab Report 2026.pdf"
+
+
+def test_ocr_sentinel_omits_filename_field_when_none(tmp_path):
+    """Caller didn't supply a name → the field is absent (not ``null``).
+
+    Keeps the sentinel slim for headless / migrated blobs without a
+    known display name, and matches the back-compat shape so old
+    parsers don't see a surprise key."""
+    import json
+
+    store = BlobStore("alice")
+    sha = store.store(b"data", "pdf")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="ocr",
+        ext="pdf",
+        provider="pymupdf",
+        chain_tried=["pymupdf"],
+        reason=None,
+        text="x",
+    )
+    sentinel = json.loads(store.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert "original_filename" not in sentinel
+
+
+def test_ocr_sentinel_first_write_wins_on_reuse(tmp_path):
+    """Re-extracting the same blob keeps the *first* name on disk.
+
+    Blob CAS dedupes by bytes — the same PDF re-pasted under a
+    different display name shares the sentinel. SessionAttachments
+    is the per-upload authority for naming; ocr.json is just an
+    anchor pointing at "what the user first called this blob."
+    """
+    import json
+
+    store = BlobStore("alice")
+    sha = store.store(b"%PDF fake", "pdf")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="ocr",
+        ext="pdf",
+        provider="pymupdf",
+        chain_tried=["pymupdf"],
+        reason=None,
+        text="x",
+        original_filename="first.pdf",
+    )
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="ocr",
+        ext="pdf",
+        provider="pymupdf",
+        chain_tried=["pymupdf"],
+        reason=None,
+        text="x",
+        original_filename="second.pdf",
+    )
+    sentinel = json.loads(store.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["original_filename"] == "first.pdf"
+
+
+def test_ocr_sentinel_chinese_filename_not_escaped(tmp_path):
+    """Chinese names land verbatim on disk — that's the whole point of
+    ensure_ascii=False, otherwise the sentinel becomes unreadable
+    ``\\u5316\\u9a8c\\u5355`` and grepping for a name fails."""
+    store = BlobStore("alice")
+    sha = store.store(b"%PDF fake", "pdf")
+    store.write_ocr_result(
+        sha,
+        status="done",
+        kind="ocr",
+        ext="pdf",
+        provider="pymupdf",
+        chain_tried=["pymupdf"],
+        reason=None,
+        text="x",
+        original_filename="化验单_2026年6月.pdf",
+    )
+    raw = store.ocr_meta_path(sha).read_text(encoding="utf-8")
+    assert "化验单_2026年6月.pdf" in raw
+    # Negative guard: the escape form must NOT appear.
+    assert "\\u5316" not in raw

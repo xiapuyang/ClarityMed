@@ -46,6 +46,12 @@ class OcrJob:
     sha256: str
     blob_path: Path
     is_phi: bool = True
+    original_filename: str | None = None
+    """User-facing name at paste/upload time (e.g. ``化验单.png``).
+    Threaded into ``ocr.json`` for disaster-recovery and into the
+    ``ocr.extract`` audit event so log consumers see the real name
+    instead of the on-disk ``content.<ext>`` placeholder. ``None``
+    when the caller doesn't have a meaningful name (rare)."""
 
 
 @dataclass(frozen=True)
@@ -156,8 +162,19 @@ class OcrWorker:
                 provider="cache",
                 reason=cached.get("reason"),
             )
+        # Stash the user-facing filename so the routing-layer audit
+        # event can record it without growing the OcrProvider signature.
+        from claritymed.core.ocr.routing_provider import (
+            reset_original_filename,
+            set_original_filename,
+        )
+
+        filename_token = set_original_filename(job.original_filename)
         try:
-            result = await self._provider.extract_text(job.blob_path)
+            try:
+                result = await self._provider.extract_text(job.blob_path)
+            finally:
+                reset_original_filename(filename_token)
         except OcrError as exc:
             logger.warning(
                 "ocr provider error for %s (%s): %s",
@@ -174,6 +191,7 @@ class OcrWorker:
                 chain_tried=[],
                 reason=str(exc),
                 text="",
+                original_filename=job.original_filename,
             )
             return OcrCompleted(
                 user_id=job.user_id,
@@ -192,6 +210,7 @@ class OcrWorker:
             chain_tried=list(result.chain_tried),
             reason=None,
             text=result.text,
+            original_filename=job.original_filename,
         )
         return OcrCompleted(
             user_id=job.user_id,
