@@ -911,6 +911,51 @@ def test_looks_like_drop_attempt_recognises_unix_and_windows():
     assert not _looks_like_drop_attempt("   ")
 
 
+def test_looks_like_drop_attempt_handles_quoted_paths():
+    """macOS Finder and several Linux desktops wrap dropped paths in
+    quotes. The heuristic must see through the outer quote to recognise
+    the path inside."""
+    from claritymed.cli.tui.app import _looks_like_drop_attempt
+
+    assert _looks_like_drop_attempt('"/Users/alice/my report.pdf"')
+    assert _looks_like_drop_attempt("'/Users/alice/lab.zip'")
+    # Empty quoted string is NOT a drop attempt.
+    assert not _looks_like_drop_attempt('""')
+
+
+def test_looks_like_drop_attempt_handles_file_uri():
+    """GNOME / KDE Wayland drag-drop sometimes emits ``file://`` URIs."""
+    from claritymed.cli.tui.app import _looks_like_drop_attempt
+
+    assert _looks_like_drop_attempt("file:///home/alice/report.pdf")
+    assert _looks_like_drop_attempt("file://localhost/home/alice/report.pdf")
+
+
+def test_decode_file_uri_returns_plain_path():
+    """``file://`` is stripped and percent-encoded chars are decoded."""
+    from claritymed.cli.tui.app import _decode_file_uri
+
+    assert _decode_file_uri("file:///home/alice/lab.pdf") == "/home/alice/lab.pdf"
+    # Percent-encoded space (``%20``) decodes back to a real space.
+    assert (
+        _decode_file_uri("file:///home/alice/my%20report.pdf")
+        == "/home/alice/my report.pdf"
+    )
+    # Pass-through for plain paths.
+    assert _decode_file_uri("/home/alice/lab.pdf") == "/home/alice/lab.pdf"
+
+
+def test_parse_dropped_paths_accepts_file_uri(tmp_path):
+    """A ``file://`` URI pointing at a real file resolves like the plain
+    form so drag-drop from GNOME works."""
+    from claritymed.cli.tui.app import _parse_dropped_paths
+
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"x")
+    uri = f"file://{f}"
+    assert _parse_dropped_paths(uri) == [f]
+
+
 @pytest.mark.asyncio
 async def test_on_paste_dropped_folder_surfaces_error_toast(tmp_path):
     """A dropped folder (or any path that does not resolve to a real

@@ -102,10 +102,17 @@ AuditKind = Literal[
     # model TTFT without inferring from timestamps.
     "llm.call.start",
     # OCR extraction — one event per extract_text call.
-    # payload: provider, file, size_bytes, status, duration_ms,
-    #          chars (on success), error (on failure),
-    #          fallback (bool, true when image default failed).
+    # payload: provider, blob_filename, original_filename (when known),
+    #          size_bytes, status, duration_ms, chars (on success),
+    #          error (on failure), fallback (bool, true when image
+    #          default failed).
     "ocr.extract",
+    # Paste-time filetype gate — one event per paste that did NOT match
+    # the active chain's accept set on first try.
+    # payload: declared_ext, detected_ext (None if Magika failed),
+    #          label (Magika class), score, outcome ("recovered" |
+    #          "rejected").
+    "filetype.detect",
     # Regex scrub — one event per scrub() call that had at least one hit.
     # payload: rule_hits (dict[rule_name, count]).
     "scrub.regex",

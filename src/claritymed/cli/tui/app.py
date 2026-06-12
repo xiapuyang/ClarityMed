@@ -163,22 +163,35 @@ def _looks_like_drop_attempt(text: str) -> bool:
     a real file."
 
     Drag-drop in Ghostty / iTerm2 / WezTerm always lands as one or more
-    absolute path tokens — ``/Users/...`` on POSIX, ``C:\\Users\\...``
-    on Windows. If the bracketed-paste text contains any of those, the
-    user almost certainly meant to ingest a file; an empty
-    ``_parse_dropped_paths`` result then signals "I tried, it failed"
-    (folder, missing file, permissions) rather than "this was a plain
-    text paste."
+    absolute path tokens. The shapes we recognise:
+
+    * ``/Users/...`` / ``~/...`` (POSIX)
+    * ``C:\\Users\\...`` (Windows)
+    * ``"path"`` / ``'path'`` (terminals that quote paths containing spaces)
+    * ``file:///...`` (file URIs — sent by some Linux desktops on drag-drop)
+    * Multi-drop: space-followed-by-path-token anywhere in the string
 
     Bare text without those tokens is left to fall through to the Input
     so non-drop pastes keep their existing behaviour.
     """
     if not text:
         return False
-    stripped = text.lstrip()
+    stripped = text.strip()
+    if not stripped:
+        return False
+    # Strip a single layer of matching outer quotes so quoted paths
+    # ("/foo bar/baz.pdf") look like the plain form to the rest of the
+    # checks. The real ``_parse_dropped_paths`` quote-strip runs per
+    # candidate; this is just for the "did the user mean to drop?"
+    # answer.
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ("'", '"'):
+        stripped = stripped[1:-1].strip()
     if not stripped:
         return False
     if stripped[0] in {"/", "~"}:
+        return True
+    # file:// URI form
+    if stripped.lower().startswith("file://"):
         return True
     # Windows: ``C:\path``
     if len(stripped) >= 3 and stripped[1:3] == ":\\":
@@ -192,8 +205,9 @@ def _parse_dropped_paths(text: str) -> list[Path]:
     """Return absolute Paths the user dropped, or [] if none parsed.
 
     Splits on Ghostty's space-separator and iTerm2's newline-separator,
-    un-escapes shell escapes, expands ``~``, and keeps only entries that
-    resolve to an existing file. Empty list = treat the paste as text."""
+    un-escapes shell escapes, expands ``~``, decodes ``file://`` URIs,
+    and keeps only entries that resolve to an existing file. Empty list
+    = treat the paste as text."""
     candidates: list[str] = []
     for chunk in _DROP_PATH_SPLIT.split(text.strip()):
         for line in chunk.split("\n"):
@@ -202,13 +216,35 @@ def _parse_dropped_paths(text: str) -> list[Path]:
                 candidates.append(_unescape_shell_path(line))
     paths: list[Path] = []
     for raw in candidates:
+        decoded = _decode_file_uri(raw)
         try:
-            p = Path(raw).expanduser()
+            p = Path(decoded).expanduser()
         except (OSError, ValueError):
             continue
         if p.is_file():
             paths.append(p)
     return paths
+
+
+def _decode_file_uri(text: str) -> str:
+    """Convert ``file:///abs/path`` into a plain ``/abs/path``.
+
+    Some desktops (GNOME, KDE) and a few terminals send ``file://`` URIs
+    on drag-drop. The hostname segment (``file://localhost/...``) is
+    optional and uniformly empty in practice; we tolerate either form.
+    Pass-through for anything that doesn't start with the scheme.
+    """
+    from urllib.parse import unquote, urlparse
+
+    if not text.lower().startswith("file://"):
+        return text
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return text
+    # ``urlparse`` returns netloc = "localhost" or "" and path = "/abs".
+    # Both yield the same on-disk path.
+    return unquote(parsed.path) or text
 
 
 class ClarityMedApp(App):
@@ -336,6 +372,14 @@ class ClarityMedApp(App):
         self.query_one(InputBar).focus_input()
         self._refresh_input_placeholder()
 
+        # Warm the paste-time supported-extension set off the UI thread.
+        # Cold path is ~120ms (import 6 OCR provider modules + parse
+        # ocr.yaml + compute union). Without this, the first paste pays
+        # that latency before its placeholder appears in the input,
+        # which feels janky on drag-drop because the user is staring
+        # straight at the cursor when they release.
+        self._warm_paste_pipeline()
+
         # Eagerly warm the RAG strategy on a worker thread so (a) Qdrant lock
         # conflicts surface at startup rather than 10s into the first turn,
         # and (b) the first message doesn't pay the embedder/qdrant/parent
@@ -345,6 +389,23 @@ class ClarityMedApp(App):
 
         if load_retrieval_config().rag.enabled:
             self._warm_rag_strategy()
+
+    @work(thread=True, exclusive=True, group="warm_paste")
+    def _warm_paste_pipeline(self) -> None:
+        """Pre-compute ``_supported_extensions`` on a background thread.
+
+        Result lands in the same cache the first paste would populate
+        synchronously, so the user's first drag-drop / Ctrl+V skips
+        the cold-import hit. Failures are silent — if the warm-up
+        crashes for some reason, the first paste pays the cold path
+        and any error surfaces there instead of taking down the App.
+        """
+        try:
+            self._supported_extensions()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "paste-pipeline pre-warm failed; first paste pays cold cost"
+            )
 
     @work(thread=True, exclusive=True)
     def _warm_rag_strategy(self) -> None:
@@ -954,10 +1015,14 @@ class ClarityMedApp(App):
         bubbles to the focused Input, which inserts it as text.
         """
         text = event.text
-        logger.debug(
+        # INFO-level (not debug) so we can diagnose "drag-drop didn't
+        # work" reports without asking users to enable debug logging.
+        # The first 200 chars is enough to see the path shape /
+        # quoting / scheme without flooding the log on giant pastes.
+        logger.info(
             "on_paste: len=%d first=%r",
             len(text),
-            text[:120] if text else "",
+            text[:200] if text else "",
         )
         paths = _parse_dropped_paths(text)
         if not paths:
@@ -966,9 +1031,14 @@ class ClarityMedApp(App):
             # text). Without a toast the user sees "nothing happen" and
             # assumes the app is broken. The heuristic that distinguishes
             # "drag-drop attempt" from "plain text paste" is the literal
-            # presence of a path-prefix token (``/`` or ``C:\``) — bare
-            # text falls through to the Input as before.
+            # presence of a path-prefix token (``/`` or ``C:\`` / quoted
+            # form / ``file://``) — bare text falls through to the Input
+            # as before.
             if text and _looks_like_drop_attempt(text):
+                logger.info(
+                    "on_paste: looked like drop but no file resolved (text=%r)",
+                    text[:200],
+                )
                 self._toast(
                     "Could not ingest the dropped item — only existing files "
                     "are supported (folders and broken paths are skipped).",
