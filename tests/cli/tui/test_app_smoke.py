@@ -895,6 +895,44 @@ async def test_on_paste_plain_text_falls_through(tmp_path):
         assert not ev._stop_propagation
 
 
+def test_looks_like_drop_attempt_recognises_unix_and_windows():
+    """Path-prefix tokens (``/``, ``~``, ``C:\\``) signal a real drag-drop
+    attempt; bare text does not."""
+    from claritymed.cli.tui.app import _looks_like_drop_attempt
+
+    assert _looks_like_drop_attempt("/Users/alice/Desktop/report.pdf")
+    assert _looks_like_drop_attempt("~/lab.pdf")
+    assert _looks_like_drop_attempt(r"C:\Users\alice\report.pdf")
+    # Multi-drop: middle/end path token still counts.
+    assert _looks_like_drop_attempt("/a/b.pdf /c/d.png")
+    # Bare text → not a drop attempt → caller falls through to Input.
+    assert not _looks_like_drop_attempt("not a path")
+    assert not _looks_like_drop_attempt("")
+    assert not _looks_like_drop_attempt("   ")
+
+
+@pytest.mark.asyncio
+async def test_on_paste_dropped_folder_surfaces_error_toast(tmp_path):
+    """A dropped folder (or any path that does not resolve to a real
+    file) leaves the user with no on-screen reaction in the prior
+    behaviour. Now ``on_paste`` consumes the event and shows a toast so
+    "I dragged something and nothing happened" stops being a thing."""
+    from textual import events
+
+    folder = tmp_path / "case_files"
+    folder.mkdir()
+
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ev = events.Paste(str(folder))
+        app.on_paste(ev)
+        await pilot.pause()
+        # Path token present → handler consumes the event so the raw
+        # folder path doesn't leak into the Input as text.
+        assert ev._stop_propagation
+
+
 @pytest.mark.asyncio
 async def test_paste_inserts_sha_placeholder_and_tool_step(monkeypatch):
     """Image paste inserts ``[Image sha:<8-char>]`` at the input cursor

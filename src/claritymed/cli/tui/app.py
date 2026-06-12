@@ -158,6 +158,36 @@ def _unescape_shell_path(text: str) -> str:
     return text.replace("\\\\", _SENTINEL).replace("\\", "").replace(_SENTINEL, "\\")
 
 
+def _looks_like_drop_attempt(text: str) -> bool:
+    """Heuristic for "user dragged something, but it did not resolve to
+    a real file."
+
+    Drag-drop in Ghostty / iTerm2 / WezTerm always lands as one or more
+    absolute path tokens — ``/Users/...`` on POSIX, ``C:\\Users\\...``
+    on Windows. If the bracketed-paste text contains any of those, the
+    user almost certainly meant to ingest a file; an empty
+    ``_parse_dropped_paths`` result then signals "I tried, it failed"
+    (folder, missing file, permissions) rather than "this was a plain
+    text paste."
+
+    Bare text without those tokens is left to fall through to the Input
+    so non-drop pastes keep their existing behaviour.
+    """
+    if not text:
+        return False
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    if stripped[0] in {"/", "~"}:
+        return True
+    # Windows: ``C:\path``
+    if len(stripped) >= 3 and stripped[1:3] == ":\\":
+        return True
+    # Ghostty multi-drop uses space-separated paths; detect any path
+    # token in the middle/end of the string.
+    return bool(_DROP_PATH_SPLIT.search(text))
+
+
 def _parse_dropped_paths(text: str) -> list[Path]:
     """Return absolute Paths the user dropped, or [] if none parsed.
 
@@ -931,6 +961,21 @@ class ClarityMedApp(App):
         )
         paths = _parse_dropped_paths(text)
         if not paths:
+            # Drag-drop that looked like a path string but resolved to no
+            # actual files (folder, non-existent target, or just garbled
+            # text). Without a toast the user sees "nothing happen" and
+            # assumes the app is broken. The heuristic that distinguishes
+            # "drag-drop attempt" from "plain text paste" is the literal
+            # presence of a path-prefix token (``/`` or ``C:\``) — bare
+            # text falls through to the Input as before.
+            if text and _looks_like_drop_attempt(text):
+                self._toast(
+                    "Could not ingest the dropped item — only existing files "
+                    "are supported (folders and broken paths are skipped).",
+                    kind="error",
+                )
+                event.stop()
+                event.prevent_default()
             return
         for path in paths:
             try:
@@ -1410,7 +1455,12 @@ class ClarityMedApp(App):
         self._session_turns.append(ChatTurn(role="assistant", text="", cancelled=True))
 
     def _toast(self, text: str, kind: str = "info") -> None:
-        self.mount(Toast(text, kind=kind))
+        # Errors stay visible longer than info/success — a user dropping
+        # an unsupported file or hitting a paste failure needs time to
+        # read the message and decide what to do, whereas an "OCR queued"
+        # confirmation can dismiss faster.
+        ttl = 8.0 if kind == "error" else 4.0
+        self.mount(Toast(text, kind=kind, ttl=ttl))
 
 
 def run() -> None:
