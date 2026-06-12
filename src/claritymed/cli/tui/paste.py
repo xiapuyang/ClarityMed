@@ -19,15 +19,15 @@ a status-bar hint upstream.
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
+
+from claritymed.core.observability.silence import silence_fd_stderr
 
 logger = logging.getLogger(__name__)
 
@@ -99,28 +99,6 @@ def classify_text(text: str) -> ClipboardContent:
 # --- macOS --------------------------------------------------------------
 
 
-@contextlib.contextmanager
-def _silence_fd_stderr():
-    """Temporarily redirect fd 2 to /dev/null.
-
-    macOS CoreGraphics ImageIO writes ``cannot create jp2 color space,
-    fallback to sRGB`` to stderr when canonicalising screenshot PNGs
-    pulled off NSPasteboard. The message is cosmetic but bleeds into
-    Textual's alternate-screen render and flashes as garbled text in
-    the chat area. Redirecting fd 2 captures the noise; sys.stderr
-    (the Python file object) is left alone so the LazyStderrHandler
-    and other Python-level loggers keep working.
-    """
-    saved = os.dup(2)
-    try:
-        with open(os.devnull, "wb") as devnull:
-            os.dup2(devnull.fileno(), 2)
-            yield
-    finally:
-        os.dup2(saved, 2)
-        os.close(saved)
-
-
 _warned_no_appkit = False
 
 
@@ -138,7 +116,7 @@ def _read_macos() -> ClipboardContent:
         from AppKit import NSPasteboard  # type: ignore
 
         pb = NSPasteboard.generalPasteboard()
-        with _silence_fd_stderr():
+        with silence_fd_stderr():
             png_data = pb.dataForType_("public.png")
         if png_data is not None:
             return ImageBytes(bytes=bytes(png_data), ext="png")

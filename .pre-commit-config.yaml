@@ -8,7 +8,10 @@ repos:
       - id: detect-private-key
       - id: trailing-whitespace
       - id: check-added-large-files
-        args: [--maxkb=1024]
+        # 2048 KB headroom: uv.lock alone is ~1.1 MB and grows with
+        # every dep change, so a 1024 KB cap blocks routine commits
+        # without catching the binary blobs this hook is meant to stop.
+        args: [--maxkb=2048]
       - id: end-of-file-fixer
       - id: check-ast
       - id: debug-statements

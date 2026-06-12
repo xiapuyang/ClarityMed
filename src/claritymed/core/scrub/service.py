@@ -27,10 +27,8 @@ is not solely a cloud-egress concern.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -40,37 +38,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from claritymed import config as _cfg
 from claritymed.core.device import resolve_device
+from claritymed.core.observability.silence import silence_fd_stderr
 
 logger = logging.getLogger(__name__)
 
 REDACTED = "[REDACTED]"
-
-
-@contextlib.contextmanager
-def _silence_fd2():
-    """Redirect C-level stderr (fd 2) to /dev/null.
-
-    onnxruntime's CoreML execution provider writes diagnostic messages
-    directly to fd 2, bypassing Python's sys.stderr entirely. In a TUI
-    (Textual) session sys.stderr is replaced with a pseudo-file that has
-    no real fileno(), so using sys.stderr.fileno() fails silently and
-    leaves fd 2 open. We use the literal fd number 2 instead, which is
-    always the OS-level stderr regardless of Python's sys.stderr state.
-    """
-    try:
-        saved = os.dup(2)
-    except OSError:
-        # fd 2 not open (unusual test environments) — nothing to redirect
-        yield
-        return
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, 2)
-    os.close(devnull)
-    try:
-        yield
-    finally:
-        os.dup2(saved, 2)
-        os.close(saved)
 
 
 def _emit_scrub_audit(payload: dict) -> None:
@@ -154,7 +126,7 @@ class _OnnxNerPipeline:
         offset_mapping = enc.pop("offset_mapping")[0]  # (seq_len, 2)
         feed = {k: v for k, v in enc.items() if k in self._input_names}
         # Silence CoreML per-inference diagnostics written directly to fd 2.
-        with _silence_fd2():
+        with silence_fd_stderr():
             logits = self._session.run(None, feed)[0][0]  # (seq_len, num_labels)
         predictions = logits.argmax(axis=-1)
         return self._aggregate(predictions, offset_mapping)
@@ -602,7 +574,7 @@ class ScrubService:
             providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
             # Suppress CoreML's C-level stderr diagnostics — they write directly
             # to fd 2 and corrupt TUI display if not redirected.
-            with _silence_fd2():
+            with silence_fd_stderr():
                 session = ort.InferenceSession(onnx_path, providers=providers)
             used = session.get_providers()
             logger.info("privacy-filter ONNX session ready (providers: %s)", used)

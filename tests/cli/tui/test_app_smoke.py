@@ -646,6 +646,95 @@ async def test_paste_clipboard_read_failure_emits_toast(monkeypatch):
         await pilot.pause()
 
 
+# --- Paste-time supported-ext gate ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_paste_unsupported_ext_rejected_before_blob_or_attachment(
+    monkeypatch, tmp_path
+):
+    """A file whose extension no OCR provider claims is rejected at paste
+    time: no blob written, no SessionAttachments row, no placeholder
+    inserted, and a Magika recovery pass that fails to find a supported
+    type leaves the rejection in place."""
+    from claritymed.cli.tui.paste import FilePath
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+    from claritymed.stores.blob_store import BlobStore
+
+    # Pure-random bytes — neither a real extension nor a Magika-recoverable
+    # type, so neither the declared ``.bin`` nor any detected ext lands
+    # in the supported set.
+    sample = tmp_path / "random.bin"
+    sample.write_bytes(b"\x00\x01\x02\x03random-noise")
+    _patch_clipboard(monkeypatch, FilePath(path=sample))
+
+    # Force Magika to "couldn't recover" so the test isolates the gate.
+    monkeypatch.setattr("claritymed.core.filetype.detector.detect", lambda _data: None)
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert rows == []
+        assert fake_worker.enqueued == []
+        # Input bar got no placeholder injected.
+        assert app.query_one(InputBar).value() == ""
+        # And no blob landed on disk for these bytes.
+        bs = BlobStore("alice")
+        import hashlib
+
+        sha = hashlib.sha256(b"\x00\x01\x02\x03random-noise").hexdigest()
+        assert not bs.exists(sha)
+
+
+@pytest.mark.asyncio
+async def test_paste_magika_recovers_extension_for_mislabeled_file(
+    monkeypatch, tmp_path
+):
+    """A PNG renamed to ``.bin`` is recovered by Magika: the ext gets
+    rewritten to ``.png`` and ingestion proceeds normally."""
+    from claritymed.cli.tui.paste import FilePath
+    from claritymed.core.filetype.detector import DetectResult
+    from claritymed.orchestrator.services.session_attachments import (
+        SessionAttachments,
+    )
+
+    sample = tmp_path / "mislabeled.bin"
+    sample.write_bytes(b"\x89PNG\r\n\x1a\nfake-png-payload")
+    _patch_clipboard(monkeypatch, FilePath(path=sample))
+
+    # Stub Magika to deterministically return ".png" — avoids depending
+    # on the real model's confidence on this short payload.
+    monkeypatch.setattr(
+        "claritymed.core.filetype.detector.detect",
+        lambda _data: DetectResult(
+            ext=".png", label="png", score=0.99, mime_type="image/png"
+        ),
+    )
+
+    fake_worker = _SyncOcrWorker()
+    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._ocr_worker = fake_worker
+        app.action_paste_clipboard()
+        await pilot.pause()
+
+        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        assert len(rows) == 1
+        # Filename keeps the user's original (``mislabeled.bin``) but
+        # the stored MIME and blob extension reflect the recovered type.
+        assert rows[0].mime == "image/png"
+        assert len(fake_worker.enqueued) == 1
+
+
 def test_parse_dropped_paths_single(tmp_path):
     """Bare absolute path → one Path entry."""
     from claritymed.cli.tui.app import _parse_dropped_paths

@@ -18,6 +18,10 @@ from claritymed.errors import MinerUNotAllowed
 class _LocalProvider(OcrProvider):
     is_local = True
     label = "local"
+    # Default claims PDF so this provider participates in routing
+    # derivation (matches the historical "this is a document-side
+    # stub" intent of every test that uses it).
+    supported_extensions = frozenset({".pdf"})
 
     def __init__(self, *, raise_with: str | None = None, text: str = "local text"):
         self._raise = raise_with
@@ -101,16 +105,24 @@ async def test_chain_exhausted_raises_with_message(tmp_path: Path):
 
 
 async def test_empty_chain_for_file_kind_raises(tmp_path: Path):
-    """A document with an empty document_chain (e.g. all filtered by policy)
-    should raise rather than silently return empty."""
-    pdf = tmp_path / "doc.pdf"
-    pdf.write_bytes(b"%PDF")
+    """A file whose target chain is empty (e.g. all filtered by policy)
+    should raise rather than silently return empty.
+
+    Realistic scenario: ``phi_policy="local-only"`` strips every cloud
+    provider out of ``image_chain``, leaving it empty; an image paste
+    then routes to a chain with nobody to run it.
+    """
+    png = tmp_path / "scan.png"
+    png.write_bytes(b"\x89PNG")
     router = RoutingOcrProvider(
-        document_chain=[],
-        image_chain=[_LocalProvider()],
+        # document_chain claims .pdf via _LocalProvider's default, so
+        # .png cannot route to it — it must route to the empty
+        # image_chain and surface the explicit error.
+        document_chain=[_LocalProvider()],
+        image_chain=[],
     )
     with pytest.raises(OcrError, match="no OCR providers available"):
-        await router.extract_text(pdf)
+        await router.extract_text(png)
 
 
 async def test_phi_policy_filters_chain_at_construction(tmp_path: Path):
@@ -173,11 +185,12 @@ async def test_all_unsupported_raises_distinct_error(tmp_path: Path):
     img_only = _LocalProvider()
     img_only.supported_extensions = frozenset({".png"})
     pdf_only = _PdfOnlyProvider()
+    # No non-vision provider in document_chain claims .csv, so derived
+    # doc_ext is empty and .csv routes to image_chain. Both providers
+    # in image_chain decline → "no chain provider supports".
     router = RoutingOcrProvider(
-        document_chain=[img_only, pdf_only],
-        image_chain=[],
-        # csv treated as a document so it routes to document_chain.
-        document_extensions=frozenset({".csv"}),
+        document_chain=[],
+        image_chain=[img_only, pdf_only],
     )
     with pytest.raises(OcrError, match="no chain provider supports"):
         await router.extract_text(csv)
@@ -185,11 +198,15 @@ async def test_all_unsupported_raises_distinct_error(tmp_path: Path):
 
 async def test_supports_none_treats_as_supports_all(tmp_path: Path):
     """``supported_extensions=None`` (the base default) must mean "all" —
-    a catch-all provider always gets tried."""
+    a catch-all provider always gets tried by the runtime supports-filter,
+    even though such providers don't participate in
+    ``_derive_document_extensions``."""
     weird = tmp_path / "f.unusual"
     weird.write_bytes(b"x")
     catchall = _LocalProvider(text="catchall")
-    # supported_extensions stays None on _LocalProvider (inherited from base).
+    # Override the class default ({".pdf"}) on this instance so the
+    # router treats it as a catch-all provider at run time.
+    catchall.supported_extensions = None
     router = RoutingOcrProvider(
         document_chain=[],
         image_chain=[catchall],
@@ -199,23 +216,55 @@ async def test_supports_none_treats_as_supports_all(tmp_path: Path):
     assert result.chain_tried == ["local"]
 
 
-# --- Document extensions widening (for text_extensions) --------------
+# --- Document extension derivation ----------------------------------
 
 
-async def test_document_extensions_widened_routes_text_to_document_chain(
+async def test_doc_ext_derived_from_non_vision_provider_supported_set(
     tmp_path: Path,
 ):
-    """When document_extensions includes text-style suffixes, csv/md
-    files route to document_chain instead of image_chain."""
-    md = tmp_path / "note.md"
-    md.write_bytes(b"# hi")
+    """The doc-vs-image disambiguation set is derived from each
+    document_chain provider's ``supported_extensions`` — not a magic
+    constant. A docx file routes to document_chain because pandoc
+    claims it; a vision LLM in the same chain doesn't sway routing."""
+
+    class _PandocLike(OcrProvider):
+        is_local = True
+        label = "pandoc"
+        supported_extensions = frozenset({".docx"})
+
+        async def extract_text(self, path: Path) -> ExtractResult:
+            return ExtractResult(
+                text="docx", provider_used=self.label, chain_tried=[self.label]
+            )
+
+    class _VisionLLM(OcrProvider):
+        is_local = True
+        label = "llm"
+        is_vision = True
+        supported_extensions = frozenset({".docx", ".png"})
+
+        async def extract_text(self, path: Path) -> ExtractResult:
+            return ExtractResult(
+                text="vision", provider_used=self.label, chain_tried=[self.label]
+            )
+
+    docx = tmp_path / "report.docx"
+    docx.write_bytes(b"PK")
     router = RoutingOcrProvider(
-        document_chain=[_LocalProvider(text="doc-side")],
-        image_chain=[_LocalProvider(text="image-side")],
-        document_extensions=frozenset({".pdf", ".md"}),
+        document_chain=[_PandocLike(), _VisionLLM()],
+        image_chain=[],
     )
-    result = await router.extract_text(md)
-    assert result.text == "doc-side"
+    # .docx → derived doc_ext = {.docx} (pandoc) → routes to document_chain
+    result = await router.extract_text(docx)
+    assert result.provider_used == "pandoc"
+
+    # .png → derived doc_ext does NOT include .png even though the
+    # vision LLM in document_chain "supports" it; routes to (empty)
+    # image_chain instead and raises.
+    png = tmp_path / "scan.png"
+    png.write_bytes(b"\x89PNG")
+    with pytest.raises(OcrError, match="no OCR providers available"):
+        await router.extract_text(png)
 
 
 # --- MineRU env-gate -------------------------------------------------

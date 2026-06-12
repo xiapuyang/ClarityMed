@@ -60,6 +60,16 @@ class OcrProvider(ABC):
     consult this to skip providers that can't handle the input; a
     skipped provider does NOT count as having been tried."""
 
+    is_vision: bool = False
+    """``True`` for general-purpose vision LLMs whose
+    ``supported_extensions`` reflects "MIME types I can ingest" rather
+    than "file types I am the authoritative source for." The router
+    excludes such providers from its document-vs-image disambiguation
+    so an image format never gets routed to ``document_chain`` just
+    because a vision LLM happens to be listed there. Specialized
+    backends (pymupdf, marker, pandoc, mineru) leave this ``False``
+    — their ``supported_extensions`` IS their authority claim."""
+
     @abstractmethod
     async def extract_text(self, path: Path) -> ExtractResult:
         """Extract all text from *path*.

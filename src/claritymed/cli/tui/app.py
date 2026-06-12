@@ -1018,6 +1018,15 @@ class ClarityMedApp(App):
             self._toast("No active chat session for paste", kind="error")
             return
 
+        # Supported-ext gate: reject paste targets that no provider can
+        # handle BEFORE anything touches blob storage or session state.
+        # Extensionless / mislabeled files get a Magika recovery pass
+        # — if the detector recognises bytes as something supported, we
+        # rewrite ``ext`` and proceed.
+        ext, gate_ok = self._gate_or_recover_extension(data, ext, display_name)
+        if not gate_ok:
+            return
+
         user_id = self._current_user_id
         session_id = self._chat_session.session_id
         try:
@@ -1138,6 +1147,123 @@ class ClarityMedApp(App):
         bar._suppress_next_value = new_value
         inp.value = new_value
         inp.cursor_position = pos + len(text)
+
+    def _supported_extensions(self) -> frozenset[str] | None:
+        """Cached union of supported extensions across active OCR chains.
+
+        ``None`` means a catch-all provider is in the chain and the gate
+        should not restrict the paste. A failed config load also returns
+        ``None`` (fail-open): a broken ``ocr.yaml`` shouldn't block paste
+        when the worker would surface the real error anyway.
+        """
+        cached = getattr(self, "_supported_exts_cache", None)
+        if cached is not None:
+            return cached[0]
+        from claritymed.core.ocr.factory import chain_supported_extensions
+        from claritymed.core.schemas.ocr import load_ocr_config
+
+        try:
+            cfg = load_ocr_config()
+            value = chain_supported_extensions(cfg)
+        except Exception:  # noqa: BLE001
+            logger.exception("supported-ext gate disabled (config load failed)")
+            value = None
+        # Wrap in a 1-tuple to distinguish "not yet computed" (attribute
+        # absent) from "computed, value is None" (catch-all / disabled).
+        self._supported_exts_cache = (value,)
+        return value
+
+    def _gate_or_recover_extension(
+        self, data: bytes, ext: str, display_name: str | None
+    ) -> tuple[str, bool]:
+        """Accept, recover, or reject a paste target by extension.
+
+        Returns ``(ext, True)`` to proceed (possibly with a corrected
+        extension) or ``(ext, False)`` after toasting the rejection.
+
+        Decision tree:
+
+        1. No gate (catch-all chain or config error) → accept.
+        2. ``ext`` is in the accepted set → accept as-is.
+        3. Run Magika on the bytes. If Magika returns an extension that
+           IS in the accepted set, rewrite ``ext`` and accept; emit an
+           audit event so operators can see ext-recovery is happening.
+        4. Otherwise → toast and reject. No blob is written, no
+           SessionAttachments row is added, no placeholder is inserted.
+        """
+        accepted = self._supported_extensions()
+        if accepted is None:
+            return ext, True
+        normalized = f".{ext.lstrip('.').lower()}"
+        if normalized in accepted:
+            return ext, True
+
+        # Recovery pass — only on the unsupported / fallback path so
+        # the happy path stays zero-overhead.
+        from claritymed.core.filetype.detector import detect
+
+        result = detect(data)
+        if result is not None and result.ext is not None and result.ext in accepted:
+            recovered = result.ext.lstrip(".")
+            self._emit_paste_audit(
+                "filetype.detect",
+                {
+                    "declared_ext": normalized,
+                    "detected_ext": result.ext,
+                    "label": result.label,
+                    "score": round(result.score, 4),
+                    "outcome": "recovered",
+                },
+            )
+            return recovered, True
+
+        # Final rejection. Use the display name if we have it so the
+        # toast is meaningful for drag-dropped files.
+        label = display_name or f"file.{ext}" if ext else "clipboard data"
+        self._toast(
+            f"Unsupported file type for OCR: {label}",
+            kind="error",
+        )
+        self._emit_paste_audit(
+            "filetype.detect",
+            {
+                "declared_ext": normalized,
+                "detected_ext": result.ext if result else None,
+                "label": result.label if result else None,
+                "score": round(result.score, 4) if result else None,
+                "outcome": "rejected",
+            },
+        )
+        return ext, False
+
+    def _emit_paste_audit(self, event: str, payload: dict) -> None:
+        """Emit an audit event from a TUI paste handler.
+
+        Paste, drag-drop, and recovery callbacks fire outside the
+        ``inject_context()`` boundary the CLI/HTTP entry points use, so
+        the audit ``ContextVars`` (request_id / user_id / language) are
+        unset and ``audit_event`` raises ``MissingContextError``. Apply
+        them transiently around the call so audit lines attribute back
+        to the originating action; reset in ``finally`` so we don't
+        bleed into other widgets.
+
+        Failures here are non-fatal — losing one audit row is strictly
+        better than crashing the paste path on a missing widget mid-
+        teardown.
+        """
+        from claritymed.core.observability.audit import audit_event
+
+        try:
+            language = self.query_one(StatusBar).language
+        except Exception:  # noqa: BLE001
+            language = "en"
+        tokens = apply_context(new_request_id(), self._current_user_id, language)
+        try:
+            audit_event(event, payload)
+        except Exception:  # noqa: BLE001
+            logger.warning("%s audit failed", event, exc_info=True)
+        finally:
+            reset_context(tokens)
 
     def _is_text_extension(self, ext: str) -> bool:
         """Cached lookup against ``OcrConfig.text_extensions``.

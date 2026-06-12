@@ -10,23 +10,31 @@
 # providers participate when explicitly listed.
 #
 # Provider names:
-#   pymupdf — local digital-PDF text extraction (no model load).
-#   marker  — local scanned-PDF OCR (PyTorch; install via
-#             `uv sync --extra ocr-scanned`).
-#   pandoc  — local office formats → markdown (install via
-#             `uv sync --extra ocr-office`).
-#   llm     — pydantic-ai vision LLM (locality = chain entry's `is_local`
-#             or provider_id catalog kind).
-#   mineru  — MineRU cloud SaaS. Requires both MINERU_API_TOKEN env var
-#             AND CLARITYMED_ALLOW_MINERU=1. is_local=false → structurally
-#             filtered from PHI chains regardless of env.
+#   pymupdf  — local digital-PDF text extraction (no model load).
+#   marker   — local scanned-PDF OCR (PyTorch; install via
+#              `uv sync --extra ocr-scanned`).
+#   pandoc   — local office formats → markdown (install via
+#              `uv sync --extra ocr-office`).
+#   rapidocr — local raster-image OCR (ONNX PaddleOCR port; install via
+#              `uv sync --extra ocr-image`). image_chain fallback when
+#              the vision LLM is unreachable.
+#   llm      — pydantic-ai vision LLM (locality = chain entry's `is_local`
+#              or provider_id catalog kind).
+#   mineru   — MineRU cloud SaaS. Requires both MINERU_API_TOKEN env var
+#              AND CLARITYMED_ALLOW_MINERU=1. is_local=false → structurally
+#              filtered from PHI chains regardless of env.
 
 # Extensions read directly as utf-8 text — they bypass the OCR worker
 # entirely. Paste/ingest writes the file content as the "extraction"
 # and the worker queue stays dedicated to actually-slow extractions.
+#
+# Only "really plain text" lives here. Formats that LOOK like text but
+# are markup (.rtf, .docx, .epub, .html) go through their proper OCR
+# provider so the LLM doesn't get raw escape codes / zip bytes / tags.
 text_extensions:
   - .txt
   - .md
+  - .rst         # reStructuredText (Python docs, papers)
   - .csv
   - .tsv
   - .json
@@ -34,6 +42,15 @@ text_extensions:
   - .xml
   - .yaml
   - .yml
+  # Config formats — small, plain text, no markup to render.
+  - .ini
+  - .toml
+  - .conf
+  # Academic / literature workflow — LaTeX sources, BibTeX entries.
+  # These are plain text by spec; downstream prompts get the raw
+  # source which is exactly what an LLM is good at reading.
+  - .tex
+  - .bib
 
 phi_policy: local-only
 
@@ -44,8 +61,8 @@ document_chain:
   - { name: pandoc,  is_local: true, optional_extra: ocr-office }
   - { name: mineru,  is_local: false }
 image_chain:
-  - { name: llm,    is_local: true, provider_id: omlx }
-  - { name: marker, is_local: true, optional_extra: ocr-scanned }
+  - { name: llm,      is_local: true, provider_id: omlx }
+  - { name: rapidocr, is_local: true, optional_extra: ocr-image }
 
 # MineRU API settings (only used when mineru is in a chain). Requires
 # CLARITYMED_ALLOW_MINERU=1 at runtime.

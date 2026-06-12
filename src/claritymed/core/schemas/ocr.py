@@ -23,7 +23,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ProviderName = Literal["pymupdf", "marker", "pandoc", "llm", "mineru"]
+ProviderName = Literal["pymupdf", "marker", "pandoc", "llm", "mineru", "rapidocr"]
 PhiPolicy = Literal["local-only", "any"]
 
 

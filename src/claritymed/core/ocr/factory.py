@@ -28,27 +28,86 @@ from claritymed.errors import MinerUNotAllowed, MissingApiKeyError
 logger = logging.getLogger(__name__)
 
 
+def chain_supported_extensions(cfg) -> frozenset[str] | None:
+    """Compute the union of ``supported_extensions`` across active chains.
+
+    Resolves provider names to their *class-level* ``supported_extensions``
+    without instantiating any provider — the paste-time gate runs on
+    every clipboard paste and must not pay model-construction cost.
+
+    Applies the same ``phi_policy`` filter that ``_filter_chain_for_policy``
+    applies at composition time, so a cloud-only provider listed in
+    ``ocr.yaml`` under ``phi_policy: local-only`` does NOT widen the
+    accepted set.
+
+    ``cfg.text_extensions`` is unioned in because those bypass the OCR
+    worker via the paste fast-path (``ClarityMedApp._is_text_extension``)
+    and are equally valid paste targets.
+
+    Returns:
+        ``frozenset`` of accepted extensions (with leading dots,
+        lowercase). ``None`` if any active provider declares
+        ``supported_extensions = None`` ("catch-all") — the gate
+        should treat that as "no gating" because any restriction we'd
+        add would be more restrictive than the actual chain behavior.
+    """
+    from claritymed.core.ocr.llm_provider import LLMOcrProvider
+    from claritymed.core.ocr.marker_provider import MarkerOcrProvider
+    from claritymed.core.ocr.mineru_provider import MineRUOcrProvider
+    from claritymed.core.ocr.pandoc_provider import PandocOcrProvider
+    from claritymed.core.ocr.pymupdf_provider import PyMuPDFOcrProvider
+    from claritymed.core.ocr.rapidocr_provider import RapidOcrProvider
+
+    classes_by_name: dict[str, type[OcrProvider]] = {
+        "pymupdf": PyMuPDFOcrProvider,
+        "marker": MarkerOcrProvider,
+        "pandoc": PandocOcrProvider,
+        "rapidocr": RapidOcrProvider,
+        "llm": LLMOcrProvider,
+        "mineru": MineRUOcrProvider,
+    }
+    accepted: set[str] = set()
+    for entry in list(cfg.document_chain) + list(cfg.image_chain):
+        cls = classes_by_name.get(entry.name)
+        if cls is None:
+            continue
+        # Mirror ``_filter_chain_for_policy``: an entry whose effective
+        # ``is_local`` is False is dropped under local-only policy.
+        # The entry override (``entry.is_local``) wins over the class
+        # default just like at runtime.
+        effective_is_local = (
+            entry.is_local if entry.is_local is not None else cls.is_local
+        )
+        if cfg.phi_policy == "local-only" and not effective_is_local:
+            continue
+        supported = cls.supported_extensions
+        if supported is None:
+            return None
+        accepted.update(supported)
+    accepted.update(cfg.text_extensions)
+    return frozenset(accepted)
+
+
 def make_ocr_provider() -> OcrProvider:
-    """Build a ``RoutingOcrProvider`` from ``configs/ocr.yaml``."""
-    from claritymed.core.ocr.routing_provider import (
-        _DEFAULT_DOCUMENT_EXTENSIONS,
-        RoutingOcrProvider,
-    )
+    """Build a ``RoutingOcrProvider`` from ``configs/ocr.yaml``.
+
+    The routing-disambiguation set is derived inside
+    ``RoutingOcrProvider`` from each chain's non-vision providers —
+    no separate ``document_extensions`` parameter is needed. Plain-text
+    extensions (``cfg.text_extensions``) are handled by the paste-time
+    fast-path before the worker is invoked at all; they never reach
+    the router, so no widening is required here.
+    """
+    from claritymed.core.ocr.routing_provider import RoutingOcrProvider
     from claritymed.core.schemas.ocr import load_ocr_config
 
     cfg = load_ocr_config()
     document_chain = _build_chain(cfg.document_chain, cfg)
     image_chain = _build_chain(cfg.image_chain, cfg)
-    # Plain-text extensions (csv/md/txt/...) route to the document chain
-    # so a configured fallback provider — typically MineRU — can still
-    # handle them if the paste fast-path is bypassed. The router's
-    # supports-filter then skips providers that can't read text.
-    document_extensions = _DEFAULT_DOCUMENT_EXTENSIONS | frozenset(cfg.text_extensions)
     return RoutingOcrProvider(
         document_chain=document_chain,
         image_chain=image_chain,
         phi_policy=cfg.phi_policy,
-        document_extensions=document_extensions,
     )
 
 
@@ -98,6 +157,10 @@ def _build_provider(name: str | None, cfg, *, chain_entry=None) -> OcrProvider:
         from claritymed.core.ocr.pandoc_provider import PandocOcrProvider
 
         return PandocOcrProvider()
+    if name == "rapidocr":
+        from claritymed.core.ocr.rapidocr_provider import RapidOcrProvider
+
+        return RapidOcrProvider()
     if name == "mineru":
         return _make_mineru_provider(cfg)
     if name == "llm":

@@ -20,10 +20,32 @@ from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DOCUMENT_EXTENSIONS = frozenset(
-    {".pdf", ".doc", ".docx", ".odt", ".rtf", ".epub", ".ppt", ".pptx", ".xls", ".xlsx"}
-)
 PhiPolicy = Literal["local-only", "any"]
+
+
+def _derive_document_extensions(chain: list[OcrProvider]) -> frozenset[str]:
+    """Compute the routing-disambiguation set from a chain.
+
+    An extension belongs to ``document_chain`` iff a *non-vision*
+    provider in that chain claims it via ``supported_extensions``.
+    Vision LLMs (``is_vision=True``) are excluded because their
+    extension set reflects "I can ingest these MIMEs", not "I am the
+    authoritative handler for these file types"; including them would
+    pull every image format into the document side just because an
+    LLM happens to be listed there.
+
+    Providers declaring ``supported_extensions=None`` ("all") are
+    skipped — they intentionally don't constrain routing.
+    """
+    result: set[str] = set()
+    for provider in chain:
+        if provider.is_vision:
+            continue
+        supported = provider.supported_extensions
+        if supported is None:
+            continue
+        result.update(supported)
+    return frozenset(result)
 
 
 def _emit_audit(payload: dict[str, Any]) -> None:
@@ -68,7 +90,6 @@ class RoutingOcrProvider(OcrProvider):
         document_chain: list[OcrProvider] | None = None,
         image_chain: list[OcrProvider] | None = None,
         phi_policy: PhiPolicy = "any",
-        document_extensions: frozenset[str] | None = None,
     ) -> None:
         if document_chain is None and image_chain is None:
             raise ValueError(
@@ -80,14 +101,11 @@ class RoutingOcrProvider(OcrProvider):
         )
         self._image_chain = _filter_chain_for_policy(image_chain or [], phi_policy)
         self._phi_policy: PhiPolicy = phi_policy
-        # Callers (factory) can widen the document set with text-only
-        # extensions so csv/md/json route to document_chain rather than
-        # image_chain. Defaults preserve the historical behavior.
-        self._document_extensions = (
-            document_extensions
-            if document_extensions is not None
-            else _DEFAULT_DOCUMENT_EXTENSIONS
-        )
+        # Derived from chain composition rather than carried in via a
+        # caller-supplied set: each non-vision provider's declared
+        # ``supported_extensions`` is the single source of truth for
+        # routing. See ``_derive_document_extensions``.
+        self._document_extensions = _derive_document_extensions(self._document_chain)
 
     async def extract_text(self, path: Path) -> ExtractResult:
         t0 = time.perf_counter()

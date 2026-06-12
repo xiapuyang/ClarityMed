@@ -25,19 +25,26 @@ class PandocOcrProvider(OcrProvider):
     """``pandoc`` runs as a local subprocess — no network hop."""
 
     label = "pandoc"
-    # Common office/text-markup formats pandoc handles well. PDFs go to
-    # pymupdf/marker; images go to llm/mineru — explicitly excluded.
+    # Office/text-markup formats verified against pandoc 3.x via the
+    # ``tests/e2e/ocr/`` matrix. Three exclusions reflect real gaps,
+    # not over-conservatism:
+    #
+    # * Legacy binary office (``.doc`` / ``.ppt`` / ``.xls``) — pandoc
+    #   shells out to ``antiword`` / ``catdoc`` / ``libreoffice`` for
+    #   these, and ``pypandoc-binary`` (our distribution) bundles only
+    #   the pandoc executable. Claiming support would route those files
+    #   into pandoc and fail at runtime.
+    # * ``.xlsx`` — pandoc 3.9.x has a workbook-relationship parsing bug
+    #   ("Entry not found: xl//xl/worksheets/sheet1.xml", doubled path
+    #   prefix) on openpyxl-generated workbooks. Re-add when that's
+    #   fixed upstream and the e2e test starts passing.
     supported_extensions = frozenset(
         {
-            ".doc",
             ".docx",
             ".odt",
             ".rtf",
             ".epub",
-            ".ppt",
             ".pptx",
-            ".xls",
-            ".xlsx",
             ".html",
             ".htm",
         }

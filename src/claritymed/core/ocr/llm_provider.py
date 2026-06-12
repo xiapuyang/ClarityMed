@@ -38,6 +38,12 @@ class LLMOcrProvider(OcrProvider):
     """
 
     label = "llm"
+    is_vision = True
+    """A vision LLM accepts any visually-renderable input — its
+    ``supported_extensions`` enumerates MIMEs it can ingest, not file
+    types it claims authority over. Routing skips its claim when
+    deciding document_chain vs image_chain; see ``OcrProvider.is_vision``.
+    """
     # Vision LLMs accept PDFs and standard raster images. Office formats
     # (.docx etc.) and pure text files are excluded so the chain skips
     # the LLM hop for them.

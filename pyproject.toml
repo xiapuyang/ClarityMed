@@ -33,6 +33,11 @@ dependencies = [
     # CPU inference backend; transformers provides the tokenizer.
     "transformers>=4.40",
     "onnxruntime>=1.17",
+    # Filetype detection for extensionless paste targets (Dockerfile,
+    # README without extension, raw clipboard bytes). Pure-local ONNX
+    # inference on the onnxruntime above; ~3 MB package, ~1 MB bundled
+    # model. PHI-safe by construction — never leaves the machine.
+    "magika>=0.6",
     "typer>=0.26.7",
     # macOS-only: NSPasteboard access for the Ctrl+V screenshot path.
     # Without it _read_macos falls back to ``osascript "the clipboard as
@@ -91,6 +96,15 @@ ocr-scanned = [
 ocr-office = [
     "pypandoc-binary>=1.13",
 ]
+# Local raster-image OCR — image_chain fallback when the vision LLM
+# (omlx) is unreachable. RapidOCR is a PaddleOCR ONNX port: ~50 MB of
+# models, runs on the onnxruntime we already pull for the PHI scrubber.
+# Chinese-medical-document quality is verified in tests/e2e/ocr/.
+# Optional because the fallback path is rare and the models are
+# non-trivial on disk.
+ocr-image = [
+    "rapidocr-onnxruntime>=1.4",
+]
 
 [project.scripts]
 claritymed = "claritymed.cli.main:main"
@@ -112,6 +126,12 @@ packages = ["src/claritymed"]
 dev = [
     "httpx>=0.28.1",
     "pre-commit>=4.6.0",
+    # OCR e2e fixture generation: minimal real-format files generated
+    # in-process so tests/e2e/ocr/ doesn't have to ship binary fixtures.
+    "reportlab>=4.0",   # PDF
+    "python-docx>=1.0", # DOCX
+    "openpyxl>=3.1",    # XLSX
+    "python-pptx>=0.6", # PPTX
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",

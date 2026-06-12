@@ -50,9 +50,29 @@ class MineRUOcrProvider(OcrProvider):
     """Cloud SaaS — never PHI-safe; chain composer filters it out."""
 
     label = "mineru"
-    # MineRU's API accepts PDF / office / image formats. We leave
-    # ``supported_extensions`` as ``None`` (= all) so it acts as the
-    # catch-all fallback at the end of a chain.
+    # Explicit allowlist mirrors the format set MineRU's API documents
+    # as accepted (PDF + legacy/modern Office + common raster images).
+    # Keeping this honest — rather than ``None`` ("catch-all") — lets the
+    # paste-time gate compute a precise "what can we accept" union from
+    # the active chains, and lets ``routing_provider`` decline truly
+    # unsupported types up-front instead of round-tripping to the API.
+    supported_extensions = frozenset(
+        {
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".ppt",
+            ".pptx",
+            ".xls",
+            ".xlsx",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".bmp",
+        }
+    )
 
     def __init__(
         self,

@@ -394,18 +394,35 @@ async def test_mineru_ocr_provider_raises_on_bad_zip(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def _noop_provider(text: str = "extracted", *, label: str = "stub") -> OcrProvider:
-    """Return a stub OcrProvider that always returns *text*."""
+def _noop_provider(
+    text: str = "extracted",
+    *,
+    label: str = "stub",
+    supported: frozenset[str] | None = None,
+) -> OcrProvider:
+    """Return a stub OcrProvider that always returns *text*.
+
+    ``supported`` becomes ``supported_extensions``. Defaults to ``None``
+    (= "all") for tests that don't care about routing; tests covering
+    document-vs-image routing pass an explicit set so the stub
+    participates in ``_derive_document_extensions``.
+    """
 
     class _Stub(OcrProvider):
         async def extract_text(self, path: Path) -> ExtractResult:
             return ExtractResult(text=text, provider_used=label, chain_tried=[label])
 
     _Stub.label = label
+    _Stub.supported_extensions = supported
     return _Stub()
 
 
-def _failing_provider(msg: str = "boom", *, label: str = "fail") -> OcrProvider:
+def _failing_provider(
+    msg: str = "boom",
+    *,
+    label: str = "fail",
+    supported: frozenset[str] | None = None,
+) -> OcrProvider:
     """Return a stub OcrProvider that always raises OcrError."""
 
     class _Fail(OcrProvider):
@@ -413,12 +430,14 @@ def _failing_provider(msg: str = "boom", *, label: str = "fail") -> OcrProvider:
             raise OcrError(msg)
 
     _Fail.label = label
+    _Fail.supported_extensions = supported
     return _Fail()
 
 
-@pytest.mark.parametrize(
-    "extension", [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"]
-)
+_DOC_EXTS = frozenset({".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"})
+
+
+@pytest.mark.parametrize("extension", sorted(_DOC_EXTS))
 async def test_routing_sends_documents_to_document_chain(
     tmp_path: Path, extension: str
 ):
@@ -426,7 +445,7 @@ async def test_routing_sends_documents_to_document_chain(
     fake.write_bytes(b"data")
 
     router = RoutingOcrProvider(
-        document_chain=[_noop_provider("doc result", label="doc")],
+        document_chain=[_noop_provider("doc result", label="doc", supported=_DOC_EXTS)],
         image_chain=[_failing_provider("should not be called", label="img")],
     )
     result = await router.extract_text(fake)
@@ -551,7 +570,11 @@ async def test_routing_emits_audit_on_error(tmp_path: Path):
         side_effect=lambda p: captured.append(p),
     ):
         router = RoutingOcrProvider(
-            document_chain=[_failing_provider("extraction failed", label="doc")],
+            document_chain=[
+                _failing_provider(
+                    "extraction failed", label="doc", supported=frozenset({".pdf"})
+                )
+            ],
             image_chain=[_noop_provider(label="img")],
         )
         with pytest.raises(OcrError):
