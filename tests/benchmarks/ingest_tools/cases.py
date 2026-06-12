@@ -596,4 +596,45 @@ CASES: list[Case] = [
             "zh": "我档案里最近一次体检的胆固醇值是多少？",
         },
     ),
+    # Pure knowledge — names a drug but never first-person, never
+    # personal data. Misfiring save_medication here means the model
+    # latched on the keyword instead of the disclosure pattern.
+    Case(
+        name="fp_pure_knowledge",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        prompts={
+            "en": "How does penicillin actually kill bacteria?",
+            "zh": "青霉素到底是怎么杀死细菌的？",
+        },
+    ),
+    # Third-party subject — first-person possessive ("my cat") but the
+    # subject the medical fact applies to is NOT the user. Saving here
+    # would pollute the user's own record with someone else's data.
+    Case(
+        name="fp_third_party_subject",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        prompts={
+            "en": "Is amoxicillin safe for my cat?",
+            "zh": "阿莫西林给猫吃安全吗？",
+        },
+    ),
+    # Hypothetical — first-person grammar but conditional ("if I were").
+    # No actual disclosure has happened. Saving an allergy that the user
+    # only floated as a what-if is a destructive false positive.
+    Case(
+        name="fp_hypothetical",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        prompts={
+            "en": (
+                "If I were allergic to sulfa drugs, what antibiotics should I avoid?"
+            ),
+            "zh": "假如我对磺胺类过敏，有哪些抗生素需要避开？",
+        },
+    ),
 ]
