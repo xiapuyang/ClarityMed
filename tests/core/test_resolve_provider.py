@@ -30,8 +30,8 @@ def test_cli_override_beats_account():
     """``--provider`` (override) is the strongest opt-in signal — exempt from
     the per-account cloud opt-in check by design."""
     a = Account(user_id="alice", display_name="Alice", provider_id="claude")
-    p = resolve_provider(override="deepseek", account=a)
-    assert p.id == "deepseek"
+    p = resolve_provider(override="deepseek-v4-flash", account=a)
+    assert p.id == "deepseek-v4-flash"
 
 
 def test_account_provider_id_none_falls_through_to_default():

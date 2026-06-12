@@ -182,8 +182,10 @@ def test_shipped_models_yaml_parses():
     ids = {p.id for p in cfg.providers}
     assert {
         "openai",
-        "deepseek",
-        "gemini",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "gemini-2-5-flash",
+        "gemini-3-1-flash-lite",
         "qwen",
         "claude",
         "kimi",

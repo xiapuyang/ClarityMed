@@ -61,12 +61,18 @@ providers:
   - id: openai
     kind: cloud
     model: "openai:gpt-4o"
-  - id: deepseek
+  - id: deepseek-v4-flash
     kind: cloud
-    model: "deepseek:deepseek-chat"
-  - id: gemini
+    model: "deepseek:deepseek-v4-flash"
+  - id: deepseek-v4-pro
     kind: cloud
-    model: "google-gla:gemini-2.0-flash"
+    model: "deepseek:deepseek-v4-pro"
+  - id: gemini-2-5-flash
+    kind: cloud
+    model: "google:gemini-2.5-flash"
+  - id: gemini-3-1-flash-lite
+    kind: cloud
+    model: "google:gemini-3.1-flash-lite"
   - id: qwen
     kind: cloud
     model: "alibaba:qwen-max"
@@ -80,7 +86,13 @@ providers:
   # ---- Cloud: native Anthropic Messages API ----
   - id: claude
     kind: cloud
-    model: "anthropic:claude-sonnet-4-5"
+    model: "anthropic:claude-sonnet-4-6"
+  - id: claude-haiku-4-5
+    kind: cloud
+    model: "anthropic:claude-haiku-4-5"
+  - id: claude-opus-4-7
+    kind: cloud
+    model: "anthropic:claude-opus-4-7"
 
   # Example: same Claude model with extended thinking turned on. The
   # orchestrator may still override per-request when a specific question

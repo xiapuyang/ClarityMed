@@ -30,7 +30,7 @@ _PREFIX_ENV: dict[str, str | list[str]] = {
     "openai-responses": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
-    "google-gla": "GEMINI_API_KEY",
+    "google": "GEMINI_API_KEY",
     "google-vertex": "GOOGLE_APPLICATION_CREDENTIALS",
     "alibaba": ["ALIBABA_API_KEY", "DASHSCOPE_API_KEY"],
     "moonshotai": "MOONSHOTAI_API_KEY",
