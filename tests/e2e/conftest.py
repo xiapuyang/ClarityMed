@@ -8,9 +8,24 @@ Services required:
     claritymed-reranker  (port 8083)
     Qdrant               (url from configs/retrieval.yaml)
     LLM server           (omlx on :8000 or ollama on :11434)
+
+Data directory:
+    Unlike unit tests (which run under pytest's per-test ``tmp_path``),
+    e2e tests redirect ``CLARITYMED_HOME`` to a fixed location under
+    ``<repo>/data/.e2e_root/`` so a maintainer can inspect
+    ``profile.db``, record manifests, audit log, and the chat session
+    JSONL after the run. The directory is wiped once at session start
+    so re-runs are deterministic, but kept between tests inside one run
+    so accumulated state (allergies + medications + …) lands in the
+    same place. Per-test isolation of in-memory caches (SQLAlchemy
+    engines, account cache) still happens so SQLite handles don't go
+    stale across tests.
 """
 
 from __future__ import annotations
+
+import shutil
+from pathlib import Path
 
 import httpx
 import pytest
@@ -27,12 +42,81 @@ load_env_file()
 # can inspect them after a run without hunting through temp directories.
 _E2E_LOG_DIR = _cfg.LOG_DIR / "e2e"
 
+# E2E writes into the developer's standard CLARITYMED_HOME
+# (``~/.claritymed/`` by default) so the on-disk layout is identical to a
+# real CLI invocation — the maintainer can ``cat
+# ~/.claritymed/data/users/e2e/profile.db`` after a run finishes. Only
+# the ``users/e2e/`` subtree is wiped at session start; sibling user
+# dirs (the developer's personal CLI user) are left alone.
+_E2E_HOME = Path.home() / ".claritymed"
+_E2E_USER_DIR = _E2E_HOME / "data" / "users" / "e2e"
+
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "local: tests that require live local services; excluded from CI",
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _wipe_e2e_user_dir() -> None:
+    """Clear ``~/.claritymed/data/users/e2e/`` once at session start.
+
+    Surgical: only the ``e2e`` user subtree is removed. Sibling user
+    dirs (the developer's personal CLI user, prior test users) and
+    shared resources (``shared/``, ``logs/``, prompt store) are left
+    untouched. Re-runs are deterministic: a previous run's profile.db
+    / manifests / chat sessions do not bleed into this run's verify
+    helpers, but accumulated state within one run lines up so a
+    successful trigger lands where the next test will look.
+    """
+    if _E2E_USER_DIR.exists():
+        shutil.rmtree(_E2E_USER_DIR)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _persistent_e2e_home(
+    _isolate_runtime,
+    _wipe_e2e_user_dir,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Override the project-level ``_isolate_runtime`` tmp_path redirect.
+
+    ``_isolate_runtime`` (in ``tests/conftest.py``) sets
+    ``CLARITYMED_HOME`` to a per-test tmp_path so unit tests can't
+    pollute each other. For e2e we want the opposite — a fixed home
+    matching the real CLI layout — so we drop the per-test override
+    here and reload config. Listed as a parameter on
+    ``_isolate_runtime`` ensures we run after its setup body completes.
+
+    The wipe-once-at-session-start fixture took care of the user
+    subtree; this fixture only re-resolves the config paths so stores
+    target ``~/.claritymed/`` instead of the tmp path.
+    """
+    monkeypatch.delenv("CLARITYMED_HOME", raising=False)
+    monkeypatch.delenv("CLARITYMED_DATA_DIR", raising=False)
+    monkeypatch.delenv("CLARITYMED_SHARED_DIR", raising=False)
+    monkeypatch.delenv("CLARITYMED_LOG_DIR", raising=False)
+
+    import importlib
+
+    from claritymed import config as _config
+
+    importlib.reload(_config)
+    _config.reload_configs()
+
+    # _isolate_runtime already cleared the per-user engine + account caches
+    # for the tmp_path it installed; redo for the fresh CLARITYMED_HOME so
+    # the next store call resolves paths against ``~/.claritymed/``.
+    from claritymed.stores import profile as _profile
+
+    _profile._ENGINES.clear()
+    from claritymed.stores.account import reset_account_cache
+
+    reset_account_cache()
+    yield
 
 
 @pytest.fixture(autouse=True)

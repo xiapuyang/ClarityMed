@@ -1,0 +1,74 @@
+name: save_to_library_tool
+description: |
+  Tool description shown to the LLM for ``save_to_library`` — store one
+  reference document (paper, textbook chapter, guideline). Distinct from
+  ``save_record``: library entries are non-PHI reference material the
+  user wants to anchor future answers in, not events that happened to
+  them. Public library entries (``public=True``) get sent to the cloud
+  RAG collection; the default is local-only.
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. The ``public=True`` flag is the *only* path
+      that flips the chunk's ``can_cloud`` bit, so default-False and
+      explicit-opt-in are the safe defaults.
+    languages:
+      en: |
+        Save one reference document to the library. Use this for
+        papers, textbook chapters, clinical guidelines, or similar
+        material the user wants future ask turns to draw on.
+
+        Do NOT use this for:
+          - The user's own lab reports, discharge summaries, imaging
+            studies → those are PHI events; use ``save_record``.
+          - Bookmarks of arbitrary web pages without uploaded content.
+
+        Field notes:
+          - ``title`` is the human-facing citation title ("ACC/AHA
+            2024 Hypertension Guideline", "Harrison's — Chapter 271").
+            Keep it under 200 chars.
+          - ``attachments`` references the sha256 of the uploaded
+            document (one PDF / Markdown file is the common case).
+            Use only sha values from this turn's inline
+            ``<file sha="...">`` / ``<image sha="...">`` tags. Never
+            invent a sha.
+          - ``authors`` is a list of strings. Leave empty when
+            unknown — do not guess.
+          - ``year`` is the publication year (1800–2200). Null if
+            unknown.
+          - ``tags`` is a list of short topical labels
+            (``cardiology``, ``guideline``, ``2024``) that help the
+            user filter the library. Optional.
+          - ``public``: default ``False`` keeps the chunk local-only.
+            Set to ``True`` only when the user explicitly says they
+            are fine with the document being sent to cloud LLMs
+            during ask turns (i.e. it is non-personal published
+            material they are comfortable sharing).
+
+        One call per document. A multi-PDF curriculum gets one call
+        per file.
+      zh: |
+        把一份参考文献入库。论文、教材章节、临床指南等用户希望后续问答
+        引用的资料走本工具。
+
+        以下场景**不要**用：
+          - 用户自己的化验报告、出院小结、影像检查 → 那是 PHI 事件，
+            用 ``save_record``。
+          - 没有上传内容的纯链接收藏。
+
+        字段说明：
+          - ``title`` 是人类可读的引用标题（"ACC/AHA 2024 高血压指南"、
+            "哈里森内科学 第 271 章"）。200 字内。
+          - ``attachments`` 用本回合 ``<file sha="...">`` /
+            ``<image sha="...">`` 标签上的 sha256 引用上传文档（通常一份
+            PDF 或 Markdown）。**不要凭空编造 sha**。
+          - ``authors`` 是字符串列表。不知道就留空——**不要猜**。
+          - ``year`` 是发表年份（1800–2200）。未知留 null。
+          - ``tags`` 是简短主题标签列表（``cardiology`` / ``guideline``
+            / ``2024``），便于用户在库视图里筛选。可选。
+          - ``public``：默认 ``False`` 表示仅本地。**只有**用户明确表示
+            可以在 ask 过程中把该文档发送给云端 LLM（即非个人、已公开
+            的资料）时才设为 ``True``。
+
+        一次调用对应一份文档。多 PDF 的合订资料按文件数发多次调用。

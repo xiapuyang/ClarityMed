@@ -25,23 +25,19 @@ keep the unit ship-able in one session.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
-Decision = Literal["once", "always_tool", "always_pattern", "modify", "deny"]
+from claritymed.core.interaction.tool_approval_channel import (
+    ApprovalDecision,
+    Decision,
+)
 
-
-@dataclass(frozen=True)
-class ApprovalDecision:
-    """User's response to one ApprovalModal."""
-
-    decision: Decision
-    modified_args: dict[str, Any] | None = None
+__all__ = ["ApprovalDecision", "Decision", "ToolApprovalModal"]
 
 
 class ToolApprovalModal(ModalScreen[ApprovalDecision]):
@@ -74,6 +70,13 @@ class ToolApprovalModal(ModalScreen[ApprovalDecision]):
     }
     """
 
+    # Tools that destroy data are restricted to ``y``/``n`` only — an
+    # always-allow rule for ``delete_record`` would let the LLM silently
+    # destroy records on subsequent turns with no confirmation. The
+    # modal sniffs ``tool_name`` at compose time and hides ``a`` / ``p``
+    # for these.
+    _DESTRUCTIVE_TOOLS: frozenset[str] = frozenset({"delete_record"})
+
     BINDINGS = [
         ("escape", "deny", "Deny"),
         ("y", "once", "Once"),
@@ -94,6 +97,7 @@ class ToolApprovalModal(ModalScreen[ApprovalDecision]):
         self._tool_name = tool_name
         self._args = args
         self._breadcrumb = breadcrumb
+        self._destructive = tool_name in self._DESTRUCTIVE_TOOLS
 
     def compose(self) -> ComposeResult:
         title = (
@@ -107,9 +111,14 @@ class ToolApprovalModal(ModalScreen[ApprovalDecision]):
             yield Label("Proceed?")
             with Horizontal(id="buttons"):
                 yield Button("Deny (n)", id="deny")
-                yield Button("Modify (m)", id="modify")
-                yield Button("Always pat. (p)", id="always_pattern")
-                yield Button("Always tool (a)", id="always_tool")
+                # Destructive ops cannot have rules persisted: every
+                # delete must be confirmed individually so a stale
+                # always-allow rule cannot silently wipe data on a
+                # later turn.
+                if not self._destructive:
+                    yield Button("Modify (m)", id="modify")
+                    yield Button("Always pat. (p)", id="always_pattern")
+                    yield Button("Always tool (a)", id="always_tool")
                 yield Button("Once (y)", id="once", variant="primary")
 
     def _render_args(self) -> str:
@@ -122,12 +131,18 @@ class ToolApprovalModal(ModalScreen[ApprovalDecision]):
         self.dismiss(ApprovalDecision(decision="once"))
 
     def action_always_tool(self) -> None:
+        if self._destructive:
+            return  # destructive tools: y/n only
         self.dismiss(ApprovalDecision(decision="always_tool"))
 
     def action_always_pattern(self) -> None:
+        if self._destructive:
+            return
         self.dismiss(ApprovalDecision(decision="always_pattern"))
 
     def action_modify(self) -> None:
+        if self._destructive:
+            return
         # Stub: minimal modal returns ``modify`` without an edit form.
         # The per-field form is Unit 10's LibraryView companion.
         self.dismiss(ApprovalDecision(decision="modify"))

@@ -1,0 +1,71 @@
+name: update_profile_field_tool
+description: |
+  Tool description shown to the LLM for ``update_profile_field`` — write
+  one structural profile column. Distinct from the three save_* fact
+  tools: those upsert a row, this one updates a column on the single
+  Profile row.
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. Enumerates the whitelist of writable fields,
+      reinforces "only when the user volunteered the value", and bans
+      proactive solicitation of passive fields.
+    languages:
+      en: |
+        Update one column on the user's Profile row.
+
+        Allowed fields (anything else is rejected):
+          - ``sex``, ``birth_date``
+          - ``weight_kg``, ``height_cm``
+          - ``residence``, ``birthplace``
+          - ``marital_status``, ``has_children``
+          - ``current_occupation``, ``past_occupations``
+
+        Use this only when the user volunteered the value in this turn
+        or stated a clear update ("my weight is now 72 kg", "I moved
+        to Berlin in March"). Do not call this tool just because a
+        column is empty — passive fields stay empty until the user
+        offers them.
+
+        Field notes:
+          - ``field`` must be one of the whitelist values verbatim
+            (snake_case, exactly as above). Any other value is
+            rejected by the schema.
+          - ``value`` is permissive at the boundary: string for
+            ``residence`` / ``birthplace``, float for ``weight_kg`` /
+            ``height_cm``, bool for ``has_children``, ISO date string
+            ``YYYY-MM-DD`` for ``birth_date``. The tool body coerces
+            to the Profile column type, so ``"72"`` works as well as
+            ``72.0`` for ``weight_kg``.
+          - For ``past_occupations``, pass a comma-separated string —
+            the tool body splits and stores as a list.
+
+        One call per field. To update weight and height in one turn,
+        propose two calls.
+      zh: |
+        更新用户 Profile 表的一列。
+
+        允许的字段（其余一律拒绝）：
+          - ``sex`` / ``birth_date``
+          - ``weight_kg`` / ``height_cm``
+          - ``residence`` / ``birthplace``
+          - ``marital_status`` / ``has_children``
+          - ``current_occupation`` / ``past_occupations``
+
+        **仅当**用户本回合主动提到该值，或明确更新（"我现在体重 72 kg"、
+        "我三月搬到柏林了"）时使用。**不要**因为某列为空就主动调用——
+        被动字段保持空白，直到用户自己提供。
+
+        字段说明：
+          - ``field`` 必须一字不差地是白名单里的值（snake_case，与上面
+            完全一致）。其他值会被 schema 拒绝。
+          - ``value`` 在入口处宽松：``residence`` / ``birthplace`` 用字符串；
+            ``weight_kg`` / ``height_cm`` 用 float；``has_children`` 用 bool；
+            ``birth_date`` 用 ISO 日期串 ``YYYY-MM-DD``。工具体会把它转成
+            Profile 列的目标类型，所以 ``"72"`` 和 ``72.0`` 对 ``weight_kg``
+            都行。
+          - ``past_occupations`` 传英文逗号分隔的字符串，工具体会拆分
+            并存为列表。
+
+        一次调用对应一个字段。同一回合要更新体重和身高，发起两次调用。

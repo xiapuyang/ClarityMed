@@ -1,0 +1,64 @@
+name: save_condition_tool
+description: |
+  Tool description shown to the LLM for ``save_condition`` — append one
+  condition row to ``profile.db``. Conditions are chronic / persistent
+  diagnoses (asthma, hypertension), not acute events (a cold last week).
+  Acute events belong in ``save_record``.
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. Pin the chronic-vs-acute distinction and the
+      null-end-date "still ongoing" encoding.
+    languages:
+      en: |
+        Add one chronic or persistent condition to the user's profile.
+
+        Use this for:
+          - Chronic diagnoses ("I have hypertension", "type 2
+            diabetes since 2019").
+          - Recurring conditions ("seasonal migraines", "eczema").
+          - Past resolved conditions the user explicitly wants on file
+            ("had childhood asthma, outgrew it at 14").
+
+        Do NOT use this for:
+          - One-off acute illnesses ("I had a cold last week"). Skip
+            the save entirely unless the user asks for it.
+          - Surgical events or procedures. Those go in ``save_record``.
+
+        Field notes:
+          - ``display`` is the human-readable name of the condition.
+            Use the user's words; do not auto-translate "high blood
+            pressure" to "hypertension" unless the user said it
+            clinically.
+          - ``code`` is ICD-10 / Snomed if known; null otherwise. Do
+            not guess.
+          - ``onset_date`` is when diagnosed (or first noticed). Null
+            when unknown.
+          - ``end_date`` null means the condition is still ongoing.
+            Only set it when the user says the condition has resolved
+            on a specific date.
+
+        One call per condition.
+      zh: |
+        把一条慢性或持续性诊断加入用户画像。
+
+        适用场景：
+          - 慢性诊断（"我有高血压"、"2019 年起 2 型糖尿病"）。
+          - 反复发作的状况（"季节性偏头痛"、"湿疹"）。
+          - 用户主动要求记录的、已愈的既往疾病（"小时候有哮喘，
+            14 岁前自愈"）。
+
+        以下场景**不要**用：
+          - 一次性的急性病（"上周感冒了"）。除非用户要求，否则直接不存。
+          - 手术或操作。这类用 ``save_record``。
+
+        字段说明：
+          - ``display`` 是疾病的人类可读名称。用用户的原话；用户没用
+            临床词时，不要自动把"血压高"换成"高血压"。
+          - ``code`` 已知 ICD-10 / Snomed 时填，否则 null。不要猜。
+          - ``onset_date`` 是诊断或首次发现的日期。未知留 null。
+          - ``end_date`` 为 null 表示状况仍在。**只有**用户说在某个具体
+            日期已痊愈时才填。
+
+        一次调用对应一个状况。

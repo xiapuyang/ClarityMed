@@ -22,6 +22,11 @@ from claritymed.core.interaction.schemas import (
     Question,
     QuestionOption,
 )
+from claritymed.core.interaction.tool_approval_channel import (
+    ApprovalDecision,
+    HeadlessToolApprovalChannel,
+    ToolApprovalChannel,
+)
 from claritymed.core.interaction.tools.ask_user_question import (
     ASK_USER_QUESTION_TOOL_NAME,
     build_ask_user_question_tool,
@@ -29,13 +34,16 @@ from claritymed.core.interaction.tools.ask_user_question import (
 
 __all__ = [
     "ASK_USER_QUESTION_TOOL_NAME",
+    "ApprovalDecision",
     "AskUserQuestionInput",
     "AskUserQuestionResult",
     "HeadlessPromptChannel",
+    "HeadlessToolApprovalChannel",
     "InteractiveChannelUnavailable",
     "PromptChannel",
     "Question",
     "QuestionOption",
+    "ToolApprovalChannel",
     "UserDeclinedAnswer",
     "build_ask_user_question_tool",
 ]

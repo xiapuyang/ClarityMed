@@ -9,9 +9,11 @@ neither the plugin nor the service knows about the others.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
 
 if TYPE_CHECKING:
+    from pydantic_ai.toolsets import AbstractToolset
+
     from claritymed.core.turn_state import TurnState
 
 
@@ -42,9 +44,18 @@ class FeaturePlugin(Protocol):
     * ``mode == "deterministic"`` → ``pre_invoke`` returns prompt text
       (empty string for no-op).
     * ``mode == "tool"`` → ``as_tool`` returns a pydantic-ai tool
-      callable; ``pre_invoke`` returns ``""``.
+      callable OR ``as_toolset`` returns a pre-built
+      ``AbstractToolset`` (used when the plugin needs framework
+      machinery like ``ApprovalRequiredToolset``); ``pre_invoke``
+      returns ``""``.
     * ``mode == "agentic"`` → reserved; v1 raises at
       ``build_features`` time.
+
+    A plugin can expose tools via ``as_tool`` (single callable),
+    ``as_toolset`` (full toolset, e.g. ingest tools behind an approval
+    gate), or both. ``AskService`` collects each side independently
+    and passes them through to ``Agent`` as ``tools=`` and
+    ``toolsets=`` respectively.
     """
 
     name: str
@@ -56,4 +67,15 @@ class FeaturePlugin(Protocol):
 
     def as_tool(self) -> Callable | None:
         """Return the pydantic-ai tool callable, or ``None`` if not in tool mode."""
+        ...
+
+    def as_toolset(self) -> "AbstractToolset[Any] | None":
+        """Return a pre-built toolset, or ``None`` when the plugin
+        exposes no toolset (the common case — RAG, attachments etc.
+        register a single callable via ``as_tool``).
+
+        Used by the ingest-tools plugin to hand back an
+        ``ApprovalRequiredToolset`` wrapping all seven write tools so
+        the framework's own approval flow runs uniformly across them.
+        """
         ...

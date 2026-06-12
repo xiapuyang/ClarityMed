@@ -16,12 +16,14 @@ selected mode:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from claritymed.core.features.base import FeatureMode, TurnContext
 from claritymed.core.rag.retrieval_pipeline import format_evidence, perform_retrieval
 
 if TYPE_CHECKING:
+    from pydantic_ai.toolsets import AbstractToolset
+
     from claritymed.core.rag.strategies.base import RagStrategy
 
 
@@ -62,3 +64,7 @@ class RagFeature:
         )
 
         return retrieve_medical_literature
+
+    def as_toolset(self) -> "AbstractToolset[Any] | None":
+        """RAG exposes a single callable, not a toolset."""
+        return None

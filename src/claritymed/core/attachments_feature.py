@@ -124,6 +124,9 @@ class AttachmentsFeature(FeaturePlugin):
     def as_tool(self):
         return None
 
+    def as_toolset(self):
+        return None
+
 
 def _render_inline_tag(blob_store: BlobStore, kind: str, att) -> str:
     """One ``<image>`` / ``<file>`` tag for one session attachment.

@@ -13,14 +13,19 @@ TOCTOU close. Audit rows always carry non-PHI fields (``record_path``,
 extracted lab values) is written to
 ``data/users/<id>/audit_payloads/<request_id>.json`` (mode 0600) via
 ``audit_payloads.write_payload``.
+
+``IngestToolsFeature`` is the orchestrator-facing wrapper that
+exposes the toolset as a ``FeaturePlugin.as_toolset()``. AskService
+collects all plugin toolsets per turn and hands them to the agent.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from claritymed.context import get_context_or_raise
+from claritymed.core.features.base import FeatureMode, TurnContext
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.audit_payloads import write_payload
 from claritymed.core.schemas import Allergy, Condition, Medication, solicitation_for
@@ -38,6 +43,9 @@ from claritymed.orchestrator.services.tool_dispatcher import ToolDispatcher
 from claritymed.stores.blob_store import BlobStore
 from claritymed.stores.manifest_store import ManifestStore, make_slug
 from claritymed.stores.profile import ProfileStore
+
+if TYPE_CHECKING:
+    from pydantic_ai.toolsets import AbstractToolset
 
 logger = logging.getLogger(__name__)
 
@@ -331,17 +339,70 @@ INGEST_TOOLS = {
 }
 
 
-def build_ingest_toolset(dispatcher: ToolDispatcher, approval_required_func=None):
+def _validate_ingest_prompts(registry) -> None:
+    """Assert every ingest tool has a bilingual prompt YAML loaded.
+
+    Fail-loud at toolset build time rather than at first model call —
+    a missing YAML is a deployment misconfiguration, not a per-turn
+    error to retry. Surfaces as ``RuntimeError`` listing the gaps so
+    the TUI can show it once instead of seven warning lines.
+    """
+    missing: list[str] = []
+    for tool_name in INGEST_TOOLS:
+        prompt_name = f"{tool_name}_tool"
+        for lang in ("en", "zh"):
+            try:
+                registry.get(prompt_name, language=lang)  # type: ignore[arg-type]
+            except Exception:  # noqa: BLE001
+                missing.append(f"{prompt_name}.{lang}")
+    if missing:
+        raise RuntimeError(
+            "Missing ingest tool prompts: "
+            + ", ".join(missing)
+            + ". Add the corresponding YAML(s) under core/prompts/store/ "
+            "before wiring ingest_factory."
+        )
+
+
+def build_ingest_toolset(
+    dispatcher: ToolDispatcher,
+    approval_required_func=None,
+    *,
+    language: str = "en",
+):
     """Bundle the 7 tools into an ``ApprovalRequiredToolset``.
 
     ``approval_required_func`` is the project-specific gate that decides
     whether a call needs the modal or can run immediately. Unit 7 wires
     this against ``SettingsStore`` (TTL'd allow rules) + the dispatcher.
-    Default ``None`` ⇒ every call goes through the framework's default
-    approval (no auto-allow).
+    Default ``None`` ⇒ raw ``FunctionToolset`` with no approval gate
+    (used by ``cli tool --auto-approve``, eval harnesses, and tests).
+
+    Each tool's ``description=`` is loaded from
+    ``core/prompts/store/<tool_name>_tool.yaml`` so the LLM sees prose
+    semantics (WHY/WHEN) alongside pydantic-ai's auto-injected JSON
+    schema (WHAT). The YAMLs are immutable per-version; the registry
+    handles language selection.
     """
     from pydantic_ai.tools import Tool
     from pydantic_ai.toolsets import ApprovalRequiredToolset, FunctionToolset
+
+    from claritymed.core.prompts.registry import PromptRegistry
+
+    registry = PromptRegistry()
+
+    # Fail-loud check: each of the seven tools must have a prompt YAML
+    # in both EN and ZH. A missing YAML at runtime would silently
+    # degrade the LLM to schema-only descriptions; instead we abort at
+    # toolset build time so the regression is caught on app start, not
+    # mid-turn. Cheap (registry already in memory).
+    _validate_ingest_prompts(registry)
+
+    def _description_for(tool_name: str) -> str:
+        # ``_validate_ingest_prompts`` already asserted presence, so a
+        # failure here is structural (e.g. registry corruption) — let
+        # the exception propagate rather than swallow it.
+        return registry.get(f"{tool_name}_tool", language=language)  # type: ignore[arg-type]
 
     # pydantic-ai Tool accepts plain callables; we bind ``dispatcher`` via
     # a closure so the registered signature matches the tool args schema.
@@ -355,9 +416,63 @@ def build_ingest_toolset(dispatcher: ToolDispatcher, approval_required_func=None
             _entry.__name__ = tool_name
             return _entry
 
-        tools.append(Tool(_make(impl, name), name=name))
+        tools.append(
+            Tool(
+                _make(impl, name),
+                name=name,
+                description=_description_for(name) or None,
+            )
+        )
 
     inner = FunctionToolset(tools)
     if approval_required_func is None:
         return inner
     return ApprovalRequiredToolset(inner, approval_required_func=approval_required_func)
+
+
+# --- FeaturePlugin wrapper -------------------------------------------
+
+
+class IngestToolsFeature:
+    """Plugin exposing the seven write tools behind the approval gate.
+
+    The plugin owns the dispatcher + the ``approval_required_func``
+    closure; both are constructed once and reused across turns. The
+    LLM-facing toolset is rebuilt on each ``as_toolset()`` call because
+    pydantic-ai's ``FunctionToolset`` does not document re-entrancy
+    across concurrent agent runs (cheap to rebuild — just rewires the
+    seven closures) and the AskService is per-turn anyway.
+
+    ``approval_required_func`` only consults the allow-rule store; it
+    must never call into a UI (pydantic-ai invokes it from the tool-
+    execution path, where blocking on a modal would deadlock the agent
+    loop). Deny rules and the modal flow are handled by AskService
+    after the ``DeferredToolRequests`` materializes.
+    """
+
+    name = "ingest_tools"
+    mode: FeatureMode = "tool"
+
+    def __init__(
+        self,
+        dispatcher: ToolDispatcher,
+        approval_required_func: Callable[[Any, Any, dict[str, Any]], bool] | None,
+        *,
+        language: str = "en",
+    ) -> None:
+        self._dispatcher = dispatcher
+        self._approval_required_func = approval_required_func
+        self._language = language
+
+    async def pre_invoke(self, ctx: TurnContext) -> str:
+        return ""
+
+    def as_tool(self) -> Callable | None:
+        return None
+
+    def as_toolset(self) -> "AbstractToolset[Any] | None":
+        return build_ingest_toolset(
+            self._dispatcher,
+            approval_required_func=self._approval_required_func,
+            language=self._language,
+        )

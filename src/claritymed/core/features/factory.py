@@ -21,6 +21,7 @@ def build_features(
     rag_mode: str = "tool",
     rag_strategy: "RagStrategy | None" = None,
     get_session_id: Callable[[], str | None] | None = None,
+    ingest_factory: Callable[[], FeaturePlugin] | None = None,
 ) -> list[FeaturePlugin]:
     """Instantiate plugins from per-feature config.
 
@@ -34,6 +35,13 @@ def build_features(
             (the default) skips the plugin entirely — headless one-shot
             paths (CLI ``ask``, evals) have no session_id and would only
             get a no-op block.
+        ingest_factory: When set, called once to build the ingest-tools
+            plugin (the seven write tools behind an approval gate). The
+            factory lives outside ``core/`` because the plugin depends on
+            ``orchestrator.features.ingest_tools_plugin`` — passing a
+            callable here keeps ``core.features`` import-free of
+            orchestrator code while letting AskService wire the live
+            dispatcher + settings store.
 
     Raises:
         NotImplementedError: any active feature requests ``agentic`` mode.
@@ -47,6 +55,8 @@ def build_features(
         from claritymed.core.attachments_feature import AttachmentsFeature
 
         plugins.append(AttachmentsFeature(get_session_id=get_session_id))
+    if ingest_factory is not None:
+        plugins.append(ingest_factory())
 
     agentic = [p for p in plugins if p.mode == "agentic"]
     if agentic:

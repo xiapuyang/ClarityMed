@@ -919,6 +919,9 @@ class ClarityMedApp(App):
 
         mode_name = load_retrieval_config().rag.mode
         from claritymed.cli.tui.prompt_channel import TextualPromptChannel
+        from claritymed.cli.tui.tool_approval_channel import (
+            TextualToolApprovalChannel,
+        )
 
         service = AskService(
             model=model,
@@ -933,6 +936,7 @@ class ClarityMedApp(App):
             ),
             rag_mode=mode_name,
             prompt_channel=TextualPromptChannel(self),
+            tool_approval_channel=TextualToolApprovalChannel(self),
         )
         self._cached_ask_service = service
         return service

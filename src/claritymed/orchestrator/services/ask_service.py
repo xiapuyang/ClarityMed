@@ -16,7 +16,7 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from claritymed.core.events import (
     Done,
@@ -25,8 +25,11 @@ from claritymed.core.events import (
     LlmCallStarted,
     LlmFirstToken,
     TokenChunk,
+    ToolCompleted,
+    ToolStarted,
 )
 from claritymed.core.features import TurnContext, build_features
+from claritymed.core.interaction import InteractiveChannelUnavailable
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.latency import LatencyTrace, build_step_records
 from claritymed.core.observability.latency import usage_dict as _usage_dict
@@ -41,6 +44,7 @@ if TYPE_CHECKING:
 
     from claritymed.core.features import FeaturePlugin
     from claritymed.core.interaction.prompt_channel import PromptChannel
+    from claritymed.core.interaction.tool_approval_channel import ToolApprovalChannel
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
     from claritymed.core.schemas.retrieval import RetrievedChunk
@@ -222,6 +226,7 @@ class AskService:
         rag_mode: str = "tool",
         features: "list[FeaturePlugin] | None" = None,
         prompt_channel: "PromptChannel | None" = None,
+        tool_approval_channel: "ToolApprovalChannel | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or PhiGuard.from_config()
@@ -238,6 +243,13 @@ class AskService:
         # falls back to a plain-text hint to the LLM rather than
         # blocking on a UI that does not exist.
         self._prompt_channel = prompt_channel
+        # Host-supplied channel for the per-tool PHI write approval modal.
+        # None ⇒ the ingest tools are NOT wired this turn (no UI to host
+        # the prompt). Mirrors the ``prompt_channel`` gate: rather than
+        # registering a toolset that will always be denied, we omit it
+        # entirely from the LLM's view so the model picks a different
+        # path (chat reply, ask_user_question) on its own.
+        self._tool_approval_channel = tool_approval_channel
         # PromptRegistry walks every YAML in the store on construction.
         # When the channel is wired up we build the tool every turn, so
         # cache the registry once instead of paying disk + Pydantic
@@ -264,6 +276,11 @@ class AskService:
                 rag_mode=rag_mode,
                 rag_strategy=strategy,
                 get_session_id=_current_session_id,
+                ingest_factory=(
+                    self._build_ingest_factory(_current_session_id)
+                    if tool_approval_channel is not None and chat_session is not None
+                    else None
+                ),
             )
         )
         # Snapshot per-feature modes for the audit row; the LLM-facing
@@ -275,6 +292,329 @@ class AskService:
     def last_chunks(self) -> list:
         """Retrieved chunks from the most recent run() call (for testing)."""
         return self._last_chunks
+
+    def _build_ingest_factory(
+        self,
+        get_session_id: "Callable[[], str | None]",
+    ) -> "Callable[[], FeaturePlugin]":
+        """Return a closure that constructs ``IngestToolsFeature`` on demand.
+
+        Bound at construction time but evaluated lazily by ``build_features``
+        so the heavy stores (SettingsStore, ToolDispatcher) only materialize
+        when ingest tools are actually wired. Closures over ``self`` are
+        intentional — the dispatcher's callables need access to the current
+        user_id + session_id via ContextVars at tool-call time, not at
+        AskService construction.
+        """
+        from typing import Any as _Any
+
+        from claritymed.context import user_id_ctx
+        from claritymed.orchestrator.features.ingest_tools_plugin import (
+            IngestToolsFeature,
+        )
+        from claritymed.orchestrator.services.tool_dispatcher import ToolDispatcher
+        from claritymed.orchestrator.services.session_attachments import (
+            SessionAttachments,
+        )
+        from claritymed.stores.settings_store import SettingsStore
+
+        def _session_shas() -> set[str]:
+            uid = user_id_ctx.get()
+            sid = get_session_id()
+            if uid is None or sid is None:
+                return set()
+            try:
+                rows = SessionAttachments(uid, sid).list()
+            except Exception:  # noqa: BLE001
+                logger.exception("ingest: failed to list session attachments")
+                return set()
+            return {row.sha256 for row in rows}
+
+        def _rule_match(tool_name: str, args: dict) -> str | None:
+            uid = user_id_ctx.get()
+            if uid is None:
+                return None
+            try:
+                rule = SettingsStore(uid).match_rule(tool_name, args)
+            except Exception:  # noqa: BLE001
+                logger.exception("ingest: settings store match_rule failed")
+                return None
+            if rule is None or rule.action != "allow":
+                return None
+            return rule.id
+
+        # Holder mutated by ``_factory`` so ``_approval_required`` (which
+        # ``ApprovalRequiredToolset`` captures at construction time) can
+        # reach the live dispatcher. Declared before the closure so
+        # static-analysis tools see it bound.
+        dispatcher_slot: dict = {}
+
+        def _approval_required(_ctx: _Any, tool_def: _Any, args: dict) -> bool:
+            """Decide if a tool call needs the modal.
+
+            Runs the full ``ToolDispatcher.gate`` pipeline: schema
+            validation, sha256 set check, record_path containment, then
+            allow-rule lookup. A validation failure raises a typed
+            exception that pydantic-ai surfaces to the LLM as a tool
+            error - the modal never opens for a malformed call. A rule
+            hit returns ``False`` (no approval needed); otherwise
+            ``True`` and the framework raises ``ApprovalRequired`` so
+            AskService can drive the modal.
+
+            Deny rules are matched by ``_resolve_approvals`` after the
+            framework emits ``DeferredToolRequests`` so the audit row
+            carries the rule id and the user sees an explicit
+            ``Tool denied`` event rather than a silent skip.
+            """
+            dispatcher = dispatcher_slot.get("dispatcher")
+            if dispatcher is None:
+                return True
+            result = dispatcher.gate(tool_def.name, args)
+            return not result.allowed
+
+        def _factory() -> "FeaturePlugin":
+            dispatcher = ToolDispatcher(
+                session_attachments=_session_shas,
+                rule_match=_rule_match,
+            )
+            dispatcher_slot["dispatcher"] = dispatcher
+            return IngestToolsFeature(
+                dispatcher=dispatcher,
+                approval_required_func=_approval_required,
+                language=self._language,
+            )
+
+        return _factory
+
+    async def _resolve_approvals(
+        self,
+        deferred,
+        user_id: str,
+        out: "asyncio.Queue[Event | None]",
+    ):
+        """Drive the approval channel for each pending tool call.
+
+        Returns a ``DeferredToolResults`` ready to be passed back into
+        ``agent.run``, or ``None`` if the user cancelled mid-batch and no
+        further work should be done. Each iteration emits
+        ``ToolStarted`` / ``ToolCompleted`` events so the UI shows
+        progress through the modals.
+
+        Decision mapping:
+
+        * ``once``                 → ``ToolApproved(override_args=None)``
+        * ``always_tool``          → persist ``allow`` rule (empty
+          pattern, default TTL) + ``ToolApproved``.
+        * ``always_pattern``       → persist ``allow`` rule whose
+          pattern is the strict-equality subset of the args (opaque
+          keys stripped by ``SettingsStore``) + ``ToolApproved``.
+        * ``modify``               → ``ToolApproved`` with the user's
+          edited args when the modal returned them, otherwise the
+          original args (v1 modal returns no edits — graceful degrade).
+        * ``deny``                 → ``ToolDenied``.
+
+        Deny rules are evaluated here (not in ``approval_required_func``)
+        so the audit row carries the matched rule id, and so the user
+        gets a clean ``Tool denied`` event in the stream instead of a
+        silent skip.
+        """
+        from pydantic_ai.tools import (
+            DeferredToolResults,
+            ToolApproved,
+            ToolDenied,
+        )
+
+        from claritymed.core.interaction import ApprovalDecision
+        from claritymed.stores.settings_store import SettingsStore
+
+        channel = self._tool_approval_channel
+        approvals: dict = {}
+        calls = list(deferred.approvals)
+        total = len(calls)
+        store = SettingsStore(user_id)
+        cancelled = False
+        for idx, call in enumerate(calls):
+            tool_name = call.tool_name
+            args = (
+                call.args_as_dict()
+                if hasattr(call, "args_as_dict")
+                else (call.args if isinstance(call.args, dict) else {})
+            )
+            await out.put(
+                ToolStarted(tool_name=tool_name, args_preview=f"{idx + 1}/{total}")
+            )
+            t_start = time.perf_counter()
+            # Deny rule short-circuit: framework should have allowed
+            # nothing through ``approval_required_func`` for these
+            # calls, but a deny rule can still match and pre-empt the
+            # modal entirely.
+            try:
+                deny_rule = store.match_rule(tool_name, args)
+            except Exception:  # noqa: BLE001
+                logger.exception("resolve_approvals: rule lookup failed")
+                deny_rule = None
+            if deny_rule is not None and deny_rule.action == "deny":
+                approvals[call.tool_call_id] = ToolDenied(
+                    message=f"Denied by rule {deny_rule.id[:8]}."
+                )
+                audit_event(
+                    "tool.approval.denied",
+                    {
+                        "user_id": user_id,
+                        "tool_name": tool_name,
+                        "rule_id": deny_rule.id,
+                        "reason": "deny_rule",
+                    },
+                )
+                await out.put(
+                    ToolCompleted(
+                        tool_name=tool_name,
+                        duration_ms=int((time.perf_counter() - t_start) * 1000),
+                        summary="denied by rule",
+                    )
+                )
+                continue
+
+            if cancelled or channel is None:
+                approvals[call.tool_call_id] = ToolDenied(
+                    message="No approval channel available."
+                )
+                audit_event(
+                    "tool.approval.denied",
+                    {
+                        "user_id": user_id,
+                        "tool_name": tool_name,
+                        "reason": "channel_unavailable",
+                    },
+                )
+                await out.put(
+                    ToolCompleted(
+                        tool_name=tool_name,
+                        duration_ms=int((time.perf_counter() - t_start) * 1000),
+                        summary="channel unavailable",
+                    )
+                )
+                continue
+
+            try:
+                decision: ApprovalDecision = await channel.request(
+                    tool_name,
+                    args,
+                    breadcrumb=f"Tool {idx + 1}/{total}",
+                )
+            except asyncio.CancelledError:
+                audit_event(
+                    "tool.cancelled_by_shutdown",
+                    {"user_id": user_id, "tool_name": tool_name},
+                )
+                approvals[call.tool_call_id] = ToolDenied(
+                    message="Cancelled by shutdown."
+                )
+                # Subsequent calls in this batch also denied without
+                # opening another modal — the host UI is going away.
+                cancelled = True
+                await out.put(
+                    ToolCompleted(
+                        tool_name=tool_name,
+                        duration_ms=int((time.perf_counter() - t_start) * 1000),
+                        summary="cancelled",
+                    )
+                )
+                continue
+            except InteractiveChannelUnavailable as exc:
+                logger.debug(
+                    "resolve_approvals: channel unavailable for %s: %s",
+                    tool_name,
+                    exc,
+                )
+                approvals[call.tool_call_id] = ToolDenied(
+                    message="Approval UI unavailable."
+                )
+                audit_event(
+                    "tool.approval.denied",
+                    {
+                        "user_id": user_id,
+                        "tool_name": tool_name,
+                        "reason": "channel_unavailable",
+                    },
+                )
+                await out.put(
+                    ToolCompleted(
+                        tool_name=tool_name,
+                        duration_ms=int((time.perf_counter() - t_start) * 1000),
+                        summary="channel unavailable",
+                    )
+                )
+                continue
+
+            kind = decision.decision
+            override = decision.modified_args
+            if kind == "deny":
+                approvals[call.tool_call_id] = ToolDenied(
+                    message="User denied this tool call."
+                )
+                audit_event(
+                    "tool.approval.denied",
+                    {"user_id": user_id, "tool_name": tool_name},
+                )
+                summary = "denied"
+            elif kind in ("once", "modify"):
+                approvals[call.tool_call_id] = ToolApproved(override_args=override)
+                audit_event(
+                    "tool.approval.granted",
+                    {"user_id": user_id, "tool_name": tool_name, "scope": kind},
+                )
+                summary = f"approved ({kind})"
+            elif kind == "always_tool":
+                try:
+                    rule = store.add_rule(tool_name, {}, action="allow")
+                    audit_event(
+                        "tool.approval.granted",
+                        {
+                            "user_id": user_id,
+                            "tool_name": tool_name,
+                            "scope": "always_tool",
+                            "rule_id": rule.id,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to persist always_tool rule")
+                approvals[call.tool_call_id] = ToolApproved(override_args=override)
+                summary = "approved (always_tool)"
+            elif kind == "always_pattern":
+                try:
+                    rule = store.add_rule(tool_name, args, action="allow")
+                    audit_event(
+                        "tool.approval.granted",
+                        {
+                            "user_id": user_id,
+                            "tool_name": tool_name,
+                            "scope": "always_pattern",
+                            "rule_id": rule.id,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to persist always_pattern rule")
+                approvals[call.tool_call_id] = ToolApproved(override_args=override)
+                summary = "approved (always_pattern)"
+            else:  # pragma: no cover — Decision Literal covers all branches
+                approvals[call.tool_call_id] = ToolDenied(
+                    message=f"Unknown decision: {kind!r}"
+                )
+                summary = "denied (unknown decision)"
+
+            await out.put(
+                ToolCompleted(
+                    tool_name=tool_name,
+                    duration_ms=int((time.perf_counter() - t_start) * 1000),
+                    summary=summary,
+                )
+            )
+
+        # ``DeferredToolResults`` carries approvals only; deferred.calls
+        # (non-approval deferred tools) are passed through unchanged
+        # because v1 has none of those.
+        return DeferredToolResults(approvals=approvals, calls={}, metadata={})
 
     async def run(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import (
@@ -598,6 +938,9 @@ class AskService:
         prompt = f"{pre_text}\n\nQuestion: {scrubbed}" if pre_text else scrubbed
 
         tools: list = [t for f in self._features if (t := f.as_tool()) is not None]
+        toolsets: list = [
+            ts for f in self._features if (ts := f.as_toolset()) is not None
+        ]
         # Register ``ask_user_question`` only when a channel is wired up.
         # Without a channel the tool would always return the "unavailable"
         # hint, which wastes a turn and shows up as noise in the LLM's
@@ -615,8 +958,32 @@ class AskService:
                     language=self._language,
                 )
             )
-        any_tool = bool(tools)
-        agent = make_ask_agent(self._model, language=self._language, tools=tools)
+        any_tool = bool(tools) or bool(toolsets)
+        # The union output type lets pydantic-ai bubble approval-required
+        # tool calls back to us as DeferredToolRequests instead of looping
+        # forever on a tool that always raises. ``str`` stays the success
+        # path; isinstance disambiguates downstream.
+        if toolsets:
+            from pydantic_ai.tools import DeferredToolRequests
+
+            agent_output_type = str | DeferredToolRequests
+        else:
+            agent_output_type = str
+        # ``tool_proposal`` carries the LLM-facing meta-rules for the
+        # seven write tools (when to propose save_record vs save_allergy,
+        # how to reference attachments by sha256, etc.). Only relevant
+        # when at least one approval-gated toolset is wired — without it
+        # the LLM doesn't have those tools anyway and the extra prose
+        # just inflates the system prompt.
+        extra_prompts = ["tool_proposal"] if toolsets else None
+        agent = make_ask_agent(
+            self._model,
+            language=self._language,
+            tools=tools,
+            toolsets=toolsets,
+            output_type=agent_output_type,
+            extra_prompt_names=extra_prompts,
+        )
 
         out: asyncio.Queue[Event | None] = asyncio.Queue()
         st: dict = {
@@ -702,36 +1069,108 @@ class AskService:
                         await out.put(LlmFirstToken(ttft_ms=ttft_ms))
                     await out.put(TokenChunk(text=text))
 
-            run_kwargs: dict = {
+            base_run_kwargs: dict = {
                 "deps": deps,
-                "message_history": (
-                    _sanitize_history_for_llm(message_history, scrub=history_scrub)
-                    if message_history
-                    else None
-                ),
                 "event_stream_handler": _handle_events,
             }
             if any_tool:
-                run_kwargs["usage_limits"] = UsageLimits(request_limit=5)
+                base_run_kwargs["usage_limits"] = UsageLimits(request_limit=5)
+            initial_history = (
+                _sanitize_history_for_llm(message_history, scrub=history_scrub)
+                if message_history
+                else None
+            )
             try:
-                logger.debug("_producer: ENTER agent.run")
-                run_result = await agent.run(prompt, **run_kwargs)
-                logger.debug("_producer: agent.run returned")
-                result["final_text"] = run_result.output
-                try:
-                    result["messages_json"] = run_result.all_messages_json()
-                except Exception:  # noqa: BLE001
-                    logger.exception("failed to capture pydantic-ai messages")
-                try:
-                    result["usage"] = run_result.usage
-                except Exception:  # noqa: BLE001
-                    logger.exception("failed to capture pydantic-ai usage")
-                try:
-                    result["steps"] = build_step_records(
-                        list(run_result.new_messages())
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("failed to build per-step records")
+                # Deferred-tool resume loop. The first iteration sends the
+                # user prompt; subsequent iterations replay the previous
+                # turn's full message history plus the approval results so
+                # the framework executes the now-approved tools and runs
+                # the model's follow-up. Cap iterations as a defense in
+                # depth — a sane gate plus a sane model produces at most
+                # 1 deferred round per turn.
+                from pydantic_ai.tools import DeferredToolRequests
+
+                run_result = None
+                deferred_results = None
+                max_resume_rounds = 4
+                for round_idx in range(max_resume_rounds + 1):
+                    run_kwargs = dict(base_run_kwargs)
+                    if deferred_results is None:
+                        run_kwargs["message_history"] = initial_history
+                        logger.debug("_producer: ENTER agent.run (initial)")
+                        run_result = await agent.run(prompt, **run_kwargs)
+                    else:
+                        run_kwargs["message_history"] = run_result.all_messages()  # type: ignore[union-attr]
+                        run_kwargs["deferred_tool_results"] = deferred_results
+                        logger.debug(
+                            "_producer: ENTER agent.run (resume round=%d)",
+                            round_idx,
+                        )
+                        run_result = await agent.run(**run_kwargs)
+                    logger.debug("_producer: agent.run returned")
+
+                    if isinstance(run_result.output, DeferredToolRequests):
+                        if round_idx == max_resume_rounds:
+                            logger.warning(
+                                "_producer: exceeded %d deferred rounds; "
+                                "denying remaining calls",
+                                max_resume_rounds,
+                            )
+                            audit_event(
+                                "tool.approval.denied",
+                                {
+                                    "user_id": user_id,
+                                    "reason": "round_limit_exceeded",
+                                    "rounds": max_resume_rounds,
+                                },
+                            )
+                            deferred_results = run_result.output.build_results(
+                                approvals={},
+                                approve_all=False,
+                            )
+                            # Force-deny everything: build_results with no
+                            # approvals leaves approvals empty; we need
+                            # explicit ToolDenied entries so the model sees
+                            # a refusal rather than a missing answer.
+                            from pydantic_ai.tools import ToolDenied
+
+                            for call in run_result.output.approvals:
+                                deferred_results.approvals[call.tool_call_id] = (
+                                    ToolDenied(
+                                        message="Approval loop exceeded round limit."
+                                    )
+                                )
+                            continue
+                        resolved = await self._resolve_approvals(
+                            run_result.output, user_id, out
+                        )
+                        if resolved is None:
+                            # cancelled / channel unavailable across all
+                            # calls — exit loop with current state.
+                            result["had_error"] = True
+                            break
+                        deferred_results = resolved
+                        continue
+
+                    # str output → terminal.
+                    result["final_text"] = run_result.output
+                    break
+
+                if run_result is not None and not result["had_error"]:
+                    try:
+                        result["messages_json"] = run_result.all_messages_json()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("failed to capture pydantic-ai messages")
+                    try:
+                        result["usage"] = run_result.usage
+                    except Exception:  # noqa: BLE001
+                        logger.exception("failed to capture pydantic-ai usage")
+                    try:
+                        result["steps"] = build_step_records(
+                            list(run_result.new_messages())
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("failed to build per-step records")
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "_producer: agent.run raised %s: %s", type(exc).__name__, exc

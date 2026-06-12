@@ -1,0 +1,57 @@
+name: save_allergy_tool
+description: |
+  Tool description shown to the LLM for ``save_allergy`` — append one
+  allergy row to ``profile.db``. Allergies are profile-level facts; if
+  the allergy was diagnosed during a specific visit and the report is
+  attached, prefer ``save_record`` with an extracted_labs / notes entry
+  AND a ``save_allergy`` call for the structured fact in the same turn.
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. Pin severity + source to the schema literals so
+      a free-text value never reaches ProfileStore.
+    languages:
+      en: |
+        Add one allergy to the user's profile.
+
+        Field notes:
+          - ``substance`` is the allergen (drug, food, environmental).
+            Keep it as the user said it. Lowercase preferred but not
+            required.
+          - ``severity`` must be one of: ``mild``, ``moderate``,
+            ``severe``, ``life_threatening``. If the user is vague
+            ("I'm a bit allergic"), pick ``mild``; if they describe
+            anaphylaxis or epinephrine, pick ``life_threatening``.
+            Never invent a fifth value.
+          - ``source`` must be one of: ``self_report`` (user said so),
+            ``provider`` (a clinician told them), ``test`` (formal
+            allergy test). Default to ``self_report`` when the user
+            does not specify.
+          - ``onset_date`` is when the allergy first appeared. Null if
+            unknown.
+          - ``end_date`` is when the allergy was resolved (rare —
+            outgrown food allergies, desensitization). Almost always
+            null.
+
+        One call per allergen. Cross-reactive allergens (penicillin
+        and amoxicillin) are still separate facts — propose two calls.
+      zh: |
+        把一条过敏记录加入用户画像。
+
+        字段说明：
+          - ``substance`` 是过敏原（药物、食物、环境）。按用户口语原样
+            记录。建议小写但不强制。
+          - ``severity`` 必须为以下之一：``mild`` / ``moderate`` /
+            ``severe`` / ``life_threatening``。用户说得含糊（"有点过敏"）
+            选 ``mild``；描述过敏性休克或自己用过肾上腺素笔，选
+            ``life_threatening``。**不要**自创第五个值。
+          - ``source`` 必须为以下之一：``self_report``（用户自述）/
+            ``provider``（医生告知）/ ``test``（正式过敏检测）。用户
+            没说就默认 ``self_report``。
+          - ``onset_date`` 是首次出现过敏的日期。不知道就留 null。
+          - ``end_date`` 是过敏已消解的日期（罕见——食物过敏自愈、
+            脱敏治疗）。绝大多数情况留 null。
+
+        一次调用对应一种过敏原。交叉过敏（青霉素与阿莫西林）也算两条
+        独立事实——分两次调用。

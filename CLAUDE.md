@@ -223,6 +223,15 @@ CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
 - 中英双语均为必填（validator 强制校验），缺任一语言会在启动时 fail-fast。
 - Phoenix 同步走 `prompts push/pull`，不要手动编辑 Phoenix 侧再回写 YAML。
 
+## Test user_id convention
+
+测试里写 `data/users/<uid>/` 时**统一**用两个固定 uid，避免污染开发者真实用户目录、也方便 fixture 一把清掉：
+
+- 单元测试 → `user_id="test"`
+- e2e 测试（`tests/e2e/`） → `user_id="e2e"`
+
+任何 `apply_context(...)`、`SettingsStore(...)`、`BlobStore(...)`、`ProfileStore(...)` 等需要 user_id 的入口都必须挑这两个之一。新加测试不要再发明 `alice`/`bob`/`u1` 之类——历史代码里残留的也鼓励顺手替换掉。临时手工调用 (e.g. dev 跑 CLI 时) 用别的就好。
+
 ## Development Workflow
 
 ```
