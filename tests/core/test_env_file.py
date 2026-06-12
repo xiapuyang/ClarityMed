@@ -60,3 +60,21 @@ def test_missing_file_returns_empty(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
     cfg = _reload_config()
     assert cfg.load_env_file() == {}
+
+
+def test_strips_leading_export(tmp_path: Path, monkeypatch):
+    """Lines copy-pasted from a shell-sourceable .env keep ``export `` —
+    the loader must strip it so the key isn't stored as ``"export NAME"``."""
+    monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
+    monkeypatch.delenv("CLARITYMED_ALLOW_MINERU", raising=False)
+    monkeypatch.delenv("EXPORTED_QUOTED", raising=False)
+    cfg = _reload_config()
+    (tmp_path / ".env").write_text(
+        'export CLARITYMED_ALLOW_MINERU=1\nexport EXPORTED_QUOTED="has spaces"\n',
+        encoding="utf-8",
+    )
+    applied = cfg.load_env_file()
+    assert applied["CLARITYMED_ALLOW_MINERU"] == "1"
+    assert applied["EXPORTED_QUOTED"] == "has spaces"
+    assert os.environ["CLARITYMED_ALLOW_MINERU"] == "1"
+    assert "export CLARITYMED_ALLOW_MINERU" not in os.environ

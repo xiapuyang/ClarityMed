@@ -137,16 +137,24 @@ class OcrWorker:
             self._queue.task_done()
 
     async def _extract(self, job: OcrJob) -> OcrCompleted:
-        # Skip if the sentinel is already on disk — same blob hashed
-        # twice, only OCR once.
+        # Sentinel on disk = a prior worker run already produced a result
+        # for this blob. Read it and decide:
+        #   * status="done"/"empty" → short-circuit with provider="cache"
+        #     so the UI can show a cache hit instead of re-extracting.
+        #   * status="failed" → treat as miss and re-run. Otherwise a
+        #     single bad run (e.g. CLARITYMED_ALLOW_MINERU not set when
+        #     the worker started) sticks forever even after the cause is
+        #     fixed, blocking every retry with the same sha.
         blob_store = BlobStore(job.user_id)
-        if blob_store.ocr_done(job.sha256):
+        cached = self._read_cached_sentinel(blob_store, job.sha256)
+        if cached is not None and cached.get("status") != "failed":
             return OcrCompleted(
                 user_id=job.user_id,
                 session_id=job.session_id,
                 sha256=job.sha256,
-                status="done",
+                status=cached.get("status", "done"),
                 provider="cache",
+                reason=cached.get("reason"),
             )
         try:
             text = await self._provider.extract_text(job.blob_path)
@@ -189,6 +197,24 @@ class OcrWorker:
             status=status,
             provider=provider_label,
         )
+
+    def _read_cached_sentinel(self, blob_store: BlobStore, sha256: str) -> dict | None:
+        """Return the parsed ocr.json contents, or None if no sentinel."""
+        if not blob_store.ocr_done(sha256):
+            return None
+        try:
+            return json.loads(
+                blob_store.ocr_meta_path(sha256).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            # A corrupt sentinel is no more useful than no sentinel —
+            # log and re-run extraction rather than crash the worker.
+            logger.warning(
+                "ocr worker: corrupt sentinel for %s, re-extracting (%s)",
+                sha256[:8],
+                exc,
+            )
+            return None
 
     def _write_sentinel(
         self,

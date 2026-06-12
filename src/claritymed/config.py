@@ -129,8 +129,9 @@ def load_env_file(path: Path | None = None) -> dict[str, str]:
 
     Per-user keys (provider API keys, language overrides, default user) live
     in the runtime root rather than the repo, so an open-source clone never
-    ships secrets. Lines starting with ``#`` are ignored. Existing env vars
-    are preserved — the file is a default, not an override.
+    ships secrets. Lines starting with ``#`` are ignored. A leading
+    ``export `` is stripped so the same file can be sourced by a shell.
+    Existing env vars are preserved — the file is a default, not an override.
 
     Returns the dict of keys that were applied (useful for tests).
     """
@@ -142,6 +143,8 @@ def load_env_file(path: Path | None = None) -> dict[str, str]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
         if "=" not in line:
             continue
         key, _, value = line.partition("=")

@@ -158,3 +158,86 @@ async def test_cache_short_circuit_when_sentinel_present(_ctx):
 
     assert completions[0].status == "done"
     assert completions[0].provider == "cache"
+
+
+async def test_cache_propagates_empty_status(_ctx):
+    """A cached ``empty`` sentinel must not be reported as ``done``.
+
+    The old worker synthesized status=done on any cache hit, which lied
+    about both empty and failed results. The empty case must keep its
+    real status so the UI can show "no text extracted" instead of "ok".
+    """
+    bs = BlobStore("alice")
+    sha = bs.store(b"x", "txt")
+    bs.ocr_path(sha).write_text("", encoding="utf-8")
+    bs.ocr_meta_path(sha).write_text(
+        json.dumps({"status": "empty", "provider": "pre-existing"}),
+        encoding="utf-8",
+    )
+
+    completions: list[OcrCompleted] = []
+    worker = OcrWorker(
+        _StubProvider(raise_with="should not call"),
+        listener=lambda c: completions.append(c),
+    )
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="alice",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "txt"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    assert completions[0].status == "empty"
+    assert completions[0].provider == "cache"
+
+
+async def test_cached_failure_triggers_retry(_ctx):
+    """A cached ``failed`` sentinel must NOT short-circuit.
+
+    Otherwise a single bad run (e.g. provider env var not set) keeps the
+    sha permanently marked failed even after the cause is fixed — the
+    user has no way to retry short of manually deleting the sentinel.
+    """
+    bs = BlobStore("alice")
+    sha = bs.store(b"x", "pdf")
+    bs.ocr_path(sha).write_text("", encoding="utf-8")
+    bs.ocr_meta_path(sha).write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "provider": None,
+                "reason": "no OCR providers available for .pdf",
+                "chars": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completions: list[OcrCompleted] = []
+    worker = OcrWorker(
+        _StubProvider(text="recovered text"),
+        listener=lambda c: completions.append(c),
+    )
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="alice",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "pdf"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    assert completions[0].status == "done"
+    assert completions[0].provider != "cache"
+    # Sentinel overwritten with the fresh result.
+    sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "done"
+    assert sentinel["chars"] == len("recovered text")
