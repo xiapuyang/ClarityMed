@@ -31,10 +31,12 @@ Existing pytest is not touched; this is the benchmark's own set.
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from claritymed.stores.manifest_store import ManifestStore
+from claritymed.stores.profile import ProfileStore
 
 USER_ID = "bench"
 
@@ -165,6 +167,110 @@ def _p_args_present(args: dict) -> tuple[bool, str]:
     """Catch-all — used for cases graded by behavior, not args content
     (multi-tool, decline, ask, fp)."""
     return True, "no per-args predicate"
+
+
+def _p_substance_peanut(args: dict) -> tuple[bool, str]:
+    s = _str(args, "substance").lower()
+    if "peanut" in s or "花生" in s:
+        return True, f"substance={s!r}"
+    return False, f"substance does not look like peanut: {s!r}"
+
+
+def _p_medication_any(args: dict) -> tuple[bool, str]:
+    """Catch-all — any non-empty name is valid for ask_then_save_medication."""
+    n = _str(args, "name").lower()
+    if n:
+        return True, f"name={n!r}"
+    return False, "name is empty"
+
+
+def _p_birth_year_from_age(stated_age: int) -> Callable[[dict], tuple[bool, str]]:
+    """Return a predicate that checks update_profile_field maps stated age → birth_year.
+
+    Accepts ±1 year to handle the ambiguity of whether the user's birthday
+    has already passed in the current calendar year.
+    """
+    current_year = datetime.date.today().year
+    expected_year = current_year - stated_age
+
+    def _check(args: dict) -> tuple[bool, str]:
+        if args.get("field") != "birth_date":
+            return False, f"field={args.get('field')!r}, expected birth_date"
+        val = _str(args, "value")
+        if not val:
+            return False, "value empty"
+        try:
+            year = int(val[:4])
+        except ValueError:
+            return False, f"cannot parse year from {val!r}"
+        if abs(year - expected_year) <= 1:
+            return True, f"birth_date={val!r} (year={year} ≈ {expected_year})"
+        return (
+            False,
+            f"year={year} not within ±1 of {expected_year} for age {stated_age}",
+        )
+
+    return _check
+
+
+# --- seeds -----------------------------------------------------------
+
+
+def _seed_profile_weight() -> dict:
+    """Seed weight_kg=72.5 so the profile already has this value."""
+    store = ProfileStore(USER_ID)
+    store.update_profile_field("weight_kg", 72.5, owner_user_id=USER_ID)
+    return {}
+
+
+def _seed_profile_sex_female() -> dict:
+    """Seed sex='female' so repeating 'I'm a woman' should be a no-op."""
+    store = ProfileStore(USER_ID)
+    store.update_profile_field("sex", "female", owner_user_id=USER_ID)
+    return {}
+
+
+def _seed_profile_occupation() -> dict:
+    """Seed current_occupation='nurse' for the repeat-occupation FP case."""
+    store = ProfileStore(USER_ID)
+    store.update_profile_field("current_occupation", "nurse", owner_user_id=USER_ID)
+    return {}
+
+
+def _seed_allergy_penicillin() -> dict:
+    """Seed an active penicillin allergy so repeating it should be a no-op."""
+    from claritymed.core.schemas.patient import Allergy
+    from claritymed.stores.profile import ProfileStore as _PS
+
+    _PS(USER_ID).add_allergy(
+        Allergy(substance="penicillin", severity="severe", source="self_report"),
+        owner_user_id=USER_ID,
+    )
+    return {}
+
+
+def _seed_condition_hypertension() -> dict:
+    """Seed an active hypertension condition."""
+    from claritymed.core.schemas.patient import Condition
+    from claritymed.stores.profile import ProfileStore as _PS
+
+    _PS(USER_ID).add_condition(
+        Condition(display="hypertension"),
+        owner_user_id=USER_ID,
+    )
+    return {}
+
+
+def _seed_medication_metformin() -> dict:
+    """Seed an active metformin medication."""
+    from claritymed.core.schemas.patient import Medication
+    from claritymed.stores.profile import ProfileStore as _PS
+
+    _PS(USER_ID).add_medication(
+        Medication(display="metformin", dose="500 mg", frequency="twice daily"),
+        owner_user_id=USER_ID,
+    )
+    return {}
 
 
 # --- seed (delete_record) -------------------------------------------
@@ -635,6 +741,149 @@ CASES: list[Case] = [
                 "If I were allergic to sulfa drugs, what antibiotics should I avoid?"
             ),
             "zh": "假如我对磺胺类过敏，有哪些抗生素需要避开？",
+        },
+    ),
+    # ---- HARD: age → birth_year inference ---------------------------
+    Case(
+        # User states age only — model must infer birth_year = current_year − age
+        # and call update_profile_field(field="birth_date", value="YYYY-01-01").
+        name="age_to_birth_year",
+        tier="hard",
+        expected_behavior="call_tool",
+        expected_tool="update_profile_field",
+        args_predicate=_p_birth_year_from_age(35),
+        prompts={
+            "en": "By the way, I'm 35 years old.",
+            "zh": "对了，我今年 35 岁。",
+        },
+    ),
+    Case(
+        # Conversational phrasing with extra context — model must still
+        # extract the age and map it to birth_date, ignoring the surrounding
+        # chitchat about birthdays.
+        name="age_to_birth_year_casual",
+        tier="hard",
+        expected_behavior="call_tool",
+        expected_tool="update_profile_field",
+        args_predicate=_p_birth_year_from_age(35),
+        prompts={
+            "en": (
+                "I just turned 35 last month. Crazy how fast time flies. "
+                "Anyway, I don't think you have my age on file."
+            ),
+            "zh": (
+                "我上个月刚满 35 岁，时间过得真快。顺便说一下，"
+                "我觉得你档案里还没有我的年龄。"
+            ),
+        },
+    ),
+    # ---- FP: already-in-profile — seeded data should not be re-saved --
+    # Each case pre-seeds one or more profile facts, then repeats that
+    # same information in natural language. The expected behavior is
+    # "decline" — the model should recognise the profile already has the
+    # data (via [Patient profile] block) and skip re-invoking the tool.
+    Case(
+        name="fp_repeat_weight",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        seed=_seed_profile_weight,
+        prompts={
+            "en": "My weight is still around 72-73 kg, hasn't changed.",
+            "zh": "我的体重还是 72-73 公斤左右，没什么变化。",
+        },
+    ),
+    Case(
+        name="fp_repeat_sex",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        seed=_seed_profile_sex_female,
+        prompts={
+            "en": "Just so you know, I'm a woman.",
+            "zh": "顺便说一下，我是女性。",
+        },
+    ),
+    Case(
+        name="fp_repeat_occupation",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        seed=_seed_profile_occupation,
+        prompts={
+            "en": "I work as a nurse, in case that's helpful context.",
+            "zh": "我是一名护士，提供一下背景信息。",
+        },
+    ),
+    Case(
+        name="fp_repeat_allergy",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        seed=_seed_allergy_penicillin,
+        prompts={
+            "en": "Just a reminder — I'm still allergic to penicillin.",
+            "zh": "提醒一下，我对青霉素还是过敏的。",
+        },
+    ),
+    Case(
+        name="fp_repeat_condition",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        seed=_seed_condition_hypertension,
+        prompts={
+            "en": "I have high blood pressure, as you probably already know.",
+            "zh": "我有高血压，你应该已经知道了。",
+        },
+    ),
+    Case(
+        name="fp_repeat_medication",
+        tier="fp",
+        expected_behavior="decline",
+        args_predicate=_p_args_present,
+        seed=_seed_medication_metformin,
+        prompts={
+            "en": "I'm still taking metformin 500 mg twice a day for my diabetes.",
+            "zh": "我还在吃二甲双胍 500 mg 一天两次，控制糖尿病。",
+        },
+    ),
+    # ---- HARD: sequential ask → tool --------------------------------
+    # These cases use _AutoAnswerFirstOptionChannel: the model asks a
+    # clarifying question, receives option[0] as the answer, then must
+    # proceed to call the ingest tool with that answer.
+    # Predicate grading checks:
+    #   - asked at least once   (sequential flow occurred)
+    #   - expected tool called  (model acted on the answer)
+    # If the model skips the ask and guesses directly, outcome is
+    # "called_without_asking" (still predicate_pass=True — the save
+    # happened, just without the interactive step).
+    Case(
+        name="ask_then_save_allergy",
+        tier="hard",
+        expected_behavior="ask_then_call_tool",
+        expected_tool="save_allergy",
+        args_predicate=_p_substance_peanut,
+        prompts={
+            "en": (
+                "I'm allergic to peanuts — I always get a reaction. "
+                "Please add it to my profile."
+            ),
+            "zh": "我对花生过敏，每次接触都有反应。请帮我加到档案里。",
+        },
+    ),
+    Case(
+        name="ask_then_save_medication",
+        tier="hard",
+        expected_behavior="ask_then_call_tool",
+        expected_tool="save_medication",
+        args_predicate=_p_medication_any,
+        prompts={
+            "en": (
+                "I take a beta blocker for my blood pressure. "
+                "Please add it to my chart."
+            ),
+            "zh": "我在吃 beta blocker（β 受体阻滞剂）控制血压。请帮我加到病历里。",
         },
     ),
 ]

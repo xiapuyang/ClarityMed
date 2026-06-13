@@ -112,6 +112,27 @@ class _RecordingDeclinePromptChannel:
         raise UserDeclinedAnswer("benchmark stub: user declined")
 
 
+class _AutoAnswerFirstOptionChannel:
+    """Records asks and answers every question with option[0].
+
+    Used for ``ask_then_call_tool`` cases: the model asks for a missing
+    detail, receives the first presented option, and then proceeds to
+    call the ingest tool with that answer.  We always pick option[0] to
+    keep the trial deterministic — predicate grading only checks that
+    the right tool fired, not which option was chosen.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[AskUserQuestionInput] = []
+
+    async def ask(self, payload: AskUserQuestionInput) -> AskUserQuestionResult:
+        self.calls.append(payload)
+        answers: dict[str, str | list[str]] = {
+            q.question: q.options[0].label for q in payload.questions
+        }
+        return AskUserQuestionResult(answers=answers)
+
+
 # --- bench env helpers ----------------------------------------------
 
 
@@ -213,7 +234,15 @@ async def _run_one_trial(
     tokens = apply_context(request_id, USER_ID, user_lang)
 
     approval = _AutoApproveChannel()
-    prompt_channel = _RecordingDeclinePromptChannel()
+    # ask_then_call_tool cases need the model to receive a real answer so it
+    # can proceed to call the ingest tool.  All other cases use decline to
+    # stop after the ask is recorded and prevent follow-on tool contamination.
+    if case.expected_behavior == "ask_then_call_tool":
+        prompt_channel: (
+            _RecordingDeclinePromptChannel | _AutoAnswerFirstOptionChannel
+        ) = _AutoAnswerFirstOptionChannel()
+    else:
+        prompt_channel = _RecordingDeclinePromptChannel()
     final_chunks: list[str] = []
     error_msg: str | None = None
     t0 = time.perf_counter()
@@ -410,6 +439,49 @@ def _classify(
             correct_tool=False,
             wrong_tools=[],
             no_tool=True,
+        )
+
+    if case.expected_behavior == "ask_then_call_tool":
+        # Success = asked at least once AND then called the expected ingest tool.
+        # The auto-answer channel answered, so ingest tool should have fired.
+        assert case.expected_tool is not None
+        target = [c for c in ingest_calls if c.tool_name == case.expected_tool]
+        wrong = [n for n in ingest_names if n != case.expected_tool]
+        if not ask_calls:
+            if target:
+                return dict(
+                    outcome="called_without_asking",
+                    predicate_pass=True,
+                    predicate_reason=f"skipped ask, called {case.expected_tool} directly",
+                    correct_tool=True,
+                    wrong_tools=wrong,
+                    no_tool=False,
+                )
+            return dict(
+                outcome="no_ask_no_tool",
+                predicate_pass=False,
+                predicate_reason="neither asked nor called expected tool",
+                correct_tool=False,
+                wrong_tools=wrong,
+                no_tool=True,
+            )
+        if target:
+            pred_ok, pred_reason = case.args_predicate(target[0].args)
+            return dict(
+                outcome="correct" if pred_ok else "predicate_fail",
+                predicate_pass=pred_ok,
+                predicate_reason=pred_reason,
+                correct_tool=True,
+                wrong_tools=wrong,
+                no_tool=False,
+            )
+        return dict(
+            outcome="asked_but_no_tool",
+            predicate_pass=False,
+            predicate_reason=f"asked {len(ask_calls)} time(s) but {case.expected_tool} never called",
+            correct_tool=False,
+            wrong_tools=wrong,
+            no_tool=not ingest_calls,
         )
 
     raise ValueError(f"unknown expected_behavior: {case.expected_behavior!r}")

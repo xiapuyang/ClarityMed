@@ -49,6 +49,12 @@ paste:
 profile_context:
   mode: deterministic
 
+# --- Agent / LLM loop limits --------------------------------------------
+# request_limit: max LLM requests per user turn (includes tool-call rounds).
+# Raise if deep multi-tool flows hit the cap; lower for cost-constrained deploys.
+agent:
+  request_limit: 10
+
 # --- Tool approval rules ------------------------------------------------
 # rule_ttl_hours: how long an "always allow" rule stays active before the
 # user is prompted again. Range: 1–720 (1 hour to 30 days).

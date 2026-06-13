@@ -171,7 +171,9 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     port = int(os.environ.get("BGE_M3_PORT", DEFAULT_PORT))
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    # log_config=None prevents uvicorn from calling logging.config.dictConfig(),
+    # which would overwrite our basicConfig format (stripping asctime).
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", log_config=None)
 
 
 if __name__ == "__main__":

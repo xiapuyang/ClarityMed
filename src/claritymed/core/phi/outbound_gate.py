@@ -24,6 +24,7 @@ URL scrubs rather than leaks.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlparse
 
@@ -31,6 +32,12 @@ if TYPE_CHECKING:
     from claritymed.core.scrub.service import ScrubService
 
 _LOCAL_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# Process-level singleton so the heavy privacy-filter ML model (ONNX / PyTorch)
+# is loaded at most once, even when make_outbound_gate() is called repeatedly
+# across trials or per-request factory rebuilds.
+_SCRUB_SERVICE: ScrubService | None = None
+_SCRUB_SERVICE_LOCK = threading.Lock()
 
 
 class OutboundTextGate(Protocol):
@@ -78,9 +85,17 @@ def make_outbound_gate(phi_kind: str) -> PhiOutboundGate | None:
 
     Expects an already-resolved kind string (``"local"`` or ``"cloud"``).
     Call ``resolve_phi_kind`` first when the raw config value may be ``None``.
+
+    The underlying ``ScrubService`` is a process-level singleton: loading the
+    privacy-filter ML model (ONNX / PyTorch) is expensive (~1-3 GB, several
+    seconds), so we must not repeat it per-request or per-trial in benchmarks.
     """
     if phi_kind != "cloud":
         return None
-    from claritymed.core.scrub.service import ScrubService
+    global _SCRUB_SERVICE
+    with _SCRUB_SERVICE_LOCK:
+        if _SCRUB_SERVICE is None:
+            from claritymed.core.scrub.service import ScrubService
 
-    return PhiOutboundGate(ScrubService.from_config())
+            _SCRUB_SERVICE = ScrubService.from_config()
+        return PhiOutboundGate(_SCRUB_SERVICE)

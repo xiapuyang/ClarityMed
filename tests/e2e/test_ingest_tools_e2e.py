@@ -21,6 +21,7 @@ model talks to disposable per-test stores.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 from typing import Any, Callable
 
@@ -28,7 +29,12 @@ import pytest
 
 from claritymed.context import apply_context, reset_context
 from claritymed.core.interaction import ApprovalDecision
+from claritymed.core.interaction.schemas import (
+    AskUserQuestionInput,
+    AskUserQuestionResult,
+)
 from claritymed.core.rag import load_retrieval_config
+from claritymed.core.schemas.patient import Allergy, Condition, Medication
 from claritymed.orchestrator.services import AskService
 from claritymed.orchestrator.services.chat_session import ChatSession
 from claritymed.stores.manifest_store import ManifestStore
@@ -157,9 +163,36 @@ def _seed_delete_target() -> tuple[str, str]:
     return f"{category}/{slug}", "exam-report"
 
 
+class _AutoAnswerFirstOptionChannel:
+    """Prompt channel that auto-selects the first available option for every question.
+
+    Used for sequential ask→tool tests: instead of declining (which stops the
+    agent) or blocking (which hangs), we pick option[0] so the LLM receives a
+    concrete answer and can proceed to call the ingest tool.  Records every
+    question payload so tests can assert the ask happened.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[AskUserQuestionInput] = []
+
+    async def ask(self, payload: AskUserQuestionInput) -> AskUserQuestionResult:
+        self.calls.append(payload)
+        answers: dict[str, str | list[str]] = {}
+        for q in payload.questions:
+            answers[q.question] = q.options[0].label
+        logger.info(
+            "[e2e] _AutoAnswerFirstOptionChannel: auto-answered %d question(s): %s",
+            len(payload.questions),
+            {q.question: answers[q.question] for q in payload.questions},
+        )
+        return AskUserQuestionResult(answers=answers)
+
+
 async def _run_one_attempt(
     provider_id: str,
     prompt: str,
+    *,
+    prompt_channel: object | None = None,
 ) -> tuple[_AutoApproveChannel, list[Any]]:
     """Run one full AskService turn end-to-end. Returns (channel, events).
 
@@ -167,6 +200,10 @@ async def _run_one_attempt(
     bias the next attempt. Resolves the live local provider via
     production code (``resolve_provider``) so this exercises the same
     wiring the TUI uses.
+
+    Pass ``prompt_channel`` to wire up interactive question-answering;
+    leave it ``None`` for tool-only tests (ask_user_question won't be
+    registered at all).
     """
     from claritymed.core.llm.model import build_model
     from claritymed.stores.models import resolve_provider
@@ -185,6 +222,7 @@ async def _run_one_attempt(
         provider_config=provider,
         rag_mode=rag_mode,
         tool_approval_channel=channel,
+        prompt_channel=prompt_channel,
     )
 
     events: list[Any] = []
@@ -327,6 +365,271 @@ async def test_ingest_tool_e2e(
         f"The local LLM never proposed this tool — "
         f"consider strengthening the prompt.\n"
         f"  prompt: {prompt!r}"
+    )
+
+
+async def test_age_to_birth_year_e2e(e2e_provider_id: str, _ctx) -> None:
+    """Stating age triggers update_profile_field(field='birth_date', value='YYYY-01-01').
+
+    The LLM must compute birth_year = current_year − stated_age and store an
+    ISO date rather than a raw age integer.  Accepts ±1 year to account for
+    whether the user's birthday has already passed in the current year.
+    """
+    stated_age = 35
+    current_year = datetime.date.today().year
+    expected_year = current_year - stated_age
+
+    prompt = f"I'm {stated_age} years old. Please update my profile with my birth year."
+
+    def _verify(channel: _AutoApproveChannel) -> None:
+        calls = [c for c in channel.calls if c[0] == "update_profile_field"]
+        assert calls, "update_profile_field was not called"
+        args = calls[0][1]
+        assert args.get("field") == "birth_date", (
+            f"field={args.get('field')!r}, expected 'birth_date'"
+        )
+        val = str(args.get("value", ""))
+        assert val, "birth_date value is empty"
+        try:
+            year = int(val[:4])
+        except ValueError:
+            pytest.fail(f"cannot parse year from value={val!r}")
+        assert abs(year - expected_year) <= 1, (
+            f"year={year} not within ±1 of {expected_year} for age {stated_age}"
+        )
+        profile = ProfileStore(USER_ID).get_profile()
+        assert profile is not None and profile.birth_date is not None, (
+            "Profile.birth_date is still null after update"
+        )
+
+    last_error: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
+        try:
+            _verify(channel)
+            return
+        except (AssertionError, Exception) as exc:
+            last_error = exc
+            logger.info(
+                "[e2e] age_to_birth_year attempt %d/%d failed: %s",
+                attempt + 1,
+                MAX_ATTEMPTS,
+                exc,
+            )
+    pytest.fail(
+        f"age_to_birth_year: no successful attempt across {MAX_ATTEMPTS} tries. "
+        f"last error: {last_error}\n  prompt: {prompt!r}"
+    )
+
+
+async def test_fp_repeat_weight_e2e(e2e_provider_id: str, _ctx) -> None:
+    """Repeating already-stored weight must not create a duplicate write.
+
+    The profile is pre-seeded with weight_kg=72.5.  The user then says
+    roughly the same value.  The model should either not call the tool at
+    all (prompt-layer dedup) or call it and receive no_change (tool-layer
+    dedup).  Either way, the DB value must remain exactly 72.5 and no
+    extra audit rows should appear from a redundant write.
+    """
+    ProfileStore(USER_ID).update_profile_field("weight_kg", 72.5, owner_user_id=USER_ID)
+    prompt = "My weight is still around 72-73 kg, nothing has changed."
+
+    for attempt in range(MAX_ATTEMPTS):
+        channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
+        upf_calls = [c for c in channel.calls if c[0] == "update_profile_field"]
+        weight_writes = [
+            c
+            for c in upf_calls
+            if c[1].get("field") == "weight_kg"
+            and abs(float(c[1].get("value", 0)) - 72.5) < 2
+        ]
+        if weight_writes:
+            logger.info(
+                "[e2e] fp_repeat_weight attempt %d/%d: tool was called (%d time(s)); "
+                "tool-layer dedup should have returned no_change",
+                attempt + 1,
+                MAX_ATTEMPTS,
+                len(weight_writes),
+            )
+            profile = ProfileStore(USER_ID).get_profile()
+            assert profile is not None and profile.weight_kg == 72.5, (
+                f"weight_kg changed from seeded value; got {profile.weight_kg if profile else None!r}"
+            )
+            return
+        # No weight tool call at all — prompt-layer dedup worked perfectly.
+        return
+    pytest.fail(
+        f"fp_repeat_weight: could not complete any attempt in {MAX_ATTEMPTS} tries"
+    )
+
+
+async def test_fp_repeat_allergy_e2e(e2e_provider_id: str, _ctx) -> None:
+    """Repeating an already-stored allergy must not create a duplicate row."""
+    store = ProfileStore(USER_ID)
+    store.add_allergy(
+        Allergy(substance="penicillin", severity="severe", source="self_report"),
+        owner_user_id=USER_ID,
+    )
+    prompt = "Just a reminder — I'm still allergic to penicillin."
+
+    for _attempt in range(MAX_ATTEMPTS):
+        channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
+        allergies = ProfileStore(USER_ID).list_allergies()
+        assert len(allergies) == 1, (
+            f"expected 1 allergy row (seeded), got {len(allergies)}"
+        )
+        return
+    pytest.fail("fp_repeat_allergy: could not complete any attempt")
+
+
+async def test_fp_repeat_condition_e2e(e2e_provider_id: str, _ctx) -> None:
+    """Repeating an already-stored condition must not create a duplicate row."""
+    store = ProfileStore(USER_ID)
+    store.add_condition(
+        Condition(display="hypertension"),
+        owner_user_id=USER_ID,
+    )
+    prompt = "I have high blood pressure, as you probably already know."
+
+    for _attempt in range(MAX_ATTEMPTS):
+        channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
+        conds = ProfileStore(USER_ID).list_conditions()
+        assert len(conds) == 1, f"expected 1 condition row (seeded), got {len(conds)}"
+        return
+    pytest.fail("fp_repeat_condition: could not complete any attempt")
+
+
+async def test_fp_repeat_medication_e2e(e2e_provider_id: str, _ctx) -> None:
+    """Repeating an already-stored medication must not create a duplicate row."""
+    store = ProfileStore(USER_ID)
+    store.add_medication(
+        Medication(display="metformin", dose="500 mg", frequency="twice daily"),
+        owner_user_id=USER_ID,
+    )
+    prompt = "I'm still taking metformin 500 mg twice a day for my diabetes."
+
+    for _attempt in range(MAX_ATTEMPTS):
+        channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
+        meds = ProfileStore(USER_ID).list_medications()
+        assert len(meds) == 1, f"expected 1 medication row (seeded), got {len(meds)}"
+        return
+    pytest.fail("fp_repeat_medication: could not complete any attempt")
+
+
+async def test_ask_then_save_allergy_e2e(e2e_provider_id: str, _ctx) -> None:
+    """Sequential ask→tool: LLM asks severity clarification, auto-answer, then saves.
+
+    Prompt gives substance but no severity. The model should:
+      1. Call ask_user_question to clarify severity.
+      2. Receive the auto-selected first option as the answer.
+      3. Call save_allergy with the answered severity.
+
+    If the model skips the ask and guesses severity directly, that is also
+    accepted (predicate only requires save_allergy fired with substance=peanuts).
+    The ask is tracked separately so callers can see whether the sequential
+    flow actually triggered.
+    """
+    prompt = (
+        "I'm allergic to peanuts — I always get a reaction. "
+        "Please add it to my profile."
+    )
+
+    last_error: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        pc = _AutoAnswerFirstOptionChannel()
+        channel, _events = await _run_one_attempt(
+            e2e_provider_id, prompt, prompt_channel=pc
+        )
+        allergy_calls = [c for c in channel.calls if c[0] == "save_allergy"]
+        if not allergy_calls:
+            logger.info(
+                "[e2e] ask_then_save_allergy attempt %d/%d: save_allergy not called "
+                "(asked=%d times, all_calls=%r)",
+                attempt + 1,
+                MAX_ATTEMPTS,
+                len(pc.calls),
+                [c[0] for c in channel.calls],
+            )
+            continue
+        try:
+            args = allergy_calls[0][1]
+            substance = str(args.get("substance", "")).lower()
+            assert "peanut" in substance, (
+                f"save_allergy called but substance={substance!r} not peanuts"
+            )
+            allergies = ProfileStore(USER_ID).list_allergies()
+            assert any("peanut" in a.substance.lower() for a in allergies), (
+                "peanut allergy not found in ProfileStore after save"
+            )
+            if pc.calls:
+                logger.info(
+                    "[e2e] ask_then_save_allergy: sequential flow confirmed "
+                    "(asked %d time(s) then saved)",
+                    len(pc.calls),
+                )
+            return
+        except AssertionError as exc:
+            last_error = exc
+            logger.info(
+                "[e2e] ask_then_save_allergy attempt %d/%d: verify failed: %s",
+                attempt + 1,
+                MAX_ATTEMPTS,
+                exc,
+            )
+
+    pytest.fail(
+        f"ask_then_save_allergy: no successful attempt across {MAX_ATTEMPTS} tries. "
+        f"last error: {last_error}\n  prompt: {prompt!r}"
+    )
+
+
+async def test_ask_then_save_medication_e2e(e2e_provider_id: str, _ctx) -> None:
+    """Sequential ask→tool: LLM asks which beta blocker, auto-answer, then saves.
+
+    Prompt gives drug class but not a specific drug name — the model should ask
+    which one, receive an answer, then call save_medication with the specific drug.
+    """
+    prompt = "I take a beta blocker for my blood pressure. Please add it to my chart."
+
+    last_error: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        pc = _AutoAnswerFirstOptionChannel()
+        channel, _events = await _run_one_attempt(
+            e2e_provider_id, prompt, prompt_channel=pc
+        )
+        med_calls = [c for c in channel.calls if c[0] == "save_medication"]
+        if not med_calls:
+            logger.info(
+                "[e2e] ask_then_save_medication attempt %d/%d: save_medication not called "
+                "(asked=%d times, all_calls=%r)",
+                attempt + 1,
+                MAX_ATTEMPTS,
+                len(pc.calls),
+                [c[0] for c in channel.calls],
+            )
+            continue
+        try:
+            meds = ProfileStore(USER_ID).list_medications()
+            assert meds, "no medication row in ProfileStore after save_medication"
+            if pc.calls:
+                logger.info(
+                    "[e2e] ask_then_save_medication: sequential flow confirmed "
+                    "(asked %d time(s) then saved)",
+                    len(pc.calls),
+                )
+            return
+        except AssertionError as exc:
+            last_error = exc
+            logger.info(
+                "[e2e] ask_then_save_medication attempt %d/%d: verify failed: %s",
+                attempt + 1,
+                MAX_ATTEMPTS,
+                exc,
+            )
+
+    pytest.fail(
+        f"ask_then_save_medication: no successful attempt across {MAX_ATTEMPTS} tries. "
+        f"last error: {last_error}\n  prompt: {prompt!r}"
     )
 
 

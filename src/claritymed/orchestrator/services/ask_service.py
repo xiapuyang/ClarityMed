@@ -864,6 +864,7 @@ class AskService:
         gets a prepended evidence block.
         """
         from pydantic_ai import UsageLimits
+        from pydantic_ai.exceptions import UsageLimitExceeded
 
         turn_ctx = TurnContext(scrubbed=scrubbed, deps=deps)
 
@@ -1069,7 +1070,14 @@ class AskService:
                 "event_stream_handler": _handle_events,
             }
             if any_tool:
-                base_run_kwargs["usage_limits"] = UsageLimits(request_limit=5)
+                from claritymed.config import load_yaml
+
+                _request_limit: int = (
+                    load_yaml("app.yaml").get("agent", {}).get("request_limit", 10)
+                )
+                base_run_kwargs["usage_limits"] = UsageLimits(
+                    request_limit=_request_limit
+                )
             initial_history = (
                 _sanitize_history_for_llm(message_history, scrub=history_scrub)
                 if message_history
@@ -1166,6 +1174,18 @@ class AskService:
                         )
                     except Exception:  # noqa: BLE001
                         logger.exception("failed to build per-step records")
+            except UsageLimitExceeded:
+                logger.warning("_producer: agent.run hit request_limit cap")
+                result["had_error"] = True
+                from claritymed.core.i18n import t
+
+                await out.put(
+                    Error(
+                        error_type="usage_limit",
+                        message=t("errors.usage_limit", lang=self._language),
+                        retryable=True,
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "_producer: agent.run raised %s: %s",
