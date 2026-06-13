@@ -75,6 +75,8 @@ tool_approval:
 tools:
   ingest:
     max_retries: 3
+  ask_user_question:
+    max_retries: 3
 
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 tracing:

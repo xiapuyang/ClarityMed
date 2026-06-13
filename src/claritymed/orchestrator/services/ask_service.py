@@ -958,6 +958,7 @@ class AskService:
         # tool list — better to omit it entirely for one-shot CLI / eval
         # runs.
         if self._prompt_channel is not None:
+            from claritymed.config import ask_user_question_max_retries
             from claritymed.core.interaction import build_ask_user_question_tool
             from claritymed.core.prompts.registry import PromptRegistry
 
@@ -967,6 +968,7 @@ class AskService:
                 build_ask_user_question_tool(
                     self._prompt_registry,
                     language=self._language,
+                    max_retries=ask_user_question_max_retries(),
                 )
             )
         any_tool = bool(tools) or bool(toolsets)

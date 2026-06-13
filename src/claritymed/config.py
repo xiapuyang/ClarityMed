@@ -175,6 +175,8 @@ _DEFAULT_TOOL_APPROVAL_TTL_HOURS = 24
 
 _DEFAULT_INGEST_TOOL_MAX_RETRIES = 3
 
+_DEFAULT_ASK_USER_QUESTION_MAX_RETRIES = 3
+
 
 def tool_approval_rule_ttl_hours() -> int:
     """Return the TTL (in hours) for always-allow tool approval rules.
@@ -202,6 +204,32 @@ def ingest_tool_max_retries() -> int:
     val = load_yaml("app.yaml").get("tools", {}).get("ingest", {}).get("max_retries")
     if val is None:
         return _DEFAULT_INGEST_TOOL_MAX_RETRIES
+    return int(val)
+
+
+def ask_user_question_max_retries() -> int:
+    """Return the retry budget for the ``ask_user_question`` tool.
+
+    Read from ``app.yaml`` ``tools.ask_user_question.max_retries``.
+    Passed to pydantic-ai's ``Tool(max_retries=N)`` so a small / local
+    model gets N chances to repair a malformed question payload (too
+    few options, missing field, header > 12 chars) before pydantic-ai
+    raises ``UnexpectedModelBehavior``.
+
+    Separate from ``ingest_tool_max_retries`` because the failure modes
+    differ — ingest tools fail on stringified lists and field-name
+    typos, ``ask_user_question`` more often fails on schema shape
+    (1 option instead of ≥2, label length). Defaults to
+    ``_DEFAULT_ASK_USER_QUESTION_MAX_RETRIES`` when missing.
+    """
+    val = (
+        load_yaml("app.yaml")
+        .get("tools", {})
+        .get("ask_user_question", {})
+        .get("max_retries")
+    )
+    if val is None:
+        return _DEFAULT_ASK_USER_QUESTION_MAX_RETRIES
     return int(val)
 
 

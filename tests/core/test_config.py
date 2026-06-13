@@ -48,6 +48,24 @@ def test_ingest_tool_max_retries_falls_back_when_missing(tmp_path, monkeypatch):
     )
 
 
+def test_ask_user_question_max_retries_reads_app_yaml(monkeypatch):
+    """Default config in ``configs/app.yaml`` sets the ask-user-question
+    budget to 3. Separate knob from ingest because the failure modes
+    differ — ingest fails on stringified lists, ask_user_question more
+    often fails on schema shape (1 option, label length)."""
+    cfg = _reload_config()
+    assert cfg.ask_user_question_max_retries() == 3
+
+
+def test_ask_user_question_max_retries_falls_back_when_missing():
+    """In-code default is 3 — pin so a YAML rename or section delete
+    doesn't silently regress to pydantic-ai's library default (which is
+    1, far too tight for small local models)."""
+    from claritymed import config as cfg
+
+    assert cfg._DEFAULT_ASK_USER_QUESTION_MAX_RETRIES == 3
+
+
 def test_load_yaml_missing_returns_empty(monkeypatch):
     cfg = _reload_config()
     assert cfg.load_yaml("does_not_exist.yaml") == {}
