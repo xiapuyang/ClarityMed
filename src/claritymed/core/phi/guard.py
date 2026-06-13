@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import threading
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -72,26 +73,19 @@ class PhiHit(BaseModel):
 
 
 _GUARD_CACHE: "PhiGuard | None" = None
+_GUARD_LOCK = threading.Lock()
 
 
 def get_default_guard() -> "PhiGuard":
-    """Return the process-wide cached ``PhiGuard``.
-
-    Construction reads ``safety.yaml`` AND eagerly builds a
-    ``ScrubService`` (which lazy-loads the ONNX privacy-filter on first
-    scrub call). Caching avoids rebuilding both per request — the YAML
-    is hot-reloadable via ``invalidate_guard_cache()`` for admins.
-    """
-    global _GUARD_CACHE
-    if _GUARD_CACHE is None:
-        _GUARD_CACHE = PhiGuard.from_config()
-    return _GUARD_CACHE
+    """Return the process-wide cached ``PhiGuard``. Delegates to ``from_config``."""
+    return PhiGuard.from_config()
 
 
 def invalidate_guard_cache() -> None:
-    """Force the next ``get_default_guard`` to rebuild from disk."""
+    """Force the next ``from_config`` / ``get_default_guard`` call to rebuild from disk."""
     global _GUARD_CACHE
-    _GUARD_CACHE = None
+    with _GUARD_LOCK:
+        _GUARD_CACHE = None
 
 
 class PhiGuard:
@@ -107,26 +101,34 @@ class PhiGuard:
 
     @classmethod
     def from_config(cls) -> "PhiGuard":
-        """Construct a PhiGuard from ``safety.yaml``.
+        """Return the process-wide cached ``PhiGuard``, building it on first call.
 
-        Reads from the YAML cache without forcing a process-wide
-        ``reload_configs()`` — earlier versions called ``reload_configs``
-        unconditionally, which thrashed the lru_cache for every retrieval
-        in the hot path (and forced the next ``load_retrieval_config()``
-        to re-parse from disk). Operators who edit ``safety.yaml`` at
-        runtime should call ``invalidate_guard_cache()`` or
-        ``_cfg.reload_configs()`` explicitly; that hot-reload hook is
-        documented in CLAUDE.md alongside other admin operations.
+        Caching lives here so that any caller — ``get_default_guard()``,
+        ``PhiAssertionModel.__init__``, or direct ``PhiGuard.from_config()``
+        calls — all get the same instance.  Without this, a new
+        ``ScrubService`` (and its 809 MB ONNX pipeline) would be constructed
+        per ``build_model()`` call, accumulating in memory across benchmark
+        trials or evals.
+
+        Hot-reload: call ``invalidate_guard_cache()`` to force a rebuild on
+        the next call (e.g. after editing ``safety.yaml`` at runtime).
         """
-        phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
-        rules = PhiRules.model_validate(
-            {
-                k: v
-                for k, v in phi_raw.items()
-                if k in {"fields", "providers", "on_deny"}
-            }
-        )
-        return cls(rules, ScrubService.from_config())
+        global _GUARD_CACHE
+        if _GUARD_CACHE is not None:  # fast path — no lock needed after init
+            return _GUARD_CACHE
+        with _GUARD_LOCK:
+            if _GUARD_CACHE is not None:  # re-check inside lock
+                return _GUARD_CACHE
+            phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
+            rules = PhiRules.model_validate(
+                {
+                    k: v
+                    for k, v in phi_raw.items()
+                    if k in {"fields", "providers", "on_deny"}
+                }
+            )
+            _GUARD_CACHE = cls(rules, ScrubService.from_config())
+            return _GUARD_CACHE
 
     def check_outbound(
         self,

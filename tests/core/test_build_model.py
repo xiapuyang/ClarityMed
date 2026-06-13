@@ -185,3 +185,27 @@ def test_settings_work_for_stock_cloud_provider(monkeypatch):
         thinking="high",
     )
     assert build_model_settings(p) == {"thinking": "high"}
+
+
+def test_cloud_models_share_phi_guard_singleton(monkeypatch):
+    """Two ``build_model`` calls must return models that share the same
+    ``PhiGuard`` instance.  Without this, each call creates a fresh
+    ``ScrubService`` which lazy-loads the 809 MB ONNX pipeline again —
+    memory grows by ~809 MB per call in benchmark / eval loops.
+    """
+    from claritymed.core.phi.assertion_model import PhiAssertionModel
+    from claritymed.core.phi.guard import invalidate_guard_cache
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    invalidate_guard_cache()
+
+    p = _provider(kind="cloud", model="anthropic:claude-sonnet-4-5", base_url=None)
+    m1 = build_model(p)
+    m2 = build_model(p)
+
+    assert isinstance(m1, PhiAssertionModel)
+    assert isinstance(m2, PhiAssertionModel)
+    assert m1._guard is m2._guard, (  # noqa: SLF001
+        "build_model() returned two different PhiGuard instances — "
+        "ScrubService / ONNX pipeline would be duplicated per call"
+    )

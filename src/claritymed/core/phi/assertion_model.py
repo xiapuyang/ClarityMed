@@ -79,8 +79,6 @@ def _scan_messages(messages: list[ModelMessage], guard: PhiGuard) -> str | None:
     (it names the offending part type, not the offending text).
     """
     from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
         SystemPromptPart,
         TextPart,
         ToolReturnPart,
@@ -113,7 +111,6 @@ def _scan_messages(messages: list[ModelMessage], guard: PhiGuard) -> str | None:
                 if _scan_text_for_phi(content, guard):
                     return type(part).__name__
         # ModelResponse text parts also flow through TextPart above.
-        del ModelRequest, ModelResponse  # silence "imported but unused" lint
     return None
 
 
@@ -146,7 +143,7 @@ class PhiAssertionModel:
         self, inner: "_PydanticModel", *, guard: PhiGuard | None = None
     ) -> None:
         self._inner = inner
-        self._guard = guard or PhiGuard.from_config()
+        self._guard = guard if guard is not None else PhiGuard.from_config()
 
     # ---- delegation -----------------------------------------------------
 
