@@ -143,3 +143,60 @@ async def test_failed_step_marked_on_llm_error():
     # translate_query catches the error, but _boom never entered `with step(...)`,
     # so no step is recorded.
     assert len(steps) == 0
+
+
+# ---------------------------------------------------------------------------
+# Factory tests
+# ---------------------------------------------------------------------------
+
+
+def test_make_translation_provider_returns_llm_provider():
+    from claritymed.core.translation.factory import make_translation_provider
+    from claritymed.core.translation.llm_provider import LLMTranslationProvider
+
+    model = TestModel(custom_output_text="x")
+    provider = make_translation_provider(model)
+    assert isinstance(provider, LLMTranslationProvider)
+
+
+def test_make_translation_provider_falls_back_on_config_error(monkeypatch):
+    """If loading retrieval.yaml fails, default to llm provider silently."""
+    import claritymed.core.rag.schemas as _rag_schemas
+
+    def _boom():
+        raise RuntimeError("config broken")
+
+    monkeypatch.setattr(_rag_schemas, "load_retrieval_config", _boom)
+    from claritymed.core.translation.factory import make_translation_provider
+    from claritymed.core.translation.llm_provider import LLMTranslationProvider
+
+    provider = make_translation_provider(TestModel(custom_output_text="x"))
+    assert isinstance(provider, LLMTranslationProvider)
+
+
+def test_make_translation_provider_with_cloud_phi_kind():
+    """phi_kind='cloud' wires a real scrub_gate into the provider."""
+    from claritymed.core.translation.factory import make_translation_provider
+    from claritymed.core.translation.llm_provider import LLMTranslationProvider
+
+    provider = make_translation_provider(
+        TestModel(custom_output_text="x"), phi_kind="cloud"
+    )
+    assert isinstance(provider, LLMTranslationProvider)
+    assert provider._scrub_gate is not None
+
+
+def test_make_translation_provider_rejects_unknown_id(monkeypatch):
+    """An unsupported provider id must fail loud rather than silently fall through."""
+    import claritymed.core.rag.schemas as _rag_schemas
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        _rag_schemas,
+        "load_retrieval_config",
+        lambda: SimpleNamespace(translation=SimpleNamespace(provider="not_real")),
+    )
+    from claritymed.core.translation.factory import make_translation_provider
+
+    with pytest.raises(ValueError, match="Unknown translation.provider"):
+        make_translation_provider(TestModel(custom_output_text="x"))

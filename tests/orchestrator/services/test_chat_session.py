@@ -342,3 +342,184 @@ def test_session_file_in_expected_location(tmp_path: Path):
     expected = user_sessions_dir("alice") / f"{session.session_id}.jsonl"
     assert session.path == expected
     assert expected.exists()
+
+
+# ---------------------------------------------------------------------------
+# Resume / load_turns error-tolerance branches
+# ---------------------------------------------------------------------------
+
+
+def test_resume_swallows_oserror_on_read(monkeypatch):
+    """When the on-disk session file can't be opened, resume yields empty history."""
+    session = ChatSession.new("alice")
+    session.append_user("hi")
+
+    from pathlib import Path as _P
+
+    real_read_text = _P.read_text
+
+    def _boom(self, *args, **kwargs):
+        if self == session.path:
+            raise OSError("read denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(_P, "read_text", _boom)
+    resumed = ChatSession.resume("alice", session.session_id)
+    assert resumed.message_history() == []
+
+
+def test_load_turns_swallows_oserror_on_read(monkeypatch):
+    """Same OSError tolerance for load_turns."""
+    session = ChatSession.new("alice")
+    session.append_user("hi")
+
+    from pathlib import Path as _P
+
+    real_read_text = _P.read_text
+
+    def _boom(self, *args, **kwargs):
+        if self == session.path:
+            raise OSError("read denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(_P, "read_text", _boom)
+    assert session.load_turns() == []
+
+
+def test_load_turns_skips_blank_lines():
+    session = ChatSession.new("alice")
+    session.append_user("hi")
+    with session.path.open("a", encoding="utf-8") as fh:
+        fh.write("\n\n   \n")
+    session.append_user("again")
+    turns = session.load_turns()
+    assert [t.text for t in turns] == ["hi", "again"]
+
+
+def test_resume_skips_blank_lines():
+    session = ChatSession.new("alice")
+    session.append_user("hi")
+    with session.path.open("a", encoding="utf-8") as fh:
+        fh.write("\n\n")
+    resumed = ChatSession.resume("alice", session.session_id)
+    # No assistant event → empty message history.
+    assert resumed.message_history() == []
+
+
+def test_resume_logs_when_messages_validate_fails(caplog):
+    """Bad message payload in an assistant event must not abort resume."""
+    import json
+
+    session = ChatSession.new("alice")
+    session.path.parent.mkdir(parents=True, exist_ok=True)
+    with session.path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "abc",
+                    "messages": [{"role": "totally_invalid", "bogus": True}],
+                }
+            )
+            + "\n"
+        )
+
+    with caplog.at_level("ERROR"):
+        resumed = ChatSession.resume("alice", session.session_id)
+    # No history rebuilt — corrupt payload is logged + skipped.
+    assert resumed.message_history() == []
+    assert any("rehydrate" in r.message for r in caplog.records)
+
+
+def test_list_sessions_skips_non_jsonl_files():
+    """Files whose suffix isn't .jsonl are silently ignored by list_sessions."""
+    from claritymed.stores.paths import user_sessions_dir
+
+    session_a = ChatSession.new("alice")
+    session_a.append_user("hello A")
+
+    sessions_dir = user_sessions_dir("alice")
+    # Drop a random file in there to exercise the suffix-filter continue.
+    (sessions_dir / "notes.txt").write_text("ignore me", encoding="utf-8")
+    (sessions_dir / "sub").mkdir()  # ignored — not a file
+
+    metas = ChatSession.list_sessions("alice")
+    # Only the real session_a remains.
+    assert [m.session_id for m in metas] == [session_a.session_id]
+
+
+# ---------------------------------------------------------------------------
+# _decode_messages error branches
+# ---------------------------------------------------------------------------
+
+
+def test_decode_messages_with_empty_bytes_returns_nones():
+    from claritymed.orchestrator.services.chat_session import _decode_messages
+
+    assert _decode_messages(b"") == (None, None, None, None)
+
+
+def test_decode_messages_handles_invalid_json(caplog):
+    from claritymed.orchestrator.services.chat_session import _decode_messages
+
+    with caplog.at_level("ERROR"):
+        result = _decode_messages(b"{not valid json")
+    assert result == (None, None, None, None)
+    assert any("invalid messages_json bytes" in r.message for r in caplog.records)
+
+
+def test_decode_messages_handles_invalid_utf8(caplog):
+    from claritymed.orchestrator.services.chat_session import _decode_messages
+
+    with caplog.at_level("ERROR"):
+        result = _decode_messages(b"\xff\xfe")
+    assert result == (None, None, None, None)
+
+
+def test_decode_messages_invalid_model_messages_yields_none_objs(caplog):
+    """JSON parses fine but doesn't validate as ModelMessage list."""
+    from claritymed.orchestrator.services.chat_session import _decode_messages
+
+    with caplog.at_level("ERROR"):
+        msgs_obj, msg_objs, _conv, _run = _decode_messages(
+            b'[{"role": "unknown_role"}]'
+        )
+    assert msgs_obj == [{"role": "unknown_role"}]
+    assert msg_objs is None
+
+
+# ---------------------------------------------------------------------------
+# _first_user_preview branches
+# ---------------------------------------------------------------------------
+
+
+def test_first_user_preview_returns_empty_on_oserror(monkeypatch, tmp_path):
+    from claritymed.orchestrator.services.chat_session import _first_user_preview
+
+    bogus = tmp_path / "missing.jsonl"
+    assert _first_user_preview(bogus) == ""
+
+
+def test_first_user_preview_truncates_long_text():
+    from claritymed.orchestrator.services.chat_session import _first_user_preview
+
+    session = ChatSession.new("alice")
+    session.append_user("A" * 200)
+    preview = _first_user_preview(session.path, max_chars=80)
+    assert len(preview) == 80
+    assert preview.endswith("…")
+
+
+def test_first_user_preview_skips_blank_and_bad_json():
+    import json
+
+    from claritymed.orchestrator.services.chat_session import _first_user_preview
+
+    session = ChatSession.new("alice")
+    session.path.parent.mkdir(parents=True, exist_ok=True)
+    with session.path.open("w", encoding="utf-8") as fh:
+        fh.write("\n")
+        fh.write("not json\n")
+        fh.write(json.dumps({"type": "system", "kind": "info", "text": "boot"}) + "\n")
+        fh.write(json.dumps({"type": "user", "text": "real message"}) + "\n")
+    assert _first_user_preview(session.path) == "real message"

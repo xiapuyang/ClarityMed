@@ -464,3 +464,468 @@ def test_from_config_loads_rules():
     assert len(svc._config.free_text_patterns) > 0
     assert svc._config.privacy_filter.enabled is True
     assert svc._config.privacy_filter.onnx_file == "onnx/model_q4f16.onnx"
+
+
+# ---------------------------------------------------------------------------
+# BIOES aggregation edge cases not covered above (state-machine transitions)
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_b_after_b_closes_previous():
+    """B-X followed by B-Y closes the X span and starts a new Y span."""
+    p = _make_pipeline()
+    preds = [1, 5]  # B-private_person, B-private_email
+    offsets = [(0, 5), (6, 11)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 2
+    assert spans[0]["entity_group"] == "private_person"
+    assert spans[0]["start"] == 0 and spans[0]["end"] == 5
+    assert spans[1]["entity_group"] == "private_email"
+
+
+def test_aggregate_i_with_mismatched_label_starts_new_span():
+    """I-Y appearing without a matching B-Y closes any open span and starts a Y span."""
+    p = _make_pipeline()
+    # B-private_person then I-private_email — mismatched I- treated as fresh span
+    preds = [1, 6 - 4]  # B-private_person, I-private_person actually matches
+    # Use B-person then I-email (id2label has no I-email; map id 6 to I-private_email)
+    p._id2label[7] = "I-private_email"
+    preds = [1, 7]
+    offsets = [(0, 5), (6, 11)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 2
+    assert spans[0]["entity_group"] == "private_person"
+    assert spans[1]["entity_group"] == "private_email"
+
+
+def test_aggregate_e_with_mismatched_open_span_emits_both():
+    """E-Y while a B-X span is open closes X and emits a separate Y token."""
+    p = _make_pipeline()
+    preds = [1, 6]  # B-private_person, E-private_email
+    offsets = [(0, 5), (6, 11)]
+    spans = p._aggregate(preds, offsets)
+    # X span closed AND Y E-token emitted on its own
+    assert len(spans) == 2
+    assert spans[0]["entity_group"] == "private_person"
+    assert spans[1]["entity_group"] == "private_email"
+    assert spans[1]["start"] == 6 and spans[1]["end"] == 11
+
+
+def test_aggregate_s_closes_existing_current():
+    """S- arriving with an open B- span first closes the existing span."""
+    p = _make_pipeline()
+    preds = [1, 4]  # B-private_person, S-private_person
+    offsets = [(0, 5), (6, 11)]
+    spans = p._aggregate(preds, offsets)
+    # First span closes when S- arrives, S- creates its own
+    assert len(spans) == 2
+
+
+def test_aggregate_o_closes_open_span():
+    """O label closes any currently open span without emitting itself."""
+    p = _make_pipeline()
+    preds = [1, 0]  # B-private_person, O
+    offsets = [(0, 5), (6, 10)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 1
+    assert spans[0]["entity_group"] == "private_person"
+    assert spans[0]["end"] == 5  # NOT extended by O token
+
+
+def test_aggregate_special_token_closes_open_span():
+    """A special token (offset_start==offset_end) closes any open span."""
+    p = _make_pipeline()
+    preds = [1, 0]  # B-private_person, then a SEP-like zero-length offset
+    offsets = [(0, 5), (10, 10)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 1
+    assert spans[0]["end"] == 5
+
+
+def test_aggregate_emits_trailing_open_span_at_end():
+    """An unclosed current span at end-of-sequence is still emitted."""
+    p = _make_pipeline()
+    preds = [1, 2]  # B-private_person, I-private_person — no closing tag
+    offsets = [(0, 5), (5, 10)]
+    spans = p._aggregate(preds, offsets)
+    assert len(spans) == 1
+    assert spans[0]["start"] == 0 and spans[0]["end"] == 10
+
+
+# ---------------------------------------------------------------------------
+# check_runtime_deps — branches by config
+# ---------------------------------------------------------------------------
+
+
+def test_check_runtime_deps_noop_when_disabled():
+    """Disabled privacy filter → no-op, no imports attempted."""
+    svc = ScrubService(ScrubConfig(privacy_filter=PrivacyFilterConfig(enabled=False)))
+    # Must not raise.
+    svc.check_runtime_deps()
+
+
+def test_check_runtime_deps_onnx_path_passes_when_deps_installed():
+    """onnxruntime + transformers are project deps, so this is the happy path."""
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file="onnx/model_q4f16.onnx"
+            )
+        )
+    )
+    svc.check_runtime_deps()  # must not raise
+
+
+def test_check_runtime_deps_torch_path_passes_when_deps_installed():
+    """Torch path: onnx_file=None — torch is a project dep."""
+    svc = ScrubService(
+        ScrubConfig(privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file=None))
+    )
+    svc.check_runtime_deps()  # must not raise
+
+
+def test_check_runtime_deps_onnx_missing_raises(monkeypatch):
+    """ImportError on onnxruntime → ImportError with install hint."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ImportError("no onnxruntime")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file="x.onnx")
+        )
+    )
+    with pytest.raises(ImportError, match="onnxruntime"):
+        svc.check_runtime_deps()
+
+
+def test_check_runtime_deps_torch_missing_raises(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("no torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    svc = ScrubService(
+        ScrubConfig(privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file=None))
+    )
+    with pytest.raises(ImportError, match="torch"):
+        svc.check_runtime_deps()
+
+
+def test_check_runtime_deps_transformers_missing_raises(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "transformers":
+            raise ImportError("no transformers")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file="onnx/model_q4f16.onnx"
+            )
+        )
+    )
+    with pytest.raises(ImportError, match="transformers"):
+        svc.check_runtime_deps()
+
+
+# ---------------------------------------------------------------------------
+# ensure_downloaded — branches
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_downloaded_noop_when_disabled():
+    svc = ScrubService(ScrubConfig(privacy_filter=PrivacyFilterConfig(enabled=False)))
+    assert svc.ensure_downloaded() is True
+
+
+def test_ensure_downloaded_hf_hub_missing_returns_false(monkeypatch):
+    """huggingface_hub not installed → log warning, return False."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            raise ImportError("missing hf hub")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file="onnx/model.onnx"
+            )
+        )
+    )
+    assert svc.ensure_downloaded() is False
+
+
+def test_ensure_downloaded_uses_cache_fast_path(monkeypatch):
+    """Local cache hit → snapshot_download called once with local_files_only=True."""
+    import huggingface_hub
+
+    calls: list[dict] = []
+
+    def fake_snapshot(repo_id, local_files_only=False, **kwargs):
+        calls.append(
+            {"repo_id": repo_id, "local_files_only": local_files_only, **kwargs}
+        )
+        return "/tmp/snapshot"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file="onnx/model_q4f16.onnx"
+            )
+        )
+    )
+    assert svc.ensure_downloaded() is True
+    assert len(calls) == 1
+    assert calls[0]["local_files_only"] is True
+    assert "config.json" in calls[0]["allow_patterns"]
+
+
+def test_ensure_downloaded_torch_path_uses_ignore_patterns(monkeypatch):
+    import huggingface_hub
+
+    calls: list[dict] = []
+
+    def fake_snapshot(repo_id, local_files_only=False, **kwargs):
+        calls.append({"local_files_only": local_files_only, **kwargs})
+        return "/tmp/snapshot"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    svc = ScrubService(
+        ScrubConfig(privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file=None))
+    )
+    assert svc.ensure_downloaded() is True
+    assert "ignore_patterns" in calls[0]
+    assert "*.msgpack" in calls[0]["ignore_patterns"]
+
+
+def test_ensure_downloaded_falls_back_to_network_on_local_miss(monkeypatch):
+    """LocalEntryNotFoundError → second snapshot_download call without local_files_only."""
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    state = {"calls": 0}
+
+    def fake_snapshot(repo_id, local_files_only=False, **kwargs):
+        state["calls"] += 1
+        if local_files_only:
+            raise LocalEntryNotFoundError("missing")
+        return "/tmp/snapshot"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file="onnx/model.onnx"
+            )
+        )
+    )
+    assert svc.ensure_downloaded() is True
+    assert state["calls"] == 2
+
+
+def test_ensure_downloaded_returns_false_on_generic_exception(monkeypatch):
+    import huggingface_hub
+
+    def fake_snapshot(*args, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file="onnx/model.onnx"
+            )
+        )
+    )
+    assert svc.ensure_downloaded() is False
+
+
+# ---------------------------------------------------------------------------
+# _get_pipeline dispatch (ONNX vs torch branch + caching)
+# ---------------------------------------------------------------------------
+
+
+def test_get_pipeline_dispatches_onnx_and_caches(monkeypatch):
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file="onnx/model.onnx"
+            )
+        )
+    )
+    sentinel = object()
+    onnx_calls = {"n": 0}
+
+    def fake_load_onnx(path):
+        onnx_calls["n"] += 1
+        return sentinel
+
+    monkeypatch.setattr(svc, "_load_onnx_pipeline", fake_load_onnx)
+    monkeypatch.setattr(svc, "_load_torch_pipeline", lambda: pytest.fail("nope"))
+
+    assert svc._get_pipeline() is sentinel
+    # Second call must not re-load.
+    assert svc._get_pipeline() is sentinel
+    assert onnx_calls["n"] == 1
+
+
+def test_get_pipeline_dispatches_torch_when_onnx_file_none(monkeypatch):
+    svc = ScrubService(
+        ScrubConfig(privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file=None))
+    )
+    sentinel = object()
+    monkeypatch.setattr(svc, "_load_onnx_pipeline", lambda *a: pytest.fail("nope"))
+    monkeypatch.setattr(svc, "_load_torch_pipeline", lambda: sentinel)
+    assert svc._get_pipeline() is sentinel
+
+
+# ---------------------------------------------------------------------------
+# _load_onnx_pipeline / _load_torch_pipeline ImportError + Exception
+# ---------------------------------------------------------------------------
+
+
+def test_load_onnx_pipeline_returns_none_on_import_error(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file="onnx/m.onnx")
+        )
+    )
+    assert svc._load_onnx_pipeline("onnx/m.onnx") is None
+
+
+def test_load_onnx_pipeline_returns_none_on_generic_exception(monkeypatch):
+    """Any non-ImportError during ONNX load disables the layer (returns None)."""
+    import huggingface_hub
+
+    def fake_hf_download(*args, **kwargs):
+        raise RuntimeError("network missing")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf_download)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file="onnx/m.onnx")
+        )
+    )
+    assert svc._load_onnx_pipeline("onnx/m.onnx") is None
+
+
+def test_load_torch_pipeline_returns_none_on_import_error(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "transformers":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    svc = ScrubService(
+        ScrubConfig(privacy_filter=PrivacyFilterConfig(enabled=True, onnx_file=None))
+    )
+    assert svc._load_torch_pipeline() is None
+
+
+def test_load_torch_pipeline_returns_none_on_generic_exception(monkeypatch):
+    """transformers.pipeline raises both on the device and the cpu fallback → return None."""
+    import transformers
+
+    def fake_pipeline(*args, **kwargs):
+        raise RuntimeError("model broken")
+
+    monkeypatch.setattr(transformers, "pipeline", fake_pipeline)
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file=None, device="cpu"
+            )
+        )
+    )
+    # On cpu we don't fall back, so first failure → return None via outer except.
+    assert svc._load_torch_pipeline() is None
+
+
+def test_load_torch_pipeline_falls_back_to_cpu(monkeypatch):
+    """Non-cpu device fails → retried on cpu."""
+    import transformers
+
+    state = {"attempts": []}
+
+    def fake_pipeline(*args, **kwargs):
+        device = kwargs.get("device")
+        state["attempts"].append(device)
+        if device != "cpu":
+            raise RuntimeError("op unsupported on mps")
+        return "cpu_pipe"
+
+    monkeypatch.setattr(transformers, "pipeline", fake_pipeline)
+    # Patch resolve_device to return non-cpu without touching real hardware.
+    import claritymed.core.scrub.service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "resolve_device", lambda _x: "mps")
+
+    svc = ScrubService(
+        ScrubConfig(
+            privacy_filter=PrivacyFilterConfig(
+                enabled=True, onnx_file=None, device="auto"
+            )
+        )
+    )
+    result = svc._load_torch_pipeline()
+    assert result == "cpu_pipe"
+    assert state["attempts"] == ["mps", "cpu"]
+
+
+# ---------------------------------------------------------------------------
+# _patch_tqdm_lock — exception path
+# ---------------------------------------------------------------------------
+
+
+def test_patch_tqdm_lock_swallows_exception(monkeypatch, caplog):
+    """If tqdm.tqdm.set_lock blows up, the helper warns instead of crashing."""
+    from claritymed.core.scrub.service import _patch_tqdm_lock
+
+    import tqdm
+
+    def boom(_lock):
+        raise RuntimeError("tqdm internals changed")
+
+    monkeypatch.setattr(tqdm.tqdm, "set_lock", boom)
+
+    with caplog.at_level("WARNING"):
+        _patch_tqdm_lock()  # must NOT raise
+
+    assert any("tqdm lock patch failed" in rec.message for rec in caplog.records)

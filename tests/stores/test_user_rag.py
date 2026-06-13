@@ -262,3 +262,79 @@ async def test_add_document_without_source_uri_allows_duplicates(store):
     await store.add_document("alice", "doc1", text="some clinical note")
     n = await store.add_document("alice", "doc2", text="some clinical note")
     assert n == 1
+
+
+# --- list_documents / get_chunks ----------------------------------------
+
+
+async def test_list_documents_empty_when_no_collection(store):
+    assert await store.list_documents("ghost") == []
+
+
+async def test_list_documents_returns_summary_per_doc(store):
+    await store.add_document(
+        "alice",
+        "doc1",
+        text="aspirin guideline body",
+        metadata={"source_uri": "/a.pdf"},
+    )
+    await store.add_document(
+        "alice",
+        "doc2",
+        text="ibuprofen monograph body",
+        metadata={"source_uri": "/b.pdf"},
+        public=True,
+    )
+    docs = await store.list_documents("alice")
+    by_id = {d["doc_id"]: d for d in docs}
+    assert set(by_id) == {"doc1", "doc2"}
+    assert by_id["doc1"]["chunk_count"] == 1
+    assert by_id["doc1"]["is_phi"] is True
+    assert by_id["doc1"]["can_cloud"] is False
+    assert by_id["doc1"]["source_uri"] == "/a.pdf"
+    assert by_id["doc2"]["is_phi"] is False
+    assert by_id["doc2"]["can_cloud"] is True
+    # chunk_index==0 has a preview
+    assert by_id["doc2"]["preview"]
+
+
+async def test_get_chunks_empty_when_no_collection(store):
+    assert await store.get_chunks("ghost", "doc1") == []
+
+
+async def test_get_chunks_returns_chunk_payloads(store):
+    await store.add_document("alice", "doc1", text="renal function summary")
+    chunks = await store.get_chunks("alice", "doc1")
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk["chunk_index"] == 0
+    assert "renal" in chunk["text"]
+    assert chunk["is_phi"] is True
+    assert chunk["can_cloud"] is False
+    assert chunk["parent_id"]
+
+
+async def test_get_chunks_for_missing_doc_returns_empty(store):
+    await store.add_document("alice", "doc1", text="something")
+    assert await store.get_chunks("alice", "nope") == []
+
+
+# --- helpers ------------------------------------------------------------
+
+
+def test_generate_doc_id_returns_unique_prefixed_id():
+    from claritymed.stores.user_rag import generate_doc_id
+
+    a = generate_doc_id()
+    b = generate_doc_id()
+    assert a.startswith("doc-")
+    assert b.startswith("doc-")
+    assert a != b
+    # doc- + 12 hex chars
+    assert len(a) == 4 + 12
+
+
+def test_collection_name_format():
+    from claritymed.stores.user_rag import collection_name
+
+    assert collection_name("alice") == "user_rag_alice"

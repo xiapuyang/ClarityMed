@@ -15,7 +15,9 @@ import yaml
 from claritymed.core.prompts.phoenix_sync import (
     LANGUAGES,
     PRODUCTION_TAG,
+    DiffReport,
     SyncReport,
+    diff,
     phoenix_prompt_name,
     pull,
     push,
@@ -355,3 +357,191 @@ def test_sync_report_changed_vs_errors():
     )
     assert {e.prompt_name for e in report.changed} == {"a"}
     assert {e.prompt_name for e in report.errors} == {"c"}
+
+
+# --- diff ---------------------------------------------------------------
+
+
+def test_diff_identical_prompts_reports_same(stub_client, store_dir):
+    _write_prompt_yaml(store_dir, "ask", en="EN_text", zh="ZH_text")
+    stub_client.prompts.store[
+        f"{phoenix_prompt_name('ask', 'en')}:{PRODUCTION_TAG}"
+    ] = _StubPromptVersion("EN_text")
+    stub_client.prompts.store[
+        f"{phoenix_prompt_name('ask', 'zh')}:{PRODUCTION_TAG}"
+    ] = _StubPromptVersion("ZH_text")
+
+    report = diff(client=stub_client, store_dir=store_dir)
+    assert isinstance(report, DiffReport)
+    assert all(e.action == "same" for e in report.entries)
+    assert report.differs == []
+    assert report.errors == []
+
+
+def test_diff_remote_missing_reports_when_no_production(stub_client, store_dir):
+    _write_prompt_yaml(store_dir, "ask", en="EN", zh="ZH")
+    # Nothing in stub_client → get() raises "not found" → remote_missing.
+    report = diff(client=stub_client, store_dir=store_dir)
+    actions = [e.action for e in report.entries]
+    assert "remote_missing" in actions
+    assert report.errors == []
+
+
+def test_diff_diverging_text_emits_unified_diff(stub_client, store_dir):
+    _write_prompt_yaml(store_dir, "ask", en="line one\nline two", zh="zh body")
+    stub_client.prompts.store[
+        f"{phoenix_prompt_name('ask', 'en')}:{PRODUCTION_TAG}"
+    ] = _StubPromptVersion("line one\nline THREE")
+    stub_client.prompts.store[
+        f"{phoenix_prompt_name('ask', 'zh')}:{PRODUCTION_TAG}"
+    ] = _StubPromptVersion("zh body")
+
+    report = diff(client=stub_client, store_dir=store_dir)
+    diffs = report.differs
+    assert len(diffs) == 1
+    assert diffs[0].language == "en"
+    # Unified diff lines should mention both versions of the line.
+    diff_text = "\n".join(diffs[0].unified_diff)
+    assert "line two" in diff_text
+    assert "line THREE" in diff_text
+
+
+def test_diff_propagates_non_404_phoenix_errors_per_entry(store_dir):
+    """Phoenix raising a non-not-found exception is recorded as an entry-level error."""
+    _write_prompt_yaml(store_dir, "ask", en="EN", zh="ZH")
+
+    class _BrokenClient:
+        class prompts:
+            class tags:
+                @staticmethod
+                def create(**_):
+                    raise AssertionError("should not be called")
+
+            @staticmethod
+            def get(**kwargs):
+                # Anything not containing "not found" / "404" propagates as error.
+                raise RuntimeError("internal server error 500")
+
+    report = diff(client=_BrokenClient(), store_dir=store_dir)
+    assert len(report.errors) == 2
+    for entry in report.errors:
+        assert "phoenix fetch failed" in entry.detail
+
+
+def test_push_handles_phoenix_fetch_error_per_entry(store_dir):
+    _write_prompt_yaml(store_dir, "ask", en="EN", zh="ZH")
+
+    class _BrokenClient:
+        class prompts:
+            class tags:
+                @staticmethod
+                def create(**_):
+                    raise AssertionError("should not be called")
+
+            @staticmethod
+            def get(**kwargs):
+                raise RuntimeError("internal server error 500")
+
+            @staticmethod
+            def create(**kwargs):
+                raise AssertionError("should not be called")
+
+    report = push(client=_BrokenClient(), store_dir=store_dir)
+    # Both languages produce error entries; no creates attempted.
+    assert len(report.errors) == 2
+    for entry in report.errors:
+        assert "phoenix fetch failed" in entry.detail
+
+
+def test_push_handles_phoenix_create_error_per_entry(store_dir):
+    """get() returns nothing (404) but create() blows up — recorded per entry."""
+    _write_prompt_yaml(store_dir, "ask", en="EN", zh="ZH")
+
+    class _BrokenClient:
+        class prompts:
+            class tags:
+                @staticmethod
+                def create(**_):
+                    raise AssertionError("should not be called")
+
+            @staticmethod
+            def get(**kwargs):
+                raise RuntimeError("404 not found")
+
+            @staticmethod
+            def create(**kwargs):
+                raise RuntimeError("phoenix write disabled")
+
+    report = push(client=_BrokenClient(), store_dir=store_dir)
+    assert len(report.errors) == 2
+    for entry in report.errors:
+        assert "phoenix create failed" in entry.detail
+
+
+def test_pull_handles_phoenix_fetch_error_per_entry(store_dir):
+    _write_prompt_yaml(store_dir, "ask", en="EN", zh="ZH")
+
+    class _BrokenClient:
+        class prompts:
+            class tags:
+                @staticmethod
+                def create(**_):
+                    raise AssertionError("should not be called")
+
+            @staticmethod
+            def get(**kwargs):
+                raise RuntimeError("internal server error 500")
+
+    report = pull(client=_BrokenClient(), store_dir=store_dir)
+    assert len(report.errors) == 2
+
+
+def test_extract_text_handles_empty_messages():
+    """_extract_text covers the empty-messages and structured-content paths."""
+    from claritymed.core.prompts.phoenix_sync import _extract_text
+
+    class _NoMessages:
+        def format(self):
+            class _F:
+                messages = []
+
+            return _F()
+
+    assert _extract_text(_NoMessages()) == ""
+
+    class _StructuredContent:
+        def format(self):
+            class _F:
+                messages = [{"role": "system", "content": [{"text": "hello"}]}]
+
+            return _F()
+
+    assert _extract_text(_StructuredContent()) == "hello"
+
+    class _UnsupportedContent:
+        def format(self):
+            class _F:
+                messages = [{"role": "system", "content": 12345}]
+
+            return _F()
+
+    assert _extract_text(_UnsupportedContent()) == ""
+
+
+def test_next_version_name_falls_back_when_versions_not_v_prefixed():
+    """When existing versions don't use the v<int> convention, fall back to phoenix-DATE."""
+    from claritymed.core.prompts.phoenix_sync import (
+        PromptVersion,
+        _next_version_name,
+    )
+
+    versions = [
+        PromptVersion(
+            version="initial",
+            created_at="2026-01-01",
+            notes="x",
+            languages={"en": "EN", "zh": "ZH"},
+        )
+    ]
+    name = _next_version_name(versions)
+    assert name.startswith("phoenix-")

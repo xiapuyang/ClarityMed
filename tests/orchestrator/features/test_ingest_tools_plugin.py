@@ -475,3 +475,140 @@ def test_format_library_embed_text_fields():
     assert "Smith" in text
     assert "2024" in text
     assert "cardiology" in text
+
+
+# ---------------------------------------------------------------------------
+# delete_record edge cases (validation branches)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_record_rejects_malformed_record_path(dispatcher, _ctx):
+    """ValueError must surface when record_path lacks a category/slug split."""
+    with pytest.raises(ValueError, match="category/slug"):
+        delete_record(
+            {"record_path": "no_slash_here", "confirm_kind": "exam-report"},
+            dispatcher=dispatcher,
+        )
+
+
+def test_delete_record_missing_record_raises_not_found(dispatcher, _ctx):
+    """RecordNotFound propagates when slug doesn't exist on disk."""
+    with pytest.raises(RecordNotFound):
+        delete_record(
+            {
+                "record_path": "exam-reports/2099-01-01-ghost",
+                "confirm_kind": "exam-report",
+            },
+            dispatcher=dispatcher,
+        )
+
+
+# ---------------------------------------------------------------------------
+# _validate_ingest_prompts: missing prompts must fail loud
+# ---------------------------------------------------------------------------
+
+
+def test_validate_ingest_prompts_raises_with_listing():
+    from claritymed.orchestrator.features.ingest_tools_plugin import (
+        _validate_ingest_prompts,
+    )
+
+    class _EmptyRegistry:
+        def get(self, *args, **kwargs):
+            raise KeyError("not found")
+
+    with pytest.raises(RuntimeError, match="Missing ingest tool prompts"):
+        _validate_ingest_prompts(_EmptyRegistry())
+
+
+# ---------------------------------------------------------------------------
+# IngestToolsFeature pre_invoke + as_tool
+# ---------------------------------------------------------------------------
+
+
+async def test_ingest_tools_feature_pre_invoke_returns_empty(dispatcher):
+    from claritymed.orchestrator.features.ingest_tools_plugin import IngestToolsFeature
+
+    feat = IngestToolsFeature(dispatcher, approval_required_func=None)
+    assert await feat.pre_invoke(None) == ""
+    assert feat.as_tool() is None
+
+
+# ---------------------------------------------------------------------------
+# _embed_record_task / _embed_library_task background helpers
+# ---------------------------------------------------------------------------
+
+
+async def test_embed_record_task_returns_silently_when_no_record_path(_ctx):
+    from claritymed.orchestrator.features.ingest_tools_plugin import _embed_record_task
+
+    # Empty result.record_path → early return, no store touched.
+    await _embed_record_task({}, {})  # must not raise
+
+
+async def test_embed_record_task_swallows_store_errors(_ctx, monkeypatch):
+    """Background task must log + swallow any exception (no propagation)."""
+    from claritymed.orchestrator.features import ingest_tools_plugin as _itp
+    from claritymed.stores import user_phi_rag as _uphi
+
+    def _boom(_uid):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(_uphi, "make_phi_rag_store", _boom)
+
+    # Provide enough kwargs for SaveRecordArgs to validate.
+    await _itp._embed_record_task(
+        {"record_path": "labs/2026-05-10-lipid"},
+        {"category": "labs", "kind": "lab_report", "title": "Lipid"},
+    )
+
+
+async def test_embed_record_task_calls_store_on_happy_path(_ctx, monkeypatch):
+    from claritymed.orchestrator.features import ingest_tools_plugin as _itp
+    from claritymed.stores import user_phi_rag as _uphi
+
+    captured = {}
+
+    class _StubStore:
+        async def add_record(self, user_id, record_path, text):
+            captured["user_id"] = user_id
+            captured["record_path"] = record_path
+            captured["text"] = text
+            return 3
+
+    monkeypatch.setattr(_uphi, "make_phi_rag_store", lambda uid: _StubStore())
+    await _itp._embed_record_task(
+        {"record_path": "labs/2026-05-10-lipid"},
+        {"category": "labs", "kind": "lab_report", "title": "Lipid"},
+    )
+    assert captured["record_path"] == "labs/2026-05-10-lipid"
+    assert "Lipid" in captured["text"]
+
+
+async def test_embed_library_task_returns_silently_when_no_library_path(_ctx):
+    from claritymed.orchestrator.features.ingest_tools_plugin import (
+        _embed_library_task,
+    )
+
+    await _embed_library_task({}, {})  # must not raise
+
+
+async def test_embed_library_task_calls_store_on_happy_path(_ctx, monkeypatch):
+    from claritymed.orchestrator.features import ingest_tools_plugin as _itp
+    from claritymed.stores import user_rag as _ur
+
+    captured = {}
+
+    class _StubStore:
+        async def add_document(self, user_id, library_path, text, public):
+            captured["public"] = public
+            captured["library_path"] = library_path
+            return 7
+
+    monkeypatch.setattr(_ur, "make_user_rag_store", lambda uid: _StubStore())
+    await _itp._embed_library_task(
+        {"library_path": "papers/aha-2024"},
+        {"title": "AHA Guideline", "public": True},
+    )
+    assert captured["public"] is True
+    assert captured["library_path"] == "papers/aha-2024"

@@ -225,3 +225,104 @@ async def test_pre_invoke_deterministic_with_data(tmp_path, monkeypatch):
     result = await p.pre_invoke(_make_ctx())
     assert "[Patient profile]" in result
     assert "sex: female" in result
+
+
+# ---------------------------------------------------------------------------
+# _format_profile_block — branches not covered above
+# ---------------------------------------------------------------------------
+
+
+def test_format_block_all_biographic_fields(tmp_path, monkeypatch):
+    """birth_date, residence, birthplace, marital_status, has_children,
+    current_occupation all appear when set."""
+    from datetime import date
+
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    store = ProfileStore("test")
+    store.upsert_profile(
+        Profile(
+            birth_date=date(1989, 1, 1),
+            residence="Shanghai",
+            birthplace="Beijing",
+            marital_status="married",
+            has_children=True,
+            current_occupation="engineer",
+        ),
+        owner_user_id="test",
+    )
+    result = _format_profile_block("test")
+    assert "birth_date: 1989-01-01" in result
+    assert "residence: Shanghai" in result
+    assert "birthplace: Beijing" in result
+    assert "marital_status: married" in result
+    assert "has_children: true" in result
+    assert "current_occupation: engineer" in result
+
+
+def test_format_block_condition_with_onset_date(tmp_path, monkeypatch):
+    """Active condition with onset_date renders as 'display (since ONSET)'."""
+    from datetime import date
+
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    store = ProfileStore("test")
+    store.add_condition(
+        Condition(display="type 2 diabetes", onset_date=date(2020, 1, 1)),
+        owner_user_id="test",
+    )
+    result = _format_profile_block("test")
+    assert "type 2 diabetes (since 2020-01-01)" in result
+
+
+def test_format_block_records_summary(tmp_path, monkeypatch):
+    """Records section lists category/slug and metadata for recent manifests."""
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    from claritymed.stores.manifest_store import ManifestStore
+
+    ms = ManifestStore("test", "records")
+    # Four manifests so the "..." suffix is exercised end-to-end.
+    for i in range(3):
+        ms.create(
+            "labs",
+            f"2026-05-1{i}-lipid",
+            {
+                "title": f"Lipid panel 1{i}",
+                "kind": "lab_report",
+                "date": f"2026-05-1{i}",
+            },
+        )
+    ms.create(
+        "labs",
+        "2026-05-20-lipid",
+        {
+            "title": "Lipid panel 20",
+            "kind": "lab_report",
+            "date": "2026-05-20",
+        },
+    )
+    result = _format_profile_block("test")
+    assert "Records (4 total):" in result
+    assert "labs/2026-05-20-lipid" in result
+    assert "..." in result
+
+
+# ---------------------------------------------------------------------------
+# retrieve_profile tool callable
+# ---------------------------------------------------------------------------
+
+
+async def test_retrieve_profile_tool_returns_formatted_block(tmp_path, monkeypatch):
+    """The tool closure reads user_id from RunContext deps at call time."""
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    store = ProfileStore("test")
+    store.upsert_profile(Profile(sex="male"), owner_user_id="test")
+
+    p = ProfileContextFeature(mode="tool")
+    tool = p.as_tool()
+    assert tool is not None
+
+    class _Ctx:
+        deps = _FakeDeps(user_id="test")
+
+    result = await tool(_Ctx())
+    assert "[Patient profile]" in result
+    assert "sex: male" in result

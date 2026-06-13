@@ -140,6 +140,191 @@ def test_mode_env_var_invalid_fails_loud(monkeypatch):
         load_retrieval_config()
 
 
+def test_user_collection_name_format():
+    from claritymed.core.rag.retriever_factory import _user_collection_name
+
+    assert _user_collection_name("alice") == "user_rag_alice"
+
+
+def test_user_library_parent_docstore_path_alias_returns_pathlib_path(
+    tmp_path, monkeypatch
+):
+    """The re-exported alias mirrors ``user_parent_docstore_library_path``."""
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.retriever_factory import user_library_parent_docstore_path
+    from claritymed.stores.paths import user_parent_docstore_library_path
+
+    assert user_library_parent_docstore_path(
+        "test"
+    ) == user_parent_docstore_library_path("test")
+
+
+# ---------------------------------------------------------------------------
+# Per-user store / parent_store factory closures
+# ---------------------------------------------------------------------------
+
+
+class _StubEmbedder:
+    @property
+    def dimension(self) -> int:
+        return 16
+
+    async def embed_dense(self, texts):
+        return [[0.0] * 16 for _ in texts]
+
+    async def embed_sparse(self, texts):
+        return [{} for _ in texts]
+
+
+def test_system_store_factory_creates_collection_store():
+    from qdrant_client import AsyncQdrantClient
+
+    from claritymed.core.rag.retriever_factory import _make_system_store_factory
+
+    aclient = AsyncQdrantClient(":memory:")
+    factory = _make_system_store_factory(aclient, _StubEmbedder())
+    store = factory("some_collection")
+    from claritymed.core.rag.qdrant_store import RagCollectionStore
+
+    assert isinstance(store, RagCollectionStore)
+
+
+async def test_user_store_factory_returns_none_when_dir_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.retriever_factory import _make_user_store_factory
+
+    factory = _make_user_store_factory(_StubEmbedder())
+    # User does not exist → factory yields None.
+    assert await factory("ghost") is None
+
+
+async def test_user_store_factory_returns_none_when_collection_missing(
+    tmp_path, monkeypatch
+):
+    """User dir exists (open succeeds) but collection wasn't created."""
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.retriever_factory import _make_user_store_factory
+    from claritymed.stores.paths import user_rag_qdrant_dir
+
+    user_rag_qdrant_dir("test").mkdir(parents=True, exist_ok=True)
+    factory = _make_user_store_factory(_StubEmbedder())
+    assert await factory("test") is None
+
+
+def test_user_parent_store_factory_returns_none_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.retriever_factory import _make_user_parent_store_factory
+
+    factory = _make_user_parent_store_factory()
+    assert factory("ghost") is None
+
+
+def test_user_parent_store_factory_returns_store_when_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.parent_store import ParentStore
+    from claritymed.core.rag.retriever_factory import _make_user_parent_store_factory
+    from claritymed.stores.paths import user_parent_docstore_path
+
+    path = user_parent_docstore_path("test")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+
+    factory = _make_user_parent_store_factory()
+    assert isinstance(factory("test"), ParentStore)
+
+
+async def test_user_phi_store_factory_returns_none_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.retriever_factory import _make_user_phi_store_factory
+
+    factory = _make_user_phi_store_factory(_StubEmbedder())
+    assert await factory("ghost") is None
+
+
+async def test_user_phi_store_factory_returns_none_when_collection_missing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.retriever_factory import _make_user_phi_store_factory
+    from claritymed.stores.paths import user_rag_qdrant_dir
+
+    user_rag_qdrant_dir("test").mkdir(parents=True, exist_ok=True)
+    factory = _make_user_phi_store_factory(_StubEmbedder())
+    assert await factory("test") is None
+
+
+def test_user_phi_parent_store_factory_returns_none_when_no_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.retriever_factory import (
+        _make_user_phi_parent_store_factory,
+    )
+
+    factory = _make_user_phi_parent_store_factory()
+    assert factory("ghost") is None
+
+
+def test_user_phi_parent_store_factory_falls_back_to_legacy_path(tmp_path, monkeypatch):
+    """When no PHI docstore exists, the factory must accept the legacy path."""
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    from claritymed.core.rag.parent_store import ParentStore
+    from claritymed.core.rag.retriever_factory import (
+        _make_user_phi_parent_store_factory,
+    )
+    from claritymed.stores.paths import user_parent_docstore_path
+
+    legacy = user_parent_docstore_path("test")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("{}", encoding="utf-8")
+
+    factory = _make_user_phi_parent_store_factory()
+    assert isinstance(factory("test"), ParentStore)
+
+
 def test_build_hybrid_retriever_returns_real_retriever():
     """The factory wires every dependency without touching the network.
 
