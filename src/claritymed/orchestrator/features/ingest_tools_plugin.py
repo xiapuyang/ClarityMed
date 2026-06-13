@@ -350,6 +350,7 @@ def save_record(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
     store = ManifestStore(user_id, "records")
     manifest_path = store.create(parsed.category, slug, manifest_data)
     record_path = f"{parsed.category}/{slug}"
+    manifest_rel = f"{record_path}/manifest.yaml"
     audit_event(
         "tool.save_record",
         {
@@ -367,7 +368,7 @@ def save_record(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
             "manifest_path": str(manifest_path),
         },
     )
-    return {"record_path": record_path}
+    return {"record_path": record_path, "manifest_path": manifest_rel}
 
 
 def save_to_library(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
@@ -389,6 +390,7 @@ def save_to_library(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict
     store = ManifestStore(user_id, "library")
     manifest_path = store.create("papers", slug, manifest_data)
     library_path = f"papers/{slug}"
+    manifest_rel = f"{library_path}/manifest.yaml"
     audit_event(
         "tool.save_to_library",
         {
@@ -406,7 +408,7 @@ def save_to_library(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict
             "manifest_path": str(manifest_path),
         },
     )
-    return {"library_path": library_path}
+    return {"library_path": library_path, "manifest_path": manifest_rel}
 
 
 def delete_record(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
