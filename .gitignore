@@ -18,6 +18,7 @@ build/
 .coverage
 htmlcov/
 coverage.json
+coverage.xml
 
 # Secrets / env
 .env

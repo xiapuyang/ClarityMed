@@ -137,12 +137,13 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
     "textual-dev>=1.8.0",
+    "diff-cover>=9.2",
 ]
 
 [tool.pytest.ini_options]
 # --ignore=tests/e2e keeps e2e out of normal CI runs (they need live services).
 # Run e2e explicitly: uv run pytest tests/e2e -v --no-cov
-addopts = "--cov=src/claritymed --cov-report=term-missing --cov-fail-under=80 --ignore=tests/e2e"
+addopts = "--cov=src/claritymed --cov-report=term-missing --cov-report=xml --cov-fail-under=80 --ignore=tests/e2e"
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
