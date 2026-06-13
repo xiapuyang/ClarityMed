@@ -42,6 +42,44 @@ phi:
     model_name: openai/privacy-filter
     # ONNX quantized variant (~809 MB). Set to null to use PyTorch safetensors (~2.8 GB).
     onnx_file: onnx/model_q4f16.onnx
+    # Tokens the NER reliably misreads but that carry no PHI value.
+    #
+    # IN-SCOPE: clinical lexicon (drug names, devices, procedures, anatomy)
+    # the NER misclassifies as person / secret. Always safe to add —
+    # these terms are never PHI on their own.
+    #
+    # OUT OF SCOPE: anything that looks like a name (张三/李四/李医生),
+    # a place (北京/上海), an organization, or a date. These shapes can be
+    # PHI in real chat — provider name and city of residence are both HIPAA
+    # identifiers. Do not add them just because a test fixture uses them as
+    # a placeholder; rename the fixture to an obviously synthetic form
+    # (Patient_001, City_A) instead.
+    #
+    # Matching is case-insensitive substring, gated by two safety rules
+    # implemented in core/scrub/service.py:
+    #   1. only applies to private_person / secret / account_number spans
+    #   2. after stripping every matched term from the span, the residual
+    #      must be ≤ 3 non-whitespace chars — otherwise the span is kept
+    #      so real PHI co-flagged with a clinical word ("李医生开的青霉素")
+    #      still gets redacted.
+    whitelist:
+      # Chinese drug names misread as private_person.
+      - 青霉素
+      - 阿莫西林
+      - 头孢
+      - 头孢曲松
+      - 头孢克肟
+      - 二甲双胍
+      - 阿司匹林
+      - 布洛芬
+      - 对乙酰氨基酚
+      - 氯雷他定
+      - 西替利嗪
+      - 奥美拉唑
+      - 雷尼替丁
+      - 胰岛素
+      - 利妥昔单抗
+      - 甲氨蝶呤
 
 red_flags: []
 

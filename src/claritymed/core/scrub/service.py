@@ -71,6 +71,22 @@ _LABEL_MAP: dict[str, str] = {
 # needs scrubbing — redacting them makes answers medically useless.
 _SKIP_LABELS: frozenset[str] = frozenset({"private_date"})
 
+# Labels the whitelist is allowed to override. The NER misclassifies Chinese
+# drug names as ``private_person`` and random slugs as ``secret`` /
+# ``account_number``, but it rarely flags clinical terms as address / email /
+# phone / URL — so we don't expose those to whitelist bypass.
+_WHITELIST_LABELS: frozenset[str] = frozenset(
+    {"private_person", "secret", "account_number"}
+)
+
+# Maximum non-whitespace residual characters left after stripping all matched
+# whitelist terms from a span. Above this, we assume the span contains real
+# PHI co-mingled with a clinical term (e.g. "李医生开的青霉素" → residual
+# "李医生开的") and leave it for the NER to redact. Tuned for short Chinese
+# fillers like "过敏" / "片" / "颗粒" / "针" without letting whole sentences
+# slip through.
+_WHITELIST_RESIDUAL_MAX: int = 3
+
 
 def _patch_tqdm_lock() -> None:
     """Replace tqdm's class-level lock with a threading.RLock.
@@ -242,6 +258,12 @@ class PrivacyFilterConfig(BaseModel):
     # ONNX quantized file path relative to the HF repo root (~809 MB total
     # including the _data companion). Set to null to use PyTorch safetensors.
     onnx_file: str | None = "onnx/model_q4f16.onnx"
+    # Words that should be exempt from redaction even when the NER tags them.
+    # The model trips on Chinese drug names ("青霉素", "阿莫西林") as
+    # ``private_person`` and on random slug-like tokens as ``secret``; both
+    # are clinical context, not PHI. Matched case-insensitively against the
+    # span's exact text — substrings do not count.
+    whitelist: list[str] = Field(default_factory=list)
 
 
 class ScrubConfig(BaseModel):
@@ -485,6 +507,12 @@ class ScrubService:
         try:
             spans = pipe(text)
             duration_ms = int((time.perf_counter() - t0) * 1000)
+            # Drop spans whose exact text matches a whitelisted term before
+            # they ever influence hit_types or text substitution. Done here
+            # rather than in _apply_spans so both the count (which gates
+            # PhiAssertionModel) and the replacement see the same filtered
+            # view.
+            spans, whitelisted = self._apply_whitelist(text, spans)
             hit_types: dict[str, int] = {}
             for span in spans:
                 label = span.get("entity_group", "unknown")
@@ -498,6 +526,7 @@ class ScrubService:
                     "duration_ms": duration_ms,
                     "hits": sum(hit_types.values()),
                     "hit_types": hit_types,
+                    "whitelisted": whitelisted,
                     "chars_in": len(text),
                     "chars_out": len(scrubbed),
                 }
@@ -649,3 +678,51 @@ class ScrubService:
             placeholder = _LABEL_MAP.get(label, REDACTED)
             text = text[: span["start"]] + placeholder + text[span["end"] :]
         return text
+
+    def _apply_whitelist(self, text: str, spans: list[dict]) -> tuple[list[dict], int]:
+        """Drop spans where a whitelisted term explains the whole span.
+
+        Two-layer gate to avoid leaking real PHI that the NER co-flagged
+        with a clinical word (e.g. "李医生开的青霉素" — one ``private_person``
+        span covering both the doctor's name and the drug):
+
+        1. Only ``private_person`` / ``secret`` / ``account_number`` spans
+           are eligible; other labels (address, email, phone, URL) are not
+           known to misfire on clinical terms, so we don't expose them to
+           bypass.
+        2. Strip every whitelisted term from the span text; if the residual
+           is more than ``_WHITELIST_RESIDUAL_MAX`` non-whitespace chars,
+           assume the span carries real PHI alongside the clinical word and
+           keep the span (the original NER decision applies — the whole
+           span gets redacted, drug name included). Below the threshold we
+           treat the span as the NER over-extending around a clinical
+           token and exempt it whole.
+
+        Returns the surviving spans plus the count of dropped ones, surfaced
+        in the audit log so over-broad whitelist entries can be spotted.
+        """
+        whitelist = self._config.privacy_filter.whitelist
+        if not whitelist or not spans:
+            return spans, 0
+        terms = tuple(w.strip().lower() for w in whitelist if w.strip())
+        if not terms:
+            return spans, 0
+        kept: list[dict] = []
+        dropped = 0
+        for span in spans:
+            label = span.get("entity_group", "")
+            if label not in _WHITELIST_LABELS:
+                kept.append(span)
+                continue
+            residual = text[span["start"] : span["end"]].lower()
+            matched = False
+            for t in terms:
+                if t in residual:
+                    matched = True
+                    residual = residual.replace(t, "")
+            residual_chars = sum(1 for c in residual if not c.isspace())
+            if matched and residual_chars <= _WHITELIST_RESIDUAL_MAX:
+                dropped += 1
+                continue
+            kept.append(span)
+        return kept, dropped
