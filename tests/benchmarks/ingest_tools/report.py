@@ -62,7 +62,8 @@ _TRIAL_FIELDS_LIGHT = [
     "no_tool",
     "ask_user_q_count",
     "latency_ms",
-    "error",
+    "had_error",
+    "error_msg",
 ]
 
 
@@ -232,9 +233,9 @@ function renderCards(rows) {{
   const n = rows.length;
   const nCorrect = rows.filter(t => CORRECT_OUTCOMES.has(t.outcome)).length;
   const nNoTool = rows.filter(t => t.no_tool).length;
-  const nErr = rows.filter(t => t.error).length;
+  const nErr = rows.filter(t => t.had_error).length;
   const nAsk = rows.reduce((a,t) => a + (t.ask_user_q_count||0), 0);
-  const lats = rows.filter(t => !t.error).map(t => t.latency_ms);
+  const lats = rows.filter(t => !t.had_error).map(t => t.latency_ms);
   const meanLat = lats.length ? lats.reduce((a,b)=>a+b,0) / lats.length : 0;
   const judge = rows.filter(t => t.judge_score != null).map(t => t.judge_score);
   const meanJudge = judge.length ? judge.reduce((a,b)=>a+b,0) / judge.length : null;
@@ -278,8 +279,8 @@ function renderGroup(rows) {{
     const nCorrect = cell.filter(t => CORRECT_OUTCOMES.has(t.outcome)).length;
     const nNoTool = cell.filter(t => t.no_tool).length;
     const nAsk = cell.reduce((a,t)=>a+(t.ask_user_q_count||0),0);
-    const nErr = cell.filter(t=>t.error).length;
-    const lats = cell.filter(t=>!t.error).map(t=>t.latency_ms);
+    const nErr = cell.filter(t=>t.had_error).length;
+    const lats = cell.filter(t=>!t.had_error).map(t=>t.latency_ms);
     const meanLat = lats.length ? lats.reduce((a,b)=>a+b,0)/lats.length : 0;
     const judge = cell.filter(t=>t.judge_score!=null).map(t=>t.judge_score);
     const meanJudge = judge.length ? judge.reduce((a,b)=>a+b,0)/judge.length : null;

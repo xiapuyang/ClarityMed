@@ -194,7 +194,12 @@ class TrialRecord:
     no_tool: bool
     # Perf
     latency_ms: float
-    error: str | None
+    # Split for clarity: ``had_error`` is the cheap boolean every aggregator
+    # branches on (correctness + latency stats), ``error_msg`` carries the
+    # human-readable detail for inspect_fails / debugging. Both go into
+    # trials.jsonl so the HTML report can show the message verbatim.
+    had_error: bool
+    error_msg: str | None
 
 
 # --- single trial ----------------------------------------------------
@@ -272,6 +277,19 @@ async def _run_one_trial(
         try:
             async with asyncio.timeout(PER_TURN_TIMEOUT_S):
                 async for ev in service.run(prompt, user_id=USER_ID):
+                    # AskService swallows ``UnexpectedModelBehavior`` etc.
+                    # inside ``_producer`` and emits an ``Error`` event
+                    # instead of raising. Capture it here so the trial
+                    # doesn't masquerade as a clean run — without this
+                    # branch, an empty-response crash on a ``decline``
+                    # case becomes a fake ``correct`` (no ingest tool
+                    # fired = predicate pass).
+                    if getattr(ev, "type", None) == "error":
+                        error_msg = (
+                            f"{getattr(ev, 'error_type', 'unknown')}: "
+                            f"{getattr(ev, 'message', '')}"
+                        )
+                        continue
                     # TokenChunk is the only text-bearing event we care
                     # about; everything else (RetrievalStarted, ToolStarted,
                     # …) is for UI progress and irrelevant to the judge.
@@ -294,7 +312,9 @@ async def _run_one_trial(
     ask_qs_payload = [p.model_dump() for p in prompt_channel.calls]
     final_text = "".join(final_chunks).strip()
 
-    outcome_info = _classify(case, approval.calls, prompt_channel.calls, final_text)
+    outcome_info = _classify(
+        case, approval.calls, prompt_channel.calls, final_text, error_msg
+    )
 
     return TrialRecord(
         request_id=request_id,
@@ -320,7 +340,8 @@ async def _run_one_trial(
         ask_user_q_count=len(prompt_channel.calls),
         no_tool=outcome_info["no_tool"],
         latency_ms=round(latency_ms, 1),
-        error=error_msg,
+        had_error=error_msg is not None,
+        error_msg=error_msg,
     )
 
 
@@ -361,11 +382,30 @@ def _classify(
     approval_calls: list[_RecordedCall],
     ask_calls: list[AskUserQuestionInput],
     final_response_text: str,
+    error_msg: str | None,
 ) -> dict[str, Any]:
-    """Predicate-only outcome label. Judge does the semantic layer later."""
+    """Predicate-only outcome label. Judge does the semantic layer later.
+
+    A non-None ``error_msg`` short-circuits to ``outcome="errored"`` before
+    any expected_behavior dispatch. Without this guard, a trial that crashes
+    in pydantic-ai (e.g. ``UnexpectedModelBehavior: empty response``) before
+    invoking any tool would be indistinguishable from a model that correctly
+    declined — both produce ``approval_calls == []`` and silently inflate
+    the ``decline -> correct`` rate.
+    """
     ingest_calls = [c for c in approval_calls if c.tool_name in INGEST_TOOLS]
     ingest_names = [c.tool_name for c in ingest_calls]
     no_tool = not approval_calls and not ask_calls
+
+    if error_msg is not None:
+        return dict(
+            outcome="errored",
+            predicate_pass=False,
+            predicate_reason=f"trial raised: {error_msg}",
+            correct_tool=False,
+            wrong_tools=ingest_names,
+            no_tool=no_tool,
+        )
 
     if case.expected_behavior == "call_tool":
         assert case.expected_tool is not None
@@ -624,12 +664,12 @@ def _summary_rows(trials: list[TrialRecord]) -> list[dict]:
 
     rows: list[dict] = []
     for (model, lang, tool_prompt_lang, case_name), cell in sorted(by_cell.items()):
-        latencies = [t.latency_ms for t in cell if t.error is None]
+        latencies = [t.latency_ms for t in cell if not t.had_error]
         n = len(cell)
         n_correct = sum(1 for t in cell if t.outcome in CORRECT_OUTCOMES)
         n_no_tool = sum(1 for t in cell if t.no_tool)
         n_ask = sum(t.ask_user_q_count for t in cell)
-        n_err = sum(1 for t in cell if t.error)
+        n_err = sum(1 for t in cell if t.had_error)
         n_fail = n - n_correct
 
         rows.append(

@@ -111,8 +111,8 @@ def _print_trial(trial: dict, judge: dict | None) -> None:
     else:
         print()
     print(f"predicate_reason: {trial['predicate_reason']}")
-    if trial.get("error"):
-        print(f"error: {trial['error']}")
+    if trial.get("had_error"):
+        print(f"error: {trial.get('error_msg', '<missing>')}")
     print("\n--- USER PROMPT ---")
     print(f"  {trial['user_prompt']}")
     print("\n--- TOOL CALLS ---")
