@@ -75,29 +75,6 @@ def test_check_shas_blob_pool_sha_passes(_ctx):
     d.check_shas({"attachments": [{"sha256": sha, "filename": "h.txt"}]})
 
 
-def test_check_shas_normalizes_json_string_attachments(_ctx):
-    """Small LLMs sometimes emit ``attachments`` as a JSON-encoded string.
-
-    Without internal normalization, ``check_shas`` iterates over the string
-    character-by-character and trips on ``str.sha256``. Self-normalization
-    means callers (e.g. the per-tool TOCTOU re-check in ``save_record``)
-    can pass raw LLM args safely.
-    """
-    sha = "a" * 64
-    d = ToolDispatcher(session_attachments=lambda: {sha})
-    raw = {"attachments": f'[{{"sha256": "{sha}", "filename": "x.pdf"}}]'}
-    d.check_shas(raw)
-
-
-def test_check_shas_bare_string_entry_does_not_attribute_error(_ctx):
-    """If an attachment entry is a bare string (not a dict / AttachmentRef),
-    surface a clean ``UnknownSha256`` rather than ``AttributeError``.
-    """
-    d = ToolDispatcher()
-    with pytest.raises(UnknownSha256, match="missing sha256"):
-        d.check_shas({"attachments": ["just-a-sha-hex-no-filename"]})
-
-
 def test_check_record_path_outside_raises(_ctx):
     d = ToolDispatcher()
     with pytest.raises(PathOutsideUserDomain):

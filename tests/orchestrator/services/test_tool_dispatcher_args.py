@@ -40,12 +40,8 @@ def _gate() -> ToolDispatcher:
 # --- string-coerced primitives (the Qwen3.6 anti-pattern) -------------
 
 
-def test_gate_rejects_unparseable_string_for_list_field(_ctx, _gate):
-    """``"attachments": "[]"`` is JSON-decoded by ``_normalize_args``
-    (see the dedicated coercion tests below), so that exact payload now
-    passes. A garbled list-like string that ``json.loads`` cannot parse
-    must still bubble up as a ``ModelRetry`` rather than being silently
-    accepted as a string."""
+def test_gate_rejects_string_coerced_list(_ctx, _gate):
+    """``"attachments": "[]"`` (string) instead of ``[]`` (list)."""
     with pytest.raises(ModelRetry, match=r"invalid args for save_record"):
         _gate.gate(
             "save_record",
@@ -53,9 +49,7 @@ def test_gate_rejects_unparseable_string_for_list_field(_ctx, _gate):
                 "category": "checkups",
                 "kind": "checkup",
                 "title": "Annual",
-                # Unbalanced brackets — ``json.loads`` raises, the string
-                # falls through, pydantic then rejects str-for-list.
-                "attachments": "[not, valid, json",
+                "attachments": "[]",
             },
         )
 
@@ -97,9 +91,7 @@ def test_gate_error_message_names_offending_field(_ctx, _gate):
                 "category": "checkups",
                 "kind": "checkup",
                 "title": "Annual",
-                # Wrong shape and not JSON-parseable — falls through to
-                # pydantic, which surfaces the field name in the error.
-                "attachments": "not_a_list",
+                "attachments": "[]",
             },
         )
     msg = str(exc_info.value)
@@ -186,76 +178,6 @@ def test_validate_args_logs_warning_on_failure(_ctx, _gate, caplog):
     msg = matching[0].getMessage()
     assert "tool=save_allergy" in msg, msg
     assert "severity" in msg, "args dict must appear in the log line"
-
-
-def test_gate_accepts_empty_string_for_optional_date(_ctx, _gate):
-    """Small models default to ``end_date=''`` for unfilled optional
-    dates instead of omitting the key. Pydantic then fails
-    ``date_from_datetime_parsing`` on the zero-length string. The
-    dispatcher cleans empty string → ``None`` along with the explicit
-    ``"None"`` / ``"null"`` literals it already handled."""
-    # Should NOT raise.
-    _gate.gate(
-        "save_condition",
-        {
-            "display": "type 2 diabetes",
-            "onset_date": "2020-01-01",
-            "end_date": "",
-            "code": "",
-        },
-    )
-
-
-def test_gate_coerces_json_string_list_to_real_list(_ctx, _gate):
-    """Dominant benchmark failure mode: models JSON-encode the whole
-    list into a single quoted string. We try ``json.loads`` on any
-    ``"[...]"`` / ``"{...}"`` looking value and substitute the parsed
-    container — saves a retry slot per occurrence."""
-    # Should NOT raise.
-    _gate.gate(
-        "save_to_library",
-        {
-            "title": "2024 Hypertension Guideline",
-            "tags": '["hypertension", "guideline", "2024"]',
-        },
-    )
-
-
-def test_gate_coerces_empty_json_list_string(_ctx, _gate):
-    """``"attachments": "[]"`` — the most common single-line form of the
-    JSON-string-as-list typo. Must parse to ``[]`` cleanly."""
-    # Should NOT raise.
-    _gate.gate(
-        "save_record",
-        {
-            "category": "checkups",
-            "kind": "checkup",
-            "title": "Annual",
-            "attachments": "[]",
-        },
-    )
-
-
-def test_gate_leaves_non_json_string_alone(_ctx, _gate):
-    """A string that incidentally starts with ``[`` but isn't valid JSON
-    (e.g. ``'[draft]'`` in a notes field) must NOT be modified —
-    falling back to the raw string lets the str-typed field accept it
-    instead of corrupting the payload."""
-    # ``provider`` is a free-text str field on save_record.
-    bs_sha = "a" * 64  # will fail at sha check, not at validate_args
-    with pytest.raises(UnknownSha256):
-        # Reaches the sha check ⇒ validate_args accepted the args, ⇒
-        # the bracketed string was kept as a string.
-        _gate.gate(
-            "save_record",
-            {
-                "category": "checkups",
-                "kind": "checkup",
-                "title": "Annual",
-                "provider": "[draft] Dr. Chen",
-                "attachments": [{"sha256": bs_sha, "filename": "r.pdf"}],
-            },
-        )
 
 
 def test_gate_accepts_string_none_for_optional_date(_ctx, _gate):
