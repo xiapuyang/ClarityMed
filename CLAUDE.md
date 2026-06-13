@@ -418,14 +418,14 @@ EnterWorktree(name="<branch-shortname>-<purpose>")
 
 `name` 务必有语义。让 `git worktree list` 一眼读得懂"这是干啥的"——不要让自动生成的随机后缀堆满 `.claude/worktrees/` 目录。
 
-End-of-session 清理（**这是 stash 翻车的镜像问题**——worktree 也会被忘掉）：
+End-of-session 清理（和 stash 类似容易被忘，但**不会丢数据**——只是堆 orphan）：
 
 | 情况 | 动作 |
 |---|---|
-| 工作已 merge 回主 feature 分支 | `ExitWorktree(action="remove")` —— 同时删目录和分支 |
-| 工作 parked、明天继续 | `ExitWorktree(action="keep")` **且**在主 working tree 里记一笔到 `docs/parked-worktrees.md`（路径 + 分支 + 一句话用途）。不记 = 14 小时后忘掉 = 翻车 |
-| 直接关终端 | **不要这么干**。worktree 目录和分支会永久挂在那里 |
+| 工作已 merge 回主 feature 分支 | `ExitWorktree(action="remove")` —— 删目录 + 分支。误删的分支可在 90 天内通过 `git reflog` 找到最后一次 HEAD 的 SHA，再 `git branch <name> <sha>` 恢复 |
+| 工作 parked、明天继续 | `ExitWorktree(action="keep")` 保留目录和分支。预计拖几天的话，顺手在 `docs/parked-worktrees.md` 记一笔（路径 + 分支 + 一句话用途），免得回头看到 `tui-agent-bench-2` 想不起来当初干啥 |
+| 直接关终端 | 数据不丢，worktree 目录和分支会留在 `.claude/worktrees/` 堆着。下次 session 启动时 SessionStart hook 会列出来提醒处理 |
 
-每次 session 启动时 global SessionStart hook 会自动 `git worktree list`，如果有多于 1 个 worktree 会提示——这是兜底，不是替代清理。
+每次 session 启动时 global SessionStart hook 会自动 `git worktree list`，多于 1 个会提示——这是兜底，不是替代清理。
 
 什么时候**不**用 worktree：单终端工作 + 没并发风险时。worktree 给你隔离的代价是每次都要 EnterWorktree / 合并 / Exit，单线工作时纯属负担。
