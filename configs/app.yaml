@@ -41,6 +41,14 @@ paste:
 #               Override with CLARITYMED_TRACE_PROJECT env var — test conftest
 #               files use this to route pytest → "claritymed-pytest" and
 #               e2e → "claritymed-e2e" without touching this file.
+# --- Patient profile context in ask turns ------------------------------
+# mode: "deterministic" splices a profile/allergy/condition/medication/record
+#        summary into every prompt before the LLM is called.
+#       "tool" exposes a retrieve_profile tool the LLM can call on demand.
+#       "off" disables the plugin entirely.
+profile_context:
+  mode: deterministic
+
 # --- Tool approval rules ------------------------------------------------
 # rule_ttl_hours: how long an "always allow" rule stays active before the
 # user is prompted again. Range: 1–720 (1 hour to 30 days).

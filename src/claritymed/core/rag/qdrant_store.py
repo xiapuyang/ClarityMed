@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,14 @@ logger = logging.getLogger(__name__)
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 
+# Process-level cache: one AsyncQdrantClient per resolved directory path.
+# Qdrant local mode writes a .lock file on open; a second open on the same
+# path raises "already accessed by another instance" — even within the same
+# process. Caching here lets the retriever factories and the post-tool embed
+# tasks share the same client without conflicting.
+_local_clients: dict[str, AsyncQdrantClient] = {}
+_local_clients_lock = threading.Lock()
+
 
 def open_local_qdrant_client(user_dir: Path) -> AsyncQdrantClient:
     """Open path-mode AsyncQdrantClient with stale-lock recovery.
@@ -59,7 +68,22 @@ def open_local_qdrant_client(user_dir: Path) -> AsyncQdrantClient:
     no other process holds it open. When ``lsof`` is unavailable or some
     process *is* holding it, the original error propagates with an
     actionable hint instead of unsafely nuking a real lock.
+
+    A process-level cache keyed by resolved path ensures the retriever
+    factories and post-tool embed tasks share one client per directory,
+    avoiding the "already accessed" conflict within the same process.
     """
+    key = str(user_dir.resolve())
+    with _local_clients_lock:
+        existing = _local_clients.get(key)
+        if existing is not None:
+            return existing
+        client = _open_local_qdrant_client_uncached(user_dir)
+        _local_clients[key] = client
+        return client
+
+
+def _open_local_qdrant_client_uncached(user_dir: Path) -> AsyncQdrantClient:
     try:
         return AsyncQdrantClient(path=str(user_dir))
     except RuntimeError as exc:

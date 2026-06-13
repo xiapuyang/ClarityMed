@@ -22,6 +22,7 @@ def build_features(
     rag_strategy: "RagStrategy | None" = None,
     get_session_id: Callable[[], str | None] | None = None,
     ingest_factory: Callable[[], FeaturePlugin] | None = None,
+    profile_context_mode: str = "deterministic",
 ) -> list[FeaturePlugin]:
     """Instantiate plugins from per-feature config.
 
@@ -42,6 +43,10 @@ def build_features(
             callable here keeps ``core.features`` import-free of
             orchestrator code while letting AskService wire the live
             dispatcher + settings store.
+        profile_context_mode: ``"deterministic"`` (default) splices the
+            patient profile block into every prompt; ``"tool"`` exposes
+            ``retrieve_profile`` as an agent tool; ``"off"`` disables the
+            plugin entirely.
 
     Raises:
         NotImplementedError: any active feature requests ``agentic`` mode.
@@ -57,6 +62,12 @@ def build_features(
         plugins.append(AttachmentsFeature(get_session_id=get_session_id))
     if ingest_factory is not None:
         plugins.append(ingest_factory())
+    if profile_context_mode != "off":
+        from claritymed.orchestrator.features.profile_context_plugin import (
+            ProfileContextFeature,
+        )
+
+        plugins.append(ProfileContextFeature(mode=profile_context_mode))
 
     agentic = [p for p in plugins if p.mode == "agentic"]
     if agentic:

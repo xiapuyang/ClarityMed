@@ -73,3 +73,13 @@ errors:
   ocr_failed: "无法从附件中提取文本。你可以选择无 OCR 文本直接保存记录，或在资料库视图中重试。"
   record_not_found: "该路径下未找到记录，可能已在其他会话中删除。"
   path_outside_user_domain: "该路径不在你的数据目录内，操作已被拒绝。"
+
+tool:
+  approval:
+    update_profile_field: "更新档案：{field} → {value}"
+    save_allergy: "保存过敏史：{substance}（{severity}）"
+    save_condition: "保存病史：{display}"
+    save_medication: "保存用药记录：{name}"
+    save_record: "保存记录：{kind} · {title}"
+    save_to_library: "存入我的资料库：{title}"
+    delete_record: "删除记录：{record_path}"

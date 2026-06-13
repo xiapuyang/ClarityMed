@@ -21,14 +21,22 @@ collects all plugin toolsets per turn and hands them to the agent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import date
 from typing import TYPE_CHECKING, Any, Callable
 
 from claritymed.context import get_context_or_raise
 from claritymed.core.features.base import FeatureMode, TurnContext
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.audit_payloads import write_payload
-from claritymed.core.schemas import Allergy, Condition, Medication, solicitation_for
+from claritymed.core.schemas import (
+    Allergy,
+    Condition,
+    Medication,
+    Profile,
+    solicitation_for,
+)
 from claritymed.core.schemas.tools import (
     DeleteRecordArgs,
     SaveAllergyArgs,
@@ -90,6 +98,79 @@ def _materialize_attachments(user_id: str, refs) -> list[dict]:
     return out
 
 
+# --- RAG embed helpers -----------------------------------------------
+
+
+def _format_record_embed_text(parsed: SaveRecordArgs) -> str:
+    """Build the text to embed for a newly saved PHI record."""
+    parts = [parsed.title]
+    if parsed.notes:
+        parts.append(parsed.notes)
+    if parsed.extracted_labs:
+        lab_strs: list[str] = []
+        for lab in parsed.extracted_labs:
+            s = f"{lab.name}: {lab.value}"
+            if lab.unit:
+                s += f" {lab.unit}"
+            lab_strs.append(s)
+        parts.append("Labs: " + ", ".join(lab_strs))
+    if parsed.tags:
+        parts.append("Tags: " + ", ".join(parsed.tags))
+    return "\n".join(parts)
+
+
+def _format_library_embed_text(parsed: SaveToLibraryArgs) -> str:
+    """Build the text to embed for a newly saved library entry."""
+    parts = [parsed.title]
+    if parsed.authors:
+        parts.append("Authors: " + ", ".join(parsed.authors))
+    if parsed.year:
+        parts.append(f"Year: {parsed.year}")
+    if parsed.tags:
+        parts.append("Tags: " + ", ".join(parsed.tags))
+    return "\n".join(parts)
+
+
+async def _embed_record_task(result: dict, kwargs: dict) -> None:
+    """Background task: embed record metadata text into ``UserPhiRagStore``."""
+    from claritymed.stores.user_phi_rag import make_phi_rag_store
+
+    try:
+        _, user_id, _ = get_context_or_raise()
+        record_path = result.get("record_path", "")
+        if not record_path:
+            return
+        parsed = SaveRecordArgs.model_validate(kwargs)
+        text = _format_record_embed_text(parsed)
+        if not text.strip():
+            return
+        store = make_phi_rag_store(user_id)
+        n = await store.add_record(user_id, record_path, text)
+        logger.debug("embed_record: %s → %d chunks", record_path, n)
+    except Exception:  # noqa: BLE001
+        logger.warning("embed_record: background task failed", exc_info=True)
+
+
+async def _embed_library_task(result: dict, kwargs: dict) -> None:
+    """Background task: embed library metadata text into ``UserRagStore``."""
+    from claritymed.stores.user_rag import make_user_rag_store
+
+    try:
+        _, user_id, _ = get_context_or_raise()
+        library_path = result.get("library_path", "")
+        if not library_path:
+            return
+        parsed = SaveToLibraryArgs.model_validate(kwargs)
+        text = _format_library_embed_text(parsed)
+        if not text.strip():
+            return
+        store = make_user_rag_store(user_id)
+        n = await store.add_document(user_id, library_path, text, public=parsed.public)
+        logger.debug("embed_library: %s → %d chunks", library_path, n)
+    except Exception:  # noqa: BLE001
+        logger.warning("embed_library: background task failed", exc_info=True)
+
+
 # --- profile.db-only tools (no manifest, no Qdrant) -----------------
 
 
@@ -101,6 +182,12 @@ def save_medication(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict
     parsed = dispatcher.validate_args("save_medication", args)
     assert isinstance(parsed, SaveMedicationArgs)
     rid, user_id, _ = get_context_or_raise()
+    existing = ProfileStore(user_id).list_medications()
+    if any(
+        m.end_date is None and m.display.lower() == parsed.name.lower()
+        for m in existing
+    ):
+        return {"ok": False, "reason": "no_change"}
     medication = Medication(
         display=parsed.name,
         code=parsed.code,
@@ -126,6 +213,12 @@ def save_allergy(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
     parsed = dispatcher.validate_args("save_allergy", args)
     assert isinstance(parsed, SaveAllergyArgs)
     rid, user_id, _ = get_context_or_raise()
+    existing = ProfileStore(user_id).list_allergies()
+    if any(
+        a.end_date is None and a.substance.lower() == parsed.substance.lower()
+        for a in existing
+    ):
+        return {"ok": False, "reason": "no_change"}
     allergy = Allergy(
         substance=parsed.substance,
         severity=parsed.severity,
@@ -150,6 +243,12 @@ def save_condition(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
     parsed = dispatcher.validate_args("save_condition", args)
     assert isinstance(parsed, SaveConditionArgs)
     rid, user_id, _ = get_context_or_raise()
+    existing = ProfileStore(user_id).list_conditions()
+    if any(
+        c.end_date is None and c.display.lower() == parsed.display.lower()
+        for c in existing
+    ):
+        return {"ok": False, "reason": "no_change"}
     condition = Condition(
         display=parsed.display,
         code=parsed.code,
@@ -173,6 +272,30 @@ def update_profile_field(args: dict[str, Any], *, dispatcher: ToolDispatcher) ->
     parsed = dispatcher.validate_args("update_profile_field", args)
     assert isinstance(parsed, UpdateProfileFieldArgs)
     rid, user_id, _ = get_context_or_raise()
+    try:
+        current = ProfileStore(user_id).get_profile()
+        if current is not None:
+            current_val = getattr(current, parsed.field, None)
+            if current_val is not None:
+                # Coerce the incoming value through the same path ProfileStore uses
+                # so we compare date↔date, float↔float, bool↔bool.
+                data = current.model_dump(mode="python")
+                data[parsed.field] = parsed.value
+                coerced_val = getattr(Profile.model_validate(data), parsed.field, None)
+                if coerced_val == current_val:
+                    return {"ok": False, "reason": "no_change"}
+                # Downgrade guard for birth_date: refuse to replace a precise
+                # date (month≠1 or day≠1) with a year-only approximation (01-01).
+                if parsed.field == "birth_date" and isinstance(coerced_val, date):
+                    if (
+                        coerced_val.month == 1
+                        and coerced_val.day == 1
+                        and isinstance(current_val, date)
+                        and (current_val.month != 1 or current_val.day != 1)
+                    ):
+                        return {"ok": False, "reason": "no_change"}
+    except Exception:  # noqa: BLE001
+        pass  # Let the write proceed if the guard itself fails
     ProfileStore(user_id).update_profile_field(
         parsed.field, parsed.value, owner_user_id=user_id
     )
@@ -406,19 +529,36 @@ def build_ingest_toolset(
 
     # pydantic-ai Tool accepts plain callables; we bind ``dispatcher`` via
     # a closure so the registered signature matches the tool args schema.
+    # ``save_record`` and ``save_to_library`` get async wrappers so they
+    # can fire-and-forget a RAG embed task without blocking the agent loop.
+    _EMBED_HOOKS: dict[str, Any] = {
+        "save_record": _embed_record_task,
+        "save_to_library": _embed_library_task,
+    }
+
     tools = []
     for name, impl in INGEST_TOOLS.items():
+        embed_hook = _EMBED_HOOKS.get(name)
 
-        def _make(impl_fn, tool_name):
-            def _entry(**kwargs):
-                return impl_fn(kwargs, dispatcher=dispatcher)
+        def _make(impl_fn, tool_name, hook=None):
+            if hook is not None:
+
+                async def _entry(**kwargs):
+                    result = impl_fn(kwargs, dispatcher=dispatcher)
+                    if isinstance(result, dict) and result.get("ok") is not False:
+                        asyncio.create_task(hook(result, kwargs))
+                    return result
+            else:
+
+                def _entry(**kwargs):  # type: ignore[misc]
+                    return impl_fn(kwargs, dispatcher=dispatcher)
 
             _entry.__name__ = tool_name
             return _entry
 
         tools.append(
             Tool(
-                _make(impl, name),
+                _make(impl, name, hook=embed_hook),
                 name=name,
                 description=_description_for(name) or None,
             )

@@ -44,8 +44,9 @@ logger = logging.getLogger(__name__)
 class TextualToolApprovalChannel:
     """Bridge a deferred tool-approval request to a Textual modal."""
 
-    def __init__(self, app: "App") -> None:
+    def __init__(self, app: "App", *, language: str = "en") -> None:
         self._app = app
+        self._language = language
 
     async def request(
         self,
@@ -62,7 +63,9 @@ class TextualToolApprovalChannel:
         try:
             t0 = time.monotonic()
             result = await self._app.push_screen_wait(
-                ToolApprovalModal(tool_name, args, breadcrumb=breadcrumb)
+                ToolApprovalModal(
+                    tool_name, args, breadcrumb=breadcrumb, language=self._language
+                )
             )
             logger.debug(
                 "TextualToolApprovalChannel.request: returned after %.0fms decision=%r",

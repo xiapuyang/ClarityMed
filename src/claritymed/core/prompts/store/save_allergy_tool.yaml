@@ -55,3 +55,60 @@ versions:
 
         一次调用对应一种过敏原。交叉过敏（青霉素与阿莫西林）也算两条
         独立事实——分两次调用。
+  - version: v2
+    created_at: 2026-06-12
+    notes: |
+      Fix enum values (source: self_report|clinical_record; severity:
+      anaphylactic). Add dedup guard: check [Patient profile] block before
+      calling to avoid redundant tool invocations.
+    languages:
+      en: |
+        Add one allergy to the user's profile.
+
+        Before calling: check the ``[Patient profile]`` block in the current
+        context. If the allergen (case-insensitive) is already listed as active
+        (no end date shown), skip this call — the tool returns
+        ``{"ok": false, "reason": "no_change"}``. Only call when the substance
+        is new to the profile, or the previous entry was resolved (has an end
+        date) and the allergy has recurred.
+
+        Field notes:
+          - ``substance`` is the allergen (drug, food, environmental).
+            Keep it as the user said it. Lowercase preferred but not required.
+          - ``severity`` must be one of: ``mild``, ``moderate``, ``severe``,
+            ``anaphylactic``. If the user is vague ("a bit allergic"), pick
+            ``mild``; if they describe anaphylaxis or carry an epinephrine
+            auto-injector, pick ``anaphylactic``. Never invent another value.
+          - ``source`` must be one of: ``self_report`` (user says so),
+            ``clinical_record`` (documented by a clinician or test result).
+            Default to ``self_report`` when the user does not specify.
+          - ``onset_date`` is when the allergy first appeared. Null if unknown.
+          - ``end_date`` is when the allergy resolved (outgrown food allergy,
+            desensitization). Almost always null.
+
+        One call per allergen. Cross-reactive allergens (penicillin and
+        amoxicillin) are separate facts — propose two calls.
+      zh: |
+        把一条过敏记录加入用户画像。
+
+        调用前：检查当前上下文里的 ``[Patient profile]`` 块。如果该过敏原
+        （忽略大小写）已经以活跃状态（无结束日期）列出，**跳过此次调用**——
+        工具会返回 ``{"ok": false, "reason": "no_change"}``。仅当该物质对用户
+        来说是新的，或之前的记录已经标记为结束（有 end_date）且过敏复发时
+        才调用。
+
+        字段说明：
+          - ``substance`` 是过敏原（药物、食物、环境）。按用户口语原样记录。
+            建议小写但不强制。
+          - ``severity`` 必须为以下之一：``mild`` / ``moderate`` / ``severe`` /
+            ``anaphylactic``。用户说得含糊（"有点过敏"）选 ``mild``；描述过
+            敏性休克或自己用过肾上腺素笔，选 ``anaphylactic``。**不要**自创其他值。
+          - ``source`` 必须为以下之一：``self_report``（用户自述）/
+            ``clinical_record``（由医生或检测报告记录）。用户没说就默认
+            ``self_report``。
+          - ``onset_date`` 是首次出现过敏的日期。不知道就留 null。
+          - ``end_date`` 是过敏已消解的日期（食物过敏自愈、脱敏治疗）。
+            绝大多数情况留 null。
+
+        一次调用对应一种过敏原。交叉过敏（青霉素与阿莫西林）也算两条
+        独立事实——分两次调用。

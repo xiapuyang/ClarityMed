@@ -224,6 +224,7 @@ class AskService:
         user_whitelist: list[str] | None = None,
         translation_service: "TranslationProvider | None" = None,
         rag_mode: str = "tool",
+        profile_context_mode: str = "deterministic",
         features: "list[FeaturePlugin] | None" = None,
         prompt_channel: "PromptChannel | None" = None,
         tool_approval_channel: "ToolApprovalChannel | None" = None,
@@ -281,6 +282,7 @@ class AskService:
                     if tool_approval_channel is not None and chat_session is not None
                     else None
                 ),
+                profile_context_mode=profile_context_mode,
             )
         )
         # Snapshot per-feature modes for the audit row; the LLM-facing

@@ -138,3 +138,27 @@ class UserPhiRagStore:
         """
         col_store = self._collection_store(user_id)
         await col_store.delete_by_doc_id(record_path)
+
+
+def make_phi_rag_store(user_id: str) -> "UserPhiRagStore":
+    """Build a ``UserPhiRagStore`` for one user (local-mode file storage).
+
+    Shares ``open_local_qdrant_client``'s process-level cache with
+    ``make_user_rag_store``, so both library and PHI collections use the
+    same ``AsyncQdrantClient`` instance for the same user directory — no
+    second file-lock conflict when the retriever and a post-tool embed
+    task run concurrently within one session.
+    """
+    from claritymed.core.rag.chunking.factory import build_chunker
+    from claritymed.core.rag.embedding.factory import build_embedder
+    from claritymed.core.rag.qdrant_store import open_local_qdrant_client
+    from claritymed.stores.paths import user_rag_qdrant_dir
+
+    user_dir = user_rag_qdrant_dir(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    aclient = open_local_qdrant_client(user_dir)
+    return UserPhiRagStore(
+        aclient=aclient,
+        embedder=build_embedder(),
+        chunker=build_chunker(),
+    )

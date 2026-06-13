@@ -922,7 +922,13 @@ class ClarityMedApp(App):
         from claritymed.cli.tui.tool_approval_channel import (
             TextualToolApprovalChannel,
         )
+        from claritymed.config import load_yaml
 
+        profile_context_mode = (
+            load_yaml("app.yaml")
+            .get("profile_context", {})
+            .get("mode", "deterministic")
+        )
         service = AskService(
             model=model,
             language=self.query_one(StatusBar).language,
@@ -935,8 +941,11 @@ class ClarityMedApp(App):
                 model, phi_kind=provider.kind
             ),
             rag_mode=mode_name,
+            profile_context_mode=profile_context_mode,
             prompt_channel=TextualPromptChannel(self),
-            tool_approval_channel=TextualToolApprovalChannel(self),
+            tool_approval_channel=TextualToolApprovalChannel(
+                self, language=self.query_one(StatusBar).language
+            ),
         )
         self._cached_ask_service = service
         return service

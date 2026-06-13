@@ -16,6 +16,7 @@ Wire-up:
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from textual import events
@@ -24,6 +25,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
+from claritymed.core.i18n import t
 from claritymed.core.interaction.tool_approval_channel import (
     ApprovalDecision,
     Decision,
@@ -31,33 +33,19 @@ from claritymed.core.interaction.tool_approval_channel import (
 
 __all__ = ["ApprovalDecision", "Decision", "ToolApprovalModal"]
 
-# Human-readable summaries for the seven ingest tools.
-# Each lambda receives the raw args dict and returns a one-line description.
-_TOOL_SUMMARY: dict[str, Any] = {
-    "update_profile_field": lambda a: (
-        f"Update profile: {a.get('field', '?')} → {a.get('value', '?')}"
-    ),
-    "save_allergy": lambda a: (
-        f"Save allergy: {a.get('substance', '?')} ({a.get('severity', '?')})"
-    ),
-    "save_condition": lambda a: f"Save condition: {a.get('display', '?')}",
-    "save_medication": lambda a: (
-        f"Save medication: {a.get('name', '?')}"
-        + (f"  {a['dose']}" if a.get("dose") else "")
-    ),
-    "save_record": lambda a: (f"Save {a.get('kind', 'record')}: {a.get('title', '?')}"),
-    "save_to_library": lambda a: f"Save to library: {a.get('title', '?')}",
-    "delete_record": lambda a: f"Delete record: {a.get('record_path', '?')}",
-}
 
-
-def _human_description(tool_name: str, args: dict[str, Any]) -> str:
-    renderer = _TOOL_SUMMARY.get(tool_name)
-    if renderer is not None:
+def _human_description(
+    tool_name: str, args: dict[str, Any], language: str = "en"
+) -> str:
+    """Return a localized one-line summary of the tool call."""
+    key = f"tool.approval.{tool_name}"
+    template = t(key, lang=language)
+    if template != key:
+        safe = defaultdict(lambda: "?", args)
         try:
-            return renderer(args)
+            return template.format_map(safe)
         except Exception:  # noqa: BLE001
-            pass
+            return template
     # Fallback for unknown tools: compact key=value list.
     pairs = ", ".join(f"{k}={v}" for k, v in args.items())
     return f"{tool_name}({pairs})"
@@ -117,11 +105,13 @@ class ToolApprovalModal(ModalScreen[ApprovalDecision]):
         args: dict[str, Any],
         *,
         breadcrumb: str | None = None,
+        language: str = "en",
     ) -> None:
         super().__init__()
         self._tool_name = tool_name
         self._args = args
         self._breadcrumb = breadcrumb
+        self._language = language
         self._destructive = tool_name in self._DESTRUCTIVE_TOOLS
 
     def on_mount(self) -> None:
@@ -152,7 +142,8 @@ class ToolApprovalModal(ModalScreen[ApprovalDecision]):
         with Vertical():
             yield Label(title, id="title")
             yield Static(
-                _human_description(self._tool_name, self._args), id="description"
+                _human_description(self._tool_name, self._args, self._language),
+                id="description",
             )
             with Horizontal(id="buttons"):
                 yield Button("Deny (n)", id="deny")

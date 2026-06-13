@@ -299,3 +299,179 @@ def test_build_ingest_toolset_wraps_when_approval_func(dispatcher):
 
     ts = build_ingest_toolset(dispatcher, approval_required_func=lambda *a, **kw: True)
     assert isinstance(ts, ApprovalRequiredToolset)
+
+
+# --- no-op guard tests (items 6+7) -----------------------------------
+
+
+def test_save_allergy_no_change_on_duplicate(dispatcher, _ctx):
+    save_allergy(
+        {"substance": "penicillin", "severity": "severe", "source": "self_report"},
+        dispatcher=dispatcher,
+    )
+    out = save_allergy(
+        {"substance": "penicillin", "severity": "mild", "source": "clinical_record"},
+        dispatcher=dispatcher,
+    )
+    assert out == {"ok": False, "reason": "no_change"}
+    # Only one row written.
+    assert len(ProfileStore("alice").list_allergies()) == 1
+
+
+def test_save_allergy_no_change_case_insensitive(dispatcher, _ctx):
+    save_allergy(
+        {"substance": "Shellfish", "severity": "mild", "source": "self_report"},
+        dispatcher=dispatcher,
+    )
+    out = save_allergy(
+        {"substance": "shellfish", "severity": "mild", "source": "self_report"},
+        dispatcher=dispatcher,
+    )
+    assert out == {"ok": False, "reason": "no_change"}
+
+
+def test_save_allergy_allows_when_resolved(dispatcher, _ctx):
+    """A resolved allergy (end_date set) does not block a new active record."""
+    save_allergy(
+        {
+            "substance": "penicillin",
+            "severity": "mild",
+            "source": "self_report",
+            "end_date": "2024-01-01",
+        },
+        dispatcher=dispatcher,
+    )
+    out = save_allergy(
+        {"substance": "penicillin", "severity": "severe", "source": "clinical_record"},
+        dispatcher=dispatcher,
+    )
+    assert out == {"ok": True}
+
+
+def test_save_condition_no_change_on_duplicate(dispatcher, _ctx):
+    save_condition({"display": "Hypertension"}, dispatcher=dispatcher)
+    out = save_condition({"display": "Hypertension"}, dispatcher=dispatcher)
+    assert out == {"ok": False, "reason": "no_change"}
+
+
+def test_save_condition_no_change_case_insensitive(dispatcher, _ctx):
+    save_condition({"display": "Type 2 Diabetes"}, dispatcher=dispatcher)
+    out = save_condition({"display": "type 2 diabetes"}, dispatcher=dispatcher)
+    assert out == {"ok": False, "reason": "no_change"}
+
+
+def test_save_condition_allows_when_resolved(dispatcher, _ctx):
+    save_condition(
+        {"display": "bronchitis", "end_date": "2023-03-01"}, dispatcher=dispatcher
+    )
+    out = save_condition({"display": "bronchitis"}, dispatcher=dispatcher)
+    assert out == {"ok": True}
+
+
+def test_save_medication_no_change_on_duplicate(dispatcher, _ctx):
+    save_medication({"name": "metformin", "dose": "500mg"}, dispatcher=dispatcher)
+    out = save_medication(
+        {"name": "metformin", "dose": "1000mg"}, dispatcher=dispatcher
+    )
+    assert out == {"ok": False, "reason": "no_change"}
+
+
+def test_save_medication_allows_when_discontinued(dispatcher, _ctx):
+    save_medication(
+        {"name": "aspirin", "end_date": "2022-06-01"}, dispatcher=dispatcher
+    )
+    out = save_medication({"name": "aspirin"}, dispatcher=dispatcher)
+    assert out == {"ok": True}
+
+
+def test_update_profile_field_no_change_same_value(dispatcher, _ctx):
+    update_profile_field({"field": "weight_kg", "value": 72.5}, dispatcher=dispatcher)
+    out = update_profile_field(
+        {"field": "weight_kg", "value": 72.5}, dispatcher=dispatcher
+    )
+    assert out == {"ok": False, "reason": "no_change"}
+
+
+def test_update_profile_field_no_change_string_coercion(dispatcher, _ctx):
+    """'72.5' and 72.5 coerce to the same float → no_change."""
+    update_profile_field({"field": "weight_kg", "value": 72.5}, dispatcher=dispatcher)
+    out = update_profile_field(
+        {"field": "weight_kg", "value": "72.5"}, dispatcher=dispatcher
+    )
+    assert out == {"ok": False, "reason": "no_change"}
+
+
+def test_update_profile_field_no_change_birth_date_downgrade(dispatcher, _ctx):
+    """Year-only approximation must not overwrite a precise full date."""
+    update_profile_field(
+        {"field": "birth_date", "value": "1989-05-02"}, dispatcher=dispatcher
+    )
+    out = update_profile_field(
+        {"field": "birth_date", "value": "1989-01-01"}, dispatcher=dispatcher
+    )
+    assert out == {"ok": False, "reason": "no_change"}
+
+
+def test_update_profile_field_allows_more_specific_date(dispatcher, _ctx):
+    """Replacing a year-only approximation with a precise date is allowed."""
+    update_profile_field(
+        {"field": "birth_date", "value": "1989-01-01"}, dispatcher=dispatcher
+    )
+    out = update_profile_field(
+        {"field": "birth_date", "value": "1989-05-02"}, dispatcher=dispatcher
+    )
+    assert out == {"ok": True}
+
+
+# --- format helper tests (item 5) ------------------------------------
+
+
+def test_format_record_embed_text_title_only():
+    from claritymed.orchestrator.features.ingest_tools_plugin import (
+        _format_record_embed_text,
+    )
+    from claritymed.core.schemas.tools import SaveRecordArgs
+
+    parsed = SaveRecordArgs(category="labs", kind="lab_report", title="Lipid panel")
+    text = _format_record_embed_text(parsed)
+    assert "Lipid panel" in text
+
+
+def test_format_record_embed_text_includes_labs_and_notes():
+    from claritymed.orchestrator.features.ingest_tools_plugin import (
+        _format_record_embed_text,
+    )
+    from claritymed.core.schemas.tools import SaveRecordArgs
+    from claritymed.core.schemas.records import ExtractedLab
+
+    parsed = SaveRecordArgs(
+        category="labs",
+        kind="lab_report",
+        title="Annual labs",
+        notes="Fasting sample",
+        extracted_labs=[ExtractedLab(name="LDL", value="120", unit="mg/dL")],
+        tags=["fasting"],
+    )
+    text = _format_record_embed_text(parsed)
+    assert "Fasting sample" in text
+    assert "LDL: 120 mg/dL" in text
+    assert "fasting" in text
+
+
+def test_format_library_embed_text_fields():
+    from claritymed.orchestrator.features.ingest_tools_plugin import (
+        _format_library_embed_text,
+    )
+    from claritymed.core.schemas.tools import SaveToLibraryArgs
+
+    parsed = SaveToLibraryArgs(
+        title="Hypertension Guideline 2024",
+        authors=["Smith", "Jones"],
+        year=2024,
+        tags=["cardiology"],
+    )
+    text = _format_library_embed_text(parsed)
+    assert "Hypertension Guideline 2024" in text
+    assert "Smith" in text
+    assert "2024" in text
+    assert "cardiology" in text

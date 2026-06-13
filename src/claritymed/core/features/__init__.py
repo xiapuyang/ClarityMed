@@ -21,6 +21,17 @@ from claritymed.core.features.factory import build_features
 
 __all__ = [
     "FeaturePlugin",
+    "ProfileContextFeature",
     "TurnContext",
     "build_features",
 ]
+
+
+def __getattr__(name: str):
+    if name == "ProfileContextFeature":
+        from claritymed.orchestrator.features.profile_context_plugin import (
+            ProfileContextFeature,
+        )
+
+        return ProfileContextFeature
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
