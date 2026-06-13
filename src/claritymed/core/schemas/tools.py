@@ -26,12 +26,37 @@ inside a ``model_validator(mode="before")`` to reshape the shorthand form
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from claritymed.core.schemas.records import ExtractedLab
 from claritymed.core.schemas.patient import AllergySeverity, AllergySource
+
+
+def _coerce_partial_date(v: Any) -> Any:
+    """Expand year-only / year-month strings into full ISO dates.
+
+    LLMs frequently emit ``"2020"`` or ``"2020-05"`` when the user said
+    "since 2020" / "2020 年起" — they know the year but not the day. The
+    persisted contract is still ``date``; we fill the missing components
+    with ``-01-01`` / ``-01`` so the row gets stored, then downstream code
+    treats those as approximations like any other day-of-year default.
+    Anything outside the two recognised partial shapes (including ``None``
+    and full ISO strings) passes through unchanged for the stock ``date``
+    parser to handle or reject.
+    """
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    if len(s) == 4 and s.isdigit():
+        return f"{s}-01-01"
+    if len(s) == 7 and s[4] == "-" and s[:4].isdigit() and s[5:].isdigit():
+        return f"{s}-01"
+    return v
+
+
+PartialDate = Annotated[date | None, BeforeValidator(_coerce_partial_date)]
 
 
 def _normalize_field_value(
@@ -108,7 +133,7 @@ class SaveRecordArgs(ToolArgsBase):
     )
     # See ``records.Manifest.event_date`` — same rename to avoid shadowing
     # ``datetime.date`` with a same-named field.
-    event_date: date | None = Field(
+    event_date: PartialDate = Field(
         default=None,
         alias="date",
         examples=["2026-03-12"],
@@ -150,8 +175,8 @@ class SaveMedicationArgs(ToolArgsBase):
         max_length=64,
         examples=["twice daily", "every 8 hours", "as needed"],
     )
-    onset_date: date | None = Field(default=None, examples=["2024-01-15"])
-    end_date: date | None = None
+    onset_date: PartialDate = Field(default=None, examples=["2024-01-15"])
+    end_date: PartialDate = None
 
 
 class SaveAllergyArgs(ToolArgsBase):
@@ -172,8 +197,8 @@ class SaveAllergyArgs(ToolArgsBase):
     )
     severity: AllergySeverity
     source: AllergySource
-    onset_date: date | None = None
-    end_date: date | None = None
+    onset_date: PartialDate = None
+    end_date: PartialDate = None
 
 
 class SaveConditionArgs(ToolArgsBase):
@@ -193,8 +218,8 @@ class SaveConditionArgs(ToolArgsBase):
         examples=["type 2 diabetes", "asthma", "hypertension"],
     )
     code: str | None = Field(default=None, max_length=64)
-    onset_date: date | None = None
-    end_date: date | None = None
+    onset_date: PartialDate = None
+    end_date: PartialDate = None
 
 
 # Fields that ``update_profile_field`` is allowed to touch. Hardcoded rather
