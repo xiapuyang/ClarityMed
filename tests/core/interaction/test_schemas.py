@@ -38,15 +38,41 @@ def test_question_accepts_minimum_valid_shape():
     assert len(q.options) == 2
 
 
-def test_question_rejects_header_over_twelve_chars():
+def test_question_accepts_header_up_to_twenty_chars():
+    """Bumped from 12 → 20 after benchmark runs against omlx kept burning
+    a retry slot on ``Which report?`` (13) / ``Severity level`` (14) —
+    headers that fit the TUI chip area but tripped the old limit."""
+    # 20 chars exactly — must pass.
+    q = _question(header="A" * 20)
+    assert q.header == "A" * 20
+
+
+def test_question_rejects_header_over_twenty_chars():
     with pytest.raises(ValidationError) as exc:
-        _question(header="ThirteenChars")
+        _question(header="A" * 21)
     assert "header" in str(exc.value).lower()
 
 
 def test_question_rejects_single_option():
     with pytest.raises(ValidationError):
         _question(options=[_opt("only")])
+
+
+def test_options_description_teaches_against_one_option_picker():
+    """The ``options`` Field description is the only schema-level hint
+    the LLM sees inside the tool's JSON Schema. Bench surfaced models
+    looping on 1-option pickers because the retry loop cannot
+    manufacture an option that doesn't exist — the only escape is
+    teaching the model to switch tools BEFORE the call. Pin the
+    description carries this guard."""
+    from claritymed.core.interaction.schemas import Question
+
+    options_field = Question.model_fields["options"]
+    desc = (options_field.description or "").lower()
+    assert "do not call this tool" in desc, (
+        f"options description must steer model away from this tool when "
+        f"only one option exists; got: {desc!r}"
+    )
 
 
 def test_question_rejects_more_than_four_options():

@@ -191,6 +191,32 @@ def test_build_tool_pulls_zh_description_from_registry():
     assert "互斥" in tool.description
 
 
+def test_build_tool_respects_max_retries_override():
+    """Builder must forward ``max_retries`` to pydantic-ai's ``Tool``.
+
+    AskService now reads this from ``app.yaml`` via
+    ``ask_user_question_max_retries()`` so the budget is operator-tunable
+    without code changes — pin the wiring so a refactor that silently
+    drops the kwarg gets caught (the default of 2 was insufficient for
+    small local models; bumping it via YAML must reach the tool).
+    """
+    tool = build_ask_user_question_tool(PromptRegistry(), language="en", max_retries=5)
+    assert tool.max_retries == 5
+
+
+def test_build_tool_warns_against_one_option_picker_in_description():
+    """The v2 prompt teaches the model that single-option pickers are
+    not valid (bench surfaced ``ask_empty_save`` looping until retry
+    budget exhausted on a 1-option payload). Pin that the production
+    description now carries this guard — a future v3 must preserve it
+    or the regression silently returns."""
+    tool = build_ask_user_question_tool(PromptRegistry(), language="en")
+    desc = tool.description.lower()
+    assert "single-option" in desc or "single option" in desc or "1 option" in desc, (
+        f"description must warn against 1-option pickers; got:\n{tool.description}"
+    )
+
+
 # ----------------------------------------------------------------------
 # Channel direct
 # ----------------------------------------------------------------------

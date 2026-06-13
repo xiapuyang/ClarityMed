@@ -76,7 +76,7 @@ async def ask_user_question_body(
     # Surface the call in the Steps panel — same pattern as
     # ``retrieve_medical_literature``. ``args_preview`` is the header
     # of the first question, which is the most readable signal the LLM
-    # produces (chip-style, ≤12 chars, mirrors what the modal will show).
+    # produces (chip-style, ≤20 chars, mirrors what the modal will show).
     eq = deps.event_queue
     first_header = payload.questions[0].header if payload.questions else ""
     await eq.put(
