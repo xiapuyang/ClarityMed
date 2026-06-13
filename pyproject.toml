@@ -148,6 +148,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "local: tests that require live local services; excluded from CI",
+    "mineru_office: MineRU Office formats (docx/xlsx/pptx) — cloud queue is systemically slow (>5min); skipped by default, run with `-m mineru_office`",
 ]
 
 [tool.coverage.run]

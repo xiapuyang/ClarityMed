@@ -31,11 +31,19 @@ from claritymed.stores.manifest_store import ManifestStore
 from claritymed.stores.paths import user_audit_payload_path
 
 
+_PAYLOAD_PATH = user_audit_payload_path("e2e", "20260611000000ABCDEF12")
+
+
 @pytest.fixture
 def _ctx():
+    # Remove stale payload written by a previous test run (same request_id is
+    # shared across test modules; O_EXCL means first writer wins, so a leftover
+    # save_medication payload would make save_record's write a silent no-op).
+    _PAYLOAD_PATH.unlink(missing_ok=True)
     tokens = apply_context("20260611000000ABCDEF12", "e2e", "en")
     yield
     reset_context(tokens)
+    _PAYLOAD_PATH.unlink(missing_ok=True)
 
 
 def test_paste_to_save_round_trip(_ctx):

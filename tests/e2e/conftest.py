@@ -65,6 +65,29 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ.setdefault("CLARITYMED_ALLOW_MINERU", "1")
 
 
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Auto-skip ``mineru_office`` cases unless explicitly opted in.
+
+    MineRU's cloud Office pipeline (docx/xlsx/pptx) routinely sits past
+    the 5-minute poll deadline even for trivially-small files, so
+    leaving those cases in the default e2e run would burn ~15 min on
+    every invocation for a known-flaky external dependency. Opt in with
+    ``pytest … -m mineru_office`` when you want to verify the path.
+    """
+    markexpr = config.getoption("-m", default="") or ""
+    if "mineru_office" in markexpr:
+        return
+    skip = pytest.mark.skip(
+        reason="mineru_office: MineRU cloud Office path is systemically slow; "
+        "opt in with `-m mineru_office`"
+    )
+    for item in items:
+        if "mineru_office" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _wipe_e2e_user_dir() -> None:
     """Clear ``~/.claritymed/data/users/e2e/`` once at session start.

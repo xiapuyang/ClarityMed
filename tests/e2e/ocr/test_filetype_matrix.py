@@ -202,9 +202,9 @@ def mineru_available(monkeypatch) -> None:
     "make_fn,ext",
     [
         (make_pdf, ".pdf"),
-        (make_docx, ".docx"),
-        (make_xlsx, ".xlsx"),
-        (make_pptx, ".pptx"),
+        pytest.param(make_docx, ".docx", marks=pytest.mark.mineru_office),
+        pytest.param(make_xlsx, ".xlsx", marks=pytest.mark.mineru_office),
+        pytest.param(make_pptx, ".pptx", marks=pytest.mark.mineru_office),
         (make_png, ".png"),
         (make_jpeg, ".jpg"),
         (make_webp, ".webp"),
@@ -220,6 +220,12 @@ async def test_mineru_accepts_claimed_format(
     This test hits the live MineRU API — only runs when explicitly
     opted in. We assert the extraction completes without raising
     ``OcrError``; recognition quality is the API's job, not ours.
+
+    Office formats (``.docx`` / ``.xlsx`` / ``.pptx``) are marked
+    ``mineru_office`` because MineRU's cloud Office pipeline is
+    systemically slow (>5 min for trivially small files — observed
+    repeatedly). They're excluded from default runs; opt in with
+    ``pytest … -m mineru_office`` when you need to verify the path.
     """
     from claritymed.core.ocr.mineru_provider import MineRUOcrProvider
 

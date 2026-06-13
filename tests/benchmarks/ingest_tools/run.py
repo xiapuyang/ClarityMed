@@ -752,7 +752,14 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
-    sys.exit(asyncio.run(_main_async(args)))
+    try:
+        sys.exit(asyncio.run(_main_async(args)))
+    except KeyboardInterrupt:
+        # asyncio.run() cleanup calls loop.shutdown_default_executor() which
+        # blocks until all ThreadPoolExecutor threads finish — including the
+        # in-flight LLM HTTP streaming thread that can't be interrupted. Skip
+        # that wait and exit immediately.
+        os._exit(130)
 
 
 if __name__ == "__main__":
