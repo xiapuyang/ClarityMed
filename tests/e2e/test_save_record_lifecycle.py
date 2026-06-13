@@ -33,7 +33,7 @@ from claritymed.stores.paths import user_audit_payload_path
 
 @pytest.fixture
 def _ctx():
-    tokens = apply_context("20260611000000ABCDEF12", "alice", "en")
+    tokens = apply_context("20260611000000ABCDEF12", "e2e", "en")
     yield
     reset_context(tokens)
 
@@ -42,7 +42,7 @@ def test_paste_to_save_round_trip(_ctx):
     """User pastes a PDF → session tray → LLM proposes save_record →
     approval is implicit (no rule, fall-through, headless caller) →
     manifest lands on disk → audit_payload carries PHI text."""
-    user_id = "alice"
+    user_id = "e2e"
     # Step 1: paste the blob.
     bs = BlobStore(user_id)
     sha = bs.store(b"%PDF-1.4 fake report body", "pdf")
@@ -81,7 +81,9 @@ def test_paste_to_save_round_trip(_ctx):
     assert manifest.attachments[0].mime == "application/pdf"
 
     # Step 6: PHI side-channel exists with mode 0o600.
-    payload_path = user_audit_payload_path(user_id, "20260611000000ABCDEF12")
+    payload_path = user_audit_payload_path(
+        user_id, "20260611000000ABCDEF12"
+    )  # matches _ctx request_id
     assert payload_path.exists()
     mode = os.stat(payload_path).st_mode & 0o777
     assert mode == 0o600

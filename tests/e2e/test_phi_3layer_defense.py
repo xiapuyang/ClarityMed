@@ -26,7 +26,7 @@ from claritymed.errors import PhiLeakDetected
 
 @pytest.fixture
 def _ctx():
-    tokens = apply_context("20260611000000ABCDEF12", "alice", "en")
+    tokens = apply_context("20260611000000ABCDEF12", "e2e", "en")
     yield
     reset_context(tokens)
 

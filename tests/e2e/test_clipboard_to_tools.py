@@ -58,7 +58,7 @@ from claritymed.stores.profile import ProfileStore
 
 
 _REQUEST_ID = "20260611000000ABCDEF12"
-_USER_ID = "alice"
+_USER_ID = "e2e"
 _SESSION_ID = "sess-e2e-paste"
 _OCR_TEXT = (
     "Lab Report — 2024-05-10\n"

@@ -62,6 +62,7 @@ def pytest_configure(config: pytest.Config) -> None:
     import os
 
     os.environ["CLARITYMED_TRACE_PROJECT"] = "claritymed-e2e"
+    os.environ.setdefault("CLARITYMED_ALLOW_MINERU", "1")
 
 
 @pytest.fixture(scope="session", autouse=True)

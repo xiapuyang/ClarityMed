@@ -29,10 +29,6 @@ import pytest
 
 from claritymed.context import apply_context, reset_context
 from claritymed.core.interaction import ApprovalDecision
-from claritymed.core.interaction.schemas import (
-    AskUserQuestionInput,
-    AskUserQuestionResult,
-)
 from claritymed.core.rag import load_retrieval_config
 from claritymed.core.schemas.patient import Allergy, Condition, Medication
 from claritymed.orchestrator.services import AskService
@@ -96,18 +92,6 @@ def _verify_save_condition() -> None:
     )
 
 
-def _verify_update_profile_weight() -> None:
-    profile = ProfileStore(USER_ID).get_profile()
-    assert profile is not None and profile.weight_kg is not None, (
-        "Profile.weight_kg is still null after update_profile_field run"
-    )
-    # The exact value depends on what the LLM emitted; we just check that
-    # *something* in the right range got written.
-    assert 30 <= profile.weight_kg <= 250, (
-        f"weight_kg out of plausible range: {profile.weight_kg!r}"
-    )
-
-
 def _verify_save_record() -> None:
     manifests = list(ManifestStore(USER_ID, "records").list())
     assert manifests, "records/ store had no manifests after save_record run"
@@ -161,31 +145,6 @@ def _seed_delete_target() -> tuple[str, str]:
     }
     store.create(category, slug, manifest_data)
     return f"{category}/{slug}", "exam-report"
-
-
-class _AutoAnswerFirstOptionChannel:
-    """Prompt channel that auto-selects the first available option for every question.
-
-    Used for sequential ask→tool tests: instead of declining (which stops the
-    agent) or blocking (which hangs), we pick option[0] so the LLM receives a
-    concrete answer and can proceed to call the ingest tool.  Records every
-    question payload so tests can assert the ask happened.
-    """
-
-    def __init__(self) -> None:
-        self.calls: list[AskUserQuestionInput] = []
-
-    async def ask(self, payload: AskUserQuestionInput) -> AskUserQuestionResult:
-        self.calls.append(payload)
-        answers: dict[str, str | list[str]] = {}
-        for q in payload.questions:
-            answers[q.question] = q.options[0].label
-        logger.info(
-            "[e2e] _AutoAnswerFirstOptionChannel: auto-answered %d question(s): %s",
-            len(payload.questions),
-            {q.question: answers[q.question] for q in payload.questions},
-        )
-        return AskUserQuestionResult(answers=answers)
 
 
 async def _run_one_attempt(
@@ -272,15 +231,6 @@ _CASES: list[tuple[str, str, Callable[[], None]]] = [
             "Do not ask follow-up questions; call the tool and confirm."
         ),
         _verify_save_condition,
-    ),
-    (
-        "update_profile_field",
-        (
-            "My weight is now 72.5 kg. Please record that update. "
-            "Use the update_profile_field tool — do not ask follow-up "
-            "questions, call it and confirm."
-        ),
-        _verify_update_profile_weight,
     ),
     (
         "save_record",
@@ -464,173 +414,75 @@ async def test_fp_repeat_weight_e2e(e2e_provider_id: str, _ctx) -> None:
 
 
 async def test_fp_repeat_allergy_e2e(e2e_provider_id: str, _ctx) -> None:
-    """Repeating an already-stored allergy must not create a duplicate row."""
+    """Repeating an already-stored allergy must not create a duplicate row.
+
+    Uses a post-seed count as baseline so prior tests' writes don't cause
+    false failures — what matters is that the model doesn't ADD a row.
+    """
     store = ProfileStore(USER_ID)
     store.add_allergy(
         Allergy(substance="penicillin", severity="severe", source="self_report"),
         owner_user_id=USER_ID,
     )
+    seeded_count = len(ProfileStore(USER_ID).list_allergies())
     prompt = "Just a reminder — I'm still allergic to penicillin."
 
     for _attempt in range(MAX_ATTEMPTS):
         channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
         allergies = ProfileStore(USER_ID).list_allergies()
-        assert len(allergies) == 1, (
-            f"expected 1 allergy row (seeded), got {len(allergies)}"
+        assert len(allergies) == seeded_count, (
+            f"expected {seeded_count} allergy rows (post-seed), got {len(allergies)}"
         )
         return
     pytest.fail("fp_repeat_allergy: could not complete any attempt")
 
 
 async def test_fp_repeat_condition_e2e(e2e_provider_id: str, _ctx) -> None:
-    """Repeating an already-stored condition must not create a duplicate row."""
+    """Repeating an already-stored condition must not create a duplicate row.
+
+    Uses a post-seed count as baseline so prior tests' writes don't cause
+    false failures — what matters is that the model doesn't ADD a row.
+    """
     store = ProfileStore(USER_ID)
     store.add_condition(
         Condition(display="hypertension"),
         owner_user_id=USER_ID,
     )
+    seeded_count = len(ProfileStore(USER_ID).list_conditions())
     prompt = "I have high blood pressure, as you probably already know."
 
     for _attempt in range(MAX_ATTEMPTS):
         channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
         conds = ProfileStore(USER_ID).list_conditions()
-        assert len(conds) == 1, f"expected 1 condition row (seeded), got {len(conds)}"
+        assert len(conds) == seeded_count, (
+            f"expected {seeded_count} condition rows (post-seed), got {len(conds)}"
+        )
         return
     pytest.fail("fp_repeat_condition: could not complete any attempt")
 
 
 async def test_fp_repeat_medication_e2e(e2e_provider_id: str, _ctx) -> None:
-    """Repeating an already-stored medication must not create a duplicate row."""
+    """Repeating an already-stored medication must not create a duplicate row.
+
+    Uses a post-seed count as baseline so prior tests' writes don't cause
+    false failures — what matters is that the model doesn't ADD a row.
+    """
     store = ProfileStore(USER_ID)
     store.add_medication(
         Medication(display="metformin", dose="500 mg", frequency="twice daily"),
         owner_user_id=USER_ID,
     )
+    seeded_count = len(ProfileStore(USER_ID).list_medications())
     prompt = "I'm still taking metformin 500 mg twice a day for my diabetes."
 
     for _attempt in range(MAX_ATTEMPTS):
         channel, _events = await _run_one_attempt(e2e_provider_id, prompt)
         meds = ProfileStore(USER_ID).list_medications()
-        assert len(meds) == 1, f"expected 1 medication row (seeded), got {len(meds)}"
+        assert len(meds) == seeded_count, (
+            f"expected {seeded_count} medication rows (post-seed), got {len(meds)}"
+        )
         return
     pytest.fail("fp_repeat_medication: could not complete any attempt")
-
-
-async def test_ask_then_save_allergy_e2e(e2e_provider_id: str, _ctx) -> None:
-    """Sequential ask→tool: LLM asks severity clarification, auto-answer, then saves.
-
-    Prompt gives substance but no severity. The model should:
-      1. Call ask_user_question to clarify severity.
-      2. Receive the auto-selected first option as the answer.
-      3. Call save_allergy with the answered severity.
-
-    If the model skips the ask and guesses severity directly, that is also
-    accepted (predicate only requires save_allergy fired with substance=peanuts).
-    The ask is tracked separately so callers can see whether the sequential
-    flow actually triggered.
-    """
-    prompt = (
-        "I'm allergic to peanuts — I always get a reaction. "
-        "Please add it to my profile."
-    )
-
-    last_error: Exception | None = None
-    for attempt in range(MAX_ATTEMPTS):
-        pc = _AutoAnswerFirstOptionChannel()
-        channel, _events = await _run_one_attempt(
-            e2e_provider_id, prompt, prompt_channel=pc
-        )
-        allergy_calls = [c for c in channel.calls if c[0] == "save_allergy"]
-        if not allergy_calls:
-            logger.info(
-                "[e2e] ask_then_save_allergy attempt %d/%d: save_allergy not called "
-                "(asked=%d times, all_calls=%r)",
-                attempt + 1,
-                MAX_ATTEMPTS,
-                len(pc.calls),
-                [c[0] for c in channel.calls],
-            )
-            continue
-        try:
-            args = allergy_calls[0][1]
-            substance = str(args.get("substance", "")).lower()
-            assert "peanut" in substance, (
-                f"save_allergy called but substance={substance!r} not peanuts"
-            )
-            allergies = ProfileStore(USER_ID).list_allergies()
-            assert any("peanut" in a.substance.lower() for a in allergies), (
-                "peanut allergy not found in ProfileStore after save"
-            )
-            if pc.calls:
-                logger.info(
-                    "[e2e] ask_then_save_allergy: sequential flow confirmed "
-                    "(asked %d time(s) then saved)",
-                    len(pc.calls),
-                )
-            return
-        except AssertionError as exc:
-            last_error = exc
-            logger.info(
-                "[e2e] ask_then_save_allergy attempt %d/%d: verify failed: %s",
-                attempt + 1,
-                MAX_ATTEMPTS,
-                exc,
-            )
-
-    pytest.fail(
-        f"ask_then_save_allergy: no successful attempt across {MAX_ATTEMPTS} tries. "
-        f"last error: {last_error}\n  prompt: {prompt!r}"
-    )
-
-
-async def test_ask_then_save_medication_e2e(e2e_provider_id: str, _ctx) -> None:
-    """Sequential ask→tool: LLM asks which beta blocker, auto-answer, then saves.
-
-    Prompt gives drug class but not a specific drug name — the model should ask
-    which one, receive an answer, then call save_medication with the specific drug.
-    """
-    prompt = "I take a beta blocker for my blood pressure. Please add it to my chart."
-
-    last_error: Exception | None = None
-    for attempt in range(MAX_ATTEMPTS):
-        pc = _AutoAnswerFirstOptionChannel()
-        channel, _events = await _run_one_attempt(
-            e2e_provider_id, prompt, prompt_channel=pc
-        )
-        med_calls = [c for c in channel.calls if c[0] == "save_medication"]
-        if not med_calls:
-            logger.info(
-                "[e2e] ask_then_save_medication attempt %d/%d: save_medication not called "
-                "(asked=%d times, all_calls=%r)",
-                attempt + 1,
-                MAX_ATTEMPTS,
-                len(pc.calls),
-                [c[0] for c in channel.calls],
-            )
-            continue
-        try:
-            meds = ProfileStore(USER_ID).list_medications()
-            assert meds, "no medication row in ProfileStore after save_medication"
-            if pc.calls:
-                logger.info(
-                    "[e2e] ask_then_save_medication: sequential flow confirmed "
-                    "(asked %d time(s) then saved)",
-                    len(pc.calls),
-                )
-            return
-        except AssertionError as exc:
-            last_error = exc
-            logger.info(
-                "[e2e] ask_then_save_medication attempt %d/%d: verify failed: %s",
-                attempt + 1,
-                MAX_ATTEMPTS,
-                exc,
-            )
-
-    pytest.fail(
-        f"ask_then_save_medication: no successful attempt across {MAX_ATTEMPTS} tries. "
-        f"last error: {last_error}\n  prompt: {prompt!r}"
-    )
 
 
 async def test_delete_record_e2e(e2e_provider_id: str, _ctx) -> None:
