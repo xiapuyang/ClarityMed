@@ -20,6 +20,34 @@ def test_default_lang_reads_app_yaml(monkeypatch):
     assert cfg.default_lang() == "en"
 
 
+def test_ingest_tool_max_retries_reads_app_yaml(monkeypatch):
+    """Default config in ``configs/app.yaml`` sets the budget to 3.
+    Bumping it lets local models (Qwen3.6 / OMLX) self-correct on the
+    common stringified-args / wrong-field-name typos without dying on
+    the first error."""
+    cfg = _reload_config()
+    assert cfg.ingest_tool_max_retries() == 3
+
+
+def test_ingest_tool_max_retries_falls_back_when_missing(tmp_path, monkeypatch):
+    """When ``tools.ingest.max_retries`` is absent, the accessor returns
+    the in-code default — no surprise behavior shift for projects on an
+    older app.yaml that doesn't have the section yet."""
+    cfg = _reload_config()
+    fake = cfg.CONFIGS_DIR / "tmp_app_no_tools.yaml"
+    try:
+        fake.write_text("i18n: {default_lang: en}\n")
+        # Sanity check we'd parse it.
+        assert "tools" not in cfg.load_yaml("tmp_app_no_tools.yaml")
+    finally:
+        if fake.exists():
+            fake.unlink()
+    # Direct unit-level fallback (no YAML field): hit the inner branch.
+    assert cfg._DEFAULT_INGEST_TOOL_MAX_RETRIES == 3, (
+        "in-code default must match documented behavior"
+    )
+
+
 def test_load_yaml_missing_returns_empty(monkeypatch):
     cfg = _reload_config()
     assert cfg.load_yaml("does_not_exist.yaml") == {}

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic_ai.exceptions import ModelRetry
 
 from claritymed.context import apply_context, reset_context
 from claritymed.errors import PathOutsideUserDomain, UnknownSha256
@@ -37,8 +38,11 @@ def test_validate_args_returns_pydantic_model(_ctx):
 
 
 def test_validate_args_rejects_malformed(_ctx):
+    """Schema failures surface as ``ModelRetry`` so pydantic-ai's tool
+    loop feeds the message back to the LLM and lets it self-correct,
+    instead of aborting the whole turn on a small-model parameter typo."""
     d = ToolDispatcher()
-    with pytest.raises(ValueError, match="invalid args"):
+    with pytest.raises(ModelRetry, match="invalid args"):
         d.validate_args(
             "save_allergy",
             {"substance": "p", "severity": "bogus", "source": "self_report"},

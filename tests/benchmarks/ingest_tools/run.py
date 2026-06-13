@@ -219,6 +219,11 @@ async def _run_one_trial(
     from claritymed.stores.models import resolve_provider
 
     os.environ["CLARITYMED_TOOL_PROMPT_LANG"] = tool_prompt_lang
+    # Benchmark grades dispatch only ("right tool, right args"); the
+    # post-tool embedder + qdrant side effects are noise here. Disabling
+    # also avoids racing the per-trial dir wipe against the background
+    # embed task (which manifested as sqlite "readonly database" errors).
+    os.environ["CLARITYMED_DISABLE_INGEST_HOOKS"] = "1"
     _wipe_bench_user_dir()
     _reload_runtime()
 

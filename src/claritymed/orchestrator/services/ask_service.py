@@ -371,6 +371,21 @@ class AskService:
             dispatcher = dispatcher_slot.get("dispatcher")
             if dispatcher is None:
                 return True
+            # ``RunContext.retry`` is the per-tool-name retry counter
+            # pydantic-ai bumps via ``ToolManager.for_run_step`` after a
+            # failed step. attempt=0 means first try; attempt=N means
+            # this is the (N+1)-th time the model has emitted this tool
+            # name in the current ``agent.run``. Logging it here pairs
+            # with ``tool_args_invalid`` (logged from the dispatcher when
+            # validation fails) so a maintainer can grep app.log and see
+            # the full ``(tool_name, args, attempt, outcome)`` trail.
+            attempt = getattr(_ctx, "retry", 0)
+            logger.info(
+                "tool_call tool=%s attempt=%d args=%s",
+                tool_def.name,
+                attempt,
+                args,
+            )
             result = dispatcher.gate(tool_def.name, args)
             return not result.allowed
 

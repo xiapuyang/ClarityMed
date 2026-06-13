@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -533,14 +534,41 @@ def build_ingest_toolset(
         # the exception propagate rather than swallow it.
         return registry.get(f"{tool_name}_tool", language=language)  # type: ignore[arg-type]
 
+    # Per-tool-name retry budget for argument-validation failures, read
+    # from ``app.yaml`` ``tools.ingest.max_retries``. Passed to every
+    # ``Tool(max_retries=N)`` below; the dispatcher's ``ModelRetry`` will
+    # be wrapped as ``RetryPromptPart`` and fed back to the model up to
+    # N times per name before pydantic-ai raises ``UnexpectedModelBehavior``.
+    from claritymed.config import ingest_tool_max_retries
+
+    _max_retries = ingest_tool_max_retries()
+
     # pydantic-ai Tool accepts plain callables; we bind ``dispatcher`` via
     # a closure so the registered signature matches the tool args schema.
     # ``save_record`` and ``save_to_library`` get async wrappers so they
     # can fire-and-forget a RAG embed task without blocking the agent loop.
-    _EMBED_HOOKS: dict[str, Any] = {
-        "save_record": _embed_record_task,
-        "save_to_library": _embed_library_task,
-    }
+    #
+    # CLARITYMED_DISABLE_INGEST_HOOKS=1 short-circuits the embed hooks.
+    # Set by the ingest-tool benchmark (and any other harness that grades
+    # tool dispatch in isolation) so a successful tool call does not also
+    # fan out to embedder + qdrant. Two reasons matter:
+    #   1. The benchmark only judges "right tool, right args" — embedder /
+    #      qdrant failures are noise that pollute the trial outcome.
+    #   2. The benchmark's per-trial ``_wipe_bench_user_dir`` races the
+    #      background embed task; deleting the user dir mid-write surfaces
+    #      as ``sqlite3.OperationalError: attempt to write a readonly
+    #      database`` from qdrant-client's local SQLite backend.
+    if os.environ.get("CLARITYMED_DISABLE_INGEST_HOOKS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        _EMBED_HOOKS: dict[str, Any] = {}
+    else:
+        _EMBED_HOOKS = {
+            "save_record": _embed_record_task,
+            "save_to_library": _embed_library_task,
+        }
 
     tools = []
     for name, impl in INGEST_TOOLS.items():
@@ -567,6 +595,7 @@ def build_ingest_toolset(
                 _make(impl, name, hook=embed_hook),
                 name=name,
                 description=_description_for(name) or None,
+                max_retries=_max_retries,
             )
         )
 

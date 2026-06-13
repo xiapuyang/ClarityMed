@@ -136,7 +136,12 @@ def test_update_profile_field_changes_weight(dispatcher, _ctx):
 
 
 def test_update_profile_field_rejects_invalid_field(dispatcher, _ctx):
-    with pytest.raises(ValueError):
+    """Schema-level rejection (``field`` is a pydantic ``Literal``) now
+    surfaces as ``ModelRetry`` so the agent loop can hand the message
+    back to the LLM, rather than aborting the whole turn on a typo."""
+    from pydantic_ai.exceptions import ModelRetry
+
+    with pytest.raises(ModelRetry):
         update_profile_field(
             {"field": "created_at", "value": "x"}, dispatcher=dispatcher
         )
@@ -299,6 +304,46 @@ def test_build_ingest_toolset_wraps_when_approval_func(dispatcher):
 
     ts = build_ingest_toolset(dispatcher, approval_required_func=lambda *a, **kw: True)
     assert isinstance(ts, ApprovalRequiredToolset)
+
+
+@pytest.mark.asyncio
+async def test_disable_ingest_hooks_env_skips_embed_task(dispatcher, _ctx, monkeypatch):
+    """``CLARITYMED_DISABLE_INGEST_HOOKS=1`` must short-circuit the
+    fire-and-forget embed task on ``save_record``. The benchmark / e2e
+    harnesses set this so a successful tool call does not also fan out
+    to embedder + qdrant — those are separately tested elsewhere, and
+    here they're just noise that can race with per-trial dir wipes."""
+    import claritymed.orchestrator.features.ingest_tools_plugin as plugin
+
+    monkeypatch.setenv("CLARITYMED_DISABLE_INGEST_HOOKS", "1")
+
+    called = False
+
+    async def _spy(result, kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(plugin, "_embed_record_task", _spy)
+    monkeypatch.setattr(plugin, "_embed_library_task", _spy)
+
+    ts = build_ingest_toolset(dispatcher)
+    # Invoke the save_record entry directly; the toolset registers it as
+    # a sync callable when no embed hook is bound. The entry must NOT
+    # spawn an embed task.
+    save_record_tool = ts.tools["save_record"]
+    result = save_record_tool.function(
+        category="checkups",
+        kind="checkup",
+        title="Annual",
+    )
+    if hasattr(result, "__await__"):
+        result = await result
+    # Yield once so any (mistakenly) scheduled task would get to run.
+    import asyncio
+
+    await asyncio.sleep(0)
+    assert called is False, "embed hook ran despite CLARITYMED_DISABLE_INGEST_HOOKS=1"
+    assert isinstance(result, dict)
 
 
 # --- no-op guard tests (items 6+7) -----------------------------------

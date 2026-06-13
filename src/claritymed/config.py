@@ -173,6 +173,8 @@ def load_env_file(path: Path | None = None) -> dict[str, str]:
 
 _DEFAULT_TOOL_APPROVAL_TTL_HOURS = 24
 
+_DEFAULT_INGEST_TOOL_MAX_RETRIES = 3
+
 
 def tool_approval_rule_ttl_hours() -> int:
     """Return the TTL (in hours) for always-allow tool approval rules.
@@ -183,6 +185,23 @@ def tool_approval_rule_ttl_hours() -> int:
     val = load_yaml("app.yaml").get("tool_approval", {}).get("rule_ttl_hours")
     if val is None:
         return _DEFAULT_TOOL_APPROVAL_TTL_HOURS
+    return int(val)
+
+
+def ingest_tool_max_retries() -> int:
+    """Return the per-tool-name retry budget for ingest tools.
+
+    Read from ``app.yaml`` ``tools.ingest.max_retries``. Passed to
+    pydantic-ai's ``Tool(max_retries=N)`` so a small / local model gets
+    N chances to self-correct its arg payload after the dispatcher
+    raises ``ModelRetry``. Counter is keyed by tool name, not call_id,
+    so concurrent calls of the same tool share the budget.
+
+    Defaults to ``_DEFAULT_INGEST_TOOL_MAX_RETRIES`` when missing.
+    """
+    val = load_yaml("app.yaml").get("tools", {}).get("ingest", {}).get("max_retries")
+    if val is None:
+        return _DEFAULT_INGEST_TOOL_MAX_RETRIES
     return int(val)
 
 

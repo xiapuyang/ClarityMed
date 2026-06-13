@@ -61,6 +61,21 @@ agent:
 tool_approval:
   rule_ttl_hours: 24
 
+# --- Tool retry budget --------------------------------------------------
+# Per-tool-name budget for argument-validation retries inside one
+# agent.run. A small / local model that emits "None" strings or wrong
+# field names gets N chances to self-correct after pydantic-ai feeds
+# the error back as a ToolRetryError; failing on the (N+1)-th attempt
+# of the same tool name raises UnexpectedModelBehavior and ends the
+# turn. Counter is keyed by tool NAME, not call_id — three concurrent
+# save_record calls share one budget.
+#
+# Default 3 is biased toward keeping small-model TUI sessions usable;
+# drop to 1 if you'd rather fail-fast and surface the bad model output.
+tools:
+  ingest:
+    max_retries: 3
+
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 tracing:
   enabled: true

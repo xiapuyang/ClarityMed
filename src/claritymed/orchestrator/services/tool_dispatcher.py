@@ -32,6 +32,7 @@ import logging
 from typing import Any, Callable
 
 from pydantic import BaseModel, ValidationError
+from pydantic_ai.exceptions import ModelRetry
 
 from claritymed.context import get_context_or_raise
 from claritymed.core.observability.audit import audit_event
@@ -45,6 +46,33 @@ from claritymed.stores.manifest_store import ManifestStore
 from claritymed.stores.paths import user_records_dir
 
 logger = logging.getLogger(__name__)
+
+
+_NULL_SENTINEL_STRINGS = frozenset({"None", "none", "NONE", "null", "NULL", "Null"})
+
+
+def _normalize_null_sentinels(value: Any) -> Any:
+    """Replace string sentinels for null with real ``None``, recursively.
+
+    Small / local LLMs frequently emit Python's ``None`` literal or
+    JSON's ``null`` as a quoted string inside tool-call payloads when
+    they mean "no value". Pydantic treats those as plain strings, which
+    then fails type coercion for any Optional field whose annotation is
+    not ``str`` (date, Decimal, Enum, int, ...). Normalizing once at the
+    dispatcher boundary saves a ``BeforeValidator`` on every Optional
+    field across every tool schema.
+
+    A required ``str`` field that receives ``"None"`` would be coerced
+    to ``None`` here and then fail with "field required" — the right
+    failure mode, since the model genuinely emitted no value.
+    """
+    if isinstance(value, dict):
+        return {k: _normalize_null_sentinels(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_null_sentinels(v) for v in value]
+    if isinstance(value, str) and value in _NULL_SENTINEL_STRINGS:
+        return None
+    return value
 
 
 class ApprovalGateResult(BaseModel):
@@ -87,12 +115,36 @@ class ToolDispatcher:
         schema = TOOL_ARG_SCHEMAS.get(tool_name)
         if schema is None:
             raise ValueError(f"unknown tool: {tool_name!r}")
+        cleaned = _normalize_null_sentinels(args)
         try:
-            return schema.model_validate(args)
+            return schema.model_validate(cleaned)
         except ValidationError as exc:
-            # Re-raise as ValueError carrying the LLM-targeted message —
-            # pydantic-ai surfaces it to the model as a tool error.
-            raise ValueError(f"invalid args for {tool_name}: {exc}") from exc
+            # Log the failed call so a maintainer reading app.log can see
+            # the exact (tool_name, args, error) triple for every retry
+            # cycle. WARNING level — these are recoverable; pydantic-ai
+            # converts the ModelRetry below into a RetryPromptPart and
+            # the model gets up to ``tools.ingest.max_retries`` chances
+            # to self-correct. The audit log carries the same info for
+            # compliance; app.log carries it for debugging.
+            logger.warning(
+                "tool_args_invalid tool=%s args=%s error=%s",
+                tool_name,
+                cleaned,
+                exc.errors(include_url=False, include_context=False),
+            )
+            # Raise ``ModelRetry`` (not ``ValueError``) so pydantic-ai's
+            # tool loop catches it, wraps as ``ToolRetryError`` with a
+            # ``RetryPromptPart``, and lets the model self-correct on
+            # the next agent step. ``ValueError`` would escape ``agent.run``
+            # entirely (``on_tool_execute_error`` re-raises) and abort
+            # the whole turn — small models that emit ``"None"`` strings,
+            # stringified lists, or wrong field names never get a chance
+            # to fix their tool call.
+            #
+            # The ``unknown tool`` ValueError above stays as-is: that one
+            # is a structural bug in the toolset wiring, not something
+            # the model can repair by trying again.
+            raise ModelRetry(f"invalid args for {tool_name}: {exc}") from exc
 
     def check_shas(self, args: dict[str, Any]) -> None:
         """Step 2 of the gate.
