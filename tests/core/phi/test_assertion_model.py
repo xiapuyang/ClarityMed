@@ -306,6 +306,62 @@ async def test_request_stream_passes_clean_message_with_run_context(guard, _ctx)
     assert received["had_run_context"] is True
 
 
+async def test_trusted_tool_return_skipped_by_name(guard, _ctx):
+    """ToolReturnPart whose tool_name is in the trusted allowlist bypasses
+    the content scan even when the content looks NER-suspicious. Covers
+    the random-slug false positive in ``save_to_library`` returns."""
+    inner = _RecordingInner()
+    wrapper = PhiAssertionModel(inner, guard=guard)
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="save_to_library",
+                    tool_call_id="call-x",
+                    content={"library_path": "papers/2026-06-13-abc23xyz"},
+                ),
+            ]
+        )
+    ]
+    await wrapper.request(messages, None, _params())  # must not raise
+    assert inner.calls
+
+
+async def test_trusted_tool_return_marker_persists(guard, _ctx):
+    """First scan must set ``_phi_safe`` on the part so subsequent scans
+    short-circuit via the standard marker path (no allowlist re-check)."""
+    inner = _RecordingInner()
+    wrapper = PhiAssertionModel(inner, guard=guard)
+    part = ToolReturnPart(
+        tool_name="save_record",
+        tool_call_id="call-y",
+        content={"record_path": "labs/2026-06-13-jq3mz8tx"},
+    )
+    messages = [ModelRequest(parts=[part])]
+    await wrapper.request(messages, None, _params())
+    assert getattr(part, _PHI_SAFE_ATTR, False) is True
+
+
+async def test_untrusted_tool_return_still_scans(guard, _ctx):
+    """A tool_name outside the allowlist still gets content-scanned —
+    the allowlist is an opt-in promise, not a default."""
+    inner = _RecordingInner()
+    wrapper = PhiAssertionModel(inner, guard=guard)
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="external_lookup",
+                    tool_call_id="call-z",
+                    content={"phone": "13800138000"},
+                ),
+            ]
+        )
+    ]
+    with pytest.raises(PhiLeakDetected):
+        await wrapper.request(messages, None, _params())
+
+
 async def test_request_stream_passes_clean_message_without_run_context(guard, _ctx):
     from contextlib import asynccontextmanager
 

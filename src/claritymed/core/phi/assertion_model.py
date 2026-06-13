@@ -16,6 +16,16 @@ Two scan passes:
   flag are skipped without a content scan (e.g. system prompts loaded
   from PromptRegistry, the original user prompt that ``AskService``
   already scrubbed). This is the false-positive escape hatch.
+* **Trusted tool-return auto-marker** — every ``ToolReturnPart`` whose
+  ``tool_name`` is in ``_TOOL_RETURN_PHI_SAFE`` gets ``_phi_safe`` set
+  on first scan and is then routed through the marker pass on every
+  subsequent step. Used for ingest tools whose return content is
+  constructed server-side (status literals like ``{"ok": True}`` and
+  internal slug paths like ``papers/2026-06-13-abc23xyz``) and is
+  guaranteed not to echo user text. The cloud NER reliably misreads
+  the random slug suffix as ``secret`` / ``account_number``; this
+  list is how the policy says "we wrote these returns, they are safe
+  by construction".
 
 Wired in ``core/llm/model.py:build_model`` when ``provider.kind ==
 "cloud"``. Wrap order is ``PhiAssertionModel(LoggingModel(Base))`` so
@@ -55,9 +65,51 @@ logger = logging.getLogger(__name__)
 # bypass through structured output.
 _PHI_SAFE_ATTR = "_phi_safe"
 
+# Tool returns that are PHI-safe by construction — see module docstring.
+# Adding a name here is a promise that the tool's return content is
+# server-built (status literal or internal slug/path), never echoes
+# user-supplied free text. Args (which may carry user text) flow through
+# the audit_payloads sidecar at mode 0600 and never appear in the
+# ToolReturnPart content.
+_TOOL_RETURN_PHI_SAFE: frozenset[str] = frozenset(
+    {
+        # Slug-bearing returns: {"record_path": "..."} / {"library_path": ...}
+        # / {"deleted": ...}. Slug shape is "<YYYY-MM-DD>-<8-char base32>"
+        # which the NER tags as ``secret`` / ``account_number``.
+        "save_record",
+        "save_to_library",
+        "delete_record",
+        # Status-literal returns: {"ok": True} or {"ok": False, "reason": ...}.
+        # Listed for symmetry — they happen not to trip the NER today but
+        # they are equally safe by construction.
+        "save_medication",
+        "save_allergy",
+        "save_condition",
+        "update_profile_field",
+    }
+)
+
 
 def _is_phi_safe(message: Any) -> bool:
     return bool(getattr(message, _PHI_SAFE_ATTR, False))
+
+
+def _auto_mark_safe_tool_return(part: Any) -> None:
+    """Set ``_phi_safe`` on ingest tool returns that are safe by construction.
+
+    No-op for parts that already carry the marker, are not
+    ``ToolReturnPart``, or whose ``tool_name`` is not in the allowlist.
+    Setting the attribute means future scans short-circuit at
+    ``_is_phi_safe`` without re-checking the allowlist.
+    """
+    from pydantic_ai.messages import ToolReturnPart
+
+    if _is_phi_safe(part):
+        return
+    if not isinstance(part, ToolReturnPart):
+        return
+    if getattr(part, "tool_name", None) in _TOOL_RETURN_PHI_SAFE:
+        setattr(part, _PHI_SAFE_ATTR, True)
 
 
 def _scan_text_for_phi(text: str, guard: PhiGuard) -> bool:
@@ -92,6 +144,7 @@ def _scan_messages(messages: list[ModelMessage], guard: PhiGuard) -> str | None:
         if parts is None:
             continue
         for part in parts:
+            _auto_mark_safe_tool_return(part)
             if _is_phi_safe(part):
                 continue
             if isinstance(
