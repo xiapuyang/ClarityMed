@@ -135,8 +135,9 @@ class PromptRegistry:
         """Return the filled template string for ``name`` at ``version``.
 
         ``version="latest"`` returns the version with the most recent
-        ``created_at``. ``language`` falls through to ``language_ctx`` then
-        ``default_lang()``.
+        ``created_at``; ties are broken by the numeric suffix of the
+        ``version`` string (``v2`` > ``v1``). ``language`` falls through
+        to ``language_ctx`` then ``default_lang()``.
         """
         prompt = self._prompts.get(name)
         if prompt is None:
@@ -147,9 +148,20 @@ class PromptRegistry:
         return chosen.languages[lang]
 
     @staticmethod
-    def _pick_version(prompt: Prompt, version: str) -> PromptVersion:
+    def _version_sort_key(v: "PromptVersion") -> tuple:
+        # Tie-break "latest" by the numeric suffix of the version string so
+        # v2 beats v1 when both share a created_at (same-day iteration is
+        # common). Falls back to the raw string when no digit is present.
+        import re
+
+        m = re.search(r"(\d+)", v.version)
+        suffix: tuple = (int(m.group(1)),) if m else (0, v.version)
+        return (v.created_at, suffix)
+
+    @classmethod
+    def _pick_version(cls, prompt: Prompt, version: str) -> PromptVersion:
         if version == "latest":
-            return max(prompt.versions, key=lambda v: v.created_at)
+            return max(prompt.versions, key=cls._version_sort_key)
         for v in prompt.versions:
             if v.version == version:
                 return v

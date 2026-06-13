@@ -70,7 +70,7 @@ versions:
 
         一次调用对应一个字段。同一回合要更新体重和身高，发起两次调用。
   - version: v2
-    created_at: 2026-06-13
+    created_at: 2026-06-12
     notes: |
       Add explicit correct/wrong call structure examples to prevent
       models from passing the field name as the argument key instead
