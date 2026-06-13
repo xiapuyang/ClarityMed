@@ -400,3 +400,32 @@ updated = MyModel.model_validate(data)
 ```
 
 适用场景：任何从外部来的值（LLM 输出、用户输入、API 请求）写入 Pydantic 模型的 date/datetime/Decimal/Enum 字段时，都走 `model_validate`，不走 `model_copy(update=...)`。
+
+## Multi-Terminal Worktree Isolation
+
+这个 repo 经常被多终端并发编辑——一个 session 跑 bench / e2e，另一个改代码。两个 session 看到的是**同一个 working tree**：终端 B 的 skill 跑一句 `git stash`，终端 A 没提交的活会被一锅端走（已经发生过两次：`stash@{0}` 和 `stash@{1}`）。
+
+防御策略：怀疑有并行 session 时，**主动开 worktree 隔离**。
+
+项目级 `.claude/settings.json` 已经设了 `worktree.baseRef: head`，所以 `EnterWorktree` 默认从**当前 HEAD** 切新分支，不会回到 origin/main——继承当前 feature 分支的全部 commits。
+
+调用规范：
+
+```
+EnterWorktree(name="<branch-shortname>-<purpose>")
+# 例：tui-agent-bench / tui-agent-fix-allergy / tui-agent-yaml-v2
+```
+
+`name` 务必有语义。让 `git worktree list` 一眼读得懂"这是干啥的"——不要让自动生成的随机后缀堆满 `.claude/worktrees/` 目录。
+
+End-of-session 清理（**这是 stash 翻车的镜像问题**——worktree 也会被忘掉）：
+
+| 情况 | 动作 |
+|---|---|
+| 工作已 merge 回主 feature 分支 | `ExitWorktree(action="remove")` —— 同时删目录和分支 |
+| 工作 parked、明天继续 | `ExitWorktree(action="keep")` **且**在主 working tree 里记一笔到 `docs/parked-worktrees.md`（路径 + 分支 + 一句话用途）。不记 = 14 小时后忘掉 = 翻车 |
+| 直接关终端 | **不要这么干**。worktree 目录和分支会永久挂在那里 |
+
+每次 session 启动时 global SessionStart hook 会自动 `git worktree list`，如果有多于 1 个 worktree 会提示——这是兜底，不是替代清理。
+
+什么时候**不**用 worktree：单终端工作 + 没并发风险时。worktree 给你隔离的代价是每次都要 EnterWorktree / 合并 / Exit，单线工作时纯属负担。
