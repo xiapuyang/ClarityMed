@@ -62,6 +62,30 @@ except ImportError as exc:  # pragma: no cover — import-time guard
 
 logger = logging.getLogger("claritymed.servers.reranker")
 
+_LOG_CONFIG: dict = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stderr",
+        },
+    },
+    "root": {"handlers": ["default"], "level": "INFO"},
+    "loggers": {
+        "uvicorn": {"propagate": True},
+        "uvicorn.error": {"propagate": True},
+        "uvicorn.access": {"propagate": True},
+    },
+}
+
 DEFAULT_MODEL_PATH = Path.home() / ".claritymed" / "models" / "bge-reranker-v2-m3"
 DEFAULT_PORT = 8083
 MAX_BATCH_TEXTS = 128
@@ -208,14 +232,10 @@ def rerank(req: RerankRequest) -> list[RerankHit]:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
     port = int(os.environ.get("BGE_RERANKER_PORT", DEFAULT_PORT))
-    # log_config=None prevents uvicorn from calling logging.config.dictConfig(),
-    # which would overwrite our basicConfig format (stripping asctime).
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", log_config=None)
+    uvicorn.run(
+        app, host="127.0.0.1", port=port, log_level="info", log_config=_LOG_CONFIG
+    )
 
 
 if __name__ == "__main__":
