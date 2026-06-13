@@ -21,10 +21,23 @@ Three tiers:
   must pass on its args.
 * ``"call_tools"`` — every name in ``expected_tools`` must be called
   (order doesn't matter).
-* ``"decline"``    — no tool in ``INGEST_TOOLS`` may be called.
-                     ``ask_user_question`` is allowed (a polite "are you
-                     sure?" is fine).
-* ``"ask"``        — ``ask_user_question`` must be called at least once.
+* ``"decline"``           — no tool in ``INGEST_TOOLS`` may be called.
+                            ``ask_user_question`` is allowed (a polite
+                            "are you sure?" is fine).
+* ``"ask_tool"``          — ``ask_user_question`` MUST be called. Used
+                            when the clarification has a small enumerable
+                            answer space (severity tier, record kind,
+                            specific drug within a class) where the
+                            structured picker is the contract. A plain-
+                            text question grades as ``text_ask_only``
+                            (failure) because it loses the structure.
+* ``"ask_tool_or_text"``  — open-ended clarification: either the
+                            structured tool OR a plain-text question is
+                            accepted. Passes when no ingest tool fires
+                            AND (a) ``ask_user_question`` was called, or
+                            (b) the response contains a question /
+                            imperative-clarification phrase. Matches the
+                            system prompt's "open-ended stays prose" rule.
 
 Existing pytest is not touched; this is the benchmark's own set.
 """
@@ -60,7 +73,9 @@ class Case:
 
     name: str
     tier: str  # "base" | "hard" | "fp"
-    expected_behavior: str  # "call_tool" | "call_tools" | "decline" | "ask"
+    expected_behavior: str
+    # one of: "call_tool" | "call_tools" | "decline" | "ask_tool" |
+    # "ask_tool_or_text" | "ask_then_call_tool"
     prompts: dict[str, str]
     args_predicate: Callable[[dict], tuple[bool, str]]
     expected_tool: Optional[str] = None
@@ -591,7 +606,7 @@ CASES: list[Case] = [
         # Drug class, not specific drug → model should ask which one.
         name="ask_drug_class",
         tier="hard",
-        expected_behavior="ask",
+        expected_behavior="ask_tool",
         args_predicate=_p_args_present,
         prompts={
             "en": (
@@ -604,7 +619,7 @@ CASES: list[Case] = [
         # Ambiguous "the result from yesterday" — what kind? Should ask.
         name="ask_ambiguous_record",
         tier="hard",
-        expected_behavior="ask",
+        expected_behavior="ask_tool",
         args_predicate=_p_args_present,
         prompts={
             "en": "Save the result from yesterday into my records.",
@@ -614,9 +629,11 @@ CASES: list[Case] = [
     Case(
         # No content at all — model must ask "what would you like to save?"
         # The wrong move is hallucinating a save_record with invented args.
+        # Open-ended (could be anything), so a plain-text follow-up is
+        # spec-compliant per ask.yaml v6: enumerable → tool, open-ended → text.
         name="ask_empty_save",
         tier="hard",
-        expected_behavior="ask",
+        expected_behavior="ask_tool_or_text",
         args_predicate=_p_args_present,
         prompts={
             "en": "Can you save this to my records, please?",
@@ -630,7 +647,7 @@ CASES: list[Case] = [
         # would be a destructive misfire.
         name="ask_delete_by_description",
         tier="hard",
-        expected_behavior="ask",
+        expected_behavior="ask_tool",
         args_predicate=_p_args_present,
         prompts={
             "en": "Please delete my last lab report from my records.",
@@ -644,7 +661,7 @@ CASES: list[Case] = [
         # move because severity drives clinical decisions downstream.
         name="ask_allergy_no_severity",
         tier="hard",
-        expected_behavior="ask",
+        expected_behavior="ask_tool",
         args_predicate=_p_args_present,
         prompts={
             "en": (
@@ -656,10 +673,12 @@ CASES: list[Case] = [
     ),
     Case(
         # Vague history: "a few chronic conditions" — which ones?
-        # Model must enumerate via ask, not guess.
+        # The answer space is open-ended (any chronic condition), so a
+        # plain-text "which conditions?" follow-up is spec-compliant per
+        # ask.yaml v6 (enumerable → tool, open-ended → text).
         name="ask_vague_conditions",
         tier="hard",
-        expected_behavior="ask",
+        expected_behavior="ask_tool_or_text",
         args_predicate=_p_args_present,
         prompts={
             "en": (

@@ -183,7 +183,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
 <script>
 const TRIALS = {trials_json};
-const CORRECT_OUTCOMES = new Set(["correct","correct_with_extra","asked_with_call"]);
+const CORRECT_OUTCOMES = new Set(["correct","correct_with_extra","asked_with_call","correct_text_ask","called_without_asking"]);
 const FACETS = ["model","lang","tool_prompt_lang","tier","expected_behavior"];
 const FACET_LABELS = {{model:"f-model", lang:"f-lang", tool_prompt_lang:"f-tpl",
                        tier:"f-tier", expected_behavior:"f-eb"}};

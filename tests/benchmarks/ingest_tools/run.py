@@ -292,8 +292,9 @@ async def _run_one_trial(
         {"tool_name": c.tool_name, "args": c.args} for c in approval.calls
     ]
     ask_qs_payload = [p.model_dump() for p in prompt_channel.calls]
+    final_text = "".join(final_chunks).strip()
 
-    outcome_info = _classify(case, approval.calls, prompt_channel.calls)
+    outcome_info = _classify(case, approval.calls, prompt_channel.calls, final_text)
 
     return TrialRecord(
         request_id=request_id,
@@ -310,7 +311,7 @@ async def _run_one_trial(
         seed=seed,
         tool_calls=tool_calls_payload,
         ask_questions=ask_qs_payload,
-        final_response_text="".join(final_chunks).strip(),
+        final_response_text=final_text,
         outcome=outcome_info["outcome"],
         predicate_pass=outcome_info["predicate_pass"],
         predicate_reason=outcome_info["predicate_reason"],
@@ -323,10 +324,43 @@ async def _run_one_trial(
     )
 
 
+_TEXT_ASK_MARKERS: tuple[str, ...] = (
+    "?",
+    "？",
+    # Imperative-form clarifications the model uses instead of questions —
+    # equally valid asks, just phrased as polite directives.
+    "please tell me",
+    "please share",
+    "please provide",
+    "let me know",
+    "could you tell",
+    "could you share",
+    "请告诉",
+    "请提供",
+    "请说明",
+    "请补充",
+)
+
+
+def _response_has_question(text: str) -> bool:
+    """Return True if ``text`` reads like a clarifying question.
+
+    Cheap heuristic: question marks (``?`` / ``？``) plus a small set of
+    imperative-clarification phrases ("please tell me", "请告诉" …). Used
+    to give ``ask_tool_or_text`` cases credit when the model clarifies
+    in plain prose instead of calling ``ask_user_question``. ``ask_tool``
+    cases ignore this signal because they explicitly demand the
+    structured picker.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _TEXT_ASK_MARKERS)
+
+
 def _classify(
     case: Case,
     approval_calls: list[_RecordedCall],
     ask_calls: list[AskUserQuestionInput],
+    final_response_text: str,
 ) -> dict[str, Any]:
     """Predicate-only outcome label. Judge does the semantic layer later."""
     ingest_calls = [c for c in approval_calls if c.tool_name in INGEST_TOOLS]
@@ -418,12 +452,17 @@ def _classify(
             no_tool=False,
         )
 
-    if case.expected_behavior == "ask":
+    if case.expected_behavior == "ask_tool":
+        # Strict: the case explicitly demands the structured tool because
+        # the answer space is enumerable (severity tier, record kind,
+        # specific drug in a class). Only an ``ask_user_question`` call
+        # counts as ``correct``. A plain-text question is graded as
+        # ``text_ask_only`` (failure) — the picker is the contract.
         if ask_calls:
             return dict(
                 outcome="correct" if not ingest_calls else "asked_with_call",
                 predicate_pass=True,
-                predicate_reason=f"asked {len(ask_calls)} times",
+                predicate_reason=f"asked {len(ask_calls)} times via tool",
                 correct_tool=True,
                 wrong_tools=ingest_names if ingest_calls else [],
                 no_tool=False,
@@ -437,10 +476,66 @@ def _classify(
                 wrong_tools=ingest_names,
                 no_tool=False,
             )
+        if _response_has_question(final_response_text):
+            return dict(
+                outcome="text_ask_only",
+                predicate_pass=False,
+                predicate_reason=(
+                    "asked in plain text but the case expected the "
+                    "structured ask_user_question tool (enumerable answers)"
+                ),
+                correct_tool=False,
+                wrong_tools=[],
+                no_tool=False,
+            )
         return dict(
             outcome="no_ask",
             predicate_pass=False,
             predicate_reason="neither asked nor called any tool",
+            correct_tool=False,
+            wrong_tools=[],
+            no_tool=True,
+        )
+
+    if case.expected_behavior == "ask_tool_or_text":
+        # Lenient: open-ended clarification — either the structured tool
+        # or a plain-text question counts. The system prompt explicitly
+        # tells the model that open-ended questions stay plain text, so
+        # we cannot penalise that choice; structured tool is also fine
+        # if the model decided the answer space was enumerable enough.
+        if ask_calls:
+            return dict(
+                outcome="correct" if not ingest_calls else "asked_with_call",
+                predicate_pass=True,
+                predicate_reason=f"asked {len(ask_calls)} times via tool",
+                correct_tool=True,
+                wrong_tools=ingest_names if ingest_calls else [],
+                no_tool=False,
+            )
+        if ingest_calls:
+            return dict(
+                outcome="guessed_instead",
+                predicate_pass=False,
+                predicate_reason=f"guessed via {ingest_names} instead of asking",
+                correct_tool=False,
+                wrong_tools=ingest_names,
+                no_tool=False,
+            )
+        if _response_has_question(final_response_text):
+            return dict(
+                outcome="correct_text_ask",
+                predicate_pass=True,
+                predicate_reason="asked in plain text (open-ended clarification)",
+                correct_tool=True,
+                wrong_tools=[],
+                no_tool=False,
+            )
+        return dict(
+            outcome="no_ask",
+            predicate_pass=False,
+            predicate_reason=(
+                "neither asked (via tool or plain text) nor called any tool"
+            ),
             correct_tool=False,
             wrong_tools=[],
             no_tool=True,
@@ -496,7 +591,20 @@ def _classify(
 
 
 CORRECT_OUTCOMES: frozenset[str] = frozenset(
-    {"correct", "correct_with_extra", "asked_with_call"}
+    {
+        "correct",
+        "correct_with_extra",
+        "asked_with_call",
+        # ``ask`` / ``ask_text`` cases where the model clarified in plain
+        # prose. The system prompt explicitly permits this for open-ended
+        # questions, so it's a pass — not a degraded outcome.
+        "correct_text_ask",
+        # ``ask_then_call_tool`` cases where the model skipped the
+        # clarifying question and went straight to the correct ingest
+        # tool with sensible args. Predicate already validates the args,
+        # so the action is right; only the flow shortcut is non-ideal.
+        "called_without_asking",
+    }
 )
 
 

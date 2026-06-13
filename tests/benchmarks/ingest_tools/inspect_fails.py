@@ -35,7 +35,13 @@ import sys
 from pathlib import Path
 
 CORRECT_OUTCOMES: frozenset[str] = frozenset(
-    {"correct", "correct_with_extra", "asked_with_call"}
+    {
+        "correct",
+        "correct_with_extra",
+        "asked_with_call",
+        "correct_text_ask",
+        "called_without_asking",
+    }
 )
 
 

@@ -41,8 +41,9 @@ en: |
 
   Ignore: minor phrasing differences, JSON whitespace, response language style.
   Focus on: did the action match the user's intent? Were args grounded in
-  what the user said (not invented)? For "ask" cases — did the assistant
-  recognize the ambiguity instead of guessing?
+  what the user said (not invented)? For "ask_tool" cases the assistant
+  must use the structured picker; "ask_tool_or_text" accepts either form
+  — in both, did the assistant recognise the ambiguity instead of guessing?
 
   Respond with JSON only:
   {{"score": <0-5 int>, "reason": "<one sentence>"}}
@@ -83,7 +84,8 @@ zh: |
 
   忽略：措辞差异、JSON 空白、回复语气。
   关注：动作是否匹配用户意图？参数是否来自用户原话（不是编造）？
-  对 "ask" 类——助手有没有识别到歧义而不是猜？
+  "ask_tool" 类必须用结构化选择器；"ask_tool_or_text" 类工具或纯文本反问
+  都可——两类都要识别到歧义，不要硬猜。
 
   只输出 JSON：
   {{"score": <0-5 整数>, "reason": "<一句话>"}}

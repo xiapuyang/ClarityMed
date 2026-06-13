@@ -106,8 +106,21 @@ def _expected_target_hint(trial: dict) -> str:
         return f"expected tools (any order): {trial['expected_tools']}"
     if eb == "decline":
         return "no destructive tool should fire"
-    if eb == "ask":
-        return "model should call ask_user_question instead of guessing"
+    if eb == "ask_tool":
+        return (
+            "model MUST call ask_user_question (enumerable answer space) "
+            "instead of guessing or asking in plain text"
+        )
+    if eb == "ask_tool_or_text":
+        return (
+            "model should clarify before saving — either via "
+            "ask_user_question or a plain-text question is acceptable"
+        )
+    if eb == "ask_then_call_tool":
+        return (
+            "model should ask for the missing field, then call the "
+            f"target ingest tool: {trial.get('expected_tool')}"
+        )
     return eb
 
 
