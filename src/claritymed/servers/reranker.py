@@ -45,7 +45,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from claritymed.servers._devices import default_device
+from claritymed.servers._devices import LOG_CONFIG, default_device
 
 try:
     import torch
@@ -61,30 +61,6 @@ except ImportError as exc:  # pragma: no cover — import-time guard
     ) from None
 
 logger = logging.getLogger("claritymed.servers.reranker")
-
-_LOG_CONFIG: dict = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "default": {
-            "format": "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-            "datefmt": "%Y-%m-%d %H:%M:%S",
-        },
-    },
-    "handlers": {
-        "default": {
-            "class": "logging.StreamHandler",
-            "formatter": "default",
-            "stream": "ext://sys.stderr",
-        },
-    },
-    "root": {"handlers": ["default"], "level": "INFO"},
-    "loggers": {
-        "uvicorn": {"propagate": True},
-        "uvicorn.error": {"propagate": True},
-        "uvicorn.access": {"propagate": True},
-    },
-}
 
 DEFAULT_MODEL_PATH = Path.home() / ".claritymed" / "models" / "bge-reranker-v2-m3"
 DEFAULT_PORT = 8083
@@ -234,7 +210,7 @@ def rerank(req: RerankRequest) -> list[RerankHit]:
 def main() -> None:
     port = int(os.environ.get("BGE_RERANKER_PORT", DEFAULT_PORT))
     uvicorn.run(
-        app, host="127.0.0.1", port=port, log_level="info", log_config=_LOG_CONFIG
+        app, host="127.0.0.1", port=port, log_level="info", log_config=LOG_CONFIG
     )
 
 

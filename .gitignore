@@ -17,6 +17,7 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+coverage.json
 
 # Secrets / env
 .env

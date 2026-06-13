@@ -34,7 +34,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from claritymed.servers._devices import default_device
+from claritymed.servers._devices import LOG_CONFIG, default_device
 
 try:
     import uvicorn
@@ -49,34 +49,6 @@ except ImportError as exc:  # pragma: no cover — import-time guard
     ) from None
 
 logger = logging.getLogger("claritymed.servers.embedder")
-
-# Explicit log config so uvicorn's own loggers also emit timestamps.
-# basicConfig + log_config=None doesn't work: uvicorn configures its
-# loggers (uvicorn, uvicorn.access) via its own formatter which omits
-# %(asctime)s, and those loggers are propagate=False by default.
-_LOG_CONFIG: dict = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "default": {
-            "format": "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-            "datefmt": "%Y-%m-%d %H:%M:%S",
-        },
-    },
-    "handlers": {
-        "default": {
-            "class": "logging.StreamHandler",
-            "formatter": "default",
-            "stream": "ext://sys.stderr",
-        },
-    },
-    "root": {"handlers": ["default"], "level": "INFO"},
-    "loggers": {
-        "uvicorn": {"propagate": True},
-        "uvicorn.error": {"propagate": True},
-        "uvicorn.access": {"propagate": True},
-    },
-}
 
 DEFAULT_MODEL_PATH = Path.home() / ".claritymed" / "models" / "bge-m3"
 DEFAULT_PORT = 8082
@@ -196,7 +168,7 @@ def embed_sparse(req: EmbedRequest) -> list[dict[str, float]]:
 def main() -> None:
     port = int(os.environ.get("BGE_M3_PORT", DEFAULT_PORT))
     uvicorn.run(
-        app, host="127.0.0.1", port=port, log_level="info", log_config=_LOG_CONFIG
+        app, host="127.0.0.1", port=port, log_level="info", log_config=LOG_CONFIG
     )
 
 
