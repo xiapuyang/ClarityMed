@@ -367,7 +367,7 @@ def save_record(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
             "manifest_path": str(manifest_path),
         },
     )
-    return {"record_path": record_path, "manifest_path": str(manifest_path)}
+    return {"record_path": record_path}
 
 
 def save_to_library(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
@@ -406,7 +406,7 @@ def save_to_library(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict
             "manifest_path": str(manifest_path),
         },
     )
-    return {"library_path": library_path, "manifest_path": str(manifest_path)}
+    return {"library_path": library_path}
 
 
 def delete_record(args: dict[str, Any], *, dispatcher: ToolDispatcher) -> dict:
