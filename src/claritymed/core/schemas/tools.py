@@ -144,9 +144,29 @@ class SaveRecordArgs(ToolArgsBase):
         examples=["Annual checkup", "Lipid panel — Dr. Chen"],
     )
     provider: str | None = Field(default=None, max_length=128)
-    attachments: list[AttachmentRef] = Field(default_factory=list)
-    extracted_labs: list[ExtractedLab] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list, examples=[["routine", "fasting"]])
+    attachments: list[AttachmentRef] = Field(
+        default_factory=list,
+        description=(
+            "Array of {sha256, filename} objects for files referenced by this "
+            "event. Pass a JSON array literal — `[]` for none, NOT the string "
+            "`'[]'`."
+        ),
+    )
+    extracted_labs: list[ExtractedLab] = Field(
+        default_factory=list,
+        description=(
+            "Array of structured lab values parsed from the source. Pass `[]` "
+            "(JSON array, not the string `'[]'`) when nothing was extracted."
+        ),
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Array of short topical labels. Pass a JSON array — `[]` for none, "
+            'NOT the string `\'[]\'`; `["a", "b"]`, NOT `\'["a", "b"]\'`.'
+        ),
+        examples=[["routine", "fasting"]],
+    )
     notes: str | None = None
 
 
@@ -303,10 +323,30 @@ class SaveToLibraryArgs(ToolArgsBase):
             "Harrison's — Chapter 271",
         ],
     )
-    attachments: list[AttachmentRef] = Field(default_factory=list)
-    authors: list[str] = Field(default_factory=list, examples=[["Jameson", "Loscalzo"]])
+    attachments: list[AttachmentRef] = Field(
+        default_factory=list,
+        description=(
+            "Array of {sha256, filename} objects for the uploaded document(s). "
+            "Pass a JSON array literal — `[]` for none, NOT the string `'[]'`."
+        ),
+    )
+    authors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Array of author name strings. Pass a JSON array — `[]` for none, "
+            "NOT the string `'[]'`."
+        ),
+        examples=[["Jameson", "Loscalzo"]],
+    )
     year: int | None = Field(default=None, ge=1800, le=2200, examples=[2024])
-    tags: list[str] = Field(default_factory=list, examples=[["textbook"]])
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Array of short topic labels. Pass a JSON array — `[]` for none, "
+            "NOT the string `'[]'`."
+        ),
+        examples=[["textbook"]],
+    )
     public: bool = False
 
 

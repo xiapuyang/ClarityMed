@@ -105,6 +105,67 @@ def test_gate_error_message_names_tool(_ctx, _gate):
         _gate.gate("save_allergy", {"substance": "x"})  # missing required fields
 
 
+# --- retry-message coaching for small-model failure modes -------------
+
+
+def test_gate_error_message_teaches_array_literal_not_string(_ctx, _gate):
+    """The dominant local-model failure: ``'[]'`` (string) for a list field.
+
+    Raw pydantic phrasing (``Input should be a valid list``) doesn't
+    teach Qwen3-MLX 35B how to fix the call — it loops emitting the
+    same stringified value. The retry message must explicitly say
+    "JSON array, not quoted string" so the next retry has a concrete
+    edit target."""
+    with pytest.raises(ModelRetry) as exc_info:
+        _gate.gate(
+            "save_record",
+            {
+                "category": "checkups",
+                "kind": "checkup",
+                "title": "Annual",
+                "attachments": "[]",
+            },
+        )
+    msg = str(exc_info.value)
+    assert "JSON array" in msg, f"hint must name the expected type; got: {msg!r}"
+    assert "not" in msg and "string" in msg, (
+        f"hint must contrast array vs string; got: {msg!r}"
+    )
+
+
+def test_gate_error_message_suggests_field_for_typo(_ctx, _gate):
+    """``extra_forbidden`` with a near-miss field name should yield a
+    "Did you mean" hint via difflib. Observed in bench: model passes
+    ``name='penicillin'`` to ``save_allergy`` (real field: ``substance``)
+    or ``type='object'`` (no real match) to ``save_record``."""
+    with pytest.raises(ModelRetry) as exc_info:
+        _gate.gate(
+            "save_record",
+            {
+                "category": "checkups",
+                "kind": "checkup",
+                "title": "Annual",
+                "confirm_kind": "checkup",  # belongs to delete_record
+            },
+        )
+    msg = str(exc_info.value)
+    assert "Valid fields" in msg, f"typo hint must list valid fields; got: {msg!r}"
+    # ``confirm_kind`` is closest to ``kind`` by difflib's ratio.
+    assert "Did you mean" in msg or "kind" in msg, (
+        f"typo hint should suggest closest match; got: {msg!r}"
+    )
+
+
+def test_gate_error_message_flags_missing_field(_ctx, _gate):
+    """``missing`` errors must surface as "required — include it" so
+    the model knows the fix is to ADD the field, not change a value."""
+    with pytest.raises(ModelRetry) as exc_info:
+        _gate.gate("save_allergy", {"substance": "x"})  # no severity, no source
+    msg = str(exc_info.value)
+    assert "required" in msg, f"hint must say required; got: {msg!r}"
+    assert "severity" in msg, f"hint must name the missing field; got: {msg!r}"
+
+
 # --- enum / literal violations ----------------------------------------
 
 

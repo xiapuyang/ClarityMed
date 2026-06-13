@@ -28,6 +28,7 @@ Unit 6 ships the gate + the seven tool implementations. Unit 7 wires
 
 from __future__ import annotations
 
+import difflib
 import logging
 from typing import Any, Callable
 
@@ -49,6 +50,66 @@ logger = logging.getLogger(__name__)
 
 
 _NULL_SENTINEL_STRINGS = frozenset({"None", "none", "NONE", "null", "NULL", "Null"})
+
+
+# Max length of the offending ``input`` value embedded in a retry hint. Long
+# nested dicts blow past the model's working memory and bury the signal; the
+# field name + first 60 chars is enough to identify what went wrong.
+_HINT_INPUT_REPR_LIMIT = 60
+
+
+def _format_validation_errors(
+    tool_name: str,
+    schema: type[BaseModel],
+    exc: ValidationError,
+) -> str:
+    """Translate pydantic ``ValidationError`` into model-friendly hints.
+
+    Raw pydantic phrasing (``Input should be a valid list
+    [input_value='[]', input_type=str]``) does not teach small local
+    models how to fix the call — they fixate on the value rather than
+    the type and loop. This helper rewrites the common error shapes
+    into explicit corrective sentences and, on ``extra_forbidden``,
+    suggests the closest valid field name via :mod:`difflib`. Anything
+    we do not specifically translate falls through to pydantic's own
+    ``msg`` so we never lose information.
+    """
+    valid_fields = sorted(schema.model_fields.keys())
+    hints: list[str] = []
+    typo_field: str | None = None
+    for err in exc.errors(include_url=False, include_context=False):
+        loc = ".".join(str(p) for p in err["loc"]) or "(root)"
+        etype = err["type"]
+        input_repr = repr(err.get("input"))
+        if len(input_repr) > _HINT_INPUT_REPR_LIMIT:
+            input_repr = input_repr[: _HINT_INPUT_REPR_LIMIT - 3] + "..."
+        if etype == "list_type":
+            hints.append(
+                f"`{loc}` must be a JSON array (e.g. `[]` for empty), "
+                f"not the quoted string {input_repr}."
+            )
+        elif etype == "dict_type":
+            hints.append(
+                f"`{loc}` must be a JSON object (e.g. `{{}}`), "
+                f"not the quoted string {input_repr}."
+            )
+        elif etype == "missing":
+            hints.append(f"`{loc}` is required — include it in the next call.")
+        elif etype == "extra_forbidden":
+            if typo_field is None:
+                typo_field = loc
+            hints.append(f"`{loc}` is not a valid field for `{tool_name}`.")
+        else:
+            hints.append(f"`{loc}`: {err['msg']}.")
+    if typo_field is not None:
+        suggestion = difflib.get_close_matches(
+            typo_field, valid_fields, n=1, cutoff=0.5
+        )
+        prefix = f"Did you mean `{suggestion[0]}`? " if suggestion else ""
+        hints.append(
+            f"{prefix}Valid fields for `{tool_name}`: {', '.join(valid_fields)}."
+        )
+    return f"invalid args for {tool_name}: " + " ".join(hints)
 
 
 def _normalize_null_sentinels(value: Any) -> Any:
@@ -144,7 +205,7 @@ class ToolDispatcher:
             # The ``unknown tool`` ValueError above stays as-is: that one
             # is a structural bug in the toolset wiring, not something
             # the model can repair by trying again.
-            raise ModelRetry(f"invalid args for {tool_name}: {exc}") from exc
+            raise ModelRetry(_format_validation_errors(tool_name, schema, exc)) from exc
 
     def check_shas(self, args: dict[str, Any]) -> None:
         """Step 2 of the gate.
