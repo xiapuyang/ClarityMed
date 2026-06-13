@@ -82,6 +82,7 @@ AuditKind = Literal[
     "mode.ingest",
     "mode.ask",
     "mode.ask.scrub",
+    "mode.ask.scrub_assembled",
     "mode.rag",
     "mode.routed",
     "mode.cancelled",

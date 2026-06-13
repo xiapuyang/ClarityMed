@@ -28,9 +28,8 @@
 #                google_thinking_config under the hood. Silently ignored on
 #                models that don't support reasoning.
 #
-# Adding a cloud entry only declares the option exists. A user still has
-# to opt in (Account.cloud_provider_opt_in) and the admin must populate
-# the env var before any request actually goes out.
+# Adding a cloud entry only declares the option exists. The admin must
+# still populate the env var before any request actually goes out.
 
 providers:
   # ---- Local: OpenAI-compatible servers ----

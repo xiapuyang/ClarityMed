@@ -127,13 +127,15 @@ CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
 - **PHI 出域只看一个字段**：`ProviderConfig.kind`。`local` 可以带 PHI；`cloud`
   必须先过 `core.orchestrator.phi_guard`。任何绕过 orchestrator 直接调
   `LLMClient` 的代码都破坏这条不变量——不要这么做。
-- **Cloud 调用是三层 AND**：env var 存在 ∧ `Account.cloud_provider_opt_in == True`
-  ∧ 用户的 `provider_id` 指向一个 cloud 条目。少任意一层就回落到 local。
+- **Cloud 调用是二层 AND**：env var 存在 ∧ `ProviderConfig.kind == "cloud"`。
+  少任意一层就跑不通。`cloud_provider_opt_in` per-user 标志曾作为第三层存在，
+  被判定为过度设计删掉；cloud-bound PHI 兜底由 `phi_guard` + assembled-prompt
+  二次 scrub 承担，不再依赖每用户开关。
 - **每用户偏好以文件为准**：`data/<user_id>/settings.yaml` 是单一真相，
   SQLite 表只是查询用的镜像；冲突时 YAML 赢。
 - **Provider resolution 失败即响**：`settings.yaml` 里把 `provider_id`
   打错字会抛 `UnknownProviderError`，**不会**静默回落到 default —— 默认回落
-  会让 opt-in 过 cloud 的用户在不知情下被切到别的后端。
+  会让指向 cloud 的用户在不知情下被切到别的后端。
 - **解析顺序**：`override`（CLI `--provider`） > `Account.provider_id` >
   `ModelsConfig.default_provider`。这个顺序在 `stores/models.py:resolve_provider`
   里硬编码，改的话连带改文档。

@@ -33,9 +33,8 @@ A ``ProviderConfig`` is intentionally tiny:
   support reasoning, which is why we keep this one knob instead of
   duplicating per-vendor schemas.
 
-Declaring a cloud entry only says "this option exists." Per-user opt-in
-(``Account.cloud_provider_opt_in``) and the admin populating the env var
-are still required before any request actually leaves the box.
+Declaring a cloud entry only says "this option exists." The admin must
+still populate the env var before any request actually leaves the box.
 """
 
 from __future__ import annotations

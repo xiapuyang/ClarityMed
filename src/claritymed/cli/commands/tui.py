@@ -30,7 +30,7 @@ def tui(
     """Launch the Textual TUI."""
     from claritymed.cli.entry import _resolve_language, _resolve_user_id
     from claritymed.cli.tui import ClarityMedApp
-    from claritymed.errors import CloudOptInRequiredError, UnknownProviderError
+    from claritymed.errors import UnknownProviderError
 
     resolved_lang = _resolve_language(language)
     resolved_user, _ = _resolve_user_id(user)
@@ -38,8 +38,7 @@ def tui(
     # Resolve the provider up front so a typo (`--provider oMLX`) fails
     # cleanly to stderr instead of opening the TUI and exploding on the
     # first submit. Matches the project rule: provider resolution is
-    # loud, never silent. Load the account so the cloud opt-in invariant
-    # is checked here too — same enforcement as `ask` / `eval`.
+    # loud, never silent.
     account = try_load_account(resolved_user)
     try:
         provider = resolve_provider(override=provider_id, account=account)
@@ -49,10 +48,6 @@ def tui(
         logger.error(msg)
         typer.echo(msg, err=True)
         raise typer.Exit(code=1) from exc
-    except CloudOptInRequiredError as exc:
-        logger.error("%s", exc)
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from exc
 
     # Pre-download in-process models before the TUI takes over the
     # terminal. Currently only openai/privacy-filter — BGE embedder /

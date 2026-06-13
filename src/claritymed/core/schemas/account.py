@@ -30,7 +30,6 @@ class Account(BaseModel):
     display_name: str = Field(min_length=1, max_length=64)
     role: Role = "user"
     language: Language = "en"
-    cloud_provider_opt_in: bool = False
     provider_id: str | None = Field(default=None, max_length=64)
     active_system_rag_collections: list[str] = Field(
         default_factory=list,

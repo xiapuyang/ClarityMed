@@ -13,22 +13,22 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def _bootstrap_alice(monkeypatch):
-    """Initialize alice as a user so CLI commands have a target."""
+def _bootstrap_user(monkeypatch):
+    """Initialize the test user so CLI commands have a target."""
     from claritymed.stores.account import init_user
 
-    init_user("alice", "Alice")
+    init_user("test", "Test")
     monkeypatch.setenv("CLARITYMED_HEADLESS", "1")
 
 
-def test_tool_run_help_lists_subcommands(_bootstrap_alice):
+def test_tool_run_help_lists_subcommands(_bootstrap_user):
     result = runner.invoke(app, ["tool", "--help"])
     assert result.exit_code == 0
     assert "run" in result.stdout
     assert "rule-list" in result.stdout
 
 
-def test_tool_run_rejects_interactive_without_auto_approve(_bootstrap_alice):
+def test_tool_run_rejects_interactive_without_auto_approve(_bootstrap_user):
     result = runner.invoke(
         app,
         [
@@ -39,7 +39,7 @@ def test_tool_run_rejects_interactive_without_auto_approve(_bootstrap_alice):
                 {"substance": "peanut", "severity": "mild", "source": "self_report"}
             ),
             "--user",
-            "alice",
+            "test",
         ],
         input="",  # non-empty stdin in click context counts as supplied
     )
@@ -47,12 +47,12 @@ def test_tool_run_rejects_interactive_without_auto_approve(_bootstrap_alice):
     assert result.exit_code == 1
 
 
-def test_tool_run_rule_list_empty(_bootstrap_alice):
-    result = runner.invoke(app, ["tool", "rule-list", "--user", "alice"])
+def test_tool_run_rule_list_empty(_bootstrap_user):
+    result = runner.invoke(app, ["tool", "rule-list", "--user", "test"])
     assert result.exit_code == 0
     assert "no active rules" in result.stdout or "Approval rules" in result.stdout
 
 
-def test_tool_run_rule_revoke_unknown_id(_bootstrap_alice):
-    result = runner.invoke(app, ["tool", "rule-revoke", "deadbeef", "--user", "alice"])
+def test_tool_run_rule_revoke_unknown_id(_bootstrap_user):
+    result = runner.invoke(app, ["tool", "rule-revoke", "deadbeef", "--user", "test"])
     assert result.exit_code == 1

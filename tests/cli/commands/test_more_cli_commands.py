@@ -983,19 +983,6 @@ def test_try_current_account_returns_none_outside_context():
 # ===========================================================================
 
 
-def test_ask_cloud_opt_in_required_exits_2(_alice, monkeypatch):
-    """Provider resolution raising CloudOptInRequiredError → exit 2."""
-    from claritymed.cli.commands import ask as _ask_mod
-    from claritymed.errors import CloudOptInRequiredError
-
-    def _boom(*a, **kw):
-        raise CloudOptInRequiredError("anthropic")
-
-    monkeypatch.setattr(_ask_mod, "resolve_provider", _boom)
-    result = runner.invoke(app, ["ask", "anything", "--user", "alice"])
-    assert result.exit_code == 2
-
-
 def test_ask_streams_token_chunks_and_finishes(_alice, monkeypatch):
     """Happy path: stream a TokenChunk and a Done — exit 0, text in stdout."""
     from types import SimpleNamespace

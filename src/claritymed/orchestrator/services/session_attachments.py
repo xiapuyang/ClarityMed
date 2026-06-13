@@ -14,6 +14,7 @@ a single-user TUI.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +33,27 @@ from claritymed.stores.paths import (
 )
 
 SourceKind = AttachmentSource
+
+# In-process thread-safety companion to the file_lock. ``file_lock`` is
+# advisory at the OS level — it serializes writers across PROCESSES but
+# is happy to let two threads inside the SAME process acquire it
+# back-to-back (filelock 3.x re-entrancy on the same handle). That lets
+# a rapid paste from two coroutines on different threads race the
+# read-modify-write cycle on ``attachments.json`` and lose updates.
+# The per-path threading.Lock here closes that hole; the file_lock
+# still handles the cross-process case.
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock_for(path: Path) -> threading.Lock:
+    key = str(path)
+    with _THREAD_LOCKS_GUARD:
+        lock = _THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _THREAD_LOCKS[key] = lock
+        return lock
 
 
 class SessionAttachment(BaseModel):
@@ -87,7 +109,7 @@ class SessionAttachments:
             size=size,
             source=source,
         )
-        with file_lock(self._lock_path()):
+        with _thread_lock_for(self._lock_path()), file_lock(self._lock_path()):
             rows = self._load()
             rows = [r for r in rows if r.sha256 != sha256]
             rows.append(entry)
@@ -102,7 +124,7 @@ class SessionAttachments:
         provider: str | None = None,
         reason: str | None = None,
     ) -> SessionAttachment | None:
-        with file_lock(self._lock_path()):
+        with _thread_lock_for(self._lock_path()), file_lock(self._lock_path()):
             rows = self._load()
             updated: SessionAttachment | None = None
             for i, row in enumerate(rows):

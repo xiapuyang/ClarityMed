@@ -36,15 +36,15 @@ class _StubProvider(OcrProvider):
 
 @pytest.fixture
 def _ctx():
-    tokens = apply_context("20260611000000ABCDEF12", "alice", "en")
+    tokens = apply_context("20260611000000ABCDEF12", "test", "en")
     yield
     reset_context(tokens)
 
 
 async def test_extract_done_writes_sentinel(_ctx):
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"some bytes", "pdf")
-    sa = SessionAttachments("alice", "sess-1")
+    sa = SessionAttachments("test", "sess-1")
     sa.add(sha256=sha, filename="r.pdf", mime="application/pdf", size=10)
 
     completions: list[OcrCompleted] = []
@@ -56,7 +56,7 @@ async def test_extract_done_writes_sentinel(_ctx):
     worker.start()
     worker.enqueue(
         OcrJob(
-            user_id="alice",
+            user_id="test",
             session_id="sess-1",
             sha256=sha,
             blob_path=bs.path(sha, "pdf"),
@@ -86,9 +86,9 @@ async def test_extract_done_writes_sentinel(_ctx):
 
 
 async def test_empty_text_marks_empty(_ctx):
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"some bytes", "pdf")
-    sa = SessionAttachments("alice", "sess-1")
+    sa = SessionAttachments("test", "sess-1")
     sa.add(sha256=sha, filename="r.pdf", mime="application/pdf", size=10)
 
     completions: list[OcrCompleted] = []
@@ -96,7 +96,7 @@ async def test_empty_text_marks_empty(_ctx):
     worker.start()
     worker.enqueue(
         OcrJob(
-            user_id="alice",
+            user_id="test",
             session_id="sess-1",
             sha256=sha,
             blob_path=bs.path(sha, "pdf"),
@@ -111,9 +111,9 @@ async def test_empty_text_marks_empty(_ctx):
 
 
 async def test_provider_failure_marks_failed(_ctx):
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"some bytes", "pdf")
-    sa = SessionAttachments("alice", "sess-1")
+    sa = SessionAttachments("test", "sess-1")
     sa.add(sha256=sha, filename="r.pdf", mime="application/pdf", size=10)
 
     completions: list[OcrCompleted] = []
@@ -124,7 +124,7 @@ async def test_provider_failure_marks_failed(_ctx):
     worker.start()
     worker.enqueue(
         OcrJob(
-            user_id="alice",
+            user_id="test",
             session_id="sess-1",
             sha256=sha,
             blob_path=bs.path(sha, "pdf"),
@@ -143,7 +143,7 @@ async def test_provider_failure_marks_failed(_ctx):
 async def test_cache_short_circuit_when_sentinel_present(_ctx):
     """An ``ocr.json`` already on disk → worker skips extraction and emits
     a synthetic ``done`` event with provider='cache'."""
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"x", "txt")
     bs.ocr_path(sha).write_text("cached text", encoding="utf-8")
     bs.ocr_meta_path(sha).write_text(
@@ -160,7 +160,7 @@ async def test_cache_short_circuit_when_sentinel_present(_ctx):
     worker.start()
     worker.enqueue(
         OcrJob(
-            user_id="alice",
+            user_id="test",
             session_id="sess-1",
             sha256=sha,
             blob_path=bs.path(sha, "txt"),
@@ -180,7 +180,7 @@ async def test_cache_propagates_empty_status(_ctx):
     about both empty and failed results. The empty case must keep its
     real status so the UI can show "no text extracted" instead of "ok".
     """
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"x", "txt")
     bs.ocr_path(sha).write_text("", encoding="utf-8")
     bs.ocr_meta_path(sha).write_text(
@@ -196,7 +196,7 @@ async def test_cache_propagates_empty_status(_ctx):
     worker.start()
     worker.enqueue(
         OcrJob(
-            user_id="alice",
+            user_id="test",
             session_id="sess-1",
             sha256=sha,
             blob_path=bs.path(sha, "txt"),
@@ -216,7 +216,7 @@ async def test_cached_failure_triggers_retry(_ctx):
     sha permanently marked failed even after the cause is fixed — the
     user has no way to retry short of manually deleting the sentinel.
     """
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"x", "pdf")
     bs.ocr_path(sha).write_text("", encoding="utf-8")
     bs.ocr_meta_path(sha).write_text(
@@ -239,7 +239,7 @@ async def test_cached_failure_triggers_retry(_ctx):
     worker.start()
     worker.enqueue(
         OcrJob(
-            user_id="alice",
+            user_id="test",
             session_id="sess-1",
             sha256=sha,
             blob_path=bs.path(sha, "pdf"),

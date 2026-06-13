@@ -58,6 +58,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Strong refs for fire-and-forget embed tasks. asyncio.create_task only holds
+# a weak reference; without this set the task can be garbage-collected mid-run
+# (https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task).
+_EMBED_BG_TASKS: set[asyncio.Task[Any]] = set()
+
 
 def _materialize_attachments(user_id: str, refs) -> list[dict]:
     """Promote the LLM's sha+filename tuples into full Attachment dicts.
@@ -580,7 +585,9 @@ def build_ingest_toolset(
                 async def _entry(**kwargs):
                     result = impl_fn(kwargs, dispatcher=dispatcher)
                     if isinstance(result, dict) and result.get("ok") is not False:
-                        asyncio.create_task(hook(result, kwargs))
+                        task = asyncio.create_task(hook(result, kwargs))
+                        _EMBED_BG_TASKS.add(task)
+                        task.add_done_callback(_EMBED_BG_TASKS.discard)
                     return result
             else:
 

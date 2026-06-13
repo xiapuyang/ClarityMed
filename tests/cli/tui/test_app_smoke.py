@@ -31,7 +31,7 @@ from claritymed.orchestrator.services import (
 )
 
 
-def _fresh_session(user_id: str = "alice") -> ChatSession:
+def _fresh_session(user_id: str = "test") -> ChatSession:
     """A fresh ChatSession in the per-test tmp tree. Per conftest isolation
     every test gets its own DATA_DIR, so no cross-test bleed."""
     return ChatSession.new(user_id)
@@ -55,7 +55,7 @@ class _StubAskService:
 @pytest.mark.asyncio
 async def test_app_mounts_with_status_bar_and_widgets():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
         ask_service_factory=lambda: _StubAskService(["hi"]),
@@ -63,7 +63,7 @@ async def test_app_mounts_with_status_bar_and_widgets():
     async with app.run_test() as pilot:
         await pilot.pause()
         status = app.query_one(StatusBar)
-        assert status.user_id == "alice"
+        assert status.user_id == "test"
         assert status.language == "en"
         assert status.mode == "ask"
         # All three main panes exist.
@@ -75,7 +75,7 @@ async def test_app_mounts_with_status_bar_and_widgets():
 @pytest.mark.asyncio
 async def test_shift_tab_cycles_mode():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -97,7 +97,7 @@ async def test_shift_tab_cycles_mode():
 @pytest.mark.asyncio
 async def test_slash_help_shows_help_bubble():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -118,7 +118,7 @@ async def test_slash_help_shows_help_bubble():
 @pytest.mark.asyncio
 async def test_slash_mode_switches_mode():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -135,7 +135,7 @@ async def test_ask_dispatch_streams_tokens_and_finalizes():
     from textual.widgets import Markdown
 
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
         ask_service_factory=lambda: _StubAskService(["hel", "lo"]),
@@ -163,7 +163,7 @@ async def test_load_recent_renders_history():
     from pydantic_ai import Agent
     from pydantic_ai.models.test import TestModel
 
-    seed = ChatSession.new("alice")
+    seed = ChatSession.new("test")
     seed.append_user("prior question")
     agent = Agent(TestModel(custom_output_text="prior answer"))
     result = await agent.run("prior question")
@@ -177,9 +177,9 @@ async def test_load_recent_renders_history():
         usage=result.usage,
         latency=LatencyTrace(total_ms=0),
     )
-    resumed = ChatSession.resume("alice", seed.session_id)
+    resumed = ChatSession.resume("test", seed.session_id)
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=resumed,
     )
@@ -201,7 +201,7 @@ async def test_unmount_is_a_noop_now():
     raised after Textual tore down child widgets. Persistence has moved
     into AskService (per-LLM-run), so the unmount path must not raise
     even with no chat_session injected."""
-    app = ClarityMedApp(user_id="alice", language="en")
+    app = ClarityMedApp(user_id="test", language="en")
     async with app.run_test() as pilot:
         await pilot.pause()
         app.query_one(InputBar).post_message(InputBar.Submitted("/mode ingest"))
@@ -213,7 +213,7 @@ async def test_unmount_is_a_noop_now():
 @pytest.mark.asyncio
 async def test_slash_user_switches_user_and_clears_history():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -229,7 +229,7 @@ async def test_slash_user_switches_user_and_clears_history():
 @pytest.mark.asyncio
 async def test_slash_user_without_arg_toasts_error():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -238,13 +238,13 @@ async def test_slash_user_without_arg_toasts_error():
         app.query_one(InputBar).post_message(InputBar.Submitted("/user"))
         await pilot.pause()
         # User did not switch.
-        assert app.query_one(StatusBar).user_id == "alice"
+        assert app.query_one(StatusBar).user_id == "test"
 
 
 @pytest.mark.asyncio
 async def test_slash_mode_invalid_arg_toasts():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -258,7 +258,7 @@ async def test_slash_mode_invalid_arg_toasts():
 @pytest.mark.asyncio
 async def test_unknown_slash_command_shows_inline_error():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -284,7 +284,7 @@ async def test_ingest_mode_dispatch_runs_service():
     Uses the real IngestService (it is deterministic, no LLM).
     """
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -320,7 +320,7 @@ async def test_slash_clear_rotates_session_and_keeps_old_file_on_disk():
     assert old_path.exists()
 
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=initial,
     )
@@ -344,7 +344,7 @@ async def test_slash_clear_rotates_session_and_keeps_old_file_on_disk():
 @pytest.mark.asyncio
 async def test_quit_command_exits_app():
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
     )
@@ -360,7 +360,7 @@ async def test_quit_command_exits_app():
 async def test_f2_toggles_steps_panel():
     """F2 adds/removes user_collapsed on ToolSteps without clearing content."""
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
         ask_service_factory=lambda: _StubAskService(["hi"]),
@@ -392,7 +392,7 @@ async def test_streaming_label_cleared_after_done():
             yield Done(final="answer")
 
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
         ask_service_factory=lambda: _StreamingStubService(),
@@ -419,7 +419,7 @@ async def test_streaming_label_cleared_after_done():
 
 def test_strategy_for_session_returns_cached():
     """Short-circuits to the cached value without re-acquiring the lock."""
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     sentinel = object()
     app._cached_strategy = sentinel
     assert app._strategy_for_session() is sentinel
@@ -431,14 +431,14 @@ def test_strategy_for_session_rag_disabled(monkeypatch):
     mock_cfg.rag.enabled = False
     monkeypatch.setattr("claritymed.core.rag.load_retrieval_config", lambda: mock_cfg)
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     assert app._strategy_for_session() is None
     assert not app._strategy_lock.locked()
 
 
 def test_strategy_for_session_lock_timeout():
     """Raises RuntimeError when the lock cannot be acquired within the timeout."""
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     mock_lock = MagicMock()
     mock_lock.acquire.return_value = False
     app._strategy_lock = mock_lock
@@ -457,7 +457,7 @@ async def test_on_mount_faulthandler_exception_silenced(monkeypatch):
         raise RuntimeError("simulated bad file descriptor")
 
     monkeypatch.setattr(faulthandler, "register", _bad_register)
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app.query_one(StatusBar)  # mount completed despite faulthandler failure
@@ -501,7 +501,7 @@ async def test_paste_image_routes_through_blob_and_session(monkeypatch):
     _patch_clipboard(monkeypatch, ImageBytes(bytes=b"fake-png-bytes", ext="png"))
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         # Skip real OCR provider construction by pre-seeding the slot.
@@ -510,17 +510,17 @@ async def test_paste_image_routes_through_blob_and_session(monkeypatch):
         await pilot.pause()
 
         # Blob landed: the sha is whatever sha256(b"fake-png-bytes") resolves to.
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert len(rows) == 1
         row = rows[0]
         assert row.filename == "clipboard.png"
         assert row.mime == "image/png"
         # Blob is on disk under the per-user CAS pool.
-        assert BlobStore("alice").path(row.sha256, "png").exists()
+        assert BlobStore("test").path(row.sha256, "png").exists()
         # OCR job was enqueued with matching identifiers.
         assert len(fake_worker.enqueued) == 1
         job = fake_worker.enqueued[0]
-        assert job.user_id == "alice"
+        assert job.user_id == "test"
         assert job.sha256 == row.sha256
 
 
@@ -530,7 +530,7 @@ async def test_paste_small_text_inserts_into_input(monkeypatch):
 
     _patch_clipboard(monkeypatch, SmallText(text="hello world"))
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_paste_clipboard()
@@ -544,7 +544,7 @@ async def test_paste_empty_clipboard_emits_toast(monkeypatch):
 
     _patch_clipboard(monkeypatch, Empty())
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         # Action should run without exception even though there's nothing to do.
@@ -566,13 +566,13 @@ async def test_paste_file_path_routes_through_blob_and_session(monkeypatch, tmp_
     _patch_clipboard(monkeypatch, FilePath(path=sample))
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
         app.action_paste_clipboard()
         await pilot.pause()
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert len(rows) == 1
         assert rows[0].filename == "report.pdf"
         assert rows[0].mime == "application/pdf"
@@ -602,14 +602,14 @@ async def test_paste_text_file_uses_fast_path_no_ocr_worker(monkeypatch, tmp_pat
     _patch_clipboard(monkeypatch, FilePath(path=sample))
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
         app.action_paste_clipboard()
         await pilot.pause()
 
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert len(rows) == 1
         sha = rows[0].sha256
 
@@ -618,7 +618,7 @@ async def test_paste_text_file_uses_fast_path_no_ocr_worker(monkeypatch, tmp_pat
 
         # Sentinel landed inline with kind="text" + ext="csv" so the
         # reader knows to consult content.csv directly.
-        bs = BlobStore("alice")
+        bs = BlobStore("test")
         sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
         assert sentinel["status"] == "done"
         assert sentinel["kind"] == "text"
@@ -639,7 +639,7 @@ async def test_paste_clipboard_read_failure_emits_toast(monkeypatch):
         raise RuntimeError("xclip segfault")
 
     monkeypatch.setattr("claritymed.cli.tui.paste.read_clipboard", _boom, raising=True)
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_paste_clipboard()  # must not raise
@@ -674,20 +674,20 @@ async def test_paste_unsupported_ext_rejected_before_blob_or_attachment(
     monkeypatch.setattr("claritymed.core.filetype.detector.detect", lambda _data: None)
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
         app.action_paste_clipboard()
         await pilot.pause()
 
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert rows == []
         assert fake_worker.enqueued == []
         # Input bar got no placeholder injected.
         assert app.query_one(InputBar).value() == ""
         # And no blob landed on disk for these bytes.
-        bs = BlobStore("alice")
+        bs = BlobStore("test")
         import hashlib
 
         sha = hashlib.sha256(b"\x00\x01\x02\x03random-noise").hexdigest()
@@ -714,7 +714,7 @@ async def test_paste_unsupported_ext_surfaces_visible_toast(monkeypatch, tmp_pat
     monkeypatch.setattr("claritymed.core.filetype.detector.detect", lambda _data: None)
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
@@ -760,14 +760,14 @@ async def test_paste_magika_recovers_extension_for_mislabeled_file(
     )
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
         app.action_paste_clipboard()
         await pilot.pause()
 
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert len(rows) == 1
         # Filename keeps the user's original (``mislabeled.bin``) but
         # the stored MIME and blob extension reflect the recovered type.
@@ -845,14 +845,14 @@ async def test_on_paste_routes_dropped_pdf_to_ingest(tmp_path):
     pdf.write_bytes(b"%PDF-1.4 fake")
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
         app.on_paste(events.Paste(str(pdf)))
         await pilot.pause()
 
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert len(rows) == 1
         assert rows[0].filename == "labs.pdf"
         assert rows[0].mime == "application/pdf"
@@ -874,7 +874,7 @@ async def test_dispatch_preserves_in_flight_ocr_row(monkeypatch):
     _patch_clipboard(monkeypatch, ImageBytes(bytes=b"png-bytes", ext="png"))
 
     app = ClarityMedApp(
-        user_id="alice",
+        user_id="test",
         language="en",
         chat_session=_fresh_session(),
         ask_service_factory=lambda: _StubAskService(["ok"]),
@@ -905,7 +905,7 @@ async def test_dispatch_preserves_in_flight_ocr_row(monkeypatch):
         sha_prefix = step_key.split(":", 1)[1]
         app._on_ocr_completed(
             OcrCompleted(
-                user_id="alice",
+                user_id="test",
                 session_id=app._chat_session.session_id,
                 sha256=sha_prefix + "0" * (64 - len(sha_prefix)),
                 status="done",
@@ -924,7 +924,7 @@ async def test_on_paste_plain_text_falls_through(tmp_path):
     Textual's default Input handler inserts it as normal text."""
     from textual import events
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         ev = events.Paste("not a path, just text")
@@ -1007,7 +1007,7 @@ async def test_on_paste_dropped_folder_surfaces_error_toast(tmp_path):
     folder = tmp_path / "case_files"
     folder.mkdir()
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         ev = events.Paste(str(folder))
@@ -1035,7 +1035,7 @@ async def test_paste_inserts_sha_placeholder_and_tool_step(monkeypatch):
     _patch_clipboard(monkeypatch, ImageBytes(bytes=payload, ext="png"))
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
@@ -1083,7 +1083,7 @@ async def test_paste_two_distinct_images_get_two_sha_placeholders(monkeypatch):
     )
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
@@ -1111,7 +1111,7 @@ async def test_paste_still_inserts_placeholder_when_ocr_worker_unavailable(monke
     sha = hashlib.sha256(payload).hexdigest()
     _patch_clipboard(monkeypatch, ImageBytes(bytes=payload, ext="png"))
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         monkeypatch.setattr(app, "_ensure_ocr_worker", lambda: None)
@@ -1136,7 +1136,7 @@ async def test_paste_pdf_uses_file_sha_placeholder(monkeypatch, tmp_path):
     _patch_clipboard(monkeypatch, FilePath(path=sample))
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker
@@ -1157,7 +1157,7 @@ async def test_ocr_completed_marks_tool_step_done(monkeypatch):
 
     _patch_clipboard(monkeypatch, ImageBytes(bytes=b"png-bytes", ext="png"))
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = _SyncOcrWorker()
@@ -1172,7 +1172,7 @@ async def test_ocr_completed_marks_tool_step_done(monkeypatch):
         # Simulate worker completion for that sha.
         app._on_ocr_completed(
             OcrCompleted(
-                user_id="alice",
+                user_id="test",
                 session_id=app._chat_session.session_id,
                 sha256=sha_prefix + "0" * (64 - len(sha_prefix)),
                 status="done",
@@ -1188,7 +1188,7 @@ async def test_ocr_completed_marks_tool_step_done(monkeypatch):
 async def test_ocr_completed_failed_status_renders_reason(monkeypatch):
     from claritymed.orchestrator.services.ocr_worker import OcrCompleted
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         steps = app.query_one(ToolSteps)
@@ -1196,7 +1196,7 @@ async def test_ocr_completed_failed_status_renders_reason(monkeypatch):
         steps.push_start(f"ocr:{sha[:8]}", args_preview="x.png")
         app._on_ocr_completed(
             OcrCompleted(
-                user_id="alice",
+                user_id="test",
                 session_id=app._chat_session.session_id,
                 sha256=sha,
                 status="failed",
@@ -1218,7 +1218,7 @@ async def test_paste_without_chat_session_emits_toast(monkeypatch):
 
     _patch_clipboard(monkeypatch, ImageBytes(bytes=b"abc", ext="png"))
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._chat_session = None
@@ -1239,7 +1239,7 @@ async def test_paste_image_oversize_rejected_before_blob_store(monkeypatch):
     )
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     # Force a tiny 1KB cap so test bytes don't have to be huge.
     payload = b"x" * 2048
     _patch_clipboard(monkeypatch, ImageBytes(bytes=payload, ext="png"))
@@ -1251,7 +1251,7 @@ async def test_paste_image_oversize_rejected_before_blob_store(monkeypatch):
         app.action_paste_clipboard()
         await pilot.pause()
 
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert rows == []
         assert fake_worker.enqueued == []
 
@@ -1270,7 +1270,7 @@ async def test_paste_file_path_oversize_rejected_before_read(monkeypatch, tmp_pa
     _patch_clipboard(monkeypatch, FilePath(path=sample))
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._max_paste_bytes_cache = 1024
@@ -1278,7 +1278,7 @@ async def test_paste_file_path_oversize_rejected_before_read(monkeypatch, tmp_pa
         app.action_paste_clipboard()
         await pilot.pause()
 
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert rows == []
         assert fake_worker.enqueued == []
 
@@ -1296,7 +1296,7 @@ async def test_drag_drop_oversize_rejected_before_read(tmp_path):
     big = tmp_path / "huge.pdf"
     big.write_bytes(b"%PDF " + b"y" * 8192)
 
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._max_paste_bytes_cache = 1024
@@ -1304,7 +1304,7 @@ async def test_drag_drop_oversize_rejected_before_read(tmp_path):
         app.on_paste(events.Paste(str(big)))
         await pilot.pause()
 
-        rows = SessionAttachments("alice", app._chat_session.session_id).list()
+        rows = SessionAttachments("test", app._chat_session.session_id).list()
         assert rows == []
 
 
@@ -1318,7 +1318,7 @@ async def test_paste_image_pushes_upload_step_row(monkeypatch):
     _patch_clipboard(monkeypatch, ImageBytes(bytes=b"ok-bytes", ext="png"))
 
     fake_worker = _SyncOcrWorker()
-    app = ClarityMedApp(user_id="alice", language="en", chat_session=_fresh_session())
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
     async with app.run_test() as pilot:
         await pilot.pause()
         app._ocr_worker = fake_worker

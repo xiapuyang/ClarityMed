@@ -130,8 +130,32 @@ class OcrWorker:
                 completion = await task
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("ocr worker: unhandled error for %s", job.sha256[:8])
+                # Without writing the failure sentinel, BlobStore.ocr_done
+                # stays False forever and the blob is stuck in "pending"
+                # across restarts even though the worker already gave up.
+                # Mirror the OcrError branch in _extract: persist a failed
+                # ocr.json so a subsequent worker run either re-tries (the
+                # _read_cached_sentinel branch treats status="failed" as
+                # a miss) or short-circuits if the failure is permanent.
+                try:
+                    BlobStore(job.user_id).write_ocr_result(
+                        job.sha256,
+                        status="failed",
+                        kind="ocr",
+                        ext=job.blob_path.suffix.lstrip("."),
+                        provider=None,
+                        chain_tried=[],
+                        reason=f"worker error: {exc!r}",
+                        text="",
+                        original_filename=job.original_filename,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "ocr worker: failed to persist failure sentinel for %s",
+                        job.sha256[:8],
+                    )
                 completion = OcrCompleted(
                     user_id=job.user_id,
                     session_id=job.session_id,
@@ -139,7 +163,15 @@ class OcrWorker:
                     status="failed",
                     reason="worker error",
                 )
-            await self._emit(completion)
+            # ``_emit`` updates SessionAttachments + calls the listener; a
+            # listener exception must NOT kill _loop or every subsequent
+            # job sits in the queue forever (silent worker death).
+            try:
+                await self._emit(completion)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "ocr worker: emit failed for %s; continuing", job.sha256[:8]
+                )
             self._queue.task_done()
 
     async def _extract(self, job: OcrJob) -> OcrCompleted:

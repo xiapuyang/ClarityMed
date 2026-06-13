@@ -28,7 +28,7 @@ from claritymed.stores.profile import ProfileStore
 
 @pytest.fixture
 def _ctx():
-    tokens = apply_context("20260611000000ABCDEF12", "alice", "en")
+    tokens = apply_context("20260611000000ABCDEF12", "test", "en")
     yield
     reset_context(tokens)
 
@@ -56,7 +56,7 @@ def test_save_allergy_persists_and_audits(dispatcher, _ctx):
         dispatcher=dispatcher,
     )
     assert out == {"ok": True}
-    rows = ProfileStore("alice").list_allergies()
+    rows = ProfileStore("test").list_allergies()
     assert any(a.substance == "penicillin" for a in rows)
 
 
@@ -66,7 +66,7 @@ def test_save_medication_persists(dispatcher, _ctx):
         dispatcher=dispatcher,
     )
     assert out == {"ok": True}
-    rows = ProfileStore("alice").list_medications()
+    rows = ProfileStore("test").list_medications()
     assert any(m.display == "metformin" for m in rows)
 
 
@@ -80,7 +80,7 @@ def test_save_medication_round_trips_dates(dispatcher, _ctx):
         dispatcher=dispatcher,
     )
     [asp] = [
-        m for m in ProfileStore("alice").list_medications() if m.display == "aspirin"
+        m for m in ProfileStore("test").list_medications() if m.display == "aspirin"
     ]
     assert asp.onset_date.isoformat() == "2020-01-01"
     assert asp.end_date.isoformat() == "2022-06-15"
@@ -97,7 +97,7 @@ def test_save_allergy_round_trips_dates(dispatcher, _ctx):
         dispatcher=dispatcher,
     )
     [sh] = [
-        a for a in ProfileStore("alice").list_allergies() if a.substance == "shellfish"
+        a for a in ProfileStore("test").list_allergies() if a.substance == "shellfish"
     ]
     assert sh.onset_date.isoformat() == "2015-07-04"
     assert sh.end_date is None
@@ -106,7 +106,7 @@ def test_save_allergy_round_trips_dates(dispatcher, _ctx):
 def test_save_condition_persists(dispatcher, _ctx):
     out = save_condition({"display": "Hypertension"}, dispatcher=dispatcher)
     assert out == {"ok": True}
-    rows = ProfileStore("alice").list_conditions()
+    rows = ProfileStore("test").list_conditions()
     assert any(c.display == "Hypertension" for c in rows)
 
 
@@ -120,7 +120,7 @@ def test_save_condition_persists_end_date(dispatcher, _ctx):
         },
         dispatcher=dispatcher,
     )
-    rows = ProfileStore("alice").list_conditions()
+    rows = ProfileStore("test").list_conditions()
     [bron] = [c for c in rows if c.display == "bronchitis"]
     assert bron.onset_date.isoformat() == "2024-01-01"
     assert bron.end_date.isoformat() == "2024-02-15"
@@ -131,7 +131,7 @@ def test_update_profile_field_changes_weight(dispatcher, _ctx):
         {"field": "weight_kg", "value": 72.5}, dispatcher=dispatcher
     )
     assert out == {"ok": True}
-    profile = ProfileStore("alice").get_profile()
+    profile = ProfileStore("test").get_profile()
     assert profile.weight_kg == 72.5
 
 
@@ -155,7 +155,7 @@ def test_update_profile_field_writes_passive_geo_field(dispatcher, _ctx):
     update_profile_field(
         {"field": "current_occupation", "value": "nurse"}, dispatcher=dispatcher
     )
-    p = ProfileStore("alice").get_profile()
+    p = ProfileStore("test").get_profile()
     assert p.residence == "Shanghai"
     assert p.current_occupation == "nurse"
 
@@ -181,7 +181,7 @@ def test_update_profile_field_audit_tags_solicitation(dispatcher, _ctx, monkeypa
 
 
 def test_save_record_writes_manifest(dispatcher, _ctx):
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"report bytes", "pdf")
     out = save_record(
         {
@@ -197,7 +197,7 @@ def test_save_record_writes_manifest(dispatcher, _ctx):
     assert out["record_path"].startswith("exam-reports/2026-06-11-")
     # Manifest exists on disk.
     cat, slug = out["record_path"].split("/")
-    m = ManifestStore("alice", "records").read(cat, slug)
+    m = ManifestStore("test", "records").read(cat, slug)
     assert m.title == "Annual"
 
 
@@ -217,7 +217,7 @@ def test_save_record_unknown_sha_raises(dispatcher, _ctx):
 
 
 def test_save_to_library_writes_manifest(dispatcher, _ctx):
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"paper", "pdf")
     out = save_to_library(
         {
@@ -229,13 +229,13 @@ def test_save_to_library_writes_manifest(dispatcher, _ctx):
     )
     assert "library_path" in out
     cat, slug = out["library_path"].split("/")
-    m = ManifestStore("alice", "library").read(cat, slug)
+    m = ManifestStore("test", "library").read(cat, slug)
     assert m.title == "Paper Title"
     assert m.public is False
 
 
 def test_delete_record_round_trip(dispatcher, _ctx):
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"x", "pdf")
     saved = save_record(
         {
@@ -254,11 +254,11 @@ def test_delete_record_round_trip(dispatcher, _ctx):
     assert out == {"deleted": record_path}
     cat, slug = record_path.split("/")
     with pytest.raises(RecordNotFound):
-        ManifestStore("alice", "records").read(cat, slug)
+        ManifestStore("test", "records").read(cat, slug)
 
 
 def test_delete_record_confirm_kind_mismatch(dispatcher, _ctx):
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"y", "pdf")
     saved = save_record(
         {
@@ -284,7 +284,7 @@ def test_audit_payload_written_with_owner_only_mode(dispatcher, _ctx):
         {"substance": "peanut", "severity": "mild", "source": "self_report"},
         dispatcher=dispatcher,
     )
-    payload_path = user_audit_payload_path("alice", "20260611000000ABCDEF12")
+    payload_path = user_audit_payload_path("test", "20260611000000ABCDEF12")
     assert payload_path.exists()
     # Owner-only mode on POSIX. Check the low 9 bits are 0o600.
     mode = os.stat(payload_path).st_mode & 0o777
@@ -360,7 +360,7 @@ def test_save_allergy_no_change_on_duplicate(dispatcher, _ctx):
     )
     assert out == {"ok": False, "reason": "no_change"}
     # Only one row written.
-    assert len(ProfileStore("alice").list_allergies()) == 1
+    assert len(ProfileStore("test").list_allergies()) == 1
 
 
 def test_save_allergy_no_change_case_insensitive(dispatcher, _ctx):

@@ -109,7 +109,19 @@ class ManifestStore:
         return self._record_dir(category, slug) / "manifest.yaml"
 
     def _lock_path(self, category: str, slug: str) -> Path:
-        return self._record_dir(category, slug) / "manifest.yaml.lock"
+        # Lock files live OUTSIDE the record dir. The previous layout
+        # (``<record_dir>/manifest.yaml.lock``) made ``delete()`` race
+        # itself: the ``with file_lock(...)`` block held a handle to a
+        # file the same block then unlinked. POSIX got away with it
+        # (silently); Windows refused with "file in use". A separate
+        # ``.locks`` dir at the scope root keeps locks decoupled from
+        # the data they protect and makes ``delete()`` safe everywhere.
+        if self.scope == "records":
+            locks_dir = user_records_dir(self.user_id) / ".locks"
+        else:
+            locks_dir = user_library_dir(self.user_id) / ".locks"
+        locks_dir.mkdir(parents=True, exist_ok=True)
+        return locks_dir / f"{category}__{slug}.lock"
 
     # --- API ---------------------------------------------------------
 
@@ -210,17 +222,20 @@ class ManifestStore:
         ``delete_record`` tool — Qdrant first, manifest second, fail-stop
         ordering). Direct callers of ``ManifestStore.delete`` are expected
         to know the cascade.
+
+        Records can carry attachment sub-directories (e.g. ``attachments/``
+        for blob copies the user pasted); recursive removal here so the
+        whole record tree disappears in one atomic-from-the-caller's-view
+        step. ``shutil.rmtree`` instead of ``rmdir`` so non-empty subdirs
+        don't crash the call.
         """
+        import shutil
+
         target = self._record_dir(category, slug)
         if not target.exists():
             raise RecordNotFound(f"no record dir at {target}")
         with file_lock(self._lock_path(category, slug)):
-            # Remove children first, then the dir itself. ``Path.rmdir``
-            # refuses non-empty dirs; this ordering matters on Windows
-            # where the file-lock holds a handle.
-            for child in target.iterdir():
-                child.unlink()
-            target.rmdir()
+            shutil.rmtree(target)
 
     def list(self, category: str | None = None) -> Iterator[Path]:
         """Yield every ``manifest.yaml`` path under the scope (optionally a category)."""

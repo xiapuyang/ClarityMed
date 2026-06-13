@@ -20,7 +20,7 @@ import os
 
 from claritymed import config as _cfg
 from claritymed.core.schemas import Account, ModelsConfig, ProviderConfig
-from claritymed.errors import CloudOptInRequiredError, UnknownProviderError
+from claritymed.errors import UnknownProviderError
 
 # pydantic-ai reads these env vars for each model prefix (no base_url path).
 # Derived from pydantic-ai's provider source; update when new providers land.
@@ -59,17 +59,13 @@ def resolve_provider(
     """Pick the active provider for this request.
 
     A typo at any layer is surfaced — we never silently downgrade to the
-    default, because hiding a misconfigured per-user setting would let a
-    cloud-opted-in user accidentally fall back to a different backend.
+    default, because hiding a misconfigured per-user setting would let
+    a user accidentally fall back to a different backend.
 
-    Per-user cloud opt-in is the third leg of the documented invariant
-    (env key ∧ ``Account.cloud_provider_opt_in`` ∧ catalog ``kind=cloud``).
-    When an account is supplied AND the resolved provider has
-    ``kind=cloud`` AND the account has ``cloud_provider_opt_in=False``,
-    ``CloudOptInRequiredError`` is raised. The override path
-    (CLI ``--provider``) is exempt because an explicit human flag is
-    the strongest possible opt-in signal — but the audit row downstream
-    will still record the choice.
+    Resolution order: ``override`` (CLI ``--provider``) > ``account.provider_id``
+    > ``ModelsConfig.default_provider``. Cloud reachability is gated by
+    env-key presence (``is_provider_available``) and the catalog ``kind`` —
+    this resolver only picks; it does not enforce per-user cloud policy.
     """
     models = load_models()
     catalog = {p.id: p for p in models.providers}
@@ -87,20 +83,7 @@ def resolve_provider(
                 f"{source} requested provider {candidate!r}, "
                 f"which is not in models.yaml"
             )
-        provider = catalog[candidate]
-        if (
-            source != "override"
-            and provider.kind == "cloud"
-            and account is not None
-            and not account.cloud_provider_opt_in
-        ):
-            raise CloudOptInRequiredError(
-                f"resolved cloud provider {provider.id!r} for user "
-                f"{account.user_id!r} but cloud_provider_opt_in=False; "
-                "set cloud_provider_opt_in=True in settings.yaml or "
-                "pass --provider with a local provider id"
-            )
-        return provider
+        return catalog[candidate]
 
     # Unreachable: ModelsConfig requires default_provider to be set.
     raise UnknownProviderError("no provider could be resolved")

@@ -19,6 +19,7 @@ ErrorType = Literal[
     "permission_denied",
     "config_error",
     "user_cancelled",
+    "scrub_unavailable",
 ]
 
 ModeName = Literal["ingest", "ask", "rag"]

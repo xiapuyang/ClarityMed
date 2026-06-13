@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from claritymed.core.schemas import Account
-from claritymed.errors import CloudOptInRequiredError, UnknownProviderError
+from claritymed.errors import UnknownProviderError
 from claritymed.stores.models import load_models, resolve_provider
 
 
@@ -14,28 +14,26 @@ def test_default_when_nothing_overrides():
     assert p.id == load_models().default_provider
 
 
-def test_account_override_beats_default_when_opted_in():
+def test_account_provider_id_beats_default():
     """Account-level provider_id wins over the catalog default when set."""
     a = Account(
-        user_id="alice",
-        display_name="Alice",
+        user_id="test",
+        display_name="Test",
         provider_id="claude",
-        cloud_provider_opt_in=True,
     )
     p = resolve_provider(account=a)
     assert p.id == "claude"
 
 
 def test_cli_override_beats_account():
-    """``--provider`` (override) is the strongest opt-in signal — exempt from
-    the per-account cloud opt-in check by design."""
-    a = Account(user_id="alice", display_name="Alice", provider_id="claude")
+    """``--provider`` (override) wins over the account preference."""
+    a = Account(user_id="test", display_name="Test", provider_id="claude")
     p = resolve_provider(override="deepseek-v4-flash", account=a)
     assert p.id == "deepseek-v4-flash"
 
 
 def test_account_provider_id_none_falls_through_to_default():
-    a = Account(user_id="alice", display_name="Alice", provider_id=None)
+    a = Account(user_id="test", display_name="Test", provider_id=None)
     p = resolve_provider(account=a)
     assert p.id == load_models().default_provider
 
@@ -47,71 +45,28 @@ def test_unknown_override_raises():
 
 def test_unknown_account_id_raises_not_silently_falls_back():
     """A typo in settings.yaml must surface — silently downgrading to the
-    default would hide a misconfigured cloud opt-in."""
-    a = Account(user_id="alice", display_name="Alice", provider_id="claud")  # typo
+    default would hide a misconfigured per-user preference."""
+    a = Account(user_id="test", display_name="Test", provider_id="claud")  # typo
     with pytest.raises(UnknownProviderError, match="account"):
         resolve_provider(account=a)
 
 
-def test_account_cloud_without_opt_in_raises():
-    """Per-user cloud opt-in is the third leg of the documented three-AND
-    invariant. An account pointing at a cloud provider with
-    ``cloud_provider_opt_in=False`` must NOT silently resolve to that
-    provider — that would let an unconsented user's PHI reach the cloud."""
-    a = Account(
-        user_id="alice",
-        display_name="Alice",
-        provider_id="claude",
-        cloud_provider_opt_in=False,
-    )
-    with pytest.raises(CloudOptInRequiredError, match="cloud_provider_opt_in"):
-        resolve_provider(account=a)
-
-
-def test_account_local_provider_allowed_regardless_of_opt_in():
-    """The opt-in check only applies to cloud providers; local providers
-    are always permitted for any account."""
-    a = Account(
-        user_id="alice",
-        display_name="Alice",
-        provider_id="ollama",
-        cloud_provider_opt_in=False,
-    )
+def test_account_local_provider_returned_as_is():
+    """Local providers resolve straight through — no extra gating."""
+    a = Account(user_id="test", display_name="Test", provider_id="ollama")
     p = resolve_provider(account=a)
     assert p.id == "ollama"
     assert p.kind == "local"
 
 
-def test_override_to_cloud_exempt_from_opt_in_check():
-    """Explicit ``--provider`` from the CLI is the human's strongest opt-in
-    signal — it bypasses the account opt-in gate so an operator can still
-    test a cloud provider one-shot without flipping the persisted flag."""
-    a = Account(
-        user_id="alice",
-        display_name="Alice",
-        cloud_provider_opt_in=False,
-    )
+def test_override_to_cloud_resolves_directly():
+    """Explicit ``--provider`` resolves to the requested entry without any
+    extra per-user gating — env-key + catalog ``kind`` are the only
+    invariants on the cloud-reachability side."""
+    a = Account(user_id="test", display_name="Test")
     p = resolve_provider(override="claude", account=a)
     assert p.id == "claude"
     assert p.kind == "cloud"
-
-
-def test_default_to_cloud_blocked_when_account_opts_out():
-    """When ``ModelsConfig.default_provider`` is a cloud entry, an account
-    without opt-in still gets blocked — the fallback path is not a safety
-    bypass."""
-    # We don't mutate the YAML here; instead simulate the default-cloud
-    # case directly by setting account.provider_id = the default and
-    # asserting the same gate fires.
-    default_id = load_models().default_provider
-    default = next(p for p in load_models().providers if p.id == default_id)
-    if default.kind != "cloud":
-        pytest.skip(
-            "default provider is local; this test only applies to cloud-default"
-        )
-    a = Account(user_id="alice", display_name="Alice", cloud_provider_opt_in=False)
-    with pytest.raises(CloudOptInRequiredError):
-        resolve_provider(account=a)
 
 
 def test_resolved_provider_carries_full_config():
@@ -140,7 +95,7 @@ def test_is_provider_available_returns_false_for_unknown_prefix():
     p = ProviderConfig(
         id="typo",
         kind="cloud",
-        model="openni:gpt-4o",  # deliberate typo (open**ni**, not openai)
+        model="openni:gpt-4o",  # deliberate typo (openni, not openai)
     )
     assert is_provider_available(p) is False
 

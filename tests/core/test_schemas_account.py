@@ -9,8 +9,9 @@ from claritymed.core.schemas import Account
 
 
 def test_happy_admin():
-    a = Account(user_id="alice", display_name="Alice", role="admin", language="zh")
-    assert a.cloud_provider_opt_in is False
+    a = Account(user_id="test", display_name="Test", role="admin", language="zh")
+    assert a.role == "admin"
+    assert a.language == "zh"
 
 
 def test_defaults_user_and_english():
@@ -64,7 +65,6 @@ def test_model_dump_has_no_phi_keys():
         "display_name",
         "role",
         "language",
-        "cloud_provider_opt_in",
         "provider_id",
         "active_system_rag_collections",
         "created_at",

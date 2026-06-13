@@ -14,7 +14,7 @@ would make scores incomparable across runs.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -179,4 +179,5 @@ class PromptRegistry:
 
 
 # Placeholder for tests that need a fresh datetime stamp.
-_now = datetime.utcnow
+def _now() -> datetime:
+    return datetime.now(UTC)

@@ -28,8 +28,7 @@ Fail-loud once opted in:
 * Unknown active id in any catalog → ``Unknown<X>Error`` immediately on
   ``load_retrieval_config().<section>.resolved()``.
 * ``rag.enabled=false`` → callers should not even reach this module;
-  ``build_hybrid_retriever`` itself does not re-check the flag (mirrors
-  pattern: ``build_model`` does not check ``cloud_provider_opt_in``).
+  ``build_hybrid_retriever`` itself does not re-check the flag.
 
 The system ``AsyncQdrantClient`` is created at startup and lives for
 the process lifetime. Per-user clients are lazily opened on first use

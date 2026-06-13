@@ -74,14 +74,8 @@ def ask(
             command=f"ask q={question[:60]!r}",
             check_user_exists=True,
         ) as (_, uid, lang):
-            from claritymed.errors import CloudOptInRequiredError
-
             account = try_current_account()
-            try:
-                provider = resolve_provider(override=provider_id, account=account)
-            except CloudOptInRequiredError as exc:
-                logger.error("%s", exc)
-                raise typer.Exit(code=2) from exc
+            provider = resolve_provider(override=provider_id, account=account)
             model = build_model(provider)
             from claritymed.core.translation import make_translation_provider
 

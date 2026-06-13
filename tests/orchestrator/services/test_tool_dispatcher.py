@@ -19,7 +19,7 @@ from claritymed.stores.blob_store import BlobStore
 
 @pytest.fixture
 def _ctx():
-    tokens = apply_context("20260611000000ABCDEF12", "alice", "en")
+    tokens = apply_context("20260611000000ABCDEF12", "test", "en")
     yield
     reset_context(tokens)
 
@@ -69,7 +69,7 @@ def test_check_shas_session_sha_passes(_ctx):
 
 def test_check_shas_blob_pool_sha_passes(_ctx):
     """A sha that's already on disk in blobs/<sha[:2]>/<sha>/ resolves."""
-    bs = BlobStore("alice")
+    bs = BlobStore("test")
     sha = bs.store(b"hello", "txt")
     d = ToolDispatcher()
     d.check_shas({"attachments": [{"sha256": sha, "filename": "h.txt"}]})
@@ -90,7 +90,7 @@ def test_check_record_path_symlink_raises(tmp_path: Path, _ctx):
     """Symlinking into the user's own dir from outside must still fail."""
     from claritymed.stores.paths import user_records_dir
 
-    root = user_records_dir("alice")
+    root = user_records_dir("test")
     root.mkdir(parents=True, exist_ok=True)
     # Create a real dir outside, then a symlink inside the user's tree
     # pointing at it.
@@ -132,4 +132,4 @@ def test_gate_returns_not_allowed_when_no_rule(_ctx):
 
 def test_manifest_references_sha_false_for_fresh_user(_ctx):
     """Empty records/library directories → no sha is referenced."""
-    assert manifest_references_sha("alice", "a" * 64) is False
+    assert manifest_references_sha("test", "a" * 64) is False

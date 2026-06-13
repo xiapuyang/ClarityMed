@@ -549,7 +549,7 @@ class AskService:
                 )
                 continue
             except InteractiveChannelUnavailable as exc:
-                logger.debug(
+                logger.warning(
                     "resolve_approvals: channel unavailable for %s: %s",
                     tool_name,
                     exc,
@@ -948,6 +948,46 @@ class AskService:
         pre_text = "\n\n".join(pre_blocks)
         prompt = f"{pre_text}\n\nQuestion: {scrubbed}" if pre_text else scrubbed
 
+        # Attachment OCR expansion (line 917) and feature pre_invoke blocks
+        # (line 928) join the prompt AFTER the user_input scrub at line 674.
+        # For cloud-bound turns the final prompt must pass through the guard
+        # one more time so OCR'd PHI and profile-context fields don't ride
+        # past the gate. Local turns skip the second pass — the user already
+        # consented to send raw text to their own machine.
+        if getattr(self._provider_config, "kind", None) == "cloud":
+            prompt, assembly_report = await asyncio.to_thread(
+                self._guard.scrub_free_text, prompt
+            )
+            audit_event(
+                "mode.ask.scrub_assembled",
+                payload={
+                    "user_id": user_id,
+                    "rule_hits": assembly_report.rule_hits,
+                    "model_hits": assembly_report.model_hits,
+                    "model_failed": assembly_report.model_failed,
+                    "text_len_before": assembly_report.text_len_before,
+                    "text_len_after": assembly_report.text_len_after,
+                },
+            )
+            if assembly_report.model_failed:
+                logger.error(
+                    "privacy-filter model failed on assembled cloud prompt; "
+                    "refusing to send unscrubbed pre_blocks/attachments to %s",
+                    self._provider_id,
+                )
+                yield Error(
+                    error_type="scrub_unavailable",
+                    message=(
+                        "Privacy filter is configured but unavailable for "
+                        "the assembled prompt; refusing to send unscrubbed "
+                        "context to the cloud provider. Switch to a local "
+                        "provider or fix the filter setup, then retry."
+                    ),
+                    retryable=False,
+                )
+                result["had_error"] = True
+                return
+
         tools: list = [t for f in self._features if (t := f.as_tool()) is not None]
         toolsets: list = [
             ts for f in self._features if (ts := f.as_toolset()) is not None
@@ -1131,9 +1171,19 @@ class AskService:
 
                     if isinstance(run_result.output, DeferredToolRequests):
                         if round_idx == max_resume_rounds:
+                            # The previous design force-denied here and then
+                            # `continue`'d — but `continue` on the last loop
+                            # iteration exits the loop, so the force-denials
+                            # never reached agent.run and the user got an
+                            # empty answer. Surface a visible failure
+                            # instead: after N denied resume rounds the
+                            # model has shown it can't terminate; another
+                            # force-deny round is wishful thinking. A clean
+                            # Error is more honest than an empty bubble.
                             logger.warning(
                                 "_producer: exceeded %d deferred rounds; "
-                                "denying remaining calls",
+                                "ending turn with scrub_unavailable-style "
+                                "Error",
                                 max_resume_rounds,
                             )
                             audit_event(
@@ -1144,23 +1194,21 @@ class AskService:
                                     "rounds": max_resume_rounds,
                                 },
                             )
-                            deferred_results = run_result.output.build_results(
-                                approvals={},
-                                approve_all=False,
-                            )
-                            # Force-deny everything: build_results with no
-                            # approvals leaves approvals empty; we need
-                            # explicit ToolDenied entries so the model sees
-                            # a refusal rather than a missing answer.
-                            from pydantic_ai.tools import ToolDenied
-
-                            for call in run_result.output.approvals:
-                                deferred_results.approvals[call.tool_call_id] = (
-                                    ToolDenied(
-                                        message="Approval loop exceeded round limit."
-                                    )
+                            await out.put(
+                                Error(
+                                    error_type="llm_error",
+                                    message=(
+                                        f"Model exceeded {max_resume_rounds} "
+                                        "tool-approval rounds without "
+                                        "producing a final answer. Try "
+                                        "rephrasing the request or denying "
+                                        "the tools manually."
+                                    ),
+                                    retryable=True,
                                 )
-                            continue
+                            )
+                            result["had_error"] = True
+                            break
                         resolved = await self._resolve_approvals(
                             run_result.output, user_id, out
                         )

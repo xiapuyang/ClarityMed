@@ -10,10 +10,6 @@ list wildcard, e.g. ``patient.allergies.*.substance``. We resist a real
 JSONPath dependency until the rule set demonstrates real-world complexity
 the simple matcher cannot handle.
 
-Per-user opt-in: when ``Account.cloud_provider_opt_in`` is True, ``deny``
-becomes ``warn`` (the field still gets redacted, but the call proceeds).
-This is the patient's "I know what I'm doing" knob.
-
 Free-text PII scrubbing is handled by ``core.scrub.ScrubService`` —
 ``PhiGuard.scrub_free_text`` delegates there.
 """
@@ -134,7 +130,6 @@ class PhiGuard:
         self,
         payload: dict[str, Any],
         provider_kind: Provider,
-        cloud_opt_in: bool = False,
     ) -> tuple[dict[str, Any], list[PhiHit]]:
         """Walk the payload and either redact or block PHI fields.
 
@@ -150,7 +145,7 @@ class PhiGuard:
         for path in self.rules.fields:
             for resolved_path, original in self._iter_field(redacted, path):
                 action: Action = "redacted"
-                if self.rules.on_deny == "raise" and not cloud_opt_in:
+                if self.rules.on_deny == "raise":
                     action = "blocked"
                 hits.append(
                     PhiHit(
