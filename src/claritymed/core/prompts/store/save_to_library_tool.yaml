@@ -72,3 +72,88 @@ versions:
             的资料）时才设为 ``True``。
 
         一次调用对应一份文档。多 PDF 的合订资料按文件数发多次调用。
+  - version: v2
+    created_at: 2026-06-13
+    notes: |
+      Clarify that attachments are optional. v1's "no bookmarks without
+      uploaded content" rule was over-applied: models refused to save
+      placeholder entries for clearly named publications (e.g. "2024
+      ACC/AHA Hypertension Guideline") when the user hadn't yet uploaded
+      the PDF. A named publication has enough identity to be a useful
+      library entry even without a file — the attachment can be added
+      later. The restriction still applies to generic URL bookmarks with
+      no identifying metadata.
+    languages:
+      en: |
+        Save one reference document to the library. Use this for
+        papers, textbook chapters, clinical guidelines, or similar
+        material the user wants future ask turns to draw on.
+
+        Attachments are optional. If the user clearly identifies a
+        publication by title, year, or authors but has not uploaded a
+        file, call this tool with just the identifying fields to create
+        a placeholder entry. The user can attach the PDF later.
+
+        Do NOT use this for:
+          - The user's own lab reports, discharge summaries, imaging
+            studies → those are PHI events; use ``save_record``.
+          - Generic URL bookmarks with no title, author, or year
+            information (e.g. "save this link"). Require at least a
+            meaningful title before saving.
+
+        Field notes:
+          - ``title`` is the human-facing citation title ("ACC/AHA
+            2024 Hypertension Guideline", "Harrison's — Chapter 271").
+            Keep it under 200 chars. Infer from context when possible
+            ("2024 hypertension guideline" → "2024 Hypertension
+            Guideline").
+          - ``attachments`` references the sha256 of the uploaded
+            document (one PDF / Markdown file is the common case).
+            Use only sha values from this turn's inline
+            ``<file sha="...">`` / ``<image sha="...">`` tags. Never
+            invent a sha. Leave empty when no file was uploaded.
+          - ``authors`` is a list of strings. Leave empty when
+            unknown — do not guess.
+          - ``year`` is the publication year (1800–2200). Null if
+            unknown.
+          - ``tags`` is a list of short topical labels
+            (``cardiology``, ``guideline``, ``2024``) that help the
+            user filter the library. Optional.
+          - ``public``: default ``False`` keeps the chunk local-only.
+            Set to ``True`` only when the user explicitly says they
+            are fine with the document being sent to cloud LLMs
+            during ask turns (i.e. it is non-personal published
+            material they are comfortable sharing).
+
+        One call per document. A multi-PDF curriculum gets one call
+        per file.
+      zh: |
+        把一份参考文献入库。论文、教材章节、临床指南等用户希望后续问答
+        引用的资料走本工具。
+
+        **附件是可选的**。用户明确说出了文献的标题、年份或作者，但还没
+        上传文件时，仍可直接调用本工具创建占位条目，附件之后再补。
+
+        以下场景**不要**用：
+          - 用户自己的化验报告、出院小结、影像检查 → 那是 PHI 事件，
+            用 ``save_record``。
+          - 没有任何标识信息的纯链接（没有标题、作者、年份）。至少要
+            有一个有意义的标题才保存。
+
+        字段说明：
+          - ``title`` 是人类可读的引用标题（"ACC/AHA 2024 高血压指南"、
+            "哈里森内科学 第 271 章"）。200 字内。可从上下文推断（"2024
+            年高血压指南" → "2024 Hypertension Guideline"）。
+          - ``attachments`` 用本回合 ``<file sha="...">`` /
+            ``<image sha="...">`` 标签上的 sha256 引用上传文档（通常一份
+            PDF 或 Markdown）。**不要凭空编造 sha**。没有上传文件时
+            留空列表。
+          - ``authors`` 是字符串列表。不知道就留空——**不要猜**。
+          - ``year`` 是发表年份（1800–2200）。未知留 null。
+          - ``tags`` 是简短主题标签列表（``cardiology`` / ``guideline``
+            / ``2024``），便于用户在库视图里筛选。可选。
+          - ``public``：默认 ``False`` 表示仅本地。**只有**用户明确表示
+            可以在 ask 过程中把该文档发送给云端 LLM（即非个人、已公开
+            的资料）时才设为 ``True``。
+
+        一次调用对应一份文档。多 PDF 的合订资料按文件数发多次调用。
