@@ -28,6 +28,7 @@ Unit 6 ships the gate + the seven tool implementations. Unit 7 wires
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable
 
@@ -48,30 +49,59 @@ from claritymed.stores.paths import user_records_dir
 logger = logging.getLogger(__name__)
 
 
-_NULL_SENTINEL_STRINGS = frozenset({"None", "none", "NONE", "null", "NULL", "Null"})
+# Strings that mean "no value" coming from a local LLM. Empty string is
+# included because small models default to it for unfilled optional
+# fields ("end_date": "") instead of omitting the key — pydantic then
+# fails ``date_from_datetime_parsing`` on the zero-length string.
+_NULL_SENTINEL_STRINGS = frozenset({"None", "none", "NONE", "null", "NULL", "Null", ""})
 
 
-def _normalize_null_sentinels(value: Any) -> Any:
-    """Replace string sentinels for null with real ``None``, recursively.
+def _normalize_args(value: Any) -> Any:
+    """Pre-clean LLM-emitted tool args before pydantic validation.
 
-    Small / local LLMs frequently emit Python's ``None`` literal or
-    JSON's ``null`` as a quoted string inside tool-call payloads when
-    they mean "no value". Pydantic treats those as plain strings, which
-    then fails type coercion for any Optional field whose annotation is
-    not ``str`` (date, Decimal, Enum, int, ...). Normalizing once at the
-    dispatcher boundary saves a ``BeforeValidator`` on every Optional
-    field across every tool schema.
+    Two normalizations, both targeted at the typo classes the ingest-tool
+    benchmark surfaces against small / local models (Qwen3.6, MLX
+    variants). Doing them once at the dispatcher boundary saves a
+    ``BeforeValidator`` on every Optional / list field across every tool
+    schema.
 
-    A required ``str`` field that receives ``"None"`` would be coerced
-    to ``None`` here and then fail with "field required" — the right
-    failure mode, since the model genuinely emitted no value.
+    1. **Null sentinel strings → ``None``** — small LLMs frequently emit
+       Python's ``None`` literal, JSON's ``null``, or an empty string as
+       a quoted string for unfilled optional fields. Pydantic treats
+       those as actual strings, which then fails coercion for any
+       Optional field whose annotation is not ``str`` (date, Decimal,
+       Enum, int, ...). A required ``str`` field that receives ``""`` /
+       ``"None"`` becomes ``None`` and then fails with "field required"
+       — the right failure mode, since the model emitted no real value.
+
+    2. **JSON-encoded list / dict strings → parsed value** — the dominant
+       benchmark failure mode is models emitting ``"tags":
+       '["a","b"]'`` or ``"attachments": '[]'``: the entire list
+       JSON-stringified into one quoted blob. We try ``json.loads`` on
+       any string that looks structurally JSON-ish (starts with ``[`` /
+       ``{`` after strip) and substitute the parsed value when it lands
+       as a list or dict. Parse failures fall through unchanged so a
+       genuinely-string field is never corrupted, and bona-fide string
+       payloads that happen to start with ``[`` (rare in our domain)
+       are preserved when ``json.loads`` raises.
     """
     if isinstance(value, dict):
-        return {k: _normalize_null_sentinels(v) for k, v in value.items()}
+        return {k: _normalize_args(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_normalize_null_sentinels(v) for v in value]
-    if isinstance(value, str) and value in _NULL_SENTINEL_STRINGS:
-        return None
+        return [_normalize_args(v) for v in value]
+    if isinstance(value, str):
+        if value in _NULL_SENTINEL_STRINGS:
+            return None
+        stripped = value.strip()
+        if stripped.startswith(("[", "{")) and stripped.endswith(("]", "}")):
+            try:
+                parsed = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                return value
+            if isinstance(parsed, (list, dict)):
+                # Recurse so nested null sentinels / nested JSON strings
+                # inside the now-real container also get cleaned.
+                return _normalize_args(parsed)
     return value
 
 
@@ -115,7 +145,7 @@ class ToolDispatcher:
         schema = TOOL_ARG_SCHEMAS.get(tool_name)
         if schema is None:
             raise ValueError(f"unknown tool: {tool_name!r}")
-        cleaned = _normalize_null_sentinels(args)
+        cleaned = _normalize_args(args)
         try:
             return schema.model_validate(cleaned)
         except ValidationError as exc:
@@ -161,15 +191,29 @@ class ToolDispatcher:
         The third clause is enforced *structurally* via the per-user
         ``BlobStore`` boundary. Cross-user resolution always fails
         because the BlobStore is keyed by the auth'd ``user_id``.
+
+        Self-normalizes via ``_normalize_args`` so it is safe to call
+        with the raw LLM-emitted ``args`` dict — small models sometimes
+        encode ``attachments`` as a JSON string, and iterating that
+        directly would treat each character as an entry and crash on
+        ``str.sha256``. ``_normalize_args`` is idempotent, so calling
+        from ``gate`` (which already normalizes once) is also fine.
         """
-        attachments = args.get("attachments") or []
+        cleaned = _normalize_args(args)
+        attachments = cleaned.get("attachments") or []
         if not attachments:
             return
         _, user_id, _ = get_context_or_raise()
         session_shas = self._session_attachments()
         blob_store = BlobStore(user_id)
         for entry in attachments:
-            sha = entry.get("sha256") if isinstance(entry, dict) else entry.sha256
+            if isinstance(entry, dict):
+                sha = entry.get("sha256")
+            else:
+                # ``AttachmentRef`` / any object exposing ``.sha256``; bare
+                # strings or other shapes fall through to the "missing sha256"
+                # branch instead of raising ``AttributeError``.
+                sha = getattr(entry, "sha256", None)
             if not sha:
                 raise UnknownSha256("missing sha256 in attachment")
             if sha in session_shas:
@@ -217,13 +261,18 @@ class ToolDispatcher:
         Step 5 (raising ``ApprovalRequired``) is done by the toolset
         wrapper in Unit 7; this dispatcher returns whether a rule
         covers the call and the caller decides how to surface that.
+
+        Each sub-step self-normalizes via ``_normalize_args`` (idempotent),
+        so passing the raw LLM args here is safe; we still normalize once
+        at the top so the rule-match below sees the cleaned shape.
         """
-        self.validate_args(tool_name, args)
-        self.check_shas(args)
-        self.check_record_path(args)
+        cleaned = _normalize_args(args)
+        self.validate_args(tool_name, cleaned)
+        self.check_shas(cleaned)
+        self.check_record_path(cleaned)
 
         if self._rule_match is not None:
-            rule_id = self._rule_match(tool_name, args)
+            rule_id = self._rule_match(tool_name, cleaned)
             if rule_id is not None:
                 audit_event(
                     "tool.always_allowed",
