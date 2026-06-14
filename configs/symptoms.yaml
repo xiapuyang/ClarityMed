@@ -22,7 +22,10 @@ datasets:
     # shadow inference.
     model_ids: [typed_basd_v1]
     model_selection: first
-    maxstep: 8                     # set by Phase 0 ablation (Unit 3)
+    # Phase 0 ablation (interim weights, 2026-06-13) picked 18 as the smallest
+    # maxstep clearing DSR ≥ 92. See docs/solutions/2026-06-13-001-maxstep-
+    # ablation-decision.md — must be re-confirmed after production retrain.
+    maxstep: 18
     partial_min_confidence: 0.5    # top-3 mass cutoff for partial differential
     severity_high_specificity_evidence_ids: []
     session_ttl_seconds: 1800      # 30 min; KTD-12
