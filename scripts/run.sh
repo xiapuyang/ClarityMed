@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Start the BGE-M3 embedder + bge-reranker-v2-m3 reranker as background
+# Start the BGE-M3 embedder + bge-reranker-v2-m3 reranker (RAG) and/or
+# the typed-BASD symptoms differential-diagnosis server as background
 # processes. Logs go to $CLARITYMED_LOG_DIR (default ~/.claritymed/logs/),
 # pidfiles to $CLARITYMED_HOME/run/.
 #
@@ -10,13 +11,26 @@
 #
 # Why 180 s default: cold reload of bge-reranker-v2-m3 under CPU
 # contention with a just-started embedder regularly crosses 90 s on
-# Apple Silicon. Override per-call when needed:
-#   RAG_HEALTH_TIMEOUT_S=300 scripts/rag/run.sh
+# Apple Silicon. The symptoms server is much smaller (~9 MB typed-BASD
+# weights) but reuses the same timeout for simplicity. Override per-call:
+#   RAG_HEALTH_TIMEOUT_S=300 scripts/run.sh
+#
+# Symptoms server notes:
+#   - port 8084; extra `symptoms-server`; console script
+#     `claritymed-symptoms-server`.
+#   - Lifespan reads configs/symptoms.yaml and loads every dataset whose
+#     `enabled: true`. `enabled: false` (the shipped default) boots a
+#     valid /health but /v1/datasets/* will 404 until you flip it.
+#   - CLARITYMED_SYMPTOMS_SKIP_LOAD=1 boots without touching weights —
+#     useful when you only want the FastAPI surface up for plugin tests.
 #
 # Usage:
-#   scripts/rag/run.sh                # start both
-#   scripts/rag/run.sh embedder       # only the embedder
-#   scripts/rag/run.sh reranker
+#   scripts/run.sh                # start all three (embedder + reranker + symptoms)
+#   scripts/run.sh embedder       # only the embedder
+#   scripts/run.sh reranker
+#   scripts/run.sh symptoms       # only the symptoms server
+#   scripts/run.sh both           # RAG only (embedder + reranker), legacy
+#   scripts/run.sh all            # explicit form of the no-arg default
 
 set -euo pipefail
 
@@ -26,12 +40,14 @@ RUN_DIR="$HOME_DIR/run"
 HEALTH_TIMEOUT_S="${RAG_HEALTH_TIMEOUT_S:-180}"
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
-repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
 start_one() {
-  local name="$1"   # embedder | reranker
+  local name="$1"   # embedder | reranker | symptoms — drives pidfile / log / labels
   local port="$2"
+  local extra="$3"  # uv extra: rag-server | symptoms-server
+  local bin="$4"    # console script: claritymed-embedder / -reranker / -symptoms-server
   local pidfile="$RUN_DIR/$name.pid"
   local logfile="$LOG_DIR/$name.log"
 
@@ -43,7 +59,7 @@ start_one() {
   echo "[$name] starting → $logfile"
   # nohup so the process survives this shell; uv handles venv + extras.
   # Append (>>) so prior crash logs are preserved for postmortem.
-  nohup uv run --extra rag-server "claritymed-$name" >> "$logfile" 2>&1 &
+  nohup uv run --extra "$extra" "$bin" >> "$logfile" 2>&1 &
   echo $! > "$pidfile"
 
   # Health poll. Cold reload of the cross-encoder on CPU + contention
@@ -77,15 +93,21 @@ start_one() {
   return 1
 }
 
-case "${1:-both}" in
-  embedder) start_one embedder 8082 ;;
-  reranker) start_one reranker 8083 ;;
+case "${1:-all}" in
+  embedder) start_one embedder 8082 rag-server      claritymed-embedder ;;
+  reranker) start_one reranker 8083 rag-server      claritymed-reranker ;;
+  symptoms) start_one symptoms 8084 symptoms-server claritymed-symptoms-server ;;
   both)
-    start_one embedder 8082
-    start_one reranker 8083
+    start_one embedder 8082 rag-server claritymed-embedder
+    start_one reranker 8083 rag-server claritymed-reranker
+    ;;
+  all)
+    start_one embedder 8082 rag-server      claritymed-embedder
+    start_one reranker 8083 rag-server      claritymed-reranker
+    start_one symptoms 8084 symptoms-server claritymed-symptoms-server
     ;;
   *)
-    echo "Usage: $0 [embedder|reranker|both]" >&2
+    echo "Usage: $0 [embedder|reranker|symptoms|both|all]" >&2
     exit 2
     ;;
 esac
