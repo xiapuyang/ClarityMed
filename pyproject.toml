@@ -60,13 +60,20 @@ rag-server = [
 ]
 # Symptoms inference server (typed-BASD differential diagnosis). Optional
 # because most ClarityMed users won't host the symptoms feature themselves.
-# torch + numpy + scipy are already in the main deps via FlagEmbedding /
-# scipy direct, so this extra only carries the FastAPI + httpx wire deps.
-# Install with ``uv sync --extra symptoms-server``.
+# torch is the actual reason this is optional — main deps don't carry it
+# (numpy + scipy do come in via qdrant-client / llama-index-core / the
+# top-level scipy pin). Install with ``uv sync --extra symptoms-server``;
+# the train CLI (``claritymed-symptoms-train-ddxplus``) needs the same
+# extra.
 symptoms-server = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "httpx>=0.27",
+    "torch>=2.0",
+    # Only the DDXPlus schema loader uses pandas, and only when training /
+    # ablating against the dataset. Kept here (not main deps) because the
+    # 30 MB+ install isn't worth it for users who only run the TUI.
+    "pandas>=2.0",
 ]
 # E2E quality evaluation — requires live local services (embedder + reranker +
 # Qdrant) and the project's configured LLM. Run with:
