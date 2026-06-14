@@ -107,8 +107,11 @@ async def test_body_returns_json_answers_on_success():
     result = await ask_user_question_body(deps, _payload())
 
     parsed = json.loads(result)
+    # numeric_values is always present (default {}) since Unit 11 added
+    # support for mixed numeric+categorical AskUserQuestionResult payloads.
     assert parsed == {
-        "answers": {"Which library should we use for date formatting?": "dayjs"}
+        "answers": {"Which library should we use for date formatting?": "dayjs"},
+        "numeric_values": {},
     }
     # The channel saw the same payload we passed in.
     assert channel.received is not None

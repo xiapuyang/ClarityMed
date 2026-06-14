@@ -29,7 +29,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from claritymed.cli.tui.modals.question_modal import QuestionModal
+from claritymed.cli.tui.modals.question_modal import QuestionModal, _fmt
 from claritymed.cli.tui.widgets.conversation import Conversation
 from claritymed.core.i18n import t
 from claritymed.core.interaction.prompt_channel import (
@@ -119,9 +119,27 @@ class TextualPromptChannel:
         self._add_system_turn(body)
 
     def _post_declined_note(self, payload: AskUserQuestionInput) -> None:
-        """Append a localized declined system turn matching the screenshot format."""
+        """Append a localized declined system turn matching the screenshot format.
+
+        Numeric questions render their range (``0-120 years``) instead of
+        the empty parens that ``options`` would produce — without this
+        branch the user sees ``Age（）`` on cancel, which mis-suggests the
+        modal was blank.
+        """
         lines: list[str] = [t("ask_modal.declined_header")]
         for q in payload.questions:
+            if q.numeric is not None:
+                spec = q.numeric
+                bounds = f"{_fmt(spec.min)}-{_fmt(spec.max)}"
+                rng = f"{bounds} {spec.unit}" if spec.unit else bounds
+                lines.append(
+                    t(
+                        "ask_modal.declined_question_numeric",
+                        question=q.question,
+                        range=rng,
+                    )
+                )
+                continue
             opts = " / ".join(opt.label for opt in q.options)
             lines.append(
                 t("ask_modal.declined_question", question=q.question, options=opts)

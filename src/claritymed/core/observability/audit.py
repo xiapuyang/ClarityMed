@@ -144,6 +144,57 @@ AuditKind = Literal[
     #          rag_accuracy, delta, regression_count, gain_count,
     #          baseline_path, rag_path, report_path, regressions_sidecar
     "eval.delta.completed",
+    # --- symptoms feature (predict_disease_from_symptoms) ---------------
+    #
+    # KTD-5: the full audit vocabulary lands in one structural commit so
+    # downstream units can call ``audit_event(...)`` without per-call enum
+    # extensions. Field allowlists below document the keys allowed in
+    # each kind's *non-PHI* payload — the Q&A transcript, complaint text,
+    # and disease *names* live in audit_payloads/, never here.
+    #
+    # tool.predict_disease_from_symptoms — tool invocation.
+    #   payload allowlist: tool_name, dataset_hint
+    "tool.predict_disease_from_symptoms",
+    # symptoms.session.started — server accepted the start request.
+    #   payload allowlist: dataset_id, model_id, session_id
+    "symptoms.session.started",
+    # symptoms.session.turn — one question/answer round-trip.
+    #   payload allowlist: turn_index, question_id, answer_type
+    "symptoms.session.turn",
+    # symptoms.session.completed — model reached stop gate.
+    #   payload allowlist: dataset_id, model_id, session_id, turns_used,
+    #                      severity_tier, top_condition_id  (id, not name)
+    "symptoms.session.completed",
+    # symptoms.session.cancelled — user cancelled mid-loop OR upstream
+    # error (server unreachable, session expired, channel unavailable).
+    #   payload allowlist: phase, turn_index, partial_confidence,
+    #                      meets_confidence_threshold, severity_override_fired,
+    #                      reason
+    "symptoms.session.cancelled",
+    # symptoms.session.cap_hit — maxstep reached without stop gate firing.
+    #   payload allowlist: turns_used, partial_confidence, severity_tier
+    "symptoms.session.cap_hit",
+    # symptoms.session.ineligible — eligibility filter rejected the
+    # complaint (lifecycle outcome of the eligibility step).
+    #   payload allowlist: dataset_id, strategy_id, reason
+    #   reasons: out_of_scope, demographic_mismatch, unknown_hint,
+    #            no_interactive_channel, server_error, strategy_unavailable
+    "symptoms.session.ineligible",
+    # symptoms.eligibility.checked — eligibility decision telemetry,
+    # regardless of outcome. One per pre-invoke run.
+    #   payload allowlist: dataset_id, strategy_id, confidence, eligible
+    "symptoms.eligibility.checked",
+    # symptoms.eligibility.strategy_unavailable — runtime dependency
+    # missing (NoOpTermService, provider down, sidecar JSON absent).
+    #   payload allowlist: dataset_id, strategy_id, reason
+    "symptoms.eligibility.strategy_unavailable",
+    # symptoms.safety_keywords.missing — KTD-2 audit-only signal. The
+    # post_process hook scanned a tier ≤2 reply and found no keyword
+    # from safety_keywords_by_tier[tier][language].
+    #   payload allowlist: max_severity, tier, observed_leading_chars
+    #   (observed_leading_chars is the count of characters scanned, not
+    #    the reply text — that would be PHI-adjacent)
+    "symptoms.safety_keywords.missing",
 ]
 
 

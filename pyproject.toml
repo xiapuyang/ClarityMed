@@ -58,6 +58,16 @@ rag-server = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
 ]
+# Symptoms inference server (typed-BASD differential diagnosis). Optional
+# because most ClarityMed users won't host the symptoms feature themselves.
+# torch + numpy + scipy are already in the main deps via FlagEmbedding /
+# scipy direct, so this extra only carries the FastAPI + httpx wire deps.
+# Install with ``uv sync --extra symptoms-server``.
+symptoms-server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+]
 # E2E quality evaluation — requires live local services (embedder + reranker +
 # Qdrant) and the project's configured LLM. Run with:
 #   uv sync --extra e2e
@@ -114,6 +124,11 @@ claritymed = "claritymed.cli.main:main"
 # and exits non-zero (see servers/embedder.py top-of-file try/except).
 claritymed-embedder = "claritymed.servers.embedder:main"
 claritymed-reranker = "claritymed.servers.reranker:main"
+# Symptoms server + training entry — only usable after
+# `uv sync --extra symptoms-server` (fastapi + uvicorn + httpx).
+# Training reuses torch already in the main deps.
+claritymed-symptoms-server = "claritymed.servers.symptoms.app:main"
+claritymed-symptoms-train-ddxplus = "claritymed.ingest.symptoms.ddxplus.train:main"
 
 [build-system]
 requires = ["hatchling"]

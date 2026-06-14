@@ -228,6 +228,7 @@ class AskService:
         features: "list[FeaturePlugin] | None" = None,
         prompt_channel: "PromptChannel | None" = None,
         tool_approval_channel: "ToolApprovalChannel | None" = None,
+        symptoms_factory: "Callable[[], FeaturePlugin] | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or get_default_guard()
@@ -282,6 +283,7 @@ class AskService:
                     if tool_approval_channel is not None and chat_session is not None
                     else None
                 ),
+                symptoms_factory=symptoms_factory,
                 profile_context_mode=profile_context_mode,
             )
         )
@@ -294,6 +296,39 @@ class AskService:
     def last_chunks(self) -> list:
         """Retrieved chunks from the most recent run() call (for testing)."""
         return self._last_chunks
+
+    async def _run_post_process_hooks(self, deps, result: dict) -> None:
+        """Invoke ``post_process`` on every plugin that implements
+        :class:`~claritymed.core.features.base.PostProcessHook`.
+
+        The hook itself short-circuits when its tool was not called
+        this turn — implementers track that via their own per-request
+        state (e.g. the symptoms plugin's request-id stash). Keeping
+        the dispatch unconditional means the orchestrator does not
+        need to know which tool name belongs to which plugin.
+
+        Audit-only by contract — implementers should not mutate the
+        user-visible reply (KTD-2 / KTD-3). Failures are caught and
+        logged at warning level; a buggy hook must not break the reply.
+        """
+        from claritymed.core.features.base import PostProcessHook
+
+        text = result.get("final_text") or ""
+        for plugin in self._features:
+            if not isinstance(plugin, PostProcessHook):
+                continue
+            try:
+                new_text = await plugin.post_process(text, result)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "post_process hook on plugin %s raised; reply unchanged",
+                    plugin.name,
+                    exc_info=True,
+                )
+                continue
+            if isinstance(new_text, str):
+                result["final_text"] = new_text
+                text = new_text
 
     def _build_ingest_factory(
         self,
@@ -1222,6 +1257,14 @@ class AskService:
 
                     # str output → terminal.
                     result["final_text"] = run_result.output
+                    # PostProcessHook fan-out (KTD-2 audit-only):
+                    # the symptoms plugin uses this to scan the reply
+                    # for tier-appropriate safety keywords. Hook
+                    # returns the (possibly-rewritten) text, but for
+                    # v1 every implementer is audit-only — text rides
+                    # through unchanged. Failures are swallowed so a
+                    # buggy hook never breaks the reply.
+                    await self._run_post_process_hooks(deps, result)
                     break
 
                 if run_result is not None and not result["had_error"]:

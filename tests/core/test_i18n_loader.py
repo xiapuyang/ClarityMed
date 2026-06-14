@@ -95,38 +95,119 @@ def test_unsafe_yaml_tag_rejected(i18n_dir, caplog):
     assert any("failed to load" in rec.message for rec in caplog.records)
 
 
-def test_key_sets_must_match_in_real_yamls():
-    """All shipped i18n YAMLs must have identical key sets.
+def _flat_keys_from_path(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    with path.open("r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    out: set[str] = set()
 
-    This is the bilingual-equivalence enforcement — if zh.yaml is missing a
-    disclaimer key, the orchestrator would silently render the en string.
+    def walk(node, prefix=""):
+        for k, v in node.items():
+            full = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                walk(v, full)
+            else:
+                out.add(full)
+
+    walk(data)
+    return out
+
+
+def test_key_sets_must_match_in_real_yamls():
+    """The shipped global i18n YAMLs must have identical key sets.
+
+    Bilingual-equivalence enforcement — if zh.yaml is missing a disclaimer
+    key, the orchestrator would silently render the en string.
     """
     from claritymed.config import I18N_DIR as REAL_I18N_DIR
 
-    def _flat_keys(path: Path) -> set[str]:
-        if not path.exists():
-            return set()
-        with path.open("r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
-        out: set[str] = set()
-
-        def walk(node, prefix=""):
-            for k, v in node.items():
-                full = f"{prefix}.{k}" if prefix else k
-                if isinstance(v, dict):
-                    walk(v, full)
-                else:
-                    out.add(full)
-
-        walk(data)
-        return out
-
-    en_keys = _flat_keys(REAL_I18N_DIR / "en.yaml")
-    zh_keys = _flat_keys(REAL_I18N_DIR / "zh.yaml")
+    en_keys = _flat_keys_from_path(REAL_I18N_DIR / "en.yaml")
+    zh_keys = _flat_keys_from_path(REAL_I18N_DIR / "zh.yaml")
     assert en_keys == zh_keys, (
         f"en/zh key sets differ — only in en: {en_keys - zh_keys}; "
         f"only in zh: {zh_keys - en_keys}"
     )
+
+
+def test_per_domain_yaml_key_sets_must_match():
+    """Per-domain i18n files under configs/i18n/<lang>/ must also pair up.
+
+    Every file under ``en/`` must have a matching ``zh/`` sibling with
+    the same flat key set, so a domain (e.g. ``symptoms_ddxplus``) can
+    never silently fall back to English just because the zh file is
+    incomplete.
+    """
+    from claritymed.config import I18N_DIR as REAL_I18N_DIR
+
+    en_dir = REAL_I18N_DIR / "en"
+    zh_dir = REAL_I18N_DIR / "zh"
+    if not en_dir.is_dir() and not zh_dir.is_dir():
+        pytest.skip("no per-domain i18n files shipped yet")
+    en_files = {p.name for p in en_dir.glob("*.yaml")} if en_dir.is_dir() else set()
+    zh_files = {p.name for p in zh_dir.glob("*.yaml")} if zh_dir.is_dir() else set()
+    assert en_files == zh_files, (
+        f"per-domain file sets differ — only in en/: {en_files - zh_files}; "
+        f"only in zh/: {zh_files - en_files}"
+    )
+    for name in en_files:
+        en_keys = _flat_keys_from_path(en_dir / name)
+        zh_keys = _flat_keys_from_path(zh_dir / name)
+        assert en_keys == zh_keys, (
+            f"{name}: en/zh key sets differ — only in en: "
+            f"{en_keys - zh_keys}; only in zh: {zh_keys - en_keys}"
+        )
+
+
+def test_per_domain_yaml_merged_into_lang_dict(i18n_dir):
+    """A file in ``configs/i18n/<lang>/`` adds its keys to ``t()``'s namespace."""
+    _write(i18n_dir / "en.yaml", {"ui": {"x": "global"}})
+    (i18n_dir / "en").mkdir()
+    _write(i18n_dir / "en" / "symptoms.yaml", {"symptoms": {"q": "domain"}})
+    assert t("ui.x", lang="en") == "global"
+    assert t("symptoms.q", lang="en") == "domain"
+
+
+def test_per_domain_file_overrides_global_on_collision(i18n_dir):
+    """When the same key appears in both, the per-domain file wins.
+
+    Useful when a feature wants to rebrand a global label for its
+    surface without touching the global YAML.
+    """
+    _write(i18n_dir / "en.yaml", {"label": "original"})
+    (i18n_dir / "en").mkdir()
+    _write(i18n_dir / "en" / "override.yaml", {"label": "rebranded"})
+    assert t("label", lang="en") == "rebranded"
+
+
+def test_multiple_per_domain_files_merge_deterministically(i18n_dir):
+    """Files load in sorted-by-name order; the later file wins on collision."""
+    _write(i18n_dir / "en.yaml", {"ui": {"x": "global"}})
+    (i18n_dir / "en").mkdir()
+    _write(i18n_dir / "en" / "a_first.yaml", {"shared": "from_a"})
+    _write(i18n_dir / "en" / "b_second.yaml", {"shared": "from_b"})
+    assert t("shared", lang="en") == "from_b"
+
+
+def test_new_per_domain_file_invalidates_cache(i18n_dir):
+    """Adding a per-domain file after a lookup should be picked up."""
+    _write(i18n_dir / "en.yaml", {"ui": {"x": "g"}})
+    assert t("ui.x", lang="en") == "g"
+    (i18n_dir / "en").mkdir()
+    _write(i18n_dir / "en" / "added.yaml", {"new_key": "added"})
+    # Force a different mtime so the fingerprint changes deterministically.
+    new_time = time.time() + 5
+    os.utime(i18n_dir / "en", (new_time, new_time))
+    os.utime(i18n_dir / "en" / "added.yaml", (new_time, new_time))
+    assert t("new_key", lang="en") == "added"
+    assert t("ui.x", lang="en") == "g"
+
+
+def test_per_domain_dir_without_global_yaml_still_works(i18n_dir):
+    """The base ``<lang>.yaml`` can be absent if only per-domain files exist."""
+    (i18n_dir / "en").mkdir()
+    _write(i18n_dir / "en" / "only.yaml", {"only_key": "value"})
+    assert t("only_key", lang="en") == "value"
 
 
 def test_resolve_lang_prefers_explicit_over_ctx():

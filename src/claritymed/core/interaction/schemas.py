@@ -12,6 +12,12 @@ TUI chip area but tripped the old limit, burning a retry slot.)
 Validation errors are not fatal — pydantic-ai retries the tool call with
 the error attached, so the model gets a chance to re-emit a well-formed
 payload. ``max_retries`` on the registered ``Tool`` bounds that loop.
+
+Numeric questions (added for the symptoms plugin's age input) use the
+optional :class:`NumericSpec` and leave ``options`` as an empty list.
+The 2-4 floor on ``options`` is enforced via a model_validator (not the
+Field constraint) so a numeric question's empty list is structurally
+valid; the validator still rejects 0/1/5+-option categorical questions.
 """
 
 from __future__ import annotations
@@ -44,13 +50,67 @@ class QuestionOption(BaseModel):
     )
 
 
+class NumericSpec(BaseModel):
+    """Numeric input descriptor for :class:`Question`.
+
+    Set on a :class:`Question` when the answer is a number rather than a
+    pick from enumerable options (e.g. age in years, pain on a 0-10
+    scale). The TUI modal renders an ``Input(type="number")`` with the
+    range hint as placeholder; invalid values are rejected inline and
+    submit is blocked until the value parses + lies inside ``[min, max]``.
+
+    ``unit`` is appended to the range hint when present (``"0-120 years"``);
+    keep it short — the chip area is narrow.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    min: float | int = Field(
+        ...,
+        description="Lower bound, inclusive. Numbers below this are rejected.",
+    )
+    max: float | int = Field(
+        ...,
+        description="Upper bound, inclusive. Numbers above this are rejected.",
+    )
+    step: float | int = Field(
+        default=1,
+        description=(
+            "Granularity of accepted values. Submit is blocked unless "
+            "``(value - min) / step`` is integer (within floating-point "
+            "tolerance). Default 1."
+        ),
+    )
+    unit: str | None = Field(
+        default=None,
+        max_length=12,
+        description=(
+            "Optional unit token rendered next to the range hint, e.g. "
+            "'years', 'mg/dL'. Keep under 12 chars."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _bounds_valid(self) -> "NumericSpec":
+        if self.min >= self.max:
+            raise ValueError(f"NumericSpec.min ({self.min}) must be < max ({self.max})")
+        if self.step <= 0:
+            raise ValueError(f"NumericSpec.step ({self.step}) must be > 0")
+        if self.unit is not None and not self.unit.strip():
+            raise ValueError("NumericSpec.unit, when set, must be non-blank")
+        return self
+
+
 class Question(BaseModel):
-    """A single question with 2-4 enumerable options.
+    """A single question with 2-4 enumerable options OR a numeric input.
 
     Use multiple ``Question`` objects in one ``AskUserQuestionInput`` only
     when the user could reasonably answer them in one sitting (e.g.
     'pick a framework' + 'pick a database' — both setup choices). For
     unrelated questions, prefer one tool call per turn.
+
+    Numeric questions set :attr:`numeric` and leave :attr:`options` as
+    ``[]`` — the TUI renders an Input widget instead of the option list.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -74,9 +134,7 @@ class Question(BaseModel):
         ),
     )
     options: list[QuestionOption] = Field(
-        ...,
-        min_length=2,
-        max_length=4,
+        default_factory=list,
         description=(
             "2-4 mutually exclusive options (unless multi_select=true). "
             "If you cannot enumerate at least 2 distinct concrete choices, "
@@ -84,16 +142,46 @@ class Question(BaseModel):
             "question in your reply instead. One-option pickers are not "
             "valid: the user has nothing to pick between. "
             "Do NOT include an 'Other' option — the UI adds free-text "
-            "automatically."
+            "automatically. "
+            "Numeric questions (numeric != null) MUST leave this empty: "
+            "the modal renders an Input widget instead of options."
         ),
     )
     multi_select: bool = Field(
         default=False,
         description=(
             "Set true ONLY when choices are genuinely not mutually "
-            "exclusive (e.g. 'which symptoms apply'). Default false."
+            "exclusive (e.g. 'which symptoms apply'). Default false. "
+            "Must be false when numeric is set."
         ),
     )
+    numeric: NumericSpec | None = Field(
+        default=None,
+        description=(
+            "Set for numeric answers (age in years, pain on 0-10 scale). "
+            "When set, options MUST be empty and multi_select MUST be false."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _options_shape_matches_numeric_flag(self) -> "Question":
+        if self.numeric is None:
+            # Categorical question — must have 2-4 options.
+            if not (2 <= len(self.options) <= 4):
+                raise ValueError(
+                    f"Categorical question must have 2-4 options, "
+                    f"got {len(self.options)}."
+                )
+        else:
+            # Numeric question — must have no options and not multi_select.
+            if self.options:
+                raise ValueError(
+                    "Numeric questions must leave options empty; "
+                    "the modal renders an Input widget, not a picker."
+                )
+            if self.multi_select:
+                raise ValueError("Numeric questions cannot use multi_select.")
+        return self
 
     @model_validator(mode="after")
     def _no_duplicate_labels(self) -> "Question":
@@ -127,6 +215,11 @@ class AskUserQuestionResult(BaseModel):
     selection — a single label string for single-select, a list of label
     strings for multi-select, or any free-form string when the user
     chose the auto-injected 'Other' option.
+
+    ``numeric_values`` carries answers to numeric questions in the same
+    payload (D10 initial-batch can mix a numeric ``age`` with a
+    single-select ``sex`` in one modal). ``answers[q]`` is set to ``""``
+    for numeric questions; the actual value lives in ``numeric_values[q]``.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -134,4 +227,12 @@ class AskUserQuestionResult(BaseModel):
     answers: dict[str, str | list[str]] = Field(
         ...,
         description="Mapping of question text to user-selected label(s).",
+    )
+    numeric_values: dict[str, float | int] = Field(
+        default_factory=dict,
+        description=(
+            "Mapping of question text to the user's numeric answer for "
+            "questions with NumericSpec set. Empty for purely categorical "
+            "modals."
+        ),
     )

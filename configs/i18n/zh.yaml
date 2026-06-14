@@ -49,11 +49,17 @@ ask_modal:
   answer_value: "    ▶ {value}"
   declined_header: "用户已取消追问"
   declined_question: "  └ · {question}（{options}）"
+  declined_question_numeric: "  └ · {question}（{range}）"
   multi_empty: "—"
   hint_single: "↑↓ 选择 · enter 提交 · esc 取消"
   hint_multi: "↑↓ 移动 · space 勾选 · enter 提交 · esc 取消"
+  hint_numeric: "输入数字，回车提交 · esc 取消"
   badge_single: "单选"
   badge_multi: "多选"
+  badge_numeric: "数字"
+  numeric_out_of_range: "请输入 {min} 到 {max} 之间的数值。"
+  numeric_step_mismatch: "数值必须是 {step} 的整数倍。"
+  numeric_invalid: "请输入数字。"
 
 phi:
   redaction_marker:

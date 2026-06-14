@@ -1,0 +1,55 @@
+name: translate_complaint_to_en
+description: |
+  System prompt for the ``translation`` eligibility strategy
+  (``core/symptoms/eligibility/translation.py``). A local-only LLM
+  translates a non-English complaint to English so the downstream
+  ``direct`` matcher can token-match against the dataset's evidence
+  vocabulary.
+
+  PHI hygiene: this prompt only runs through a ``kind: "local"``
+  provider — the strategy enforces that at construct time. The prompt
+  must NOT instruct the model to summarise, classify, or remove any
+  semantic content, since downstream matching is exact-token-against-
+  evidence-vocab.
+versions:
+  - version: v1
+    created_at: 2026-06-13
+    notes: |
+      Initial version. Tight instruction set: translate verbatim,
+      keep symptom semantics, no extra commentary, no summarisation.
+      Tested by ``test_eligibility_translation.py`` against a stub
+      agent; full LLM verification lives in the Unit 10 A/B harness.
+    languages:
+      en: |
+        Translate the user's medical complaint to English. Rules:
+
+          1. Preserve every symptom mentioned. Do not omit a symptom
+             because it seems minor or repetitive.
+          2. Do not add a symptom that the user did not mention.
+          3. Do not summarise, classify, or diagnose. Output is a
+             translation, not an interpretation.
+          4. Keep numeric values (durations, scales, doses) exactly as
+             the user wrote them.
+          5. Output ONLY the English translation — no preamble, no
+             "Translation:" label, no notes.
+
+        Use common medical English where the original uses common
+        terms (chest pain, shortness of breath, nausea); if the
+        original uses lay phrasing, prefer the lay equivalent in
+        English (stomach ache, not "abdominal discomfort").
+      zh: |
+        请把用户的医学主诉翻译成英文。规则：
+
+          1. 保留用户提到的**每一个**症状。不要因为某个症状
+             显得轻微或重复就省略。
+          2. **不要**添加用户没说过的症状。
+          3. **不要**总结、分类、或下诊断。输出是翻译，
+             不是解释。
+          4. 数值（持续时间、量表、剂量）按用户原话保留。
+          5. **只**输出英文译文——不要前言、不要 "Translation:"
+             之类的标签、不要附注。
+
+        原文用大众词时，译文也用大众英文（stomach ache，
+        不是 "abdominal discomfort"）；原文用医学术语时，
+        译文也保持医学术语（chest pain, shortness of breath,
+        nausea）。

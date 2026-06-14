@@ -25,3 +25,26 @@ def test_build_features_agentic_raises_not_implemented():
     with pytest.raises(NotImplementedError) as exc:
         build_features(rag_mode="agentic", rag_strategy=None)
     assert "agentic" in str(exc.value).lower()
+
+
+def test_build_features_symptoms_factory_included_when_provided():
+    """When a ``symptoms_factory`` is passed, the returned plugin lands
+    in the active list. Absence (the default) keeps the registry untouched
+    — the symptoms feature is opt-in per-deployment via
+    ``configs/symptoms.yaml`` + AskService wiring."""
+
+    class _StubSymptoms:
+        name = "symptoms"
+        mode = "tool"
+
+    plugins = build_features(
+        rag_mode="tool", rag_strategy=None, symptoms_factory=_StubSymptoms
+    )
+    assert any(p.name == "symptoms" for p in plugins)
+
+
+def test_build_features_symptoms_absent_by_default():
+    """No ``symptoms_factory`` → no symptoms plugin in the active list.
+    Clean degradation when ``configs/symptoms.yaml`` is missing."""
+    plugins = build_features(rag_mode="tool", rag_strategy=None)
+    assert all(p.name != "symptoms" for p in plugins)

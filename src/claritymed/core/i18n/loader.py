@@ -1,8 +1,20 @@
 """i18n loader (mirrors ``fin/fin/i18n.py``, YAML instead of JSON).
 
-``t(key, lang=None, **fmt)`` is the only public surface. Translations live in
-``configs/i18n/{en,zh}.yaml`` and reload automatically when the file's mtime
-changes — admins editing copy do not need to restart the app.
+``t(key, lang=None, **fmt)`` is the only public surface. Translations live in:
+
+* ``configs/i18n/<lang>.yaml`` — the global namespace (app-wide UI copy,
+  red-flag wording, mode labels, …).
+* ``configs/i18n/<lang>/*.yaml`` — per-domain namespace files merged into
+  the same flat key dict (introduced so the symptoms feature can ship a
+  large per-dataset translation table without bloating the global YAML).
+
+All files for a given language are loaded + flattened + merged into one
+``key -> string`` dict per language. Reload is mtime-driven: a fingerprint
+combining every file's mtime invalidates the cache when any file changes,
+so admins editing copy do not need to restart the app. Subdirectory keys
+later in the merge order win over earlier ones; the global ``<lang>.yaml``
+is loaded first and per-domain files override it — useful when a feature
+needs to rebrand a global key for its surface without touching the global.
 
 Language resolution order:
 
@@ -18,6 +30,7 @@ ClarityMed, not a machine preference.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -29,7 +42,7 @@ from claritymed.context import language_ctx
 logger = logging.getLogger(__name__)
 
 _cache: dict[str, dict[str, Any]] = {}
-_mtime: dict[str, float] = {}
+_fingerprint: dict[str, tuple[tuple[str, float], ...]] = {}
 _lock = Lock()
 
 
@@ -44,34 +57,64 @@ def resolve_lang(explicit: str | None = None) -> str:
     return fallback if fallback in ("en", "zh") else "en"
 
 
-def _load(lang: str) -> dict[str, Any]:
-    """Read ``configs/i18n/<lang>.yaml`` with mtime-based caching.
+def _candidate_paths(lang: str) -> list[Path]:
+    """Return every file that contributes to ``lang``'s flat dict.
 
-    Returns an empty dict when the file is missing — better to fall back to
-    the bare key than crash mid-request because someone is editing a YAML.
+    Order:
+
+    1. ``configs/i18n/<lang>.yaml`` (global) — loaded first so per-domain
+       files can override.
+    2. ``configs/i18n/<lang>/*.yaml`` (per-domain) sorted by filename so
+       the merge order is deterministic across hosts.
     """
-    path = I18N_DIR / f"{lang}.yaml"
-    if not path.exists():
+    paths: list[Path] = []
+    base = I18N_DIR / f"{lang}.yaml"
+    if base.exists():
+        paths.append(base)
+    domain_dir = I18N_DIR / lang
+    if domain_dir.is_dir():
+        paths.extend(sorted(domain_dir.glob("*.yaml")))
+    return paths
+
+
+def _current_fingerprint(paths: list[Path]) -> tuple[tuple[str, float], ...]:
+    """Build an mtime fingerprint that changes when any file's mtime moves."""
+    out: list[tuple[str, float]] = []
+    for path in paths:
+        try:
+            out.append((str(path), path.stat().st_mtime))
+        except OSError:
+            out.append((str(path), -1.0))
+    return tuple(out)
+
+
+def _load(lang: str) -> dict[str, Any]:
+    """Read every contributing YAML for ``lang`` and return the merged flat dict.
+
+    Returns an empty dict when no files exist — better to fall back to the
+    bare key than crash mid-request because someone is editing a YAML.
+    """
+    paths = _candidate_paths(lang)
+    if not paths:
         return {}
 
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return _cache.get(lang, {})
+    fingerprint = _current_fingerprint(paths)
 
     with _lock:
-        if _mtime.get(lang) == mtime and lang in _cache:
+        if _fingerprint.get(lang) == fingerprint and lang in _cache:
             return _cache[lang]
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                data = yaml.safe_load(fh) or {}
-        except (OSError, yaml.YAMLError) as exc:
-            logger.warning("i18n: failed to load %s: %s", path, exc)
-            return _cache.get(lang, {})
-        flat = _flatten(data)
-        _cache[lang] = flat
-        _mtime[lang] = mtime
-        return flat
+        merged: dict[str, str] = {}
+        for path in paths:
+            try:
+                with path.open("r", encoding="utf-8") as fh:
+                    data = yaml.safe_load(fh) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                logger.warning("i18n: failed to load %s: %s", path, exc)
+                continue
+            merged.update(_flatten(data))
+        _cache[lang] = merged
+        _fingerprint[lang] = fingerprint
+        return merged
 
 
 def _flatten(data: dict[str, Any], prefix: str = "") -> dict[str, str]:
@@ -112,4 +155,4 @@ def _reset_for_tests() -> None:
     """Test hook: clear cache so a fixture YAML edit is visible immediately."""
     with _lock:
         _cache.clear()
-        _mtime.clear()
+        _fingerprint.clear()

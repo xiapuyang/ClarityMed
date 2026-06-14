@@ -22,6 +22,7 @@ def build_features(
     rag_strategy: "RagStrategy | None" = None,
     get_session_id: Callable[[], str | None] | None = None,
     ingest_factory: Callable[[], FeaturePlugin] | None = None,
+    symptoms_factory: Callable[[], FeaturePlugin] | None = None,
     profile_context_mode: str = "deterministic",
 ) -> list[FeaturePlugin]:
     """Instantiate plugins from per-feature config.
@@ -43,6 +44,15 @@ def build_features(
             callable here keeps ``core.features`` import-free of
             orchestrator code while letting AskService wire the live
             dispatcher + settings store.
+        symptoms_factory: When set, called once to build the symptoms
+            plugin (``predict_disease_from_symptoms`` tool). Same
+            indirection rationale as ``ingest_factory``: the plugin
+            depends on ``orchestrator.features.symptoms_plugin``, so we
+            pass a callable instead of importing the concrete class
+            here. ``None`` (the default) means the symptoms feature is
+            absent — operator either flagged
+            ``configs/symptoms.yaml.datasets[0].enabled = false`` or
+            never created the file.
         profile_context_mode: ``"deterministic"`` (default) splices the
             patient profile block into every prompt; ``"tool"`` exposes
             ``retrieve_profile`` as an agent tool; ``"off"`` disables the
@@ -62,6 +72,8 @@ def build_features(
         plugins.append(AttachmentsFeature(get_session_id=get_session_id))
     if ingest_factory is not None:
         plugins.append(ingest_factory())
+    if symptoms_factory is not None:
+        plugins.append(symptoms_factory())
     if profile_context_mode != "off":
         from claritymed.orchestrator.features.profile_context_plugin import (
             ProfileContextFeature,

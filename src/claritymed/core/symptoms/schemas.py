@@ -1,0 +1,342 @@
+"""Pydantic contracts for ``configs/symptoms.yaml``.
+
+Mirrors the catalog + active-id pattern used by ``core/rag/schemas.py`` —
+``eligibility.active`` must resolve to a catalog entry id, a typo raises
+:class:`~claritymed.errors.UnknownEligibilityStrategyError` at load time
+rather than silently degrading to a default.
+
+Two-level integrity chain on model weights (see KTD-6 in the
+disease-prediction plan): :class:`ModelSpec.manifest_sha256` pins the
+manifest's own digest from this file, so a tampered manifest pointing at
+different weights cannot pass the file-against-manifest check the server
+runs on startup. The chain is rooted in the committed config.
+
+``safety_keywords_by_tier`` is the audit-only allow-list consumed by the
+plugin's ``post_process`` hook — it is NOT a verbatim safety-sentence
+template. Per-tier behavioural prose lives in the prompt registry
+(``symptoms_final_reply.yaml``); this section only feeds the
+``symptoms.safety_keywords.missing`` audit signal.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from claritymed.errors import UnknownEligibilityStrategyError
+
+# Per-disease severity is sourced from DDXPlus ``release_conditions.json``
+# on a 1-5 scale (1 = most severe). Tier names are stable across the
+# audit, prompt registry, and config so a Critical-tier mock in tests
+# matches the field used by the post_process check.
+SeverityTier = Literal["Critical", "Urgent", "Moderate", "Mild"]
+
+# Eligibility strategy ids accepted by the catalog discriminator. Adding
+# a new strategy requires (a) a new entry class below, (b) a factory
+# branch in ``core/symptoms/eligibility/factory.py`` (Unit 7), and (c)
+# a YAML catalog entry. Anything else (typo, missing branch) fails loud.
+EligibilityStrategyKind = Literal["direct", "term_service", "translation"]
+
+
+# --- datasets + models -----------------------------------------------------
+
+
+class DatasetSpec(BaseModel):
+    """One dataset registered with the symptoms server.
+
+    ``model_ids`` references entries in the top-level ``models`` list —
+    cross-checked by :meth:`SymptomsConfig._model_refs_resolve`. Multiple
+    models per dataset are supported (shadow inference, future A/B);
+    :attr:`model_selection` decides which the server uses per-request.
+    The first id in the list is the canonical primary used by the
+    "first" selection strategy. ``maxstep`` is the per-session question
+    budget chosen by the Phase 0 ablation (Unit 3 in the plan);
+    ``partial_min_confidence`` is the top-3 mass cutoff below which a
+    cancelled session is treated as "no usable differential" rather
+    than "show partial results".
+
+    i18n: every text-bearing field in the question payload is rendered
+    via ``t(key, lang=...)``. Keys follow the convention
+    ``{i18n_key_prefix}.<evidence_id>.question`` and
+    ``{i18n_key_prefix}.<evidence_id>.values.<raw_value>``;
+    condition names use ``{i18n_key_prefix}.conditions.<slug>.name``.
+    Per-language YAML files live under ``configs/i18n/<lang>/`` and are
+    merged into the language dict by the loader. ``binary_yes_key`` /
+    ``binary_no_key`` default to a shared global so multiple datasets
+    don't each ship their own Yes/No translation.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    enabled: bool = True
+    model_ids: list[str] = Field(
+        min_length=1,
+        max_length=8,
+        description=(
+            "One or more model ids this dataset can serve. The first "
+            "entry is the canonical primary; additional entries enable "
+            "multi-model selection via model_selection."
+        ),
+    )
+    model_selection: Literal["first", "round_robin"] = Field(
+        default="first",
+        description=(
+            "Per-request model picker. 'first' always uses model_ids[0] "
+            "(default); 'round_robin' cycles in spec order — useful for "
+            "A/B and shadow inference."
+        ),
+    )
+    maxstep: int = Field(ge=1, le=50)
+    partial_min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    severity_high_specificity_evidence_ids: list[str] = Field(default_factory=list)
+    # KTD-12: in-memory session TTL. Default 30 minutes; raise to 7200 if
+    # dogfood shows TTL eviction dominates the cancel reason. Config-driven
+    # so the change is one line, not an architectural shift.
+    session_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
+
+    @model_validator(mode="after")
+    def _model_ids_unique(self) -> "DatasetSpec":
+        if len(set(self.model_ids)) != len(self.model_ids):
+            raise ValueError(f"datasets[id={self.id!r}].model_ids must be unique")
+        return self
+
+    def primary_model_id(self) -> str:
+        """Return the first model id — the canonical 'main' checkpoint."""
+        return self.model_ids[0]
+
+    # i18n key wiring (see class docstring). ``None`` for prefix means
+    # derive as ``symptoms.<id>``; explicit override accepted for the
+    # rare dataset that needs to share keys with a sibling.
+    i18n_key_prefix: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "Root prefix for evidence i18n keys. None → 'symptoms.<id>'. "
+            "Resolved keys: '<prefix>.<evidence_id>.question' and "
+            "'<prefix>.<evidence_id>.values.<raw_value>'."
+        ),
+    )
+    binary_yes_key: str = Field(
+        default="symptoms.binary.yes",
+        min_length=1,
+        max_length=128,
+    )
+    binary_no_key: str = Field(
+        default="symptoms.binary.no",
+        min_length=1,
+        max_length=128,
+    )
+
+    def resolved_i18n_prefix(self) -> str:
+        """Return the active prefix (explicit override or convention)."""
+        return self.i18n_key_prefix or f"symptoms.{self.id}"
+
+    def question_key(self, evidence_id: str) -> str:
+        return f"{self.resolved_i18n_prefix()}.{evidence_id}.question"
+
+    def value_key(self, evidence_id: str, raw_value: str) -> str:
+        return f"{self.resolved_i18n_prefix()}.{evidence_id}.values.{raw_value}"
+
+    def condition_name_key(self, condition_slug: str) -> str:
+        """Localized display name key for a canonical condition slug."""
+        return f"{self.resolved_i18n_prefix()}.conditions.{condition_slug}.name"
+
+
+class ModelSpec(BaseModel):
+    """One model checkpoint registered for a dataset.
+
+    ``weights_subpath`` is resolved relative to
+    ``CLARITYMED_HOME/models/symptoms/`` at server load time. Absolute
+    paths and traversal segments are rejected to keep the load surface
+    scoped to the per-user runtime root.
+
+    ``manifest_sha256`` pins the digest of the ``manifest.json`` that
+    sits next to the weights; the server hashes the manifest at startup
+    and refuses to start on mismatch (KTD-6).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    algorithm_module: str = Field(min_length=1, max_length=64)
+    weights_subpath: str = Field(min_length=1, max_length=256)
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def _weights_subpath_relative(self) -> "ModelSpec":
+        path = self.weights_subpath
+        if path.startswith("/") or path.startswith("~"):
+            raise ValueError(
+                f"weights_subpath must be relative to "
+                f"CLARITYMED_HOME/models/symptoms/, got absolute path: {path!r}"
+            )
+        if ".." in path.replace("\\", "/").split("/"):
+            raise ValueError(
+                f"weights_subpath must not contain '..' segments: {path!r}"
+            )
+        return self
+
+
+# --- eligibility catalog ---------------------------------------------------
+
+
+class _EligibilityEntryBase(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+
+
+class DirectEligibilityEntry(_EligibilityEntryBase):
+    """EN-only token-match strategy. Cheapest, zero external deps."""
+
+    kind: Literal["direct"]
+
+
+class TermServiceEligibilityEntry(_EligibilityEntryBase):
+    """Concept-grounded strategy. Cross-lingual via the active TermService.
+
+    Requires ``term_service.active != "none"`` in ``retrieval.yaml``; the
+    factory raises :class:`~claritymed.errors.EligibilityStrategyUnavailableError`
+    at construct time when a NoOp service is configured.
+    """
+
+    kind: Literal["term_service"]
+
+
+class TranslationEligibilityEntry(_EligibilityEntryBase):
+    """LLM-translation strategy. ``provider_id`` must be ``kind: local``.
+
+    The factory asserts ``ProviderConfig.kind == "local"`` and raises
+    :class:`~claritymed.errors.EligibilityStrategyConfigError` for a cloud
+    provider — PHI must not cross the network for translation.
+    """
+
+    kind: Literal["translation"]
+    provider_id: str = Field(min_length=1, max_length=64)
+    prompt_name: str = Field(min_length=1, max_length=64)
+    max_tokens: int = Field(default=256, ge=16, le=4096)
+
+
+EligibilityCatalogEntry = Annotated[
+    DirectEligibilityEntry | TermServiceEligibilityEntry | TranslationEligibilityEntry,
+    Field(discriminator="kind"),
+]
+
+
+class EligibilityCatalogConfig(BaseModel):
+    """The catalog + active-id resolution for symptom eligibility."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    active: str = Field(min_length=1)
+    catalog: list[EligibilityCatalogEntry] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _resolve_active(self) -> "EligibilityCatalogConfig":
+        ids = {entry.id for entry in self.catalog}
+        if self.active not in ids:
+            raise UnknownEligibilityStrategyError(
+                f"eligibility.active={self.active!r} not in catalog {sorted(ids)!r}"
+            )
+        return self
+
+    def resolved(self) -> EligibilityCatalogEntry:
+        for entry in self.catalog:
+            if entry.id == self.active:
+                return entry
+        # ``_resolve_active`` guarantees this is unreachable.
+        raise UnknownEligibilityStrategyError(self.active)
+
+
+# --- safety keywords (audit-only allow-list) -------------------------------
+
+
+class SafetyKeywordsLang(BaseModel):
+    """Per-language keyword allow-list for one severity tier.
+
+    The post_process audit scans the LLM's reply for any keyword in the
+    active language; absence at tiers ≤2 emits
+    ``symptoms.safety_keywords.missing``. Empty lists are rejected so a
+    bilingual omission cannot silently disable the audit signal.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    en: list[str] = Field(min_length=1)
+    zh: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _no_blank_keywords(self) -> "SafetyKeywordsLang":
+        for lang, items in (("en", self.en), ("zh", self.zh)):
+            for kw in items:
+                if not kw.strip():
+                    raise ValueError(
+                        f"safety_keywords_by_tier.*.{lang} contains an "
+                        f"empty / whitespace-only keyword"
+                    )
+        return self
+
+
+class SafetyKeywordsByTier(BaseModel):
+    """Required keyword allow-list for every severity tier.
+
+    Missing a tier is a validation error — the audit pipeline depends on
+    being able to look up every tier by name. Adding a future tier means
+    updating both this model and :data:`SeverityTier`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    Critical: SafetyKeywordsLang
+    Urgent: SafetyKeywordsLang
+    Moderate: SafetyKeywordsLang
+    Mild: SafetyKeywordsLang
+
+    def for_tier(self, tier: SeverityTier) -> SafetyKeywordsLang:
+        return getattr(self, tier)
+
+
+# --- top-level symptoms config --------------------------------------------
+
+
+class SymptomsConfig(BaseModel):
+    """Root of ``configs/symptoms.yaml``.
+
+    Cross-references are validated up-front: every dataset's ``model_id``
+    must resolve to a registered model. A typo'd reference raises at
+    load time so the server never starts against a half-broken catalog.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    datasets: list[DatasetSpec] = Field(min_length=1)
+    models: list[ModelSpec] = Field(min_length=1)
+    eligibility: EligibilityCatalogConfig
+    safety_keywords_by_tier: SafetyKeywordsByTier
+
+    @model_validator(mode="after")
+    def _model_refs_resolve(self) -> "SymptomsConfig":
+        known = {m.id for m in self.models}
+        for ds in self.datasets:
+            unknown = [mid for mid in ds.model_ids if mid not in known]
+            if unknown:
+                raise ValueError(
+                    f"datasets[id={ds.id!r}].model_ids reference unknown "
+                    f"models {unknown!r}; known: {sorted(known)!r}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _unique_dataset_ids(self) -> "SymptomsConfig":
+        ids = [d.id for d in self.datasets]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"datasets[].id must be unique, got {ids!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _unique_model_ids(self) -> "SymptomsConfig":
+        ids = [m.id for m in self.models]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"models[].id must be unique, got {ids!r}")
+        return self

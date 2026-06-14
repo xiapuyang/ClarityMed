@@ -1,0 +1,104 @@
+# Symptoms feature — disease prediction via typed-BASD.
+#
+# Schema lives at src/claritymed/core/symptoms/schemas.py. A typo here
+# fails loud at load (catalog + active-id pattern mirrors retrieval.yaml).
+#
+# Kill switch: set `datasets[0].enabled: false` to ship the file with
+# the plugin disabled. Removing this file entirely takes the plugin out
+# of the agent's toolset (Unit 16 wiring degrades silently).
+#
+# `manifest_sha256` is the SHA-256 of the model's manifest.json. The
+# server hashes the manifest at startup and refuses to load on
+# mismatch — this is half of the KTD-6 two-level integrity chain. The
+# placeholder below is overwritten by `claritymed-symptoms-train-ddxplus`
+# after a successful train; pre-train, keep the dataset disabled.
+
+datasets:
+  - id: ddxplus
+    enabled: false  # flip to true once weights + manifest exist locally
+    # One or more models can serve this dataset; the first id is the
+    # canonical primary used by the "first" selection strategy. Add
+    # additional ids and set model_selection: round_robin for A/B or
+    # shadow inference.
+    model_ids: [typed_basd_v1]
+    model_selection: first
+    maxstep: 8                     # set by Phase 0 ablation (Unit 3)
+    partial_min_confidence: 0.5    # top-3 mass cutoff for partial differential
+    severity_high_specificity_evidence_ids: []
+    session_ttl_seconds: 1800      # 30 min; KTD-12
+
+models:
+  - id: typed_basd_v1
+    algorithm_module: typed_basd
+    weights_subpath: ddxplus/typed_basd_v1
+    # Placeholder — replaced by the train pipeline. Validator accepts any
+    # 64-char hex so the file shape is valid; the server's startup check
+    # is what catches a real mismatch.
+    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+eligibility:
+  # Production default chosen by Phase 2 A/B (Unit 10). `direct` is the
+  # cheapest fallback while the eval set is being labeled.
+  active: direct
+  catalog:
+    - id: direct
+      kind: direct
+    - id: term_service
+      kind: term_service
+    - id: translation
+      kind: translation
+      provider_id: omlx               # MUST be ProviderConfig.kind == "local"
+      prompt_name: translate_complaint_to_en
+      max_tokens: 256
+
+# Audit-only allow-list. NOT a verbatim safety-sentence template — the
+# LLM composes prose per `symptoms_final_reply.yaml` (the prompt
+# registry), and the post_process hook scans the reply for any keyword
+# below. Absence at tiers ≤2 emits `symptoms.safety_keywords.missing`.
+safety_keywords_by_tier:
+  Critical:                          # severity 1
+    en:
+      - "call 911"
+      - "emergency services"
+      - "ER now"
+      - "do not self-transport"
+      - "call emergency"
+    zh:
+      - "立即拨打120"
+      - "立即拨打"
+      - "急救"
+      - "急诊"
+      - "不要自行前往"
+  Urgent:                            # severity 2
+    en:
+      - "same-day"
+      - "urgent care"
+      - "ER if"
+      - "today"
+    zh:
+      - "今日就诊"
+      - "急诊"
+      - "出现以下情况"
+      - "24小时内"
+  Moderate:                          # severity 3-4
+    en:
+      - "within a week"
+      - "primary care"
+      - "watch for"
+      - "see your doctor"
+    zh:
+      - "一周内"
+      - "门诊"
+      - "如果出现"
+      - "建议就诊"
+  Mild:                              # severity 5
+    en:
+      - "self-care"
+      - "if it worsens"
+      - "if it persists"
+      - "rest"
+    zh:
+      - "居家护理"
+      - "如加重"
+      - "如持续"
+      - "休息"

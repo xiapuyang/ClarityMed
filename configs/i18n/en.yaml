@@ -55,11 +55,17 @@ ask_modal:
   answer_value: "    ▶ {value}"
   declined_header: "User declined to answer questions"
   declined_question: "  └ · {question}（{options}）"
+  declined_question_numeric: "  └ · {question}（{range}）"
   multi_empty: "—"
   hint_single: "↑↓ move · enter submit · esc cancel"
   hint_multi: "↑↓ move · space toggle · enter submit · esc cancel"
+  hint_numeric: "Type a number, press enter · esc cancel"
   badge_single: "Single"
   badge_multi: "Multi"
+  badge_numeric: "Number"
+  numeric_out_of_range: "Enter a value between {min} and {max}."
+  numeric_step_mismatch: "Value must be a multiple of {step}."
+  numeric_invalid: "Enter a number."
 
 phi:
   redaction_marker:

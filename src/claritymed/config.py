@@ -138,6 +138,36 @@ def load_evals_config() -> "EvalsConfig":
     return EvalsConfig.model_validate(raw)
 
 
+def load_symptoms_config() -> "SymptomsConfig":
+    """Load and validate ``configs/symptoms.yaml``.
+
+    Single source of truth for the symptoms feature's dataset/model
+    catalog, eligibility strategy catalog, and tier-keyed safety-keyword
+    allow-list (audit-only — verbatim safety sentences are NOT stored
+    here; per-tier behavioural prose lives in ``symptoms_final_reply.yaml``
+    in the prompt registry).
+
+    Raises:
+        FileNotFoundError: ``configs/symptoms.yaml`` does not exist. The
+            file is the feature's enable gate — its absence is the
+            documented "kill switch" that keeps the symptoms plugin out
+            of the agent's toolset entirely.
+        pydantic.ValidationError: The YAML is structurally wrong.
+        UnknownEligibilityStrategyError: ``eligibility.active`` does not
+            match a catalog entry id.
+    """
+    from claritymed.core.symptoms.schemas import SymptomsConfig
+
+    raw = load_yaml("symptoms.yaml")
+    if not raw:
+        raise FileNotFoundError(
+            "configs/symptoms.yaml missing or empty — required when the "
+            "symptoms feature is enabled. Set datasets[0].enabled=false "
+            "to ship with the feature off rather than removing the file."
+        )
+    return SymptomsConfig.model_validate(raw)
+
+
 def load_env_file(path: Path | None = None) -> dict[str, str]:
     """Load ``KEY=VALUE`` lines from ``CLARITYMED_HOME/.env`` into ``os.environ``.
 
@@ -241,3 +271,4 @@ def reload_configs() -> None:
 if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
     from claritymed.core.schemas.evals import EvalsConfig  # noqa: F401
     from claritymed.core.schemas.router import RouterConfig  # noqa: F401
+    from claritymed.core.symptoms.schemas import SymptomsConfig  # noqa: F401

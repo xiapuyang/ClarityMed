@@ -212,3 +212,56 @@ class MinerUNotAllowed(OcrProviderError):
     testing only — ``is_local = False`` keeps PHI chains structurally
     safe even when the env is set.
     """
+
+
+# --- symptoms feature errors -------------------------------------------
+#
+# Same fail-loud catalog pattern as the RAG errors above: a typo'd
+# ``eligibility.active`` or a config that cross-references a missing
+# dataset id raises at load time rather than silently degrading. The
+# strategy-level runtime errors (config misuse, dependency unavailable)
+# are split so the orchestrator can branch on "won't ever work" vs
+# "transiently down".
+
+
+class UnknownEligibilityStrategyError(KeyError):
+    """``eligibility.active`` does not appear in the catalog."""
+
+
+class UnknownDatasetError(KeyError):
+    """A symptoms config field referenced a dataset id not in ``datasets[]``.
+
+    Raised by ``SymptomsConfig`` validators (load time) and never by the
+    registry's runtime resolution path — LLM-supplied ``dataset_hint``
+    values fall through soft, per KTD-9 in the disease-prediction plan.
+    """
+
+
+class SymptomsServerUnreachableError(RuntimeError):
+    """Symptoms server returned non-2xx, timed out, or sent a bad shape.
+
+    Mirrors ``EmbedderUnreachableError``: the orchestrator catches this
+    mid-loop and degrades the tool call to a structured ``server_error``
+    result so the LLM can fall back to free-text answering.
+    """
+
+
+class EligibilityStrategyConfigError(RuntimeError):
+    """An eligibility strategy was built against an invalid configuration.
+
+    The canonical case is the ``translation`` strategy resolving a
+    provider whose ``ProviderConfig.kind`` is ``"cloud"`` — that path
+    would send PHI off-device, so construction fails loud rather than
+    waiting for the first request.
+    """
+
+
+class EligibilityStrategyUnavailableError(RuntimeError):
+    """An eligibility strategy cannot run in the current environment.
+
+    Distinct from ``EligibilityStrategyConfigError``: the config is
+    well-formed, but a runtime dependency (LLM provider unreachable,
+    ``NoOpTermService`` injected, sidecar JSON missing) makes the
+    strategy non-functional. Caller may fall through to the next
+    strategy or to free-text answering.
+    """
