@@ -342,6 +342,7 @@ class SymptomsFeature:
         self,
         ctx: "RunContext[TurnState]",
         complaint: str,
+        symptom_summary: str | None = None,
         dataset_hint: str | None = None,
     ) -> dict[str, Any]:
         """Run the eligibility → confirm → loop pipeline.
@@ -349,13 +350,25 @@ class SymptomsFeature:
         Always returns a dict (never raises into the LLM). Error
         translation happens here so the LLM sees a structured result
         for every branch.
+
+        ``symptom_summary`` is the LLM's distilled clinical chief
+        complaint — passed straight to the server's init-symptom
+        matcher. Eligibility / audit / PHI guard all stay on
+        ``complaint`` because they want the raw user text. See
+        ``predict_disease_from_symptoms_tool.yaml`` for the LLM-facing
+        contract.
         """
         deps = ctx.deps
         language = getattr(deps, "language", "en") or "en"
         request_id, user_id, _ = get_context_or_raise()
         audit_event(
             "tool.predict_disease_from_symptoms",
-            {"tool_name": TOOL_NAME, "dataset_hint": dataset_hint},
+            {
+                "tool_name": TOOL_NAME,
+                "dataset_hint": dataset_hint,
+                "has_symptom_summary": symptom_summary is not None
+                and bool(symptom_summary.strip()),
+            },
         )
 
         dataset = self._resolve_dataset(dataset_hint, complaint)
@@ -403,6 +416,7 @@ class SymptomsFeature:
             channel=channel,
             dataset=dataset,
             complaint=complaint,
+            symptom_summary=symptom_summary,
             wire_profile=wire_profile,
             language=language,
             request_id=request_id,
@@ -497,6 +511,7 @@ class SymptomsFeature:
         channel: Any,
         dataset: DatasetSpec,
         complaint: str,
+        symptom_summary: str | None,
         wire_profile: dict[str, Any],
         language: str,
         request_id: str,
@@ -504,7 +519,11 @@ class SymptomsFeature:
     ) -> dict[str, Any]:
         try:
             start = await self._client.start_session(
-                dataset.id, complaint, wire_profile, language=language
+                dataset.id,
+                complaint,
+                wire_profile,
+                language=language,
+                symptom_summary=symptom_summary,
             )
         except SymptomsServerUnreachableError:
             audit_event(

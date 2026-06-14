@@ -38,6 +38,82 @@ SeverityTier = Literal["Critical", "Urgent", "Moderate", "Mild"]
 # a YAML catalog entry. Anything else (typo, missing branch) fails loud.
 EligibilityStrategyKind = Literal["direct", "term_service", "translation"]
 
+# Evidence dtypes the init-symptom matcher will consider as candidates.
+# Mila's BASD only injects binary evidences as the turn-0 free
+# observation (env.py:267 — ``if data_type == "B" and is_present and
+# (not is_antecedent)``). We mirror that by default; relaxing to
+# ``["B", "M"]`` requires the matcher to also pick a value, which v1
+# does not implement.
+EvidenceDtype = Literal["B", "C", "M"]
+
+
+# --- init-symptom matcher --------------------------------------------------
+
+
+class InitSymptomFilter(BaseModel):
+    """Per-dataset candidate-pool filter for the init-symptom matcher.
+
+    Default mirrors Mila BASD: exclude antecedent evidences and accept
+    only binary dtype. Datasets where the binary pool is too small (or
+    where the matcher should also consider M-type localizers) can
+    override either field — but enabling M requires runtime support
+    for value resolution that v1 doesn't ship.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    exclude_antecedent: bool = True
+    allowed_dtypes: list[EvidenceDtype] = Field(
+        default_factory=lambda: ["B"],
+        min_length=1,
+        max_length=3,
+    )
+
+
+class InitMatcherConfig(BaseModel):
+    """Top-level init-symptom matcher configuration.
+
+    The embedder is a process-wide singleton loaded once at server
+    lifespan startup. Per-dataset candidate vectors are encoded
+    against this singleton at dataset load time. Disabling the
+    matcher globally (``enabled=False``) makes ``init_catalog`` on
+    every :class:`LoadedDataset` ``None`` and the runtime falls back
+    to zero-init state — matching pre-matcher behaviour.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = True
+    model_id: str = Field(
+        default="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
+        min_length=1,
+        max_length=128,
+        description=(
+            "sentence-transformers / HuggingFace model id. SapBERT is "
+            "the default — trained on UMLS synonyms, well-suited to "
+            "short medical-phrase similarity."
+        ),
+    )
+    device: Literal["cpu", "cuda", "mps", "auto"] = Field(
+        default="cpu",
+        description=(
+            "Where to load the matcher model. CPU keeps it from "
+            "competing with BASD inference for GPU memory; matching "
+            "is a turn-0 one-shot so latency is not critical."
+        ),
+    )
+    threshold: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cosine score for a match to be injected. Scores "
+            "below this fall through to the zero-init branch (no "
+            "evidence pre-revealed). 0.55 is a SapBERT-on-DDXPlus "
+            "starting point; sweep on a dev set to tune."
+        ),
+    )
+
 
 # --- datasets + models -----------------------------------------------------
 
@@ -95,6 +171,18 @@ class DatasetSpec(BaseModel):
     # dogfood shows TTL eviction dominates the cancel reason. Config-driven
     # so the change is one line, not an architectural shift.
     session_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
+
+    # Init-symptom matching (parity with Mila BASD's INITIAL_EVIDENCE).
+    # When ``True`` and a ``SymptomsConfig.init_matcher`` is enabled +
+    # reachable, the server attempts to map the user's complaint to one
+    # candidate evidence and pre-reveal it on turn 0 — same shape as
+    # ``Patient.init`` in training (typed_basd.py:247). Defaults to
+    # ``True`` to close the train/serve skew; setting ``False`` reverts
+    # to zero-init state.
+    use_initial_symptom_flag: bool = True
+    init_symptom_filter: "InitSymptomFilter" = Field(
+        default_factory=lambda: InitSymptomFilter()
+    )
 
     @model_validator(mode="after")
     def _model_ids_unique(self) -> "DatasetSpec":
@@ -314,6 +402,7 @@ class SymptomsConfig(BaseModel):
     models: list[ModelSpec] = Field(min_length=1)
     eligibility: EligibilityCatalogConfig
     safety_keywords_by_tier: SafetyKeywordsByTier
+    init_matcher: InitMatcherConfig = Field(default_factory=lambda: InitMatcherConfig())
 
     @model_validator(mode="after")
     def _model_refs_resolve(self) -> "SymptomsConfig":

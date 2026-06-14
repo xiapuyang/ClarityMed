@@ -43,6 +43,17 @@ class StartSessionRequest(BaseModel):
     sub-session is rendered in. Set by the plugin from the active
     ``language_ctx``; the server doesn't read its own ContextVar
     because uvicorn workers don't carry the orchestrator's context.
+
+    ``symptom_summary`` is the LLM's distilled chief-complaint
+    summary — a 1-2 sentence English description of the user's
+    presenting symptoms, synthesized from the full conversation by
+    the calling LLM. Used exclusively as input to the init-symptom
+    matcher (complaint → candidate evidence cosine match); the
+    differential model itself never sees it. Falls back to
+    ``complaint`` server-side when absent. Kept separate from
+    ``complaint`` because eligibility / audit / PHI guard all want
+    the raw user text, while the embedder wants a tight clinical
+    phrase — the two uses have opposite preferences.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -50,6 +61,15 @@ class StartSessionRequest(BaseModel):
     complaint: str = Field(min_length=1, max_length=4_000)
     profile: ProfilePayload
     language: Literal["en", "zh"] = "en"
+    symptom_summary: str | None = Field(
+        default=None,
+        max_length=4_000,
+        description=(
+            "LLM-distilled clinical chief complaint (1-2 sentences, EN). "
+            "Used as input to the init-symptom matcher; falls back to "
+            "`complaint` when absent."
+        ),
+    )
 
 
 class StartSessionResponse(BaseModel):
@@ -86,7 +106,16 @@ class TurnRequest(BaseModel):
 
 
 class EvidenceCollectedRow(BaseModel):
-    """One Q&A round-trip the server applied to internal state."""
+    """One Q&A round-trip the server applied to internal state.
+
+    ``source`` distinguishes user-answered evidence from
+    init-matcher-inferred evidence (the latter is pre-revealed on
+    turn 0 by mapping the LLM-supplied symptom summary to a candidate
+    evidence — see :func:`_maybe_inject_initial_symptom`). The LLM
+    downstream can frame the two differently in the final reply
+    ("you reported …" vs "the model inferred …"). Defaults to
+    ``"modal_answer"`` so existing call sites stay schema-compatible.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -94,6 +123,7 @@ class EvidenceCollectedRow(BaseModel):
     evidence_name: str
     evidence_type: Literal["B", "C", "M"]
     answer: str | int | float | list[str]
+    source: Literal["modal_answer", "init_matcher"] = "modal_answer"
 
 
 class DifferentialRow(BaseModel):

@@ -205,7 +205,7 @@ class _SyntheticAdapter:
     dataset_id = "test_synth_ds"
 
     @classmethod
-    def load(cls, spec, model_specs, *, device):  # noqa: ARG003
+    def load(cls, spec, model_specs, *, device, init_matcher=None):  # noqa: ARG003
         return LoadedDataset(
             spec=spec,
             canonical=_canonical(),
@@ -269,7 +269,7 @@ def test_registry_refuses_to_clobber_existing_id(_registered_adapter) -> None:
         dataset_id = "test_synth_ds"
 
         @classmethod
-        def load(cls, spec, model_specs, *, device):  # noqa: ARG003
+        def load(cls, spec, model_specs, *, device, init_matcher=None):  # noqa: ARG003
             raise NotImplementedError
 
     with pytest.raises(ValueError, match="already registered"):

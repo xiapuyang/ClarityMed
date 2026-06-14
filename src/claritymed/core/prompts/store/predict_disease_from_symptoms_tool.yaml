@@ -128,3 +128,149 @@ versions:
         每轮最多一次调用。若返回 ``{eligible: false}`` 或
         ``{user_declined: true}``，请改走自由文本——**不要**重试，
         也**不要**改用其他工具补救。
+  - version: v2
+    created_at: 2026-06-14
+    notes: |
+      Adds the ``symptom_summary`` argument. Closes the train/serve
+      skew where the BASD agent was trained with ``Patient.init``
+      (typed_basd.py:247) pre-revealing one chief-complaint evidence
+      on turn 0, but the runtime started from zero-init state. The
+      server uses ``symptom_summary`` as input to the init-symptom
+      matcher; falls back to ``complaint`` when absent. Eligibility +
+      audit + PHI guard still operate on the raw ``complaint``.
+    languages:
+      en: |
+        Run a structured differential-diagnosis sub-session from the
+        user's symptoms. Use this tool when the user is asking
+        diagnostically — "what could be wrong with me?", "is this
+        serious?", "could this be X?" — and the complaint plausibly
+        involves one of the conditions listed below.
+
+        How it works (the LLM does NOT drive the loop):
+          1. The plugin runs an eligibility filter on the complaint.
+             If the complaint is out of scope, it returns
+             ``{eligible: false}`` and you should answer with normal
+             RAG / free text — no second tool call needed.
+          2. The plugin asks the user a one-tap confirm modal
+             ("Try follow-up Q&A?"). If the user declines, you get
+             ``{user_declined: true}`` and should answer with normal
+             RAG / free text.
+          3. The plugin then collects age + sex via a modal (if
+             missing from profile), then loops 5-12 structured
+             questions with the user. You will NOT be invoked during
+             that loop.
+          4. When the loop finishes (done / cap / cancel), you receive
+             a structured payload and compose the final reply per
+             ``symptoms_final_reply.yaml``.
+
+        Covered conditions (DDXPlus, abbreviated by region):
+          - Cardiopulmonary: chest pain, pulmonary embolism,
+            spontaneous pneumothorax, myocardial infarction analogues,
+            pericarditis.
+          - Respiratory / infectious: bronchitis, pneumonia,
+            tuberculosis, asthma exacerbation, COVID-19, influenza,
+            URI / sinusitis.
+          - Gastrointestinal: abdominal pain, GERD, pancreatitis,
+            cholecystitis, bowel obstruction, gastroenteritis.
+          - Neurological: cluster headache, migraine, meningitis.
+          - Allergy / dermatology: urticaria, anaphylaxis,
+            angioedema.
+          - Other systemic infectious / inflammatory presentations.
+
+        DO call when the user describes a multi-symptom presentation
+        plausibly in this scope ("I've had chest pain and shortness of
+        breath since this morning"), or a single high-specificity
+        symptom (severe headache, sudden chest pain).
+
+        DO NOT call for: medication questions, general health advice,
+        profile updates ("save this allergy"), past-history queries,
+        or symptoms clearly outside this scope (dental pain, eye pain
+        without systemic context, chronic skin condition management).
+
+        Arguments:
+          - ``complaint`` (required): the user's symptom description
+            in their own words. Pass the substantive text — do not
+            paraphrase or pre-classify. The plugin's eligibility check
+            runs against the raw complaint.
+          - ``symptom_summary`` (optional but recommended): a tight
+            English clinical chief-complaint distilled from the full
+            conversation, 1-2 sentences. Examples:
+              * "severe right-sided abdominal pain for 2 days with
+                 fever and vomiting"
+              * "sudden chest pain radiating to the left arm,
+                 shortness of breath, started 30 minutes ago"
+              * "rash and itching on both forearms after eating
+                 shellfish 1 hour ago"
+            Used ONLY as input to the differential model's chief
+            complaint matcher — the user never sees this text, and
+            it does not affect eligibility filtering. Omit only when
+            the conversation is so short that ``complaint`` already
+            reads like a clean chief complaint.
+          - ``dataset_hint`` (optional): If you have reason to prefer
+            a specific dataset (rare in v1 since only DDXPlus is
+            enabled), pass its id. Unknown hints fall through soft —
+            they do NOT raise. Leave unset in normal use.
+
+        Single call per turn. If the result is
+        ``{eligible: false}`` or ``{user_declined: true}``, fall
+        through to free-text — do not retry or call a sibling tool.
+      zh: |
+        基于用户症状跑一次结构化的鉴别诊断子会话。当用户在做诊断性
+        询问（"我可能怎么了"、"这严重吗"、"会不会是 X"），且主诉合理
+        地涉及下方列出的某类疾病时，调用本工具。
+
+        工作方式（LLM 不参与循环）：
+          1. 插件先对主诉跑一次资格过滤。若不在范围内，返回
+             ``{eligible: false}``，你应改用常规 RAG / 自由文本回答，
+             **不要**再调一次工具。
+          2. 插件给用户弹一次确认模态（"要做一轮跟进问答吗？"）。
+             用户点 No 则你收到 ``{user_declined: true}``，同样
+             改走常规 RAG / 自由文本。
+          3. 插件随后通过模态采集年龄 + 性别（profile 缺失时），
+             再与用户跑 5-12 轮结构化问答。**你不会在循环过程中
+             被再次调用。**
+          4. 循环结束（done / cap / cancel）后，你会收到一份结构化
+             payload，再依据 ``symptoms_final_reply.yaml`` 撰写
+             最终回复。
+
+        覆盖的疾病（DDXPlus，按解剖区简列）：
+          - 心肺：胸痛、肺栓塞、自发性气胸、心肌梗死类、心包炎。
+          - 呼吸 / 感染：支气管炎、肺炎、肺结核、哮喘急性发作、
+            新冠、流感、上呼吸道感染 / 鼻窦炎。
+          - 消化：腹痛、胃食管反流、胰腺炎、胆囊炎、肠梗阻、
+            肠胃炎。
+          - 神经：丛集性头痛、偏头痛、脑膜炎。
+          - 过敏 / 皮肤：荨麻疹、过敏性休克、血管性水肿。
+          - 其他系统性感染 / 炎症性表现。
+
+        应当调用的场景：用户描述多个症状且合理在上述范围内
+        （"今早开始胸痛伴气短"），或单一高特异性症状（剧烈头痛、
+        突发胸痛）。
+
+        **不**应调用的场景：用药问题、一般健康建议、画像更新
+        （"帮我记下这条过敏"）、既往史查询，或明显在范围外的
+        症状（牙痛、孤立的眼痛、慢性皮肤病管理）。
+
+        参数：
+          - ``complaint`` （必填）：用户对症状的原话描述。把原文
+            传进去——**不要**改写、**不要**预分类。资格过滤是
+            针对原始文本跑的。
+          - ``symptom_summary`` （可选但推荐）：用英文写一句紧凑
+            的临床主诉，从完整对话中提炼，1-2 句。例：
+              * "severe right-sided abdominal pain for 2 days with
+                 fever and vomiting"
+              * "sudden chest pain radiating to the left arm,
+                 shortness of breath, started 30 minutes ago"
+              * "rash and itching on both forearms after eating
+                 shellfish 1 hour ago"
+            仅用于鉴别诊断模型的主诉匹配——用户**看不到**这段文字，
+            也**不影响**资格过滤。除非对话很短、``complaint``
+            本身已经是一句干净的主诉，否则都建议传。
+          - ``dataset_hint`` （可选）：若有理由优先某个数据集
+            （v1 仅 DDXPlus，几乎不会用到），传它的 id 即可。
+            未知的 hint 会被软处理——**不会**抛错。常规情况下
+            保持不传。
+
+        每轮最多一次调用。若返回 ``{eligible: false}`` 或
+        ``{user_declined: true}``，请改走自由文本——**不要**重试，
+        也**不要**改用其他工具补救。

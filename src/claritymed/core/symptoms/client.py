@@ -100,12 +100,20 @@ class SymptomsServerClient:
         profile: dict[str, Any],
         *,
         language: str = "en",
+        symptom_summary: str | None = None,
     ) -> StartSessionResponse:
-        """``POST /v1/datasets/<id>/sessions`` — open a new sub-session."""
+        """``POST /v1/datasets/<id>/sessions`` — open a new sub-session.
+
+        ``symptom_summary`` is the LLM-distilled clinical chief
+        complaint (1-2 sentences, EN) — fed to the server's
+        init-symptom matcher to pre-reveal turn-0 evidence. ``None``
+        is fine: the server falls back to ``complaint``.
+        """
         payload = StartSessionRequest(
             complaint=complaint,
             profile=profile,  # type: ignore[arg-type] — pydantic coerces
             language=language,  # type: ignore[arg-type]
+            symptom_summary=symptom_summary,
         )
         data = await self._post_json(
             f"/v1/datasets/{dataset_id}/sessions",

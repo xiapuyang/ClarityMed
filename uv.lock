@@ -607,6 +607,7 @@ symptoms-server = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pandas" },
+    { name = "sentence-transformers" },
     { name = "torch" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -661,6 +662,7 @@ requires-dist = [
     { name = "rapidocr-onnxruntime", marker = "extra == 'ocr-image'", specifier = ">=1.4" },
     { name = "rich", specifier = ">=13.6.0" },
     { name = "scipy", specifier = ">=1.17.1" },
+    { name = "sentence-transformers", marker = "extra == 'symptoms-server'", specifier = ">=3.0" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "starlette", specifier = ">=0.41.0" },
     { name = "textual", specifier = ">=0.85,<1.0" },

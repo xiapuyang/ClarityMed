@@ -63,6 +63,13 @@ class CanonicalEvidence:
     ``native_question_text`` and ``native_value_labels`` are the corpus's
     own text — used by the question renderer as the fallback after i18n
     keys miss. Empty when the corpus only ships one language.
+
+    ``is_antecedent`` mirrors DDXPlus's flag: ``True`` for history /
+    risk-factor questions ("Have you had surgery in the last month?"),
+    ``False`` for current presenting symptoms ("Do you have a fever?").
+    Used by the init-symptom matcher to restrict the candidate pool to
+    plausible chief complaints. Datasets without an analogous flag
+    leave this at the default ``False``.
     """
 
     id: str
@@ -72,6 +79,7 @@ class CanonicalEvidence:
     native_question_text: dict[str, str] = field(default_factory=dict)
     native_value_labels: dict[str, dict[str, str]] = field(default_factory=dict)
     is_high_specificity: bool = False
+    is_antecedent: bool = False
 
     def value_by_raw(self, raw: str) -> CanonicalValue | None:
         for v in self.values:
@@ -201,6 +209,30 @@ class LoadedModel:
 
 
 @dataclass(frozen=True)
+class InitSymptomCatalog:
+    """Per-dataset chief-complaint catalog for the init-symptom matcher.
+
+    Built once at dataset load by encoding the question text of every
+    eligible candidate evidence (typically ``is_antecedent=False ∧
+    dtype="B"``) through the shared init-matcher embedder. The matrix
+    is L2-normalized and stored as ``float32``; runtime cosine reduces
+    to a single ``matrix @ vec`` dot product.
+
+    ``candidate_idx[i]`` is the algorithm-internal evidence idx the
+    i-th row of ``matrix`` corresponds to. The runtime matcher returns
+    ``candidate_idx[argmax]`` when the top score clears ``threshold``.
+
+    Carries no reference to the embedder model — that lives as a
+    process-wide singleton on ``SERVER_STATE``. This lets a dataset
+    hot-reload without disturbing the shared model and vice versa.
+    """
+
+    candidate_idx: list[int]
+    matrix: np.ndarray  # [N, D] L2-normalized fp32
+    threshold: float
+
+
+@dataclass(frozen=True)
 class LoadedDataset:
     """Server-side bundle: canonical data + per-model_id loaded models.
 
@@ -210,11 +242,17 @@ class LoadedDataset:
     strategy. ``round_robin`` keeps a tiny mutable counter in
     ``_rr_counter``; the dataclass is frozen otherwise so request-time
     code can't accidentally mutate the canonical or model bundles.
+
+    ``init_catalog`` is ``None`` when the dataset doesn't use the
+    init-symptom matcher (``use_initial_symptom_flag=False`` or the
+    matcher embedder failed to load). Runtime checks this before
+    attempting a match — absence is a no-op, not an error.
     """
 
     spec: DatasetSpec
     canonical: CanonicalDataset
     models: dict[str, LoadedModel]
+    init_catalog: InitSymptomCatalog | None = None
     _rr_counter: list[int] = field(default_factory=lambda: [0], repr=False)
 
     def model_ids(self) -> list[str]:

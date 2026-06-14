@@ -76,6 +76,11 @@ symptoms-server = [
     # ablating against the dataset. Kept here (not main deps) because the
     # 30 MB+ install isn't worth it for users who only run the TUI.
     "pandas>=2.0",
+    # Init-symptom matcher (complaint → candidate evidence) — loaded once
+    # at server lifespan startup, CPU-default so it doesn't compete with
+    # BASD for GPU memory. SapBERT is the recommended default model; any
+    # SentenceTransformer-compatible id works via `init_matcher.model_id`.
+    "sentence-transformers>=3.0",
 ]
 # E2E quality evaluation — requires live local services (embedder + reranker +
 # Qdrant) and the project's configured LLM. Run with:

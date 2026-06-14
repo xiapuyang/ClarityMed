@@ -29,6 +29,15 @@ datasets:
     partial_min_confidence: 0.5    # top-3 mass cutoff for partial differential
     severity_high_specificity_evidence_ids: []
     session_ttl_seconds: 1800      # 30 min; KTD-12
+    # Init-symptom matcher: maps the LLM's symptom_summary (or raw
+    # complaint) to one candidate evidence and pre-reveals it on
+    # turn 0 — mirrors Mila BASD's INITIAL_EVIDENCE mechanism that
+    # ClarityMed's typed_basd.py:247 trains against. Filter defaults
+    # to is_antecedent=False ∧ dtype=B (96 candidates on DDXPlus).
+    use_initial_symptom_flag: true
+    init_symptom_filter:
+      exclude_antecedent: true
+      allowed_dtypes: ["B"]
 
 models:
   - id: typed_basd_v1
@@ -38,6 +47,17 @@ models:
     # 64-char hex so the file shape is valid; the server's startup check
     # is what catches a real mismatch.
     manifest_sha256: "0ec28469bf88a3119df1fe22ad8665a497184ba3231a74601ab691f272697d82"
+
+# Process-wide chief-complaint matcher embedder. Shared singleton —
+# every dataset's per-catalog vectors are encoded against this one
+# model. SapBERT is the default (UMLS-trained, ~440MB on disk, CPU-fast
+# enough since matching is a turn-0 one-shot). Set enabled: false to
+# turn the feature off without removing per-dataset opt-ins.
+init_matcher:
+  enabled: true
+  model_id: cambridgeltl/SapBERT-from-PubMedBERT-fulltext
+  device: cpu                     # CPU keeps BASD GPU/MPS free
+  threshold: 0.55                 # cosine cutoff; sweep on a dev set
 
 eligibility:
   # Production default chosen by Phase 2 A/B (Unit 10). `direct` is the

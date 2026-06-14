@@ -8,12 +8,15 @@ sub-package's adapter registration) and then calls :func:`build_dataset`.
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from claritymed.core.symptoms.datasets.adapter import DatasetAdapter
 from claritymed.core.symptoms.datasets.canonical import LoadedDataset
 from claritymed.core.symptoms.schemas import DatasetSpec, ModelSpec
 from claritymed.errors import UnknownDatasetError
+
+if TYPE_CHECKING:
+    from claritymed.core.symptoms.init_matcher import InitMatcherEmbedder
 
 _ADAPTERS: dict[str, type[DatasetAdapter]] = {}
 
@@ -50,11 +53,17 @@ def build_dataset(
     model_specs: Iterable[ModelSpec],
     *,
     device: str,
+    init_matcher: "InitMatcherEmbedder | None" = None,
 ) -> LoadedDataset:
     """Dispatch to the adapter registered for ``spec.id`` and load.
 
     Filters ``model_specs`` down to the ids the dataset references —
-    adapters never see specs they don't need.
+    adapters never see specs they don't need. ``init_matcher`` is the
+    shared singleton embedder for chief-complaint matching; adapters
+    use it to build the per-dataset init-symptom catalog at load time
+    (see :class:`~claritymed.core.symptoms.init_matcher.InitMatcherEmbedder`).
+    ``None`` disables the catalog build and the runtime falls back to
+    zero-init state.
 
     Raises:
         UnknownDatasetError: No adapter is registered for ``spec.id``.
@@ -75,4 +84,4 @@ def build_dataset(
         raise UnknownDatasetError(
             f"dataset {spec.id!r} references model ids not in models[]: {missing!r}"
         )
-    return adapter.load(spec, needed, device=device)
+    return adapter.load(spec, needed, device=device, init_matcher=init_matcher)

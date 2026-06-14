@@ -10,11 +10,14 @@ without loading torch weights.
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+
+if TYPE_CHECKING:
+    from claritymed.core.symptoms.init_matcher import MatchResult
 
 from claritymed.core.symptoms.datasets import (
     CanonicalCondition,
@@ -401,3 +404,124 @@ def test_main_binds_loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_mod.uvicorn, "run", _fake_run)
     app_mod.main()
     assert captured["host"] == "127.0.0.1"
+
+
+# --- init-symptom matcher injection --------------------------------------
+
+
+class _StubMatcher:
+    """Process-singleton substitute for InitMatcherEmbedder.
+
+    Carries a fixed mapping ``text → MatchResult``. The server's
+    start_session calls ``match(text, catalog)``; this stub ignores
+    the catalog and returns the canned result so each test can pin
+    exactly which evidence (if any) gets injected.
+    """
+
+    def __init__(self, responses: dict[str, "MatchResult"]) -> None:
+        self._responses = responses
+        self.calls: list[str] = []
+
+    def match(self, text: str, _catalog) -> "MatchResult":
+        self.calls.append(text)
+        from claritymed.core.symptoms.init_matcher import MatchResult
+
+        return self._responses.get(
+            text.strip(), MatchResult(evidence_idx=None, score=0.0)
+        )
+
+
+def _loaded_dataset_with_catalog(agent: _StubAgent, *, threshold: float = 0.5):
+    """LoadedDataset variant with an init catalog wired in.
+
+    The catalog matrix is a dummy 2×4 — the stub matcher returns
+    canned results without consulting it, so values don't matter as
+    long as the dataclass is well-formed.
+    """
+    from claritymed.core.symptoms.datasets.canonical import InitSymptomCatalog
+
+    ds = _loaded_dataset(agent=agent)
+    catalog = InitSymptomCatalog(
+        candidate_idx=[0, 1],  # E_a, E_b — both B-type
+        matrix=np.eye(2, 4, dtype=np.float32),
+        threshold=threshold,
+    )
+    return LoadedDataset(
+        spec=ds.spec,
+        canonical=ds.canonical,
+        models=ds.models,
+        init_catalog=catalog,
+    )
+
+
+def test_start_session_injects_matched_evidence_into_state(client: TestClient) -> None:
+    from claritymed.core.symptoms.init_matcher import MatchResult
+
+    agent = _StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
+    SERVER_STATE.datasets["testds"] = _loaded_dataset_with_catalog(agent)
+    SERVER_STATE.config_loaded = True
+    SERVER_STATE.init_matcher_model = _StubMatcher(
+        {"chest pain summary": MatchResult(evidence_idx=1, score=0.85)}
+    )
+    payload = _start_payload()
+    payload["symptom_summary"] = "chest pain summary"
+
+    response = client.post("/v1/datasets/testds/sessions", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    session_id = body["session_id"]
+    sub = SERVER_STATE.sessions[session_id]
+
+    assert sub.evidence_collected[0]["evidence_id"] == "E_b"
+    assert sub.evidence_collected[0]["source"] == "init_matcher"
+    # The matched evidence's block-start slot is 1 in state[0] —
+    # the layout's `off` array maps idx → slot.
+    ds = SERVER_STATE.datasets["testds"]
+    block_start = int(ds.canonical.layout["off"][1])
+    assert sub.state[0, block_start] == 1.0
+
+
+def test_start_session_falls_back_to_complaint_when_no_summary(
+    client: TestClient,
+) -> None:
+    from claritymed.core.symptoms.init_matcher import MatchResult
+
+    agent = _StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
+    SERVER_STATE.datasets["testds"] = _loaded_dataset_with_catalog(agent)
+    SERVER_STATE.config_loaded = True
+    matcher = _StubMatcher({"chest pain": MatchResult(evidence_idx=0, score=0.9)})
+    SERVER_STATE.init_matcher_model = matcher
+
+    response = client.post("/v1/datasets/testds/sessions", json=_start_payload())
+    assert response.status_code == 200
+    # Matcher received the raw complaint, since payload had no summary.
+    assert matcher.calls == ["chest pain"]
+
+
+def test_start_session_no_injection_when_matcher_missing(client: TestClient) -> None:
+    agent = _StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
+    SERVER_STATE.datasets["testds"] = _loaded_dataset_with_catalog(agent)
+    SERVER_STATE.config_loaded = True
+    SERVER_STATE.init_matcher_model = None  # matcher disabled
+
+    response = client.post("/v1/datasets/testds/sessions", json=_start_payload())
+    assert response.status_code == 200
+    sub = SERVER_STATE.sessions[response.json()["session_id"]]
+    assert sub.evidence_collected == []
+
+
+def test_start_session_no_injection_when_below_threshold(client: TestClient) -> None:
+    from claritymed.core.symptoms.init_matcher import MatchResult
+
+    agent = _StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
+    SERVER_STATE.datasets["testds"] = _loaded_dataset_with_catalog(agent)
+    SERVER_STATE.config_loaded = True
+    # Stub returns a None-idx MatchResult to mimic sub-threshold cosine.
+    SERVER_STATE.init_matcher_model = _StubMatcher(
+        {"chest pain": MatchResult(evidence_idx=None, score=0.42)}
+    )
+
+    response = client.post("/v1/datasets/testds/sessions", json=_start_payload())
+    assert response.status_code == 200
+    sub = SERVER_STATE.sessions[response.json()["session_id"]]
+    assert sub.evidence_collected == []

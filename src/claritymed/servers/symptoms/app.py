@@ -37,6 +37,7 @@ except ImportError as exc:  # pragma: no cover — import-time guard
 from claritymed.config import load_symptoms_config
 from claritymed.core.device import resolve_device
 from claritymed.core.symptoms.datasets import LoadedDataset, build_dataset
+from claritymed.core.symptoms.init_matcher import InitMatcherEmbedder
 from claritymed.core.symptoms.schemas import SymptomsConfig
 from claritymed.errors import UnknownDatasetError
 from claritymed.ingest.symptoms import (  # noqa: F401 — registers adapters
@@ -109,6 +110,13 @@ async def _load_config_into_state() -> None:
     Skipped silently when ``CLARITYMED_SYMPTOMS_SKIP_LOAD=1`` — tests
     pre-populate ``SERVER_STATE.datasets`` and don't want the lifespan
     re-loading on top.
+
+    Init-symptom matcher: when ``config.init_matcher.enabled`` is True,
+    the matcher embedder is constructed once and injected into every
+    dataset's ``build_dataset`` call. Catalog encoding happens inline
+    during dataset load, so the per-dataset matrix is materialized
+    before the server reports ``status=ok``. Construction failures are
+    logged but non-fatal — the runtime falls back to zero-init.
     """
     if os.environ.get("CLARITYMED_SYMPTOMS_SKIP_LOAD") == "1":
         SERVER_STATE.config_loaded = True
@@ -121,22 +129,59 @@ async def _load_config_into_state() -> None:
         SERVER_STATE.config_loaded = True
         return
     device = resolve_device("auto")
+    SERVER_STATE.init_matcher_model = _maybe_build_init_matcher(config)
     for spec in config.datasets:
         if not spec.enabled:
             continue
         try:
-            loaded = build_dataset(spec, config.models, device=device)
+            loaded = build_dataset(
+                spec,
+                config.models,
+                device=device,
+                init_matcher=SERVER_STATE.init_matcher_model,
+            )
         except (UnknownDatasetError, FileNotFoundError, RuntimeError):
             logger.exception("failed to load dataset %s", spec.id)
             raise
         SERVER_STATE.datasets[spec.id] = loaded
         logger.info(
-            "loaded dataset %s with models %s (eval: %s)",
+            "loaded dataset %s with models %s (eval: %s; init_catalog=%s)",
             spec.id,
             sorted(loaded.models),
             {mid: m.manifest.get("eval", {}) for mid, m in loaded.models.items()},
+            (
+                f"{len(loaded.init_catalog.candidate_idx)} candidates"
+                if loaded.init_catalog is not None
+                else "disabled"
+            ),
         )
     SERVER_STATE.config_loaded = True
+
+
+def _maybe_build_init_matcher(config: SymptomsConfig) -> InitMatcherEmbedder | None:
+    """Construct the shared init-matcher embedder when enabled.
+
+    Failure here is non-fatal: a missing sentence-transformers package
+    or a model-id typo logs and returns ``None``; downstream code sees
+    no catalog and skips matching. The single thing that ARE fatal are
+    config-validation errors, which Pydantic raises before this runs.
+    """
+    cfg = config.init_matcher
+    if not cfg.enabled:
+        logger.info("init-matcher disabled by config")
+        return None
+    try:
+        return InitMatcherEmbedder(
+            model_id=cfg.model_id,
+            device=cfg.device,
+            default_threshold=cfg.threshold,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "init-matcher construction failed for %s; matching disabled",
+            cfg.model_id,
+        )
+        return None
 
 
 async def _ttl_purge_loop() -> None:
@@ -188,6 +233,60 @@ def _initial_state(ds: LoadedDataset, age_years: int, sex: str) -> np.ndarray:
     sex_idx = SEX2IDX.get(sex, 0)
     state[0, s_size + len(AGE_BUCKETS) + sex_idx] = 1.0
     return state
+
+
+def _maybe_inject_initial_symptom(
+    ds: LoadedDataset, state: np.ndarray, complaint_text: str
+) -> int | None:
+    """Pre-reveal the matched chief-complaint evidence on turn 0.
+
+    Mirrors the training-time mechanism: ``typed_basd.py:247`` writes
+    ``Patient.init`` into the state at batch initialization, so the
+    BASD agent learned to make turn-0 decisions conditioned on one
+    evidence already being present. Skipping this step at runtime
+    leaves the agent in a state distribution it never saw during
+    training — measurable as a turn-0 ``next_action`` drift.
+
+    Returns the matched evidence idx (for audit) or ``None`` when no
+    match was injected. All failure modes — no matcher, no catalog,
+    sub-threshold score, encode failure — converge on ``None`` and
+    leave ``state`` untouched.
+    """
+    matcher = SERVER_STATE.init_matcher_model
+    if matcher is None or ds.init_catalog is None:
+        return None
+    text = (complaint_text or "").strip()
+    if not text:
+        return None
+    result = matcher.match(text, ds.init_catalog)
+    if result.evidence_idx is None:
+        return None
+    ev = ds.canonical.evidence_by_idx(result.evidence_idx)
+    # B-only candidate pool (enforced upstream by InitSymptomFilter)
+    # → ``bin_pos`` is the right write payload. Asserting here keeps
+    # the contract crisp if a future filter relaxation accidentally
+    # lets a C / M slip through.
+    if ev.dtype != "B":
+        logger.warning(
+            "init-matcher matched non-B evidence %s (dtype=%s); skipping "
+            "injection to avoid malformed state write",
+            ev.id,
+            ev.dtype,
+        )
+        return None
+    env = _writer_env(ds)
+    env._write(
+        state[0],
+        result.evidence_idx,
+        {"bin_pos": {result.evidence_idx}, "cat_val": {}, "multi_val": {}},
+    )
+    logger.info(
+        "init-matcher injected %s (idx=%d, score=%.3f) as turn-0 evidence",
+        ev.id,
+        result.evidence_idx,
+        result.score,
+    )
+    return result.evidence_idx
 
 
 def _writer_env(ds: LoadedDataset) -> TypedEnv:
@@ -275,9 +374,20 @@ router = APIRouter(prefix="/v1/datasets/{dataset_id}")
 
 @router.post("/sessions", response_model=StartSessionResponse)
 def start_session(dataset_id: str, req: StartSessionRequest) -> StartSessionResponse:
-    """Initialize a sub-session — return the first question."""
+    """Initialize a sub-session — return the first question.
+
+    Init-symptom injection: when ``req.symptom_summary`` (preferred) or
+    ``req.complaint`` (fallback) matches a catalog candidate above the
+    dataset's threshold, that evidence is pre-revealed in the state
+    vector before the first ``next_action`` call. This mirrors the
+    training-time ``Patient.init`` mechanism — see
+    :func:`_maybe_inject_initial_symptom` for the train/serve skew
+    rationale.
+    """
     ds = _require_dataset(dataset_id)
     state = _initial_state(ds, req.profile.age_years, req.profile.sex)
+    matcher_text = req.symptom_summary or req.complaint
+    initial_evidence_idx = _maybe_inject_initial_symptom(ds, state, matcher_text)
     model = ds.select_model()
     first_ev_idx = int(model.agent.next_action(state)[0])
     question, ev_idx = _try_render_question(
@@ -306,6 +416,21 @@ def start_session(dataset_id: str, req: StartSessionRequest) -> StartSessionResp
         language=req.language,
         profile={"age_years": req.profile.age_years, "sex": req.profile.sex},
     )
+    # Record the injected evidence in the trail so audit + final
+    # payload reflect it (training does the same — init counts as a
+    # collected evidence even though the user didn't answer a
+    # question for it).
+    if initial_evidence_idx is not None:
+        init_ev = ds.canonical.evidence_by_idx(initial_evidence_idx)
+        sub.evidence_collected.append(
+            {
+                "evidence_id": init_ev.id,
+                "evidence_name": init_ev.id,
+                "evidence_type": init_ev.dtype,
+                "answer": "Yes",
+                "source": "init_matcher",
+            }
+        )
     SERVER_STATE.sessions[session_id] = sub
     return StartSessionResponse(session_id=session_id, first_question=question)
 

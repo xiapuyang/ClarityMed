@@ -3,10 +3,12 @@
 Two layers of state:
 
 * :data:`SERVER_STATE` — process-wide, holds loaded datasets (one
-  :class:`LoadedDataset` per ``DatasetSpec`` with ``enabled=True``) and
-  the live sub-session map. Tests pre-populate ``datasets`` to skip the
-  manifest+weights load and pre-populate ``sessions`` to assert
-  lifecycle without a real ML run.
+  :class:`LoadedDataset` per ``DatasetSpec`` with ``enabled=True``),
+  the shared init-symptom matcher embedder, and the live sub-session
+  map. Tests pre-populate ``datasets`` to skip the manifest+weights
+  load and pre-populate ``sessions`` to assert lifecycle without a
+  real ML run; ``init_matcher_model`` is left ``None`` and matching is
+  silently skipped.
 * :class:`SubSessionState` — per-session record carrying the live numpy
   state vector, turn count, and the evidence-collected trail.
 """
@@ -15,10 +17,14 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from claritymed.core.symptoms.datasets import LoadedDataset
+
+if TYPE_CHECKING:
+    from claritymed.core.symptoms.init_matcher import InitMatcherEmbedder
 
 
 @dataclass
@@ -51,12 +57,19 @@ class _ServerState:
         self.datasets: dict[str, LoadedDataset] = {}
         self.sessions: dict[str, SubSessionState] = {}
         self.config_loaded: bool = False
+        # Process-wide init-symptom matcher singleton. Lifespan loads
+        # it once at boot; adapters encode their per-dataset catalogs
+        # against this instance during ``build_dataset``. ``None`` means
+        # matching is disabled — every code path treats absence as a
+        # no-op rather than an error.
+        self.init_matcher_model: "InitMatcherEmbedder | None" = None
 
     def reset(self) -> None:
-        """Test helper — drops all loaded datasets + sessions."""
+        """Test helper — drops all loaded datasets + sessions + matcher."""
         self.datasets.clear()
         self.sessions.clear()
         self.config_loaded = False
+        self.init_matcher_model = None
 
 
 SERVER_STATE = _ServerState()

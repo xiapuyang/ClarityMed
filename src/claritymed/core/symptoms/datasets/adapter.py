@@ -11,10 +11,13 @@ without instantiating heavy resources.
 
 from __future__ import annotations
 
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 from claritymed.core.symptoms.datasets.canonical import LoadedDataset
 from claritymed.core.symptoms.schemas import DatasetSpec, ModelSpec
+
+if TYPE_CHECKING:
+    from claritymed.core.symptoms.init_matcher import InitMatcherEmbedder
 
 
 @runtime_checkable
@@ -36,6 +39,7 @@ class DatasetAdapter(Protocol):
         model_specs: dict[str, ModelSpec],
         *,
         device: str,
+        init_matcher: "InitMatcherEmbedder | None" = None,
     ) -> LoadedDataset:
         """Build a :class:`LoadedDataset` from the dataset's native files.
 
@@ -48,6 +52,12 @@ class DatasetAdapter(Protocol):
                 models that aren't in ``spec.model_ids``.
             device: Resolved torch device string (``"cpu"`` / ``"mps"`` /
                 ``"cuda"``) — passed through to :func:`build_basd`.
+            init_matcher: Shared init-symptom matcher embedder. When
+                provided and ``spec.use_initial_symptom_flag`` is True,
+                the adapter encodes the candidate evidence catalog at
+                load time and attaches it to :class:`LoadedDataset`.
+                ``None`` (or matcher unavailable) leaves
+                ``init_catalog=None`` and the runtime skips matching.
 
         Raises:
             FileNotFoundError: A required native file or weights file is

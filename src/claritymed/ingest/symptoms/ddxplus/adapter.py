@@ -180,6 +180,7 @@ def _build_canonical(spec: DatasetSpec, data_dir: Path) -> CanonicalDataset:
                 native_question_text=native_q,
                 native_value_labels=native_v,
                 is_high_specificity=ev_id in high_specificity,
+                is_antecedent=bool(native.get("is_antecedent", False)),
             )
         )
 
@@ -255,6 +256,7 @@ class DDXPlusAdapter:
         model_specs: dict[str, ModelSpec],
         *,
         device: str,
+        init_matcher=None,  # type: InitMatcherEmbedder | None
     ) -> LoadedDataset:
         data_dir = _data_dir()
         canonical = _build_canonical(spec, data_dir)
@@ -274,4 +276,34 @@ class DDXPlusAdapter:
             models[model_id] = LoadedModel(
                 spec=model_spec, agent=agent, manifest=manifest
             )
-        return LoadedDataset(spec=spec, canonical=canonical, models=models)
+
+        init_catalog = _maybe_build_init_catalog(spec, canonical, init_matcher)
+        return LoadedDataset(
+            spec=spec,
+            canonical=canonical,
+            models=models,
+            init_catalog=init_catalog,
+        )
+
+
+def _maybe_build_init_catalog(spec, canonical, init_matcher):
+    """Build the init-symptom catalog when the spec opts in and the
+    matcher is available. ``None`` on any disabled-or-failure path."""
+    if not spec.use_initial_symptom_flag:
+        return None
+    if init_matcher is None:
+        return None
+    # Local import to avoid pulling sentence-transformers types into the
+    # adapter module's import graph when the matcher is disabled.
+    from claritymed.core.symptoms.init_matcher import build_catalog
+
+    # Default threshold lives on InitMatcherConfig and is surfaced via
+    # ``InitMatcherEmbedder.default_threshold``. Per-dataset override
+    # is a future extension on ``DatasetSpec`` — until then, the
+    # singleton's value is the single source of truth.
+    return build_catalog(
+        canonical.evidences,
+        spec.init_symptom_filter,
+        init_matcher,
+        init_matcher.default_threshold,
+    )

@@ -111,8 +111,25 @@ class _StubClient:
         self._cancel = cancel
         self.calls: list[tuple[str, dict]] = []
 
-    async def start_session(self, dataset_id, complaint, profile, *, language="en"):
-        self.calls.append(("start", {"dataset_id": dataset_id, "language": language}))
+    async def start_session(
+        self,
+        dataset_id,
+        complaint,
+        profile,
+        *,
+        language="en",
+        symptom_summary=None,
+    ):
+        self.calls.append(
+            (
+                "start",
+                {
+                    "dataset_id": dataset_id,
+                    "language": language,
+                    "symptom_summary": symptom_summary,
+                },
+            )
+        )
         if isinstance(self._start, Exception):
             raise self._start
         return self._start
