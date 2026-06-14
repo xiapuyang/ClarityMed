@@ -71,3 +71,4 @@ docs/
 demo/
 .claritymed/
 .deepeval/
+hparam.db

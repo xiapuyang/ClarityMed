@@ -114,17 +114,19 @@ def load_torch_agent(
     weights_path: Path,
     device: str,
     *,
-    hidden: int = 2048,
-    stop_thres: float = 0.1,
     stop_mode: str = "heuristic",
 ) -> Any:
-    """Build a fresh :class:`Agent` and load weights into it.
+    """Build a fresh :class:`Agent` and load weights from ``weights_path``.
 
-    The hyperparameters are the typed-BASD defaults from the demo;
-    operators tuning them should retrain rather than override here, so
-    train-time vs serve-time stay in sync.
+    ``hidden``, ``stop_thres``, and ``temp`` are all read from the
+    checkpoint so train-time and serve-time always stay in sync regardless
+    of which hyperparameters the Optuna search settled on.
     """
     import torch
+
+    state = torch.load(weights_path, map_location=device)
+    hidden = state["trunk"]["0.weight"].shape[0]
+    stop_thres = state.get("thres", 0.1)
 
     # ``build_basd`` reads env.S, env.n_ev, env.context_size, env.off —
     # it does NOT iterate env.patients, so an empty patient list is fine.
@@ -138,13 +140,13 @@ def load_torch_agent(
         stop_thres=stop_thres,
         stop_mode=stop_mode,
     )
-    state = torch.load(weights_path, map_location=device)
     agent.trunk.load_state_dict(state["trunk"])
     agent.sym.load_state_dict(state["sym"])
     agent.patho.load_state_dict(state["patho"])
     if agent.stop is not None and state.get("stop") is not None:
         agent.stop.load_state_dict(state["stop"])
     agent.thres = state.get("thres", agent.thres)
+    agent.temp = state.get("temp", agent.temp)
     return agent
 
 

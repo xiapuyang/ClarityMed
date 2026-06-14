@@ -190,6 +190,7 @@ def _save_weights(agent, path: Path) -> None:
             "stop": agent.stop.state_dict() if agent.stop is not None else None,
             "thres": agent.thres,
             "mode": agent.mode,
+            "temp": agent.temp,
         },
         path,
     )

@@ -56,6 +56,7 @@ def _load_weights(agent, weights_path: Path, device: str) -> None:
     if agent.stop is not None and state.get("stop") is not None:
         agent.stop.load_state_dict(state["stop"])
     agent.thres = state.get("thres", agent.thres)
+    agent.temp = state.get("temp", agent.temp)
 
 
 def main() -> None:
@@ -73,6 +74,13 @@ def main() -> None:
         "--stop-mode", choices=["learned", "heuristic"], default="heuristic"
     )
     ap.add_argument("--stop-thres", type=float, default=0.1)
+    ap.add_argument(
+        "--patho-temp",
+        type=float,
+        default=None,
+        help="Classifier softmax temperature (T<1 sharpens differential → DDP up, DDR down). "
+        "Defaults to the value stored in the checkpoint.",
+    )
     ap.add_argument(
         "--quick",
         action="store_true",
@@ -100,21 +108,36 @@ def main() -> None:
     n_dis = len(pidx)
     test_pats = load_patients(args.data_dir, args.eval_n, "test", schema, pidx)
 
+    # Detect hidden size from checkpoint so --hidden doesn't need to match.
+    import torch
+
+    ckpt_state = torch.load(args.weights, map_location=device)
+    detected_hidden = ckpt_state["trunk"]["0.weight"].shape[0]
+    if args.hidden != DEFAULT_HIDDEN and args.hidden != detected_hidden:
+        print(
+            f"WARNING: --hidden {args.hidden} overrides checkpoint hidden "
+            f"{detected_hidden}; load will fail.",
+            file=sys.stderr,
+        )
+    hidden = detected_hidden
+
     # Build a one-shot env to instantiate the agent (sizes derive from env);
     # interactive_eval rebuilds a fresh env per maxstep below.
     seed_env = TypedEnv(test_pats[:1], schema, n_dis)
     agent = build_basd(
         seed_env,
         n_dis=n_dis,
-        hidden=args.hidden,
+        hidden=hidden,
         lr=1e-4,
         device=device,
         stop_thres=args.stop_thres,
         stop_mode=args.stop_mode,
     )
     _load_weights(agent, args.weights, device)
+    if args.patho_temp is not None:
+        agent.temp = args.patho_temp
 
-    print("\n## Maxstep ablation (DDXPlus / typed-BASD)\n")
+    print(f"\n## Maxstep ablation (DDXPlus / typed-BASD)  patho_temp={agent.temp}\n")
     print("| maxstep | IL | DDR | DDP | DDF1 | DSR | n_severe |")
     print("|---------|-----|-----|-----|------|-----|---------|")
     rows: list[tuple[int, float]] = []

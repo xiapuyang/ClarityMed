@@ -46,6 +46,8 @@ dependencies = [
     # into the Textual render.
     "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
     "scipy>=1.17.1",
+    "optuna>=4.9.0",
+    "optuna-dashboard>=0.20.0",
 ]
 
 [project.optional-dependencies]
