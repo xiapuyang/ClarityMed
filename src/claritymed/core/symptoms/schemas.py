@@ -179,6 +179,10 @@ class DatasetSpec(BaseModel):
     # dogfood shows TTL eviction dominates the cancel reason. Config-driven
     # so the change is one line, not an architectural shift.
     session_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
+    # Maximum categorical options shown per question. DDXPlus travel-region
+    # evidence (E_204) has 12 values; 12 fits the TUI picker without a long
+    # scroll. Raise for datasets with denser categorical vocabularies.
+    max_options: int = Field(default=12, ge=2, le=20)
 
     # Init-symptom matching (parity with Mila BASD's INITIAL_EVIDENCE).
     # When ``True`` and a ``SymptomsConfig.init_matcher`` is enabled +

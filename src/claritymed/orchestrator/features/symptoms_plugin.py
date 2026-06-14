@@ -366,6 +366,21 @@ class SymptomsFeature:
     async def pre_invoke(self, ctx: TurnContext) -> str:
         return ""
 
+    def system_prompt_fn(self) -> "Callable":
+        """Return a dynamic system-prompt function for pydantic-ai.
+
+        pydantic-ai calls this before each LLM request in the agent run.
+        Returns the ``symptoms_final_reply`` prompt only after the tool
+        has set ``deps.symptoms_reply_guide`` (i.e. on the reply-composition
+        call, not the tool-selection call). Empty string when the tool was
+        not called or returned user_declined / eligible:false / server_error.
+        """
+
+        def _fn(ctx: "RunContext[Any]") -> str:
+            return getattr(ctx.deps, "symptoms_reply_guide", None) or ""
+
+        return _fn
+
     def as_toolset(self) -> "AbstractToolset[Any] | None":
         return None
 
@@ -460,7 +475,7 @@ class SymptomsFeature:
             )
             return {"eligible": True, "user_declined": True}
 
-        return await self._run_sub_session(
+        result = await self._run_sub_session(
             deps=deps,
             channel=channel,
             dataset=dataset,
@@ -471,6 +486,20 @@ class SymptomsFeature:
             request_id=request_id,
             user_id=user_id,
         )
+        # Inject the composing-guide into deps so the dynamic system_prompt
+        # fn (registered by make_ask_agent) can surface it on the second
+        # LLM call (reply composition). Only set when there's a usable
+        # differential — user_declined / eligible:false / server_error leave
+        # deps.symptoms_reply_guide as None so no extra prompt is added.
+        if result.get("differential") or result.get("partial_differential"):
+            try:
+                guide = self._prompt_registry.get(
+                    "symptoms_final_reply", language=language
+                )
+                ctx.deps.symptoms_reply_guide = guide  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                pass
+        return result
 
     # --- helpers ------------------------------------------------------------
 
@@ -509,12 +538,26 @@ class SymptomsFeature:
         language: str,
     ) -> EligibilityResult:
         profile = await self._load_profile(deps.user_id)
+        strategy_id = self._strategy_id()
+        logger.info(
+            "eligibility check: dataset=%s strategy=%s",
+            dataset.id,
+            strategy_id,
+        )
         result = await self._eligibility.check(complaint, language, profile, dataset)
+        logger.info(
+            "eligibility result: dataset=%s strategy=%s eligible=%s confidence=%.3f reason=%r",
+            dataset.id,
+            strategy_id,
+            result.eligible,
+            result.confidence,
+            result.reason,
+        )
         audit_event(
             "symptoms.eligibility.checked",
             {
                 "dataset_id": dataset.id,
-                "strategy_id": self._strategy_id(),
+                "strategy_id": strategy_id,
                 "confidence": result.confidence,
                 "eligible": result.eligible,
             },
@@ -587,6 +630,7 @@ class SymptomsFeature:
                 wire_profile,
                 language=language,
                 symptom_summary=symptom_summary,
+                request_id=request_id,
             )
         except SymptomsServerUnreachableError:
             audit_event(
@@ -647,10 +691,16 @@ class SymptomsFeature:
                     turn_index=turn_index,
                 )
             answer_text = _first_answer(answer)
+            answer_value = _pick_answer_value(answer, question)
             transcript.append({"question": question.question, "answer": answer_text})
             try:
                 turn_resp = await self._client.turn(
-                    dataset.id, start.session_id, answer_text, language=language
+                    dataset.id,
+                    start.session_id,
+                    answer_text,
+                    answer_value=answer_value,
+                    language=language,
+                    request_id=request_id,
                 )
             except SymptomsServerUnreachableError:
                 audit_event(
@@ -699,7 +749,7 @@ class SymptomsFeature:
         user_id: str,
         transcript: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        diff = [d.model_dump() for d in turn_resp.differential]
+        diff_raw = [d.model_dump() for d in turn_resp.differential]
         audit_event(
             "symptoms.session.completed",
             {
@@ -708,7 +758,7 @@ class SymptomsFeature:
                 "session_id": "<elided>",
                 "turns_used": turn_resp.turn_count,
                 "severity_tier": _tier_for(turn_resp.differential),
-                "top_condition_id": diff[0]["condition_id"] if diff else None,
+                "top_condition_id": diff_raw[0]["condition_id"] if diff_raw else None,
             },
         )
         write_payload(
@@ -716,22 +766,18 @@ class SymptomsFeature:
             request_id,
             {
                 "kind": "symptoms.session.completed",
-                "differential": diff,
+                "differential": diff_raw,
                 "transcript": transcript,
             },
         )
-        result = {
-            "eligible": True,
-            "differential": diff,
-            "evidence_collected": [
-                e.model_dump() for e in turn_resp.evidence_collected
-            ],
-            "turn_count": turn_resp.turn_count,
-        }
         self._stash[request_id] = {
             "max_severity": _max_severity(turn_resp.differential),
         }
-        return result
+        return {
+            "eligible": True,
+            "differential": _format_differential(turn_resp.differential),
+            "turns_used": turn_resp.turn_count,
+        }
 
     def _handle_cap(
         self,
@@ -742,7 +788,7 @@ class SymptomsFeature:
         user_id: str,
         transcript: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        diff = [d.model_dump() for d in turn_resp.partial_differential]
+        diff_raw = [d.model_dump() for d in turn_resp.partial_differential]
         tier = _tier_for(turn_resp.partial_differential)
         audit_event(
             "symptoms.session.cap_hit",
@@ -757,7 +803,7 @@ class SymptomsFeature:
             request_id,
             {
                 "kind": "symptoms.session.cap_hit",
-                "partial_differential": diff,
+                "partial_differential": diff_raw,
                 "transcript": transcript,
             },
         )
@@ -767,11 +813,10 @@ class SymptomsFeature:
         return {
             "eligible": True,
             "hit_cap": True,
-            "partial_differential": diff,
-            "evidence_collected": [
-                e.model_dump() for e in turn_resp.evidence_collected
-            ],
-            "turn_count": turn_resp.turn_count,
+            "partial_differential": _format_differential(
+                turn_resp.partial_differential
+            ),
+            "turns_used": turn_resp.turn_count,
             "partial_confidence": turn_resp.partial_confidence,
         }
 
@@ -786,7 +831,9 @@ class SymptomsFeature:
         turn_index: int,
     ) -> dict[str, Any]:
         try:
-            cancel = await self._client.cancel(dataset.id, session_id)
+            cancel = await self._client.cancel(
+                dataset.id, session_id, request_id=request_id
+            )
         except SymptomsServerUnreachableError:
             audit_event(
                 "symptoms.session.cancelled",
@@ -822,12 +869,18 @@ class SymptomsFeature:
                 "max_severity": _max_severity(cancel.partial_differential),
             }
         # else: no stash entry → post_process treats as no audit needed.
+        partial = _format_differential(cancel.partial_differential)
+        # Surface partial_differential when either confidence threshold is
+        # met (case C) OR severity_override fires (case E). The server
+        # already populates partial_differential for both conditions via
+        # ``show_partial = meets_threshold or override_fired``; here we
+        # mirror that logic so the LLM has the actual conditions for case E.
+        show_partial = cancel.meets_confidence_threshold or cancel.severity_override
         return {
             "eligible": True,
             "cancelled": True,
-            "partial_differential": diff if cancel.meets_confidence_threshold else None,
-            "evidence_collected": [e.model_dump() for e in cancel.evidence_collected],
-            "turn_count": cancel.turn_count,
+            "partial_differential": partial if show_partial else None,
+            "turns_used": cancel.turn_count,
             "partial_confidence": cancel.partial_confidence,
             "meets_confidence_threshold": cancel.meets_confidence_threshold,
             "severity_override": cancel.severity_override,
@@ -877,6 +930,23 @@ class SymptomsFeature:
 # --- module helpers --------------------------------------------------------
 
 
+def _format_differential(rows: list[DifferentialRow]) -> list[dict[str, Any]]:
+    """Build the LLM-facing differential — only the fields the reply prompt uses.
+
+    Drops condition_id (internal slug), condition_idx (algorithm index),
+    and icd10 (the prompt explicitly tells the LLM not to show ICD codes).
+    Severity is a 1-5 integer: 1=Critical, 2=Urgent, 3=Moderate, 4-5=Mild.
+    """
+    return [
+        {
+            "condition_name": d.condition_name,
+            "probability": round(d.probability, 3),
+            "severity": d.severity,
+        }
+        for d in rows
+    ]
+
+
 def _first_answer(result: AskUserQuestionResult) -> Any:
     if result.numeric_values:
         return next(iter(result.numeric_values.values()))
@@ -886,6 +956,28 @@ def _first_answer(result: AskUserQuestionResult) -> Any:
             return v[0] if v else ""
         return v
     return ""
+
+
+def _pick_answer_value(
+    result: AskUserQuestionResult,
+    question: "Question",
+) -> "str | list[str] | None":
+    """Extract the ``QuestionOption.value`` for the user's pick.
+
+    Returns the raw value identifier (e.g. ``"V_0"``, ``"yes"``) that the
+    server can use as ``answer_value`` to skip label re-matching. Returns
+    ``None`` for numeric answers (no raw code) and when options carry no
+    ``value`` field.
+    """
+    if result.numeric_values or not result.answers or not question.options:
+        return None
+    raw_answer = next(iter(result.answers.values()))
+    by_label: dict[str, str | None] = {opt.label: opt.value for opt in question.options}
+    if isinstance(raw_answer, list):
+        values = [by_label.get(lbl) for lbl in raw_answer]
+        filtered = [v for v in values if v is not None]
+        return filtered if filtered else None
+    return by_label.get(raw_answer)
 
 
 def _max_severity(diff: list[DifferentialRow]) -> int | None:
@@ -913,3 +1005,115 @@ def _default_profile_loader(user_id: str) -> Profile:
     store = ProfileStore(user_id)
     profile = store.get_profile()
     return profile or Profile()
+
+
+# --- production factory --------------------------------------------------------
+
+
+def _load_ddxplus_vocab(data_dir: str) -> "dict[str, frozenset[str]]":
+    """Build evidence_id → EN phrase set from release_evidences.json.
+
+    Used by :func:`make_symptoms_factory` to populate the vocab map for
+    :class:`~claritymed.core.symptoms.eligibility.direct.DirectEligibility`.
+    Returns an empty dict when the file is absent (data not yet downloaded).
+    """
+    import json
+    from pathlib import Path as _Path
+
+    evidences_path = _Path(data_dir) / "release_evidences.json"
+    if not evidences_path.exists():
+        return {}
+    with evidences_path.open("r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    per_evidence: dict[str, frozenset[str]] = {}
+    for ev_code, ev_data in raw.items():
+        phrases: set[str] = set()
+        if q_en := ev_data.get("question_en"):
+            phrases.add(q_en)
+        for val_meanings in (ev_data.get("value_meaning") or {}).values():
+            if isinstance(val_meanings, dict) and (en_label := val_meanings.get("en")):
+                phrases.add(en_label)
+        if phrases:
+            per_evidence[ev_code] = frozenset(phrases)
+    return per_evidence
+
+
+def make_symptoms_factory(
+    base_url: str = "http://127.0.0.1:8084",
+) -> "Callable[[], SymptomsFeature] | None":
+    """Build the :class:`SymptomsFeature` factory for :class:`~claritymed.orchestrator.services.ask_service.AskService`.
+
+    Returns ``None`` when:
+    * ``configs/symptoms.yaml`` is absent or malformed.
+    * All datasets have ``enabled: false``.
+    * The active eligibility strategy cannot be constructed (provider
+      unreachable, config error).
+
+    ``None`` silently skips the symptoms tool so the LLM still answers
+    with free text — the tool is treated as "not installed" rather than
+    "broken".
+    """
+    from pathlib import Path as _Path
+
+    from claritymed.config import DATA_DIR
+    from claritymed.core.symptoms.eligibility.direct import EvidenceVocabMap
+    from claritymed.core.symptoms.eligibility.factory import build_eligibility_strategy
+    from claritymed.core.symptoms.registry import DatasetRegistry
+    from claritymed.errors import (
+        EligibilityStrategyConfigError,
+        EligibilityStrategyUnavailableError,
+    )
+
+    try:
+        from claritymed.config import load_symptoms_config
+
+        config = load_symptoms_config()
+    except Exception:
+        logger.warning("symptoms: config load failed; feature disabled", exc_info=True)
+        return None
+
+    enabled = [d for d in config.datasets if d.enabled]
+    if not enabled:
+        logger.info("symptoms: no enabled datasets; feature disabled")
+        return None
+
+    vocabs: EvidenceVocabMap = {}
+    for ds in enabled:
+        if ds.id == "ddxplus":
+            data_dir = _Path(str(DATA_DIR)) / "symptoms" / "ddxplus"
+            per_evidence = _load_ddxplus_vocab(data_dir)
+            if per_evidence:
+                vocabs[ds.id] = per_evidence
+            else:
+                logger.warning(
+                    "symptoms: ddxplus vocab not found at %s; "
+                    "eligibility direct-match will return strategy_unavailable",
+                    data_dir,
+                )
+
+    try:
+        eligibility = build_eligibility_strategy(config.eligibility, vocabs=vocabs)
+    except (EligibilityStrategyConfigError, EligibilityStrategyUnavailableError) as exc:
+        logger.warning(
+            "symptoms: eligibility strategy unavailable (%s); feature disabled", exc
+        )
+        return None
+    except Exception:
+        logger.warning(
+            "symptoms: eligibility strategy build failed; feature disabled",
+            exc_info=True,
+        )
+        return None
+
+    registry = DatasetRegistry(config.datasets)
+    client = SymptomsServerClient(base_url)
+
+    def _factory() -> SymptomsFeature:
+        return SymptomsFeature(
+            config=config,
+            registry=registry,
+            client=client,
+            eligibility=eligibility,
+        )
+
+    return _factory

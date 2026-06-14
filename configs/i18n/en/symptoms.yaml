@@ -5,6 +5,8 @@
 # back to the bare key string, which surfaces as obviously broken
 # copy.
 symptoms:
+  ui:
+    not_applicable: "not applicable"
   confirm:
     text: "I can run a short symptom-driven differential (~5-12 follow-up questions) to narrow down what this might be. Try it?"
     header: "Try follow-up?"

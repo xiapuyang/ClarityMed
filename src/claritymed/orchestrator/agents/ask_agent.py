@@ -39,6 +39,7 @@ def make_ask_agent(
     toolsets: "list[AbstractToolset[AskDeps]] | None" = None,
     output_type: Any = str,
     extra_prompt_names: list[str] | None = None,
+    dynamic_system_prompts: "list[Callable] | None" = None,
 ) -> "Agent[AskDeps, Any]":
     """Build the Pydantic AI agent for ask mode.
 
@@ -60,8 +61,8 @@ def make_ask_agent(
         output_type: Agent output spec. Defaults to ``str``. Pass
             ``str | DeferredToolRequests`` when the agent has at least
             one approval-gated toolset wired — the framework needs the
-            union so it can return ``DeferredToolRequests`` as the
-            run output when a tool call raises ``ApprovalRequired``.
+            union so it can return ``DeferredToolRequests`` as the run
+            output when a tool call raises ``ApprovalRequired``.
         extra_prompt_names: Optional list of registry prompt names to
             append to the base ``ask`` system prompt. AskService passes
             ``["tool_proposal"]`` when the ingest-tools toolset is
@@ -69,6 +70,12 @@ def make_ask_agent(
             writes alongside the standard answer rules. A missing
             entry logs a warning and is skipped rather than aborting
             the turn.
+        dynamic_system_prompts: Optional list of callables to register
+            as ``@agent.system_prompt`` functions. pydantic-ai calls
+            them before every LLM request within the agent run, so they
+            can inject context that was set by a preceding tool call.
+            Each function receives a ``RunContext[AskDeps]`` and returns
+            a string (empty string means no contribution for that call).
     """
     from pydantic_ai import Agent
 
@@ -89,4 +96,6 @@ def make_ask_agent(
         tools=list(tools or []),
         toolsets=list(toolsets or []),
     )
+    for fn in dynamic_system_prompts or []:
+        agent.system_prompt(fn)
     return agent

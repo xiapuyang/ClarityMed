@@ -75,8 +75,8 @@ def test_options_description_teaches_against_one_option_picker():
     )
 
 
-def test_question_rejects_more_than_four_options():
-    too_many = [_opt(f"opt-{i}") for i in range(5)]
+def test_question_rejects_more_than_twenty_options():
+    too_many = [_opt(f"opt-{i}") for i in range(21)]
     with pytest.raises(ValidationError):
         _question(options=too_many)
 

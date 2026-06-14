@@ -141,12 +141,22 @@ def test_question_rejects_categorical_with_one_option() -> None:
         Question(question="What?", header="X", options=[_opt("only")])
 
 
-def test_question_rejects_categorical_with_five_options() -> None:
+def test_question_accepts_up_to_twenty_options() -> None:
+    """Dataset-driven categorical questions can have up to 20 options."""
+    q = Question(
+        question="What?",
+        header="X",
+        options=[_opt(f"o{i}") for i in range(20)],
+    )
+    assert len(q.options) == 20
+
+
+def test_question_rejects_categorical_with_twenty_one_options() -> None:
     with pytest.raises(ValidationError):
         Question(
             question="What?",
             header="X",
-            options=[_opt(f"o{i}") for i in range(5)],
+            options=[_opt(f"o{i}") for i in range(21)],
         )
 
 

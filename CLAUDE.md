@@ -23,104 +23,37 @@ uv run claritymed ask "..." [--user <id>] [--provider <id>]
 uv run claritymed ingest profile allergy=penicillin --user <id>
 uv run claritymed rag add ./path/to/note.md --user <id>
 
-# Phoenix prompts 双向同步（详见下面 Prompts workflow）
+# Phoenix prompts 双向同步
 uv run claritymed prompts push [NAME] [--dry-run]
-uv run claritymed prompts pull [NAME] [--dry-run] \
-    [--into-new-version] [--version-name v1.1]
+uv run claritymed prompts pull [NAME] [--dry-run] [--into-new-version] [--version-name v1.1]
+
+# E2E 多 provider 对比（逗号分隔；未设置则 pick_reachable_provider）
+# CLARITYMED_E2E_PROVIDERS=omlx,deepseek uv run pytest tests/e2e/test_ingest_tools_e2e.py
+
+# Tool prompt 语言与用户语言解耦（A/B tool description 语言对工具调用准确率的影响）
+# CLARITYMED_TOOL_PROMPT_LANG=en|zh uv run claritymed tui
 ```
 
 ## Observability — Phoenix tracing
 
-Tracing 是 opt-in：`configs/app.yaml` 里 `tracing.enabled: true` 就上，默认
-`false` 完全 no-op（CI / 离线 / headless test 零影响）。
+`configs/app.yaml` 里 `tracing.enabled` 由**开发者手动管理**，code review / sweep 不得修改。
+本地开发通常设为 `true`；CI 和离线 session 设为 `false` 保持 no-op。
 
-```yaml
-# configs/app.yaml
-tracing:
-  enabled: true
-  endpoint: http://localhost:6006   # 默认，可改成远端 Phoenix
-  api_key_env: null                 # 远端鉴权时填 env var 名，如 PHOENIX_API_KEY
-  phi_kind: null                    # null=自动检测；local/cloud 可手动覆盖
-  service_name: claritymed
-```
-
-```bash
-# 本地起 Phoenix（任选其一）
-docker run -p 6006:6006 arizephoenix/phoenix:latest
-# 或
-uvx arize-phoenix serve
-
-uv run claritymed tui
-```
-
-打开 `http://localhost:6006` 就能看到每一次 `agent.run` / `model_call` 的
-prompt / response / token usage（含 `cache_read_tokens` / `cache_write_tokens`）/
-latency 分层（`total_ms` / `ttft_ms` / `completion_ms`）/ 多步 trace。
-
-**Audit ↔ Trace 关联**：每条 `audit.log` 行带 `trace_id` + `span_id`；每个 OTel
-span 带三个 baggage attribute：
-- `claritymed.request_id` —— 跟 audit 行的 `request_id` 一一对应
-- `claritymed.user_id`
-- `claritymed.session_id` —— `AskService` 在调 LLM 时 attach，可按对话粒度聚合
-
-→ Phoenix 里搜某个 `trace_id` 能定位到对应的 audit 行；反过来 grep audit.log 拿
-到 `claritymed.session_id` 也能在 Phoenix 里 group by 对话。
-
-**PHI 提醒**：`phi_kind: null`（默认）时 localhost endpoint → 不 scrub，远端
-endpoint → 自动启用 PHI scrubbing。**绝对不要**把 `endpoint` 指向第三方 SaaS
-且同时把 `phi_kind` 设成 `local` —— PHI 会出域。远端 Phoenix 的 `phi_kind` 留
-`null` 即可，auto-detect 会兜底。
+配置示例、audit ↔ trace 关联、PHI scrubbing 行为详见 [`docs/tracing.md`](docs/tracing.md)。
 
 ## Prompts workflow
 
-Prompts 仍以 `core/prompts/store/*.yaml` 为**运行时唯一真相**。Phoenix 只是
-编辑 UI + eval 平台。Runtime 完全不调 Phoenix。
+Prompts 以 `core/prompts/store/*.yaml` 为**运行时唯一真相**。Phoenix 只是编辑 UI + eval 平台，runtime 不调 Phoenix。
 
-```bash
-# 1. 把 YAML 现状推到 Phoenix，让 UI 能编辑、能跑 experiments
-uv run claritymed prompts push
+命名约定：`(name, language)` → Phoenix prompt `claritymed_<name>_<lang>`（如 `claritymed_ask_zh`），`production` tag 标识当前同步版本。
 
-# 2. (在 Phoenix UI 改 prompt、跑 eval、确认满意)
-
-# 3. 把 Phoenix 改动拉回 YAML —— 三种粒度选一：
-uv run claritymed prompts pull               # 默认: in-place 覆盖最新 version（compact diff）
-uv run claritymed prompts pull --into-new-version          # 追加 v(N+1) 新 block，保留旧 version
-uv run claritymed prompts pull --version-name v1.1         # 追加，显式指定版本号（implies --into-new-version）
-
-# dry-run 看 diff 不写盘
-uv run claritymed prompts pull --dry-run
-```
-
-命名约定：每个 `(name, language)` 对应一个 Phoenix prompt `claritymed_<name>_<lang>`
-（例：`claritymed_ask_en`、`claritymed_ask_zh`），用 `production` tag 标识当前
-同步到 YAML 的版本。
+流程：`prompts push` → 在 Phoenix UI 改 prompt → `prompts pull`（加 `--into-new-version` 保留旧版本）。
 
 ## Architecture
 
-```
-src/claritymed/
-  config.py             # YAML 加载器（mtime 缓存）、env 读取
-  context.py            # ContextVars：当前 user / request_id / language
-  errors.py             # 项目异常：PHI / Permission / UnknownProvider…
-  cli/                  # CLI 入口；inject_context 负责把 ContextVars 装好
-  core/
-    i18n/               # 翻译加载器，mtime hot-reload
-    llm/                # 对 pydantic-ai 的薄包装（chat 边界层）
-    observability/      # 结构化日志、审计、ASGI middleware
-    orchestrator/       # PHI guard（后续：回答 pipeline）
-    prompts/            # Prompt registry（文件系统支撑）
-    schemas/            # Pydantic 契约：Account/Patient/Answer/Lab/Models…
-  stores/               # IO 边界：account/profile/knowledge/chat/models YAML
-configs/                # *.yaml — app/models/ocr/retrieval/safety/uncertainty
-data/                   # gitignored — 每用户目录、知识库、SQLite
-docs/{brainstorms,plans,solutions}/   # ce skills 的输出
-tests/                  # pytest，覆盖率门槛 80%
-```
+详细模块说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
-**数据流（目标态）：**
-CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
-`prompts/registry` 取模板 → `phi_guard` 判 cloud vs local → `LLMClient.chat()`
-（内部委托 pydantic-ai）→ 响应归一化 → audit log 落盘。
+数据流：`inject_context()` 装 ContextVars → orchestrator 取 prompt → `phi_guard` 判 cloud/local → `LLMClient.chat()` → audit log。
 
 ## Key design constraints
 
@@ -224,24 +157,6 @@ CLI / HTTP → `inject_context()` 装 ContextVars → orchestrator 从
 - 已有 YAML 不满足需求时，追加新 `version` 而不是修改现有 version（版本不可变）。
 - 中英双语均为必填（validator 强制校验），缺任一语言会在启动时 fail-fast。
 - Phoenix 同步走 `prompts push/pull`，不要手动编辑 Phoenix 侧再回写 YAML。
-
-## E2E provider matrix
-
-`tests/e2e/test_ingest_tools_e2e.py` 默认跑 `pick_reachable_provider()` 选中的本地 provider。要对比多个 provider 在同一组 7 tool 上的表现：
-
-```bash
-CLARITYMED_E2E_PROVIDERS=omlx,deepseek uv run pytest tests/e2e/test_ingest_tools_e2e.py
-```
-
-pytest 会把每个 tool case 都 × 每个 provider 一遍（`[save_allergy-omlx]`、`[save_allergy-deepseek]` …）。某个 provider 没 reachable / 没 API key 时它自己 skip，不会拖崩整轮。
-
-## Tool prompt language override
-
-`CLARITYMED_TOOL_PROMPT_LANG=en|zh` 强制 ingest tool 的 description 用该语言（与用户的 chat 语言解耦）。**不**影响用户回答的语言。用途：A/B 不同语言的 tool description 对同一模型的工具调用准确率，无需改用户偏好。空 / 未设置 → fallback 到当前用户语言。
-
-例子：
-- 中文用户跑 EN tool prompt（看英文 schema 是否更稳）：`CLARITYMED_TOOL_PROMPT_LANG=en uv run claritymed tui`
-- e2e 批跑两种语言对比：`CLARITYMED_TOOL_PROMPT_LANG=en uv run pytest tests/e2e/test_ingest_tools_e2e.py` 然后再跑一次 `=zh`
 
 ## Test user_id convention
 

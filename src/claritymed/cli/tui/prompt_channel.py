@@ -113,8 +113,16 @@ class TextualPromptChannel:
             picked = result.answers.get(q.question)
             if picked is None:
                 continue
+            # Numeric questions store "" in answers; actual value is in numeric_values.
+            if picked == "" and q.question in result.numeric_values:
+                num = result.numeric_values[q.question]
+                display = _fmt(num)
+                if q.numeric is not None and q.numeric.unit:
+                    display = f"{display} {q.numeric.unit}"
+            else:
+                display = self._render_pick(picked)
             lines.append(t("ask_modal.answer_question", question=q.question))
-            lines.append(t("ask_modal.answer_value", value=self._render_pick(picked)))
+            lines.append(t("ask_modal.answer_value", value=display))
         body = header + ("\n" + "\n".join(lines) if lines else "")
         self._add_system_turn(body)
 

@@ -4,6 +4,8 @@
 # t() / t_list() 读取——保持 en/zh 同步，缺失 key 会回落到原始
 # key 字符串，作为明显的"翻译丢失"信号显示给用户。
 symptoms:
+  ui:
+    not_applicable: "不适用"
   confirm:
     text: "我可以做一轮基于症状的鉴别诊断（约 5-12 个追问）来缩小范围。要试试吗？"
     header: "试一下吗？"

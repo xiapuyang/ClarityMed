@@ -302,11 +302,11 @@ async def test_happy_path_end_to_end_through_real_server() -> None:
         await client.aclose()
         reset_context(token)
     assert result["eligible"] is True
-    assert result["turn_count"] >= 1
+    assert result["turns_used"] >= 1
     diff = result["differential"]
     assert len(diff) >= 1
     top = diff[0]
-    assert top["condition_id"] == "critical_disease"
+    assert top["condition_name"] == "Critical disease"
     assert top["severity"] == 1
     # KTD-2: the plugin stashed the max severity for post_process. Run it
     # and confirm Critical-tier reply with a keyword is unmodified.
@@ -343,7 +343,7 @@ async def test_cap_hit_path_end_to_end() -> None:
         await client.aclose()
         reset_context(token)
     assert result["hit_cap"] is True
-    assert result["turn_count"] == 2
+    assert result["turns_used"] == 2
     assert len(result["partial_differential"]) >= 1
 
 

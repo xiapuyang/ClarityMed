@@ -346,11 +346,11 @@ symptoms:
     E_54:
       question: 'Characterize your pain:'
       values:
-        V_11: NA
-        V_71: heartbreaking
-        V_112: haunting
-        V_154: tedious
-        V_161: sensitive
+        V_11: not applicable
+        V_71: excruciating
+        V_112: shooting
+        V_154: distressing
+        V_161: tender
         V_179: a knife stroke
         V_180: tugging
         V_181: burning

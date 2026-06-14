@@ -48,6 +48,14 @@ class QuestionOption(BaseModel):
             "happen if it is selected."
         ),
     )
+    value: str | None = Field(
+        default=None,
+        description=(
+            "Internal raw identifier for this option (e.g. a dataset value code). "
+            "Not shown to the user. When set, callers may pass it back as "
+            "``answer_value`` to skip label re-matching on the server."
+        ),
+    )
 
 
 class NumericSpec(BaseModel):
@@ -166,10 +174,12 @@ class Question(BaseModel):
     @model_validator(mode="after")
     def _options_shape_matches_numeric_flag(self) -> "Question":
         if self.numeric is None:
-            # Categorical question — must have 2-4 options.
-            if not (2 <= len(self.options) <= 4):
+            # 2-4 is the UX sweet-spot for tool-generated questions; the hard
+            # upper bound is 20 to accommodate dataset-driven categorical
+            # evidences that can have O(10) values (e.g. DDXPlus travel regions).
+            if not (2 <= len(self.options) <= 20):
                 raise ValueError(
-                    f"Categorical question must have 2-4 options, "
+                    f"Categorical question must have 2-20 options, "
                     f"got {len(self.options)}."
                 )
         else:

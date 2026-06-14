@@ -42,3 +42,9 @@ class AskDeps:
     # (eval, one-shot CLI, headless tests); the tool body returns a
     # plain-text fallback hint to the LLM in that case.
     prompt_channel: "PromptChannel | None" = None
+    # Set by SymptomsFeature._predict when the tool returns a usable
+    # differential. Picked up by the dynamic system_prompt registered in
+    # make_ask_agent so the composing-guide is only present for the
+    # second LLM call (reply composition), not the first (tool selection).
+    # Stays None on user_declined / eligible:false / server_error turns.
+    symptoms_reply_guide: str | None = None

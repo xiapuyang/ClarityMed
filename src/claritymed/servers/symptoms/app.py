@@ -26,7 +26,7 @@ from claritymed.servers._devices import LOG_CONFIG
 
 try:
     import uvicorn
-    from fastapi import APIRouter, FastAPI, HTTPException
+    from fastapi import APIRouter, FastAPI, HTTPException, Request
 except ImportError as exc:  # pragma: no cover — import-time guard
     raise SystemExit(
         "claritymed-symptoms-server requires the 'symptoms-server' extra. "
@@ -260,6 +260,12 @@ def _maybe_inject_initial_symptom(
         return None
     result = matcher.match(text, ds.init_catalog)
     if result.evidence_idx is None:
+        logger.debug(
+            "init-matcher: no injection (score=%.3f < threshold=%.2f) text=%r",
+            result.score,
+            ds.init_catalog.threshold,
+            text[:80],
+        )
         return None
     ev = ds.canonical.evidence_by_idx(result.evidence_idx)
     # B-only candidate pool (enforced upstream by InitSymptomFilter)
@@ -373,7 +379,9 @@ router = APIRouter(prefix="/v1/datasets/{dataset_id}")
 
 
 @router.post("/sessions", response_model=StartSessionResponse)
-def start_session(dataset_id: str, req: StartSessionRequest) -> StartSessionResponse:
+def start_session(
+    dataset_id: str, req: StartSessionRequest, http_req: Request
+) -> StartSessionResponse:
     """Initialize a sub-session — return the first question.
 
     Init-symptom injection: when ``req.symptom_summary`` (preferred) or
@@ -432,11 +440,24 @@ def start_session(dataset_id: str, req: StartSessionRequest) -> StartSessionResp
             }
         )
     SERVER_STATE.sessions[session_id] = sub
+    req_id = http_req.headers.get("X-Request-ID", "")
+    first_ev = ds.canonical.evidence_by_idx(first_ev_idx)
+    logger.info(
+        "session started: session=%s dataset=%s first_evidence=%s "
+        "init_matcher=%s req_id=%s",
+        session_id,
+        dataset_id,
+        first_ev.id,
+        initial_evidence_idx is not None,
+        req_id or "-",
+    )
     return StartSessionResponse(session_id=session_id, first_question=question)
 
 
 @router.post("/sessions/{session_id}/turn", response_model=TurnResponse)
-def turn(dataset_id: str, session_id: str, req: TurnRequest) -> TurnResponse:
+def turn(
+    dataset_id: str, session_id: str, req: TurnRequest, http_req: Request
+) -> TurnResponse:
     """Apply an answer to the running session; return the next question or done."""
     ds = _require_dataset(dataset_id)
     sub = _require_session(session_id)
@@ -448,6 +469,7 @@ def turn(dataset_id: str, session_id: str, req: TurnRequest) -> TurnResponse:
     sub.language = req.language
     _apply_answer(ds, sub, req)
     model = ds.model(sub.model_id)
+    req_id = http_req.headers.get("X-Request-ID", "")
 
     # Stop gate first — same order as the demo's interactive_eval.
     stop = model.agent.should_stop(sub.state)
@@ -455,6 +477,13 @@ def turn(dataset_id: str, session_id: str, req: TurnRequest) -> TurnResponse:
         probs = _diagnose(ds, sub)
         diff, evidence_rows = format_differential(ds, sub, probs)
         del SERVER_STATE.sessions[session_id]
+        logger.info(
+            "session done: session=%s turn=%d differential=%d req_id=%s",
+            session_id,
+            sub.turn_count,
+            len(diff),
+            req_id or "-",
+        )
         return TurnResponse(
             done=True,
             differential=diff,
@@ -467,6 +496,13 @@ def turn(dataset_id: str, session_id: str, req: TurnRequest) -> TurnResponse:
         probs = _diagnose(ds, sub)
         outcome = format_cancel_outcome(ds, sub, probs)
         del SERVER_STATE.sessions[session_id]
+        logger.info(
+            "session cap: session=%s turn=%d confidence=%.3f req_id=%s",
+            session_id,
+            outcome["turn_count"],
+            outcome["partial_confidence"],
+            req_id or "-",
+        )
         return TurnResponse(
             hit_cap=True,
             partial_differential=outcome["partial_differential"],
@@ -478,11 +514,21 @@ def turn(dataset_id: str, session_id: str, req: TurnRequest) -> TurnResponse:
     next_ev_idx = int(model.agent.next_action(sub.state)[0])
     question, ev_idx = _try_render_question(ds, sub, next_ev_idx)
     sub.last_ev_idx = ev_idx
+    next_ev = ds.canonical.evidence_by_idx(ev_idx)
+    logger.debug(
+        "session turn %d: session=%s next_evidence=%s req_id=%s",
+        sub.turn_count,
+        session_id,
+        next_ev.id,
+        req_id or "-",
+    )
     return TurnResponse(next_question=question, turn_count=sub.turn_count)
 
 
 @router.delete("/sessions/{session_id}", response_model=CancelResponse)
-def cancel_session(dataset_id: str, session_id: str) -> CancelResponse:
+def cancel_session(
+    dataset_id: str, session_id: str, http_req: Request
+) -> CancelResponse:
     """Cancel mid-loop; return partial-result outcome (may be empty)."""
     ds = _require_dataset(dataset_id)
     sub = _require_session(session_id)
@@ -493,6 +539,18 @@ def cancel_session(dataset_id: str, session_id: str) -> CancelResponse:
     probs = _diagnose(ds, sub)
     outcome = format_cancel_outcome(ds, sub, probs)
     del SERVER_STATE.sessions[session_id]
+    req_id = http_req.headers.get("X-Request-ID", "")
+    logger.info(
+        "session cancelled: session=%s dataset=%s turn=%d "
+        "confidence=%.3f threshold_met=%s severity_override=%s req_id=%s",
+        session_id,
+        dataset_id,
+        outcome["turn_count"],
+        outcome["partial_confidence"],
+        outcome["meets_confidence_threshold"],
+        outcome["severity_override"],
+        req_id or "-",
+    )
     return CancelResponse(
         cancelled=True,
         partial_differential=outcome["partial_differential"],

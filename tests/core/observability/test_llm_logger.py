@@ -61,16 +61,48 @@ def test_fmt_messages_renders_each_part_type():
         )
     ]
     out = _fmt_messages(messages)
-    assert "sys: sys text" in out
-    assert "user: user text" in out
-    assert "tool_result(lookup): tool result" in out
+    assert "[sys]" in out and "sys text" in out
+    assert "[user]" in out and "user text" in out
+    assert "[tool]" in out and "lookup" in out and "tool result" in out
 
 
-def test_fmt_messages_skips_non_request_messages():
-    """ModelResponse messages are filtered out by the isinstance check."""
+def test_fmt_messages_includes_model_response():
+    """ModelResponse (assistant turns) are now included in the thread."""
     resp = ModelResponse(parts=[TextPart(content="hi")])
     out = _fmt_messages([resp])
-    assert out == ""
+    assert "[asst]" in out and "hi" in out
+
+
+def test_fmt_messages_renders_assistant_tool_call():
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="get_drug", args={"name": "aspirin"}, tool_call_id="t1"
+                )
+            ]
+        )
+    ]
+    out = _fmt_messages(messages)
+    assert "← tool_call: get_drug" in out
+
+
+def test_fmt_messages_empty_list_returns_sentinel():
+    assert "(no messages)" in _fmt_messages([])
+
+
+def test_fmt_messages_sequence_numbers_are_monotonic():
+    """Each part gets a unique [N] index, incrementing across msg boundaries."""
+    messages = [
+        ModelRequest(
+            parts=[SystemPromptPart(content="s"), UserPromptPart(content="u")]
+        ),
+        ModelResponse(parts=[TextPart(content="a")]),
+    ]
+    out = _fmt_messages(messages)
+    assert "[1]" in out
+    assert "[2]" in out
+    assert "[3]" in out
 
 
 def test_fmt_response_renders_each_part_type():
@@ -293,8 +325,9 @@ async def test_request_logs_req_and_res(caplog):
     log_text = "\n".join(rec.message for rec in caplog.records)
     assert "==== REQ" in log_text
     assert "==== RES" in log_text
+    assert "----" in log_text
     assert "tool_a" in log_text
-    assert "user: hello" in log_text
+    assert "[user]" in log_text and "hello" in log_text
     # response part rendered
     assert "text: ok" in log_text
     # finish reason and tokens captured

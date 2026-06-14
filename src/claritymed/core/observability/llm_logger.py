@@ -6,11 +6,15 @@ produces a REQ/RES block in ``~/.claritymed/logs/llm.log``:
 
     ==== REQ 2026-06-10T03:27:24 rid=2026...  call#1 ====
     model: claude-sonnet-4-5  system: anthropic
-    history: 2 messages  tools: ask_user_question, retrieve_medical_literature
-    user: which health checkup package should I choose
+    history: 4 messages  tools: ask_user_question, retrieve_medical_literature
+      [1] [sys]   You are ClarityMed ...
+      [2] [user]  which health checkup package should I choose
+      [3] [asst]  ← tool_call: retrieve_medical_literature({"query": "..."})
+      [4] [tool]  retrieve_medical_literature → [{"chunk": "..."}]
     ==== RES  total_ms=7213  ttft_ms=6195  call#1 ====
-    finish: tool_calls  tokens: in=1234 out=45 total=1279
-      tool_call: ask_user_question({"questions": [...]})
+    finish: stop  tokens: in=1234 out=45 total=1279
+      text: Based on your profile ...
+    ----
 
     ==== REQ 2026-06-10T03:27:43 rid=2026...  call#2 ====
     ...
@@ -48,28 +52,53 @@ def _safe(text: str) -> str:
 
 
 def _fmt_messages(messages: list[ModelMessage]) -> str:
-    """Return a human-readable summary of the message history (full content)."""
+    """Return a human-readable conversation thread (full content, all roles).
+
+    Format:
+        [N] [sys]   <system prompt>
+        [N] [user]  <user text>
+        [N] [asst]  ← tool_call: name(args)
+        [N] [tool]  name → result
+    """
     from pydantic_ai.messages import (
         ModelRequest,
+        ModelResponse,
         SystemPromptPart,
+        TextPart,
+        ThinkingPart,
+        ToolCallPart,
         ToolReturnPart,
         UserPromptPart,
     )
 
     lines: list[str] = []
+    idx = 0
     for msg in messages:
-        if not isinstance(msg, ModelRequest):
-            continue
-        for part in msg.parts:
-            if isinstance(part, SystemPromptPart):
-                lines.append(f"  sys: {_safe(str(part.content))}")
-            elif isinstance(part, UserPromptPart):
-                lines.append(f"  user: {_safe(str(part.content))}")
-            elif isinstance(part, ToolReturnPart):
-                lines.append(
-                    f"  tool_result({part.tool_name}): {_safe(str(part.content))}"
-                )
-    return "\n".join(lines)
+        if isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                idx += 1
+                n = f"[{idx}]"
+                if isinstance(part, SystemPromptPart):
+                    lines.append(f"  {n} [sys]   {_safe(str(part.content))}")
+                elif isinstance(part, UserPromptPart):
+                    lines.append(f"  {n} [user]  {_safe(str(part.content))}")
+                elif isinstance(part, ToolReturnPart):
+                    lines.append(
+                        f"  {n} [tool]  {part.tool_name} → {_safe(str(part.content))}"
+                    )
+        elif isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                idx += 1
+                n = f"[{idx}]"
+                if isinstance(part, TextPart):
+                    lines.append(f"  {n} [asst]  {_safe(part.content)}")
+                elif isinstance(part, ToolCallPart):
+                    lines.append(
+                        f"  {n} [asst]  ← tool_call: {part.tool_name}({_safe(str(part.args))})"
+                    )
+                elif isinstance(part, ThinkingPart):
+                    lines.append(f"  {n} [asst/thinking]  {_safe(part.content)}")
+    return "\n".join(lines) if lines else "  (no messages)"
 
 
 def _fmt_response(response: Any) -> str:
@@ -208,7 +237,7 @@ class LoggingModel:
         if ttft_ms is not None:
             timing += f"  ttft_ms={ttft_ms}"
         get_llm_logger().debug(
-            "==== RES  %s  call#%d ====\nfinish: %s  tokens: %s\n%s\n",
+            "==== RES  %s  call#%d ====\nfinish: %s  tokens: %s\n%s\n----\n",
             timing,
             call_n,
             getattr(response, "finish_reason", "?"),

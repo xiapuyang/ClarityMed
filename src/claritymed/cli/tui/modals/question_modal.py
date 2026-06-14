@@ -83,6 +83,7 @@ class QuestionModal(ModalScreen[AskUserQuestionResult | None]):
     }
     QuestionModal #question-text {
         margin-bottom: 1;
+        height: auto;
     }
     QuestionModal #picker {
         margin-bottom: 1;
@@ -131,10 +132,11 @@ class QuestionModal(ModalScreen[AskUserQuestionResult | None]):
             with Horizontal(id="header-row"):
                 yield Label(q.header, classes="chip")
                 yield Label(t(self._badge_key(q)), classes="chip-mode")
-                yield Label(
-                    f"{self._page + 1} / {len(self._payload.questions)}",
-                    id="progress",
-                )
+                if len(self._payload.questions) > 1:
+                    yield Label(
+                        f"{self._page + 1} / {len(self._payload.questions)}",
+                        id="progress",
+                    )
             yield Label(q.question, id="question-text")
             if q.numeric is not None:
                 yield Input(
@@ -285,7 +287,10 @@ class QuestionModal(ModalScreen[AskUserQuestionResult | None]):
 
     @staticmethod
     def _option_text(opt: QuestionOption) -> str:
-        """Render one picker row: ``label — description``."""
+        """Render one picker row: ``label — description``, or just ``label``
+        when the description adds no information beyond the label itself."""
+        if opt.description.strip() == opt.label.strip():
+            return opt.label
         return f"{opt.label} — {opt.description}"
 
     @staticmethod

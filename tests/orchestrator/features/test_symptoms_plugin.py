@@ -115,6 +115,7 @@ class _StubClient:
         *,
         language="en",
         symptom_summary=None,
+        request_id=None,
     ):
         self.calls.append(
             (
@@ -131,7 +132,14 @@ class _StubClient:
         return self._start
 
     async def turn(
-        self, dataset_id, session_id, answer, *, answer_value=None, language="en"
+        self,
+        dataset_id,
+        session_id,
+        answer,
+        *,
+        answer_value=None,
+        language="en",
+        request_id=None,
     ):
         self.calls.append(("turn", {"answer": answer}))
         if not self._turns:
@@ -141,7 +149,7 @@ class _StubClient:
             raise nxt
         return nxt
 
-    async def cancel(self, dataset_id, session_id):
+    async def cancel(self, dataset_id, session_id, *, request_id=None):
         self.calls.append(("cancel", {"dataset_id": dataset_id}))
         if self._cancel is None:
             raise AssertionError("StubClient.cancel called without canned response")
@@ -439,9 +447,9 @@ async def test_happy_path_returns_differential() -> None:
 
         reset_context(token)
     assert result["eligible"] is True
-    assert result["turn_count"] == 1
+    assert result["turns_used"] == 1
     assert len(result["differential"]) == 1
-    assert result["differential"][0]["condition_id"] == "acute_appendicitis"
+    assert result["differential"][0]["condition_name"] == "acute appendicitis"
     assert client.calls[0][0] == "start"
     assert client.calls[1][0] == "turn"
 
@@ -500,8 +508,8 @@ async def test_cap_hit_returns_partial_differential() -> None:
 
         reset_context(token)
     assert result["hit_cap"] is True
-    assert result["partial_differential"][0]["condition_id"] == "meningitis"
-    assert result["turn_count"] == 8
+    assert result["partial_differential"][0]["condition_name"] == "meningitis"
+    assert result["turns_used"] == 8
 
 
 async def test_cancel_mid_loop_with_confidence_returns_partial() -> None:
@@ -533,7 +541,7 @@ async def test_cancel_mid_loop_with_confidence_returns_partial() -> None:
         reset_context(token)
     assert result["cancelled"] is True
     assert result["meets_confidence_threshold"] is True
-    assert result["partial_differential"][0]["condition_id"] == "cluster_headache"
+    assert result["partial_differential"][0]["condition_name"] == "cluster headache"
 
 
 async def test_cancel_without_confidence_drops_differential() -> None:

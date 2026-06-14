@@ -6,16 +6,18 @@ shape leaks. Two directions:
 * :func:`build_question` — render the evidence at ``ev_idx`` as a
   localized :class:`Question`. Text + option labels resolve through
   ``t(key, lang=...)`` using the dataset's ``question_key`` /
-  ``value_key`` conventions. Each option's ``description`` carries the
-  raw value id in parentheses so the plugin can match the user's click
-  back to it without a parallel lookup table.
+  ``value_key`` conventions. Each option's ``value`` field carries the
+  raw value id so the plugin can pass it back as ``answer_value``
+  without a label re-match round-trip.
 * :func:`synth_patient` — translate the user's answer back into the
   ``{bin_pos, cat_val, multi_val}`` dict :meth:`TypedEnv._write` reads.
   Prefers raw value ids when supplied by the client; falls back to
   matching the answer string against every value's localized label.
 
-Categorical evidences with more than four values are truncated to the
-first four (sorted by raw value id); this is a documented v1 limitation.
+Categorical option ordering follows the corpus's ``possible-values``
+order (i.e. :meth:`CanonicalEvidence.raw_values` insertion order), not
+lexicographic sort. Options are capped at ``DatasetSpec.max_options``
+(default 12) to keep the TUI picker manageable.
 Numeric-categorical evidences (every value parses as a number) are
 emitted as :class:`NumericSpec` so the modal renders an Input widget.
 """
@@ -30,9 +32,6 @@ from claritymed.core.i18n import t
 from claritymed.core.interaction.schemas import NumericSpec, Question, QuestionOption
 from claritymed.core.symptoms.datasets import CanonicalDataset, CanonicalEvidence
 from claritymed.core.symptoms.schemas import DatasetSpec
-
-MAX_OPTIONS = 4
-RAW_VALUE_SUFFIX = "  ·{raw}"  # appended to option description
 
 
 class QuestionPayloadError(Exception):
@@ -119,6 +118,8 @@ def _value_label(
     label = str(label).strip()
     if not label:
         label = raw_value
+    if label.upper() in ("NA", "N/A"):
+        label = t("symptoms.ui.not_applicable", lang=language)
     return label[:40]
 
 
@@ -140,14 +141,6 @@ def _condition_name(
     return str(fallback).strip()
 
 
-def _value_description(label: str, raw_value: str) -> str:
-    """Build a QuestionOption description that carries the raw value id."""
-    suffix = RAW_VALUE_SUFFIX.format(raw=raw_value)
-    available = 160 - len(suffix)
-    head = label if len(label) <= available else label[: max(1, available - 1)] + "…"
-    return f"{head}{suffix}"
-
-
 def _binary_question(
     ev: CanonicalEvidence, spec: DatasetSpec, language: str
 ) -> Question:
@@ -162,11 +155,9 @@ def _binary_question(
         header=_header(ev.id),
         options=[
             QuestionOption(
-                label=yes_label[:40], description=_value_description(yes_label, "yes")
+                label=yes_label[:40], description=yes_label[:40], value="yes"
             ),
-            QuestionOption(
-                label=no_label[:40], description=_value_description(no_label, "no")
-            ),
+            QuestionOption(label=no_label[:40], description=no_label[:40], value="no"),
         ],
     )
 
@@ -194,14 +185,12 @@ def _options_from_values(
     raw_values: list[str],
     language: str,
 ) -> list[QuestionOption]:
-    """Truncate to the first MAX_OPTIONS raw values + localize."""
-    truncated = sorted(raw_values)[:MAX_OPTIONS]
+    """Localize up to spec.max_options values, preserving corpus order."""
+    truncated = raw_values[: spec.max_options]
     out: list[QuestionOption] = []
     for raw in truncated:
         label = _value_label(ev, spec, raw, language)
-        out.append(
-            QuestionOption(label=label, description=_value_description(label, raw))
-        )
+        out.append(QuestionOption(label=label, description=label, value=raw))
     return out
 
 

@@ -30,6 +30,7 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,7 @@ from claritymed.servers._devices import LOG_CONFIG, default_device
 
 try:
     import uvicorn
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from FlagEmbedding import BGEM3FlagModel
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover — import-time guard
@@ -124,10 +125,12 @@ def _flush_mps_cache() -> None:
 
 
 @app.post("/embed")
-def embed(req: EmbedRequest) -> list[list[float]]:
+def embed(req: EmbedRequest, http_req: Request) -> list[list[float]]:
     """Dense embeddings only. Returns ``list[list[float]]`` (1024-dim each)."""
     _validate_batch(req.inputs)
     model = _require_model()
+    req_id = http_req.headers.get("X-Request-ID", "-")
+    t0 = time.monotonic()
     out = model.encode(
         req.inputs,
         return_dense=True,
@@ -137,11 +140,17 @@ def embed(req: EmbedRequest) -> list[list[float]]:
     # FlagEmbedding returns numpy arrays; convert to plain lists for JSON.
     result = [vec.tolist() for vec in out["dense_vecs"]]
     _flush_mps_cache()
+    logger.debug(
+        "embed: n=%d elapsed_ms=%.0f req_id=%s",
+        len(req.inputs),
+        (time.monotonic() - t0) * 1000,
+        req_id,
+    )
     return result
 
 
 @app.post("/embed_sparse")
-def embed_sparse(req: EmbedRequest) -> list[dict[str, float]]:
+def embed_sparse(req: EmbedRequest, http_req: Request) -> list[dict[str, float]]:
     """Sparse lexical weights. Returns ``[{token_id: weight}]`` per input.
 
     Keys are stringified token ids (the BgeM3HttpEmbedder client coerces
@@ -150,6 +159,8 @@ def embed_sparse(req: EmbedRequest) -> list[dict[str, float]]:
     """
     _validate_batch(req.inputs)
     model = _require_model()
+    req_id = http_req.headers.get("X-Request-ID", "-")
+    t0 = time.monotonic()
     out = model.encode(
         req.inputs,
         return_dense=False,
@@ -162,6 +173,12 @@ def embed_sparse(req: EmbedRequest) -> list[dict[str, float]]:
         for entry in out["lexical_weights"]
     ]
     _flush_mps_cache()
+    logger.debug(
+        "embed_sparse: n=%d elapsed_ms=%.0f req_id=%s",
+        len(req.inputs),
+        (time.monotonic() - t0) * 1000,
+        req_id,
+    )
     return result
 
 

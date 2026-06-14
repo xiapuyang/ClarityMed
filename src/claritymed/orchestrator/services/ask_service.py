@@ -1064,6 +1064,16 @@ class AskService:
         # the LLM doesn't have those tools anyway and the extra prose
         # just inflates the system prompt.
         extra_prompts = ["tool_proposal"] if toolsets else None
+        # ``symptoms_final_reply`` is injected dynamically: SymptomsFeature
+        # sets deps.symptoms_reply_guide only when the tool returns a real
+        # differential. The dynamic system_prompt fn is a no-op on
+        # user_declined / eligible:false / server_error turns, so no
+        # extra tokens are burned when the sub-session produces no result.
+        dynamic_sys_prompts = [
+            f.system_prompt_fn()
+            for f in self._features
+            if hasattr(f, "system_prompt_fn")
+        ]
         agent = make_ask_agent(
             self._model,
             language=self._language,
@@ -1071,6 +1081,7 @@ class AskService:
             toolsets=toolsets,
             output_type=agent_output_type,
             extra_prompt_names=extra_prompts,
+            dynamic_system_prompts=dynamic_sys_prompts or None,
         )
 
         out: asyncio.Queue[Event | None] = asyncio.Queue()

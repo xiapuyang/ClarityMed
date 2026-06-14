@@ -41,6 +41,7 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,7 @@ from claritymed.servers._devices import LOG_CONFIG, default_device
 try:
     import torch
     import uvicorn
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from pydantic import BaseModel, Field
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 except ImportError as exc:  # pragma: no cover — import-time guard
@@ -170,7 +171,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/rerank")
-def rerank(req: RerankRequest) -> list[RerankHit]:
+def rerank(req: RerankRequest, http_req: Request) -> list[RerankHit]:
     """Score every (query, text) pair and return them sorted by score desc.
 
     The client's ``_parse`` only checks that ``index`` is in range and
@@ -183,6 +184,8 @@ def rerank(req: RerankRequest) -> list[RerankHit]:
             detail=f"batch size {len(req.texts)} exceeds {MAX_BATCH_TEXTS}",
         )
     model, tokenizer, device = _require_loaded()
+    req_id = http_req.headers.get("X-Request-ID", "-")
+    t0 = time.monotonic()
     effective_query = _apply_query_instruction(
         req.query, _state.get("query_instruction", "")
     )
@@ -204,6 +207,14 @@ def rerank(req: RerankRequest) -> list[RerankHit]:
     indexed.sort(key=lambda x: x[1], reverse=True)
     result = [RerankHit(index=i, score=s) for i, s in indexed]
     _flush_mps_cache()
+    top_score = result[0].score if result else 0.0
+    logger.debug(
+        "rerank: n=%d top_score=%.3f elapsed_ms=%.0f req_id=%s",
+        len(req.texts),
+        top_score,
+        (time.monotonic() - t0) * 1000,
+        req_id,
+    )
     return result
 
 

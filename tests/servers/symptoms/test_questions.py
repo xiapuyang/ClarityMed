@@ -140,7 +140,7 @@ def test_binary_question_falls_back_to_native_question(spec, i18n_dir) -> None:
     labels = {opt.label for opt in q.options}
     assert labels == {"Yes", "No"}
     for opt in q.options:
-        assert "·yes" in opt.description or "·no" in opt.description
+        assert opt.value in {"yes", "no"}
 
 
 def test_categorical_question_uses_native_value_labels(spec, i18n_dir) -> None:

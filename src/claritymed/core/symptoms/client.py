@@ -101,6 +101,7 @@ class SymptomsServerClient:
         *,
         language: str = "en",
         symptom_summary: str | None = None,
+        request_id: str | None = None,
     ) -> StartSessionResponse:
         """``POST /v1/datasets/<id>/sessions`` — open a new sub-session.
 
@@ -108,6 +109,8 @@ class SymptomsServerClient:
         complaint (1-2 sentences, EN) — fed to the server's
         init-symptom matcher to pre-reveal turn-0 evidence. ``None``
         is fine: the server falls back to ``complaint``.
+        ``request_id`` is forwarded as ``X-Request-ID`` so server logs
+        can be correlated with orchestrator audit events.
         """
         payload = StartSessionRequest(
             complaint=complaint,
@@ -118,6 +121,7 @@ class SymptomsServerClient:
         data = await self._post_json(
             f"/v1/datasets/{dataset_id}/sessions",
             payload.model_dump(),
+            request_id=request_id,
         )
         return StartSessionResponse.model_validate(data)
 
@@ -129,6 +133,7 @@ class SymptomsServerClient:
         *,
         answer_value: str | list[str] | None = None,
         language: str = "en",
+        request_id: str | None = None,
     ) -> TurnResponse:
         """``POST /v1/datasets/<id>/sessions/<sid>/turn`` — apply an answer."""
         payload = TurnRequest(
@@ -139,14 +144,22 @@ class SymptomsServerClient:
         data = await self._post_json(
             f"/v1/datasets/{dataset_id}/sessions/{session_id}/turn",
             payload.model_dump(),
+            request_id=request_id,
         )
         return TurnResponse.model_validate(data)
 
-    async def cancel(self, dataset_id: str, session_id: str) -> CancelResponse:
+    async def cancel(
+        self,
+        dataset_id: str,
+        session_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> CancelResponse:
         """``DELETE /v1/datasets/<id>/sessions/<sid>`` — cancel mid-loop."""
         data = await self._request_json(
             "DELETE",
             f"/v1/datasets/{dataset_id}/sessions/{session_id}",
+            request_id=request_id,
         )
         return CancelResponse.model_validate(data)
 
@@ -155,10 +168,18 @@ class SymptomsServerClient:
     async def _get_json(self, path: str) -> dict:
         return await self._request_json("GET", path)
 
-    async def _post_json(self, path: str, body: dict) -> dict:
-        return await self._request_json("POST", path, json=body)
+    async def _post_json(
+        self, path: str, body: dict, *, request_id: str | None = None
+    ) -> dict:
+        return await self._request_json("POST", path, json=body, request_id=request_id)
 
-    async def _request_json(self, method: str, path: str, **kwargs: Any) -> dict:
+    async def _request_json(
+        self, method: str, path: str, *, request_id: str | None = None, **kwargs: Any
+    ) -> dict:
+        if request_id:
+            headers = kwargs.pop("headers", {})
+            headers["X-Request-ID"] = request_id
+            kwargs["headers"] = headers
         try:
             response = await self._client.request(method, path, **kwargs)
         except httpx.ConnectError as exc:

@@ -929,6 +929,10 @@ class ClarityMedApp(App):
             .get("profile_context", {})
             .get("mode", "deterministic")
         )
+        from claritymed.orchestrator.features.symptoms_plugin import (
+            make_symptoms_factory,
+        )
+
         service = AskService(
             model=model,
             language=self.query_one(StatusBar).language,
@@ -946,6 +950,7 @@ class ClarityMedApp(App):
             tool_approval_channel=TextualToolApprovalChannel(
                 self, language=self.query_one(StatusBar).language
             ),
+            symptoms_factory=make_symptoms_factory(),
         )
         self._cached_ask_service = service
         return service
