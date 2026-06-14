@@ -100,23 +100,29 @@ def _verify_manifest_chain(model_spec: ModelSpec, weights_dir: Path) -> dict:
 def _load_torch_agent(schema: dict, n_dis: int, weights_path: Path, device: str):
     import torch
 
+    state = torch.load(weights_path, map_location=device)
+    # Derive hidden from the checkpoint's first Linear so the loader stays
+    # in sync with whatever the Optuna search picked at train time
+    # (sister implementation: src/claritymed/servers/symptoms/loader.py).
+    hidden = state["trunk"]["0.weight"].shape[0]
+    stop_thres = state.get("thres", 0.1)
     seed_env = TypedEnv([], schema, n_dis)
     agent = build_basd(
         seed_env,
         n_dis=n_dis,
-        hidden=2048,
+        hidden=hidden,
         lr=1e-4,
         device=device,
-        stop_thres=0.1,
+        stop_thres=stop_thres,
         stop_mode="heuristic",
     )
-    state = torch.load(weights_path, map_location=device)
     agent.trunk.load_state_dict(state["trunk"])
     agent.sym.load_state_dict(state["sym"])
     agent.patho.load_state_dict(state["patho"])
     if agent.stop is not None and state.get("stop") is not None:
         agent.stop.load_state_dict(state["stop"])
     agent.thres = state.get("thres", agent.thres)
+    agent.temp = state.get("temp", agent.temp)
     return agent
 
 

@@ -15,7 +15,7 @@
 
 datasets:
   - id: ddxplus
-    enabled: false  # flip to true once weights + manifest exist locally
+    enabled: true  # weights + manifest present at $CLARITYMED_HOME/models/symptoms/ddxplus/typed_basd_v1/
     # One or more models can serve this dataset; the first id is the
     # canonical primary used by the "first" selection strategy. Add
     # additional ids and set model_selection: round_robin for A/B or
@@ -37,7 +37,7 @@ models:
     # Placeholder — replaced by the train pipeline. Validator accepts any
     # 64-char hex so the file shape is valid; the server's startup check
     # is what catches a real mismatch.
-    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    manifest_sha256: "0ec28469bf88a3119df1fe22ad8665a497184ba3231a74601ab691f272697d82"
 
 eligibility:
   # Production default chosen by Phase 2 A/B (Unit 10). `direct` is the

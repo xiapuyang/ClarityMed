@@ -56,11 +56,17 @@ from claritymed.servers.symptoms.wire import (
     TurnResponse,
 )
 
-if TYPE_CHECKING:
-    from pydantic_ai import RunContext
-    from pydantic_ai.toolsets import AbstractToolset
+# Runtime imports for forward refs in tool-method annotations: pydantic-ai
+# resolves the annotations via ``get_type_hints`` at toolset build time, so
+# any name that appears in the string form (``RunContext[TurnState]``) must
+# exist in this module's globals. Keeping them under TYPE_CHECKING produced
+# a NameError once pydantic-ai actually inspected ``SymptomsFeature._predict``.
+from pydantic_ai import RunContext
 
-    from claritymed.core.turn_state import TurnState
+from claritymed.core.turn_state import TurnState
+
+if TYPE_CHECKING:
+    from pydantic_ai.toolsets import AbstractToolset
 
 logger = logging.getLogger(__name__)
 
