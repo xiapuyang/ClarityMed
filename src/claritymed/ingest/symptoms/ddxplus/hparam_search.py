@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
+from claritymed import config as _cfg
 from claritymed.core.device import resolve_device
 from claritymed.ingest.symptoms.ddxplus.schema import (
     load_evidence_schema,
@@ -42,6 +43,11 @@ from claritymed.ingest.symptoms.typed_basd import (
     interactive_eval,
     seed_everything,
 )
+
+
+def _run_dir() -> Path:
+    return _cfg.CLARITYMED_HOME / "models" / "symptoms" / "ddxplus" / "run"
+
 
 DEFAULT_MAX_EPOCHS = 40
 DEFAULT_PATIENCE = 4
@@ -180,7 +186,8 @@ def main() -> None:
         "--out",
         type=Path,
         default=None,
-        help="Destination for best weights.pt (default: <data-dir>/hparam_best.pt).",
+        help="Destination for best weights.pt "
+        "(default: CLARITYMED_HOME/models/symptoms/ddxplus/run/hparam_best.pt).",
     )
     ap.add_argument("--n-trials", type=int, default=DEFAULT_N_TRIALS)
     ap.add_argument("--max-epochs", type=int, default=DEFAULT_MAX_EPOCHS)
@@ -206,8 +213,8 @@ def main() -> None:
     ap.add_argument(
         "--storage",
         default=None,
-        help="Optuna storage URL (e.g. sqlite:///hparam.db). "
-        "Omit for in-memory (results lost on exit).",
+        help="Optuna storage URL. Defaults to "
+        "sqlite:///<run_dir>/hparam.db so trials survive interruptions.",
     )
     ap.add_argument("--study-name", default="typed_basd_hparam")
     args = ap.parse_args()
@@ -221,9 +228,13 @@ def main() -> None:
     except ImportError as exc:
         raise SystemExit("torch not installed") from exc
 
-    out = args.out or args.data_dir / "hparam_best.pt"
+    run_dir = _run_dir()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out = args.out or run_dir / "hparam_best.pt"
+    if args.storage is None:
+        args.storage = f"sqlite:///{run_dir / 'hparam.db'}"
     # Persistent so weights survive across --storage resumptions.
-    trial_dir = out.parent / f".{args.study_name}_trials"
+    trial_dir = run_dir / f".{args.study_name}_trials"
     trial_dir.mkdir(parents=True, exist_ok=True)
 
     device = resolve_device(args.device)

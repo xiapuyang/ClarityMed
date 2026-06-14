@@ -9,7 +9,7 @@ Usage::
 
     uv run python scripts/symptoms_ablate_maxstep.py \\
         --data-dir ./demo/ddxplus_demo/ddxplus \\
-        --weights ~/.claritymed/models/symptoms/ddxplus/typed_basd_v1/weights.pt \\
+        --weights ~/.claritymed/models/symptoms/ddxplus/typed_basd_v2/weights.pt \\
         --maxsteps 6,8,10,12,18 \\
         --games 1000
 
@@ -41,7 +41,6 @@ from claritymed.ingest.symptoms.typed_basd import (
 )
 
 DEFAULT_MAXSTEPS = "6,8,10,12,18"
-DEFAULT_GAMES = 200
 DEFAULT_HIDDEN = 2048
 DSR_FLOOR = 92.0
 
@@ -65,11 +64,22 @@ def main() -> None:
     ap.add_argument("--data-dir", required=True, type=Path)
     ap.add_argument("--weights", required=True, type=Path)
     ap.add_argument("--maxsteps", default=DEFAULT_MAXSTEPS)
-    ap.add_argument("--games", type=int, default=DEFAULT_GAMES)
+
+    ap.add_argument(
+        "--games",
+        type=int,
+        default=None,
+        help="Patients per eval call. Defaults to all loaded (--eval-n).",
+    )
     ap.add_argument("--eval-n", type=int, default=5_000)
     ap.add_argument("--hidden", type=int, default=DEFAULT_HIDDEN)
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed. Omit to let runs vary naturally.",
+    )
     ap.add_argument(
         "--stop-mode", choices=["learned", "heuristic"], default="heuristic"
     )
@@ -99,9 +109,10 @@ def main() -> None:
     maxsteps = [int(s) for s in args.maxsteps.split(",")]
     if args.quick:
         args.eval_n = 100
-        args.games = 50
+        args.games = min(args.games, 100) if args.games else 100
 
-    seed_everything(args.seed)
+    if args.seed is not None:
+        seed_everything(args.seed)
     device = resolve_device(args.device)
     schema = load_evidence_schema(args.data_dir)
     pidx, sev = load_pidx(args.data_dir)
@@ -147,7 +158,7 @@ def main() -> None:
             env,
             agent,
             maxstep=m,
-            games=min(args.games, len(test_pats)),
+            games=args.games if args.games is not None else len(test_pats),
             severity=sev,
         )
         dsr = metrics.DSR if not np.isnan(metrics.DSR) else float("nan")
