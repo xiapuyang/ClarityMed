@@ -105,7 +105,14 @@ def load_evidence_schema(
             )
         dtype = entry.get("data_type", "B")
         vals = entry.get("possible-values") or entry.get("possible_values") or []
-        evs.append(dict(name=name, dtype=dtype, values=[str(v) for v in vals]))
+        evs.append(
+            dict(
+                name=name,
+                dtype=dtype,
+                values=[str(v) for v in vals],
+                is_antecedent=bool(entry.get("is_antecedent", False)),
+            )
+        )
     evs.sort(key=lambda d: d["name"])
     return build_layout(evs, use_ordinal=use_ordinal)
 

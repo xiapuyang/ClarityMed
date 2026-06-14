@@ -293,3 +293,56 @@ def test_interactive_eval_returns_eval_metrics_with_finite_values() -> None:
         assert np.isnan(metrics.DSR)
     else:
         assert np.isfinite(metrics.DSR)
+    # Fixture declares no antecedents, so antecedent-side metrics must be
+    # NaN (no patient contributed) while symptom-side stays finite.
+    for field in ("PSR", "PSP", "PSF1"):
+        assert np.isfinite(getattr(metrics, field)), field
+    for field in ("PAR", "PAP", "PAF1"):
+        assert np.isnan(getattr(metrics, field)), field
+
+
+def test_build_layout_propagates_is_antecedent_flag() -> None:
+    """``is_antecedent`` defaults to False and round-trips when set."""
+    schema = build_layout(_FIXTURE_EVS)
+    assert schema["is_antecedent"].dtype == bool
+    assert schema["is_antecedent"].shape == (4,)
+    assert not schema["is_antecedent"].any()
+    mixed = [
+        {**_FIXTURE_EVS[0], "is_antecedent": False},
+        {**_FIXTURE_EVS[1], "is_antecedent": True},
+        _FIXTURE_EVS[2],
+        _FIXTURE_EVS[3],
+    ]
+    schema2 = build_layout(mixed)
+    assert schema2["is_antecedent"].tolist() == [False, True, False, False]
+
+
+def test_interactive_eval_splits_symptom_and_antecedent_metrics() -> None:
+    """One antecedent + one symptom → both PSR and PAR are finite."""
+    # E0 is now an antecedent, the rest stay symptoms. Patient still has
+    # all four evidences positive so both gt_sym and gt_atcd are non-empty.
+    evs = [
+        {**_FIXTURE_EVS[0], "is_antecedent": True},
+        _FIXTURE_EVS[1],
+        _FIXTURE_EVS[2],
+        _FIXTURE_EVS[3],
+    ]
+    schema = build_layout(evs)
+    pats = [_patient() for _ in range(20)]
+    env = TypedEnv(pats, schema, n_dis=3)
+    seed_everything(2)
+    agent = build_basd(
+        env,
+        n_dis=3,
+        hidden=8,
+        lr=1e-3,
+        device="cpu",
+        stop_thres=0.1,
+        stop_mode="heuristic",
+    )
+    severity = np.array([1.0, 3.0, 5.0])
+    metrics = interactive_eval(env, agent, maxstep=4, games=5, severity=severity)
+    for field in ("PSR", "PSP", "PSF1", "PAR", "PAP", "PAF1"):
+        val = getattr(metrics, field)
+        assert np.isfinite(val), f"{field}={val!r} not finite"
+        assert 0.0 <= val <= 100.0, f"{field}={val!r} out of [0, 100]"

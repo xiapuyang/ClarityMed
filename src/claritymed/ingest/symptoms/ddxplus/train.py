@@ -58,7 +58,12 @@ def main() -> None:
     """CLI: ``uv run --extra symptoms-server claritymed-symptoms-train-ddxplus ...``."""
     ap = argparse.ArgumentParser(description="Train typed-BASD on DDXPlus.")
     ap.add_argument("--data-dir", required=True, help="DDXPlus release dir.")
-    ap.add_argument("--out-subpath", default="ddxplus/typed_basd_v1")
+    ap.add_argument(
+        "--out-subpath",
+        default="ddxplus/typed_basd_v1_candidate",
+        help="Output path under CLARITYMED_HOME/models/symptoms/. Defaults to a "
+        "staging path; promote to typed_basd_v1 manually after evaluation.",
+    )
     ap.add_argument("--device", default="auto")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--episodes", type=int, default=200_000)
@@ -149,7 +154,8 @@ def main() -> None:
     print(
         f"== TEST (maxstep={args.maxstep}) IL={metrics.IL:.2f} "
         f"DDR={metrics.DDR:.2f} DDP={metrics.DDP:.2f} "
-        f"DDF1={metrics.DDF1:.2f} DSR={metrics.DSR:.2f}"
+        f"DDF1={metrics.DDF1:.2f} DSR={metrics.DSR:.2f} "
+        f"PSF1={metrics.PSF1:.2f} PAF1={metrics.PAF1:.2f}"
     )
 
     out_dir = _models_dir() / args.out_subpath

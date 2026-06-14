@@ -115,10 +115,15 @@ def build_layout(
     ``evs`` is a list of ``{name, dtype, values}`` dicts; ``dtype`` is
     ``"B"`` (binary), ``"C"`` (categorical), or ``"M"`` (multi-choice).
     ``values`` is the categorical/multi value list (ignored for ``"B"``).
+    Each dict may optionally carry ``is_antecedent`` (bool, defaults to
+    ``False``); the flag is plumbed through the schema so :func:`interactive_eval`
+    can report symptom vs. antecedent metrics separately without changing
+    the state encoding or model trunk (Mila BASD parity).
 
     Returns a dict with ``off`` (per-evidence block offsets), ``typ``,
     ``vmap`` (value → local index), ``sym_size`` (total symptom slots),
-    ``n_ev`` (number of evidences), and ordinal-scalar metadata used by
+    ``n_ev`` (number of evidences), ``is_antecedent`` (bool ndarray of
+    shape ``[n_ev]``), and ordinal-scalar metadata used by
     :meth:`TypedEnv._write`.
 
     ``use_ordinal=True`` opts numeric-categorical evidences (values that
@@ -169,6 +174,9 @@ def build_layout(
                 num_lo.append(0.0)
                 num_span.append(1.0)
                 cur += 1 + k
+    is_antecedent = np.array(
+        [bool(e.get("is_antecedent", False)) for e in evs], dtype=bool
+    )
     return dict(
         evs=list(evs),
         index=index,
@@ -182,6 +190,7 @@ def build_layout(
         num_arr=num_arr,
         num_lo=num_lo,
         num_span=num_span,
+        is_antecedent=is_antecedent,
     )
 
 
@@ -204,6 +213,7 @@ class TypedEnv:
         self.off = schema["off"]
         self.typ = schema["typ"]
         self.vmap = schema["vmap"]
+        self.is_antecedent = schema["is_antecedent"]
         self.context_size = len(AGE_BUCKETS) + len(SEX2IDX)
         self.idx = 0
         self.order = np.arange(len(patients))
@@ -264,7 +274,18 @@ class TypedEnv:
 
 @dataclass(frozen=True)
 class EvalMetrics:
-    """Typed result of :func:`interactive_eval` (replaces the demo's dict)."""
+    """Typed result of :func:`interactive_eval` (replaces the demo's dict).
+
+    The ``P{S,A}{R,P,F1}`` fields mirror Mila BASD's split metrics:
+    symptom-side (``PSR``/``PSP``/``PSF1``) is computed over evidences
+    flagged ``is_antecedent=False`` in the schema, antecedent-side
+    (``PAR``/``PAP``/``PAF1``) over the rest. Each is a macro average
+    over patients that have at least one ground-truth evidence (or, for
+    precision, at least one ``asked`` evidence) on the corresponding
+    side; patients with no such evidence are skipped so the metric is
+    not silently dragged toward zero. ``NaN`` indicates no patient
+    contributed (e.g. dataset has zero antecedent evidences).
+    """
 
     IL: float
     ACC: float
@@ -274,6 +295,12 @@ class EvalMetrics:
     DDF1: float
     DSR: float
     n_severe: int
+    PSR: float = float("nan")
+    PSP: float = float("nan")
+    PSF1: float = float("nan")
+    PAR: float = float("nan")
+    PAP: float = float("nan")
+    PAF1: float = float("nan")
 
 
 def build_basd(
@@ -474,8 +501,10 @@ def interactive_eval(
     Returns :class:`EvalMetrics` with IL (interaction length), ACC
     (top-1 accuracy), GTPA (ground-truth-in-pred-above), DDR / DDP /
     DDF1 (differential recall/precision/F1 at >0.01 prob), DSR (severe
-    recall over diseases with severity < 3), and ``n_severe`` (the
-    count of severe-disease cases that contributed to DSR).
+    recall over diseases with severity < 3), ``n_severe`` (the count of
+    severe-disease cases that contributed to DSR), and the Mila-parity
+    PSR/PSP/PSF1 + PAR/PAP/PAF1 split metrics (symptom vs. antecedent
+    inquiry recall/precision/F1; see :class:`EvalMetrics` doc).
     """
     env.reset()
     env.order = np.arange(len(env.patients))
@@ -484,6 +513,10 @@ def interactive_eval(
     nb = npat = 0
     dsr = dsn = 0.0
     sev_mask = severity < 3
+    antec = env.is_antecedent  # [n_ev] bool — schema-level split
+    psr = psp = psf1 = par = pap = paf1 = 0.0
+    n_sym_r = n_sym_p = n_sym_f1 = 0
+    n_atcd_r = n_atcd_p = n_atcd_f1 = 0
     while env.idx + games <= len(env.patients):
         s, _ = env.initialize_state(games)
         done = agent.should_stop(s)
@@ -498,6 +531,7 @@ def interactive_eval(
         a_d, p_d = agent.diagnose(s)
         gt = env.diff > 0.01
         pred = p_d > 0.01
+        asked = env.asked_mask(s)  # [B, n_ev] bool
         il_t += il.mean()
         acc_t += (a_d == env.disease).mean()
         gtpa_t += np.mean([float(pred[i, env.disease[i]]) for i in range(games)])
@@ -514,7 +548,50 @@ def interactive_eval(
                 ps = pred[i] & sev_mask
                 dsr += (gs & ps).sum() / gs.sum()
                 dsn += 1
+            # Split symptom / antecedent inquiry metrics. ``pos`` is the
+            # union of binary-positive + categorical + multi evidences the
+            # patient actually has (built by the dataset adapter).
+            gt_mask = np.zeros(env.n_ev, dtype=bool)
+            for ev_idx in env.batch[i]["pos"]:
+                gt_mask[ev_idx] = True
+            asked_row = asked[i]
+            gt_sym = gt_mask & ~antec
+            gt_atcd = gt_mask & antec
+            asked_sym = asked_row & ~antec
+            asked_atcd = asked_row & antec
+            inter_sym = int((gt_sym & asked_row).sum())
+            inter_atcd = int((gt_atcd & asked_row).sum())
+            gt_sym_n = int(gt_sym.sum())
+            gt_atcd_n = int(gt_atcd.sum())
+            asked_sym_n = int(asked_sym.sum())
+            asked_atcd_n = int(asked_atcd.sum())
+            r_s = inter_sym / gt_sym_n if gt_sym_n else None
+            p_s = inter_sym / asked_sym_n if asked_sym_n else None
+            r_a = inter_atcd / gt_atcd_n if gt_atcd_n else None
+            p_a = inter_atcd / asked_atcd_n if asked_atcd_n else None
+            if r_s is not None:
+                psr += r_s
+                n_sym_r += 1
+            if p_s is not None:
+                psp += p_s
+                n_sym_p += 1
+            if r_s is not None and p_s is not None:
+                psf1 += 2 * p_s * r_s / (p_s + r_s + 1e-10)
+                n_sym_f1 += 1
+            if r_a is not None:
+                par += r_a
+                n_atcd_r += 1
+            if p_a is not None:
+                pap += p_a
+                n_atcd_p += 1
+            if r_a is not None and p_a is not None:
+                paf1 += 2 * p_a * r_a / (p_a + r_a + 1e-10)
+                n_atcd_f1 += 1
         nb += 1
+
+    def _avg(total: float, n: int) -> float:
+        return total / n * 100 if n else float("nan")
+
     return EvalMetrics(
         IL=il_t / nb,
         ACC=acc_t / nb * 100,
@@ -524,4 +601,10 @@ def interactive_eval(
         DDF1=ddf1 / npat * 100,
         DSR=(dsr / dsn * 100 if dsn else float("nan")),
         n_severe=int(dsn),
+        PSR=_avg(psr, n_sym_r),
+        PSP=_avg(psp, n_sym_p),
+        PSF1=_avg(psf1, n_sym_f1),
+        PAR=_avg(par, n_atcd_r),
+        PAP=_avg(pap, n_atcd_p),
+        PAF1=_avg(paf1, n_atcd_f1),
     )
