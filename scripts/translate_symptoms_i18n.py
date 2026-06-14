@@ -15,9 +15,8 @@ schema-only refresh (re-run the generator) never accidentally overwrites
 a translator's hand edits, and a translation refresh (re-run this) never
 needs to touch the dataset's JSON.
 
-Usage::
+Usage (provider API keys are loaded from repo-root ``.env``)::
 
-    OMLX_API_KEY=...whatever... \\
     uv run python scripts/translate_symptoms_i18n.py \\
         --dataset-id ddxplus \\
         --source en \\
@@ -40,9 +39,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
+
+load_dotenv(REPO_ROOT / ".env")
 
 from claritymed.core.llm.model import build_model, build_model_settings  # noqa: E402
 from claritymed.stores.models import resolve_provider  # noqa: E402
