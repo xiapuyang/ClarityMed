@@ -10,7 +10,7 @@ from claritymed.errors import UnknownDatasetError
 
 
 def _spec(id_: str, enabled: bool = True) -> DatasetSpec:
-    return DatasetSpec(id=id_, enabled=enabled, model_ids=[f"{id_}_m1"], maxstep=8)
+    return DatasetSpec(id=id_, enabled=enabled, model_ids=[f"{id_}_m1"])
 
 
 # --- list / has / get ----------------------------------------------------

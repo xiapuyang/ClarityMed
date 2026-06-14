@@ -463,7 +463,7 @@ def turn(dataset_id: str, session_id: str, req: TurnRequest) -> TurnResponse:
         )
 
     # Cap hit?
-    if sub.turn_count >= ds.spec.maxstep:
+    if sub.turn_count >= model.spec.maxstep:
         probs = _diagnose(ds, sub)
         outcome = format_cancel_outcome(ds, sub, probs)
         del SERVER_STATE.sessions[session_id]

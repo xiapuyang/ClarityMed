@@ -31,7 +31,6 @@ def _cfg(**overrides) -> SymptomsConfig:
                 "id": "ddxplus",
                 "enabled": True,
                 "model_ids": ["typed_basd_v1"],
-                "maxstep": 8,
             }
         ],
         "models": [
@@ -40,6 +39,7 @@ def _cfg(**overrides) -> SymptomsConfig:
                 "algorithm_module": "typed_basd",
                 "weights_subpath": "ddxplus/typed_basd_v1",
                 "manifest_sha256": _DUMMY_SHA,
+                "maxstep": 8,
             }
         ],
         "eligibility": {
@@ -61,7 +61,7 @@ def test_shipped_configs_symptoms_yaml_loads() -> None:
     """
     cfg = load_symptoms_config()
     assert cfg.datasets[0].id == "ddxplus"
-    assert cfg.eligibility.resolved().id == "direct"
+    assert cfg.eligibility.resolved().id == "translation"
 
 
 def test_resolved_eligibility_returns_active_entry() -> None:
@@ -106,7 +106,6 @@ def test_dataset_references_unknown_model_id_rejected() -> None:
                 {
                     "id": "ddxplus",
                     "model_ids": ["missing_model"],
-                    "maxstep": 8,
                 }
             ],
         )
@@ -120,7 +119,6 @@ def test_dataset_multi_model_ids_all_must_resolve() -> None:
                 {
                     "id": "ddxplus",
                     "model_ids": ["typed_basd_v1", "absent"],
-                    "maxstep": 8,
                 }
             ],
         )
@@ -134,7 +132,6 @@ def test_dataset_model_ids_must_be_unique() -> None:
                 {
                     "id": "ddxplus",
                     "model_ids": ["typed_basd_v1", "typed_basd_v1"],
-                    "maxstep": 8,
                 }
             ],
         )
@@ -153,7 +150,6 @@ def test_partial_min_confidence_out_of_range_rejected() -> None:
             {
                 "id": "ddxplus",
                 "model_ids": ["typed_basd_v1"],
-                "maxstep": 8,
                 "partial_min_confidence": 1.5,
             }
         )
@@ -161,8 +157,14 @@ def test_partial_min_confidence_out_of_range_rejected() -> None:
 
 def test_maxstep_must_be_positive() -> None:
     with pytest.raises(ValidationError):
-        DatasetSpec.model_validate(
-            {"id": "ddxplus", "model_ids": ["typed_basd_v1"], "maxstep": 0}
+        ModelSpec.model_validate(
+            {
+                "id": "typed_basd_v1",
+                "algorithm_module": "typed_basd",
+                "weights_subpath": "ddxplus/typed_basd_v1",
+                "manifest_sha256": _DUMMY_SHA,
+                "maxstep": 0,
+            }
         )
 
 
@@ -175,6 +177,7 @@ def test_weights_subpath_absolute_path_rejected() -> None:
                 "algorithm_module": "typed_basd",
                 "weights_subpath": "/tmp/evil",
                 "manifest_sha256": _DUMMY_SHA,
+                "maxstep": 8,
             }
         )
     assert "relative" in str(excinfo.value).lower()
@@ -188,6 +191,7 @@ def test_weights_subpath_traversal_rejected() -> None:
                 "algorithm_module": "typed_basd",
                 "weights_subpath": "../etc/passwd",
                 "manifest_sha256": _DUMMY_SHA,
+                "maxstep": 8,
             }
         )
     assert ".." in str(excinfo.value)
@@ -201,6 +205,7 @@ def test_manifest_sha256_wrong_length_rejected() -> None:
                 "algorithm_module": "typed_basd",
                 "weights_subpath": "ddxplus/v1",
                 "manifest_sha256": "abc",
+                "maxstep": 8,
             }
         )
 
@@ -209,8 +214,8 @@ def test_duplicate_dataset_ids_rejected() -> None:
     with pytest.raises(ValidationError) as excinfo:
         _cfg(
             datasets=[
-                {"id": "ddxplus", "model_ids": ["typed_basd_v1"], "maxstep": 8},
-                {"id": "ddxplus", "model_ids": ["typed_basd_v1"], "maxstep": 8},
+                {"id": "ddxplus", "model_ids": ["typed_basd_v1"]},
+                {"id": "ddxplus", "model_ids": ["typed_basd_v1"]},
             ],
         )
     assert "unique" in str(excinfo.value).lower()
@@ -253,7 +258,6 @@ def test_dataset_spec_explicit_i18n_prefix_wins() -> None:
             {
                 "id": "ddxplus",
                 "model_ids": ["typed_basd_v1"],
-                "maxstep": 8,
                 "i18n_key_prefix": "custom.bundle",
             }
         ]

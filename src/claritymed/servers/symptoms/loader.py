@@ -150,6 +150,17 @@ def load_torch_agent(
     return agent
 
 
+def apply_model_overrides(agent, model_spec: "ModelSpec") -> None:
+    """Override runtime-tunable agent params from the model yaml config.
+
+    Called after weight loading so the yaml always wins over checkpoint values.
+    """
+    if model_spec.patho_temp is not None:
+        agent.temp = model_spec.patho_temp
+    if model_spec.stop_thres is not None:
+        agent.thres = model_spec.stop_thres
+
+
 def load_dataset(
     spec: DatasetSpec,
     model_spec: ModelSpec,
@@ -191,6 +202,7 @@ def load_dataset(
         weights_path=weights_dir / "weights.pt",
         device=device,
     )
+    apply_model_overrides(agent, model_spec)
     return DatasetLoaded(
         spec=spec,
         model_spec=model_spec,

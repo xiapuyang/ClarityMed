@@ -165,7 +165,6 @@ class DatasetSpec(BaseModel):
             "A/B and shadow inference."
         ),
     )
-    maxstep: int = Field(ge=1, le=50)
     partial_min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     severity_high_specificity_evidence_ids: list[str] = Field(default_factory=list)
     # Native language of the dataset's evidence vocab — the language
@@ -260,6 +259,14 @@ class ModelSpec(BaseModel):
     algorithm_module: str = Field(min_length=1, max_length=64)
     weights_subpath: str = Field(min_length=1, max_length=256)
     manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    # Per-session question budget. Populated from claritymed-symptoms-tune-ddxplus.
+    maxstep: int = Field(ge=1, le=50)
+    # Softmax temperature for the pathology classifier (overrides checkpoint).
+    # null → fall back to the value baked into the checkpoint.
+    patho_temp: float | None = Field(default=None, gt=0.0, le=10.0)
+    # Stop-gate threshold (overrides checkpoint). Heuristic mode: max symptom
+    # prob must drop below this to keep asking. null → use checkpoint value.
+    stop_thres: float | None = Field(default=None, gt=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _weights_subpath_relative(self) -> "ModelSpec":

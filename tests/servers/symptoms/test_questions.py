@@ -53,7 +53,7 @@ def _write_yaml(path: Path, payload: dict) -> None:
 
 @pytest.fixture
 def spec() -> DatasetSpec:
-    return DatasetSpec(id="ddxplus", model_ids=["typed_basd_v1"], maxstep=8)
+    return DatasetSpec(id="ddxplus", model_ids=["typed_basd_v1"])
 
 
 def _canonical() -> CanonicalDataset:

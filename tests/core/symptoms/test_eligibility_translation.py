@@ -33,7 +33,6 @@ def _dataset() -> DatasetSpec:
         id="ddxplus",
         enabled=True,
         model_ids=["typed_basd_v1"],
-        maxstep=8,
     )
 
 
@@ -248,7 +247,6 @@ def _zh_dataset() -> DatasetSpec:
         id="ddxplus",
         enabled=True,
         model_ids=["typed_basd_v1"],
-        maxstep=8,
         native_language="zh",
     )
 

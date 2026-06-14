@@ -54,7 +54,6 @@ def _dataset_spec(*, id_: str = "ddxplus") -> DatasetSpec:
         id=id_,
         enabled=True,
         model_ids=["typed_basd_v1"],
-        maxstep=8,
     )
 
 
@@ -70,6 +69,7 @@ def _symptoms_config(
                 algorithm_module="typed_basd",
                 weights_subpath="ddxplus/typed_basd_v1",
                 manifest_sha256="0" * 64,
+                maxstep=8,
             )
         ],
         eligibility=EligibilityCatalogConfig(

@@ -105,7 +105,6 @@ def _spec(model_ids=("typed_basd_v1",)) -> DatasetSpec:
     return DatasetSpec(
         id="ddxplus",
         model_ids=list(model_ids),
-        maxstep=8,
     )
 
 
@@ -115,6 +114,7 @@ def _model_spec(model_id: str, manifest_sha: str) -> ModelSpec:
         algorithm_module="typed_basd",
         weights_subpath=f"ddxplus/{model_id}",
         manifest_sha256=manifest_sha,
+        maxstep=8,
     )
 
 
@@ -193,7 +193,6 @@ def test_load_marks_high_specificity_evidences(
     spec = DatasetSpec(
         id="ddxplus",
         model_ids=["typed_basd_v1"],
-        maxstep=8,
         severity_high_specificity_evidence_ids=["E_91"],
     )
     loaded = DDXPlusAdapter.load(
@@ -223,7 +222,6 @@ def test_load_multi_model_loads_each_checkpoint(
         id="ddxplus",
         model_ids=["v1", "v2"],
         model_selection="round_robin",
-        maxstep=8,
     )
     loaded = DDXPlusAdapter.load(
         spec,
@@ -233,12 +231,14 @@ def test_load_multi_model_loads_each_checkpoint(
                 algorithm_module="typed_basd",
                 weights_subpath="ddxplus/v1",
                 manifest_sha256=shas["v1"],
+                maxstep=8,
             ),
             "v2": ModelSpec(
                 id="v2",
                 algorithm_module="typed_basd",
                 weights_subpath="ddxplus/v2",
                 manifest_sha256=shas["v2"],
+                maxstep=8,
             ),
         },
         device="cpu",

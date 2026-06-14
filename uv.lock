@@ -572,9 +572,11 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "arize-phoenix-client" },
+    { name = "datasets" },
     { name = "filelock" },
     { name = "llama-index-core" },
     { name = "llama-index-vector-stores-qdrant" },
+    { name = "lm-eval" },
     { name = "magika" },
     { name = "onnxruntime" },
     { name = "openinference-instrumentation-pydantic-ai" },
@@ -602,10 +604,6 @@ e2e = [
     { name = "deepeval" },
     { name = "httpx" },
     { name = "pytest-rerunfailures" },
-]
-evals = [
-    { name = "datasets" },
-    { name = "lm-eval" },
 ]
 ocr-image = [
     { name = "rapidocr-onnxruntime" },
@@ -650,7 +648,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "arize-phoenix-client", specifier = ">=2.7.0" },
-    { name = "datasets", marker = "extra == 'evals'", specifier = ">=2.20" },
+    { name = "datasets", specifier = ">=2.20" },
     { name = "deepeval", marker = "extra == 'e2e'", specifier = ">=4.0" },
     { name = "fastapi", marker = "extra == 'rag-server'", specifier = ">=0.115" },
     { name = "fastapi", marker = "extra == 'symptoms-server'", specifier = ">=0.115" },
@@ -660,7 +658,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'symptoms-server'", specifier = ">=0.27" },
     { name = "llama-index-core", specifier = ">=0.14.22" },
     { name = "llama-index-vector-stores-qdrant", specifier = ">=0.10.1" },
-    { name = "lm-eval", marker = "extra == 'evals'", specifier = ">=0.4.5,<0.5" },
+    { name = "lm-eval", specifier = ">=0.4.5,<0.5" },
     { name = "magika", specifier = ">=0.6" },
     { name = "marker-pdf", marker = "extra == 'ocr-scanned'", specifier = ">=0.2" },
     { name = "mlflow", marker = "extra == 'symptoms-server'", specifier = ">=2.0" },
@@ -692,7 +690,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'rag-server'", specifier = ">=0.32" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'symptoms-server'", specifier = ">=0.32" },
 ]
-provides-extras = ["rag-server", "symptoms-server", "e2e", "evals", "ocr-scanned", "ocr-office", "ocr-image"]
+provides-extras = ["rag-server", "symptoms-server", "e2e", "ocr-scanned", "ocr-office", "ocr-image"]
 
 [package.metadata.requires-dev]
 dev = [

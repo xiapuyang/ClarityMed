@@ -15,17 +15,13 @@
 
 datasets:
   - id: ddxplus
-    enabled: true  # weights + manifest present at $CLARITYMED_HOME/models/symptoms/ddxplus/typed_basd_v1/
+    enabled: true  # weights + manifest present at $CLARITYMED_HOME/models/symptoms/ddxplus/typed_basd_v2/
     # One or more models can serve this dataset; the first id is the
     # canonical primary used by the "first" selection strategy. Add
     # additional ids and set model_selection: round_robin for A/B or
     # shadow inference.
-    model_ids: [typed_basd_v1]
+    model_ids: [typed_basd_v2]
     model_selection: first
-    # Phase 0 ablation (interim weights, 2026-06-13) picked 18 as the smallest
-    # maxstep clearing DSR ≥ 92. See docs/solutions/2026-06-13-001-maxstep-
-    # ablation-decision.md — must be re-confirmed after production retrain.
-    maxstep: 18
     partial_min_confidence: 0.5    # top-3 mass cutoff for partial differential
     severity_high_specificity_evidence_ids: []
     session_ttl_seconds: 1800      # 30 min; KTD-12
@@ -40,13 +36,18 @@ datasets:
       allowed_dtypes: ["B"]
 
 models:
-  - id: typed_basd_v1
+  - id: typed_basd_v2
     algorithm_module: typed_basd
-    weights_subpath: ddxplus/typed_basd_v1
+    weights_subpath: ddxplus/typed_basd_v2
     # Placeholder — replaced by the train pipeline. Validator accepts any
     # 64-char hex so the file shape is valid; the server's startup check
     # is what catches a real mismatch.
-    manifest_sha256: "0ec28469bf88a3119df1fe22ad8665a497184ba3231a74601ab691f272697d82"
+    manifest_sha256: "b6e3f4adcfc04dd8b4da476c406cd52db318efb5684e2c4d15149a3c65253b35"
+    # maxstep and patho_temp are populated from claritymed-symptoms-tune-ddxplus
+    # after each retrain. null → fall back to the value baked into the checkpoint.
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.1
 
 # Process-wide chief-complaint matcher embedder. Shared singleton —
 # every dataset's per-catalog vectors are encoded against this one
@@ -62,7 +63,7 @@ init_matcher:
 eligibility:
   # Production default chosen by Phase 2 A/B (Unit 10). `direct` is the
   # cheapest fallback while the eval set is being labeled.
-  active: direct
+  active: translation
   # Which LLM-supplied string the plugin forwards to the active
   # strategy. `complaint` (default) is the user's raw text — preserves
   # original-language surfaces, keeps audit honest. `symptom_summary`

@@ -18,7 +18,6 @@ def _dataset(
         id=id_,
         enabled=True,
         model_ids=["typed_basd_v1"],
-        maxstep=8,
         severity_high_specificity_evidence_ids=high_spec or [],
     )
 

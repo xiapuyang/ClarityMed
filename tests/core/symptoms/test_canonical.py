@@ -154,7 +154,6 @@ def _spec(model_ids: list[str], selection: str = "first") -> DatasetSpec:
         id="synth",
         model_ids=model_ids,
         model_selection=selection,  # type: ignore[arg-type]
-        maxstep=8,
     )
 
 
@@ -164,6 +163,7 @@ def _model_spec(mid: str) -> ModelSpec:
         algorithm_module="typed_basd",
         weights_subpath=f"synth/{mid}",
         manifest_sha256=_DUMMY_SHA,
+        maxstep=8,
     )
 
 
@@ -228,12 +228,13 @@ def test_registry_lists_registered_adapters(_registered_adapter) -> None:
 
 
 def test_registry_build_dispatches_to_adapter(_registered_adapter) -> None:
-    spec = DatasetSpec(id="test_synth_ds", model_ids=["m"], maxstep=8)
+    spec = DatasetSpec(id="test_synth_ds", model_ids=["m"])
     m = ModelSpec(
         id="m",
         algorithm_module="typed_basd",
         weights_subpath="x/y",
         manifest_sha256=_DUMMY_SHA,
+        maxstep=8,
     )
     loaded = build_dataset(spec, [m], device="cpu")
     assert loaded.spec.id == "test_synth_ds"
@@ -241,24 +242,26 @@ def test_registry_build_dispatches_to_adapter(_registered_adapter) -> None:
 
 
 def test_registry_unknown_id_raises_unknown_dataset_error() -> None:
-    spec = DatasetSpec(id="never_registered", model_ids=["m"], maxstep=8)
+    spec = DatasetSpec(id="never_registered", model_ids=["m"])
     m = ModelSpec(
         id="m",
         algorithm_module="typed_basd",
         weights_subpath="x/y",
         manifest_sha256=_DUMMY_SHA,
+        maxstep=8,
     )
     with pytest.raises(UnknownDatasetError, match="no adapter registered"):
         build_dataset(spec, [m], device="cpu")
 
 
 def test_registry_missing_model_spec_raises(_registered_adapter) -> None:
-    spec = DatasetSpec(id="test_synth_ds", model_ids=["m1", "m2"], maxstep=8)
+    spec = DatasetSpec(id="test_synth_ds", model_ids=["m1", "m2"])
     only_m1 = ModelSpec(
         id="m1",
         algorithm_module="typed_basd",
         weights_subpath="x/y",
         manifest_sha256=_DUMMY_SHA,
+        maxstep=8,
     )
     with pytest.raises(UnknownDatasetError, match="m2"):
         build_dataset(spec, [only_m1], device="cpu")

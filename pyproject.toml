@@ -48,6 +48,8 @@ dependencies = [
     "scipy>=1.17.1",
     "optuna>=4.9.0",
     "optuna-dashboard>=0.20.0",
+    "lm-eval>=0.4.5,<0.5",
+    "datasets>=2.20",
 ]
 
 [project.optional-dependencies]
@@ -96,16 +98,6 @@ e2e = [
     # silently no-ops and local-LLM variance (translation rewrites,
     # HyDE hypotheticals) shows up as spurious test failures.
     "pytest-rerunfailures>=15.0",
-]
-# MCQA evaluation — runs MedQA-USMLE (and follow-on CMB/MedMCQA/PubMedQA YAML
-# tasks) through lm-evaluation-harness against any provider in models.yaml.
-# Heavy: lm-eval transitively pulls in torch (~2 GB) plus datasets. TUI/ask/
-# ingest users never need it. Run with:
-#   uv sync --extra evals
-#   uv run claritymed eval medqa --provider <id> --limit 50
-evals = [
-    "lm-eval>=0.4.5,<0.5",
-    "datasets>=2.20",
 ]
 # Local OCR for scanned / messy PDFs — second leg of the chain after
 # pymupdf. marker-pdf is best-in-class but pulls PyTorch (~2 GB), so it is

@@ -147,8 +147,8 @@ def _canonical() -> CanonicalDataset:
     )
 
 
-def _spec(maxstep: int = 8) -> DatasetSpec:
-    return DatasetSpec(id=_DATASET_ID, model_ids=[_MODEL_ID], maxstep=maxstep)
+def _spec() -> DatasetSpec:
+    return DatasetSpec(id=_DATASET_ID, model_ids=[_MODEL_ID])
 
 
 def _loaded(*, agent: _StubAgent, maxstep: int = 8) -> LoadedDataset:
@@ -157,9 +157,10 @@ def _loaded(*, agent: _StubAgent, maxstep: int = 8) -> LoadedDataset:
         algorithm_module="typed_basd",
         weights_subpath=f"{_DATASET_ID}/{_MODEL_ID}",
         manifest_sha256="a" * 64,
+        maxstep=maxstep,
     )
     return LoadedDataset(
-        spec=_spec(maxstep=maxstep),
+        spec=_spec(),
         canonical=_canonical(),
         models={
             _MODEL_ID: LoadedModel(
@@ -215,6 +216,7 @@ def _config() -> SymptomsConfig:
         algorithm_module="typed_basd",
         weights_subpath=f"{_DATASET_ID}/{_MODEL_ID}",
         manifest_sha256="a" * 64,
+        maxstep=8,
     )
     return SymptomsConfig(
         datasets=[spec],
