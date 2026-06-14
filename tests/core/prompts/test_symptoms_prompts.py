@@ -11,7 +11,7 @@ from claritymed.core.prompts.registry import PromptRegistry
 
 _SYMPTOM_PROMPT_NAMES = (
     "predict_disease_from_symptoms_tool",
-    "translate_complaint_to_en",
+    "translate_complaint",
     "symptoms_final_reply",
 )
 
@@ -58,14 +58,14 @@ def test_translation_prompt_has_no_personal_identifiers(
     email, a personal name, or a phone number that would survive into a
     public GitHub mirror."""
     for lang in ("en", "zh"):
-        text = registry.get("translate_complaint_to_en", language=lang)
+        text = registry.get("translate_complaint", language=lang)
         assert not re.search(r"[\w.]+@[\w.]+", text), (
-            f"email-like pattern in translate_complaint_to_en ({lang})"
+            f"email-like pattern in translate_complaint ({lang})"
         )
         # No 10-digit phone runs (US-style); allow short numbers because
         # "120" is the local emergency number used in symptoms_final_reply.
         assert not re.search(r"\b\d{10}\b", text), (
-            f"long digit run in translate_complaint_to_en ({lang})"
+            f"long digit run in translate_complaint ({lang})"
         )
 
 

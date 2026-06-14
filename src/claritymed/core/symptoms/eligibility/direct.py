@@ -65,7 +65,7 @@ def _flatten_evidence_vocab(
 
 
 class DirectEligibility(EligibilityStrategy):
-    """EN-only evidence-vocab matcher.
+    """Single-language evidence-vocab matcher.
 
     The strategy is dataset-aware via the per-construct ``vocabs`` map:
     each registered dataset id resolves to its evidence-id → token-set
@@ -73,9 +73,12 @@ class DirectEligibility(EligibilityStrategy):
     ``strategy_unavailable`` so a partially-initialised plugin (e.g.
     one dataset's prepare.py hasn't run) does not block the others.
 
-    Non-English complaints are not supported — ``zh`` callers should
-    route through the ``translation`` strategy (Unit 9) or
-    ``term_service`` strategy (Unit 8) instead.
+    The complaint's language must match the dataset's native vocab
+    language (``DatasetSpec.native_language``). Mismatched complaints
+    should route through the ``translation`` strategy — which will
+    translate to the dataset's native language and re-enter direct
+    matching — or through the ``term_service`` strategy (Unit 8),
+    which is cross-lingual by design.
     """
 
     def __init__(self, *, vocabs: EvidenceVocabMap):
@@ -91,7 +94,7 @@ class DirectEligibility(EligibilityStrategy):
         profile: Profile,
         dataset: DatasetSpec,
     ) -> EligibilityResult:
-        if language != "en":
+        if language != dataset.native_language:
             return EligibilityResult(eligible=False, reason="strategy_unavailable")
         per_evidence = self._vocabs.get(dataset.id)
         if per_evidence is None:

@@ -142,11 +142,11 @@ def build_evidence_concept_sidecar(
     ``(written_path, coverage)`` where coverage is the fraction of
     evidences with at least one concept hit (target ≥ 0.8).
     """
-    from claritymed.core.rag.terms.factory import build_term_service
+    from claritymed.core.rag.terms.factory import get_term_service
     from claritymed.ingest.symptoms.ddxplus.schema import load_evidence_schema
 
     schema = load_evidence_schema(data_dir)
-    service = build_term_service()
+    service = get_term_service()
     sidecar: dict[str, str] = {}
     total = 0
     for ev in schema["evs"]:

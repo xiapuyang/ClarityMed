@@ -7,9 +7,9 @@ description: |
   guidance is owned by the LLM via this prompt, not by a verbatim
   server-injected sentence). The audit-only ``post_process`` hook
   checks whether tier-appropriate keywords from
-  ``configs/symptoms.yaml.safety_keywords_by_tier`` appear in the
-  reply at tiers ≤2 and emits ``symptoms.safety_keywords.missing`` on
-  absence; nothing is mutated.
+  ``configs/i18n/<lang>/symptoms.yaml symptoms.safety_keywords.<tier>``
+  appear in the reply at tiers ≤2 and emits
+  ``symptoms.safety_keywords.missing`` on absence; nothing is mutated.
 
   This prompt is load-bearing for safety. Its versions are immutable
   and iterate via Phoenix; the keyword-compliance audit signal is the

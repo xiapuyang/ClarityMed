@@ -190,7 +190,7 @@ AuditKind = Literal[
     "symptoms.eligibility.strategy_unavailable",
     # symptoms.safety_keywords.missing — KTD-2 audit-only signal. The
     # post_process hook scanned a tier ≤2 reply and found no keyword
-    # from safety_keywords_by_tier[tier][language].
+    # from configs/i18n/<lang>/symptoms.yaml symptoms.safety_keywords.<tier>.
     #   payload allowlist: max_severity, tier, observed_leading_chars
     #   (observed_leading_chars is the count of characters scanned, not
     #    the reply text — that would be PHI-adjacent)

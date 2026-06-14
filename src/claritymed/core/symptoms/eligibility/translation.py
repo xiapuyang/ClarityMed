@@ -1,9 +1,11 @@
 """LLM-translation eligibility strategy.
 
-For ZH complaints (or any non-EN locale we add later), translate to
-English via a ``kind: local`` pydantic-ai ``Agent`` and then run the
-translated complaint through an injected :class:`DirectEligibility`.
-The matching logic lives in one place — this module is glue.
+When the user's complaint is in a different language than the
+dataset's evidence vocab (``DatasetSpec.native_language``), translate
+the complaint into the dataset's native language via a ``kind: local``
+pydantic-ai ``Agent`` and then run the translated complaint through an
+injected :class:`DirectEligibility`. The matching logic lives in one
+place — this module is glue.
 
 PHI hygiene: the provider's ``kind`` must be ``"local"`` (see
 ``ProviderConfig.kind``). A cloud provider would send PHI off-device,
@@ -140,13 +142,14 @@ class TranslationEligibility(EligibilityStrategy):
         dataset: DatasetSpec,
     ) -> EligibilityResult:
         # Same-language short-circuit — skip the LLM entirely when the
-        # complaint already speaks the matcher's language. The injected
-        # direct strategy's check is already async.
-        if language == "en":
-            return await self._direct.check(complaint, "en", profile, dataset)
+        # complaint already speaks the dataset's vocab language. The
+        # injected direct strategy's check is already async.
+        target = dataset.native_language
+        if language == target:
+            return await self._direct.check(complaint, language, profile, dataset)
 
         try:
-            translated = await self._translate(complaint)
+            translated = await self._translate(complaint, target_language=target)
         except EligibilityStrategyUnavailableError:
             raise
         except Exception as exc:  # noqa: BLE001 — propagate as typed error
@@ -160,16 +163,22 @@ class TranslationEligibility(EligibilityStrategy):
 
         if not translated.strip():
             return EligibilityResult(eligible=False, reason="out_of_scope")
-        return await self._direct.check(translated, "en", profile, dataset)
+        return await self._direct.check(translated, target, profile, dataset)
 
-    async def _translate(self, complaint: str) -> str:
+    async def _translate(self, complaint: str, *, target_language: str) -> str:
         """Run the Agent and return the model's text output.
 
-        System prompt is pulled at the model's English locale because
-        the agent's job is to *produce* English — the prompt itself
-        should match that target.
+        The prompt YAML indexes its ``languages`` map by **target**
+        language (the dataset's vocab language), so we fetch with
+        ``language=target_language``. EN target → English body
+        instructing "translate to English"; ZH target → Chinese body
+        instructing "translate to Chinese". The user's chat language
+        does not enter this lookup.
         """
-        system_prompt = self._registry.get(self._prompt_name, language="en")
+        system_prompt = self._registry.get(
+            self._prompt_name,
+            language=target_language,  # type: ignore[arg-type]
+        )
         agent = self._agent_factory(system_prompt, self._provider)
         result = await agent.run(complaint)
         return getattr(result, "output", str(result))

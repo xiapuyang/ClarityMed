@@ -1,0 +1,50 @@
+# 症状功能交互模态的用户可见文案。
+# 通过 core/i18n/loader.py 加载，key 形如 `symptoms.<…>`。
+# 插件代码 (orchestrator/features/symptoms_plugin.py) 用
+# t() / t_list() 读取——保持 en/zh 同步，缺失 key 会回落到原始
+# key 字符串，作为明显的"翻译丢失"信号显示给用户。
+symptoms:
+  confirm:
+    text: "我可以做一轮基于症状的鉴别诊断（约 5-12 个追问）来缩小范围。要试试吗？"
+    header: "试一下吗？"
+    yes_label: "是"
+    yes_description: "开始症状问答流程。"
+    no_label: "否"
+    no_description: "跳过，按自由文本回答。"
+  age:
+    question: "请问您今年多大（岁）？"
+    header: "年龄"
+    unit: "岁"
+  sex:
+    question: "生理性别（用于鉴别诊断模型）？"
+    header: "性别"
+    female_label: "女"
+    female_description: "生理性别为女。"
+    male_label: "男"
+    male_description: "生理性别为男。"
+  # 审计用关键词白名单。**不是**安全提示原话——LLM 按
+  # symptoms_final_reply.yaml 自己组织措辞；post_process 钩子扫
+  # 描回复里是否出现下列任意关键词。Critical / Urgent 档缺失会
+  # 触发 symptoms.safety_keywords.missing 审计事件。
+  safety_keywords:
+    Critical:                          # 严重度 1
+      - "立即拨打120"
+      - "立即拨打"
+      - "急救"
+      - "急诊"
+      - "不要自行前往"
+    Urgent:                            # 严重度 2
+      - "今日就诊"
+      - "急诊"
+      - "出现以下情况"
+      - "24小时内"
+    Moderate:                          # 严重度 3-4
+      - "一周内"
+      - "门诊"
+      - "如果出现"
+      - "建议就诊"
+    Mild:                              # 严重度 5
+      - "居家护理"
+      - "如加重"
+      - "如持续"
+      - "休息"

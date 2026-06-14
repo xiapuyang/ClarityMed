@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from claritymed.context import get_context_or_raise
 from claritymed.core.features.base import FeatureMode, TurnContext
+from claritymed.core.i18n.loader import t, t_list
 from claritymed.core.interaction.prompt_channel import (
     InteractiveChannelUnavailable,
     UserDeclinedAnswer,
@@ -73,7 +74,7 @@ logger = logging.getLogger(__name__)
 TOOL_NAME = "predict_disease_from_symptoms"
 PROMPT_NAMES = (
     "predict_disease_from_symptoms_tool",
-    "translate_complaint_to_en",
+    "translate_complaint",
     "symptoms_final_reply",
 )
 
@@ -87,6 +88,39 @@ _AUDIT_TIERS = {"Critical", "Urgent"}
 # would let "rest if it feels better" later in the message satisfy a
 # Critical-tier audit.
 _AUDIT_LEADING_CHARS = 600
+
+
+_SAFETY_KEYWORD_TIERS = ("Critical", "Urgent", "Moderate", "Mild")
+
+
+def _validate_safety_keywords() -> None:
+    """Fail-loud check: every safety-keyword tier resolves in en + zh.
+
+    Used to live in Pydantic on ``SafetyKeywordsByTier``; moved here
+    when the lists migrated into the i18n bundle. Same contract: a
+    bilingual omission cannot silently disable the
+    ``symptoms.safety_keywords.missing`` audit signal.
+    """
+    missing: list[str] = []
+    for tier in _SAFETY_KEYWORD_TIERS:
+        key = f"symptoms.safety_keywords.{tier}"
+        for lang in ("en", "zh"):
+            entries = t_list(key, lang=lang)
+            if not entries:
+                missing.append(f"{key}.{lang}")
+                continue
+            if any(not item.strip() for item in entries):
+                raise RuntimeError(
+                    f"i18n key {key!r} ({lang}) contains a blank entry; "
+                    f"fill or delete it in configs/i18n/{lang}/symptoms.yaml"
+                )
+    if missing:
+        raise RuntimeError(
+            "Missing safety_keywords i18n entries: "
+            + ", ".join(missing)
+            + ". Define them in configs/i18n/<lang>/symptoms.yaml under "
+            "symptoms.safety_keywords.<tier>."
+        )
 
 
 def _validate_symptoms_prompts(registry: PromptRegistry) -> None:
@@ -116,29 +150,26 @@ def _validate_symptoms_prompts(registry: PromptRegistry) -> None:
 
 
 def _confirm_question(language: str) -> Question:
-    """Bilingual confirm modal copy.
+    """Build the confirm modal from i18n keys.
 
-    Lives inline (not in the prompt registry) per Unit 13's scope note:
-    the registry's YAMLs are LLM-facing; this string only reaches the
-    user via the modal renderer.
+    Copy lives in ``configs/i18n/<lang>/symptoms.yaml`` under
+    ``symptoms.confirm.*`` so translators can edit it without touching
+    Python. The modal renderer surfaces the rendered question and the
+    yes/no options to the user.
     """
-    en_text = (
-        "I can run a short symptom-driven differential (~5-12 follow-up "
-        "questions) to narrow down what this might be. Try it?"
-    )
-    zh_text = "我可以做一轮基于症状的鉴别诊断（约 5-12 个追问）来缩小范围。要试试吗？"
-    en_opts = [
-        QuestionOption(label="Yes", description="Run the symptom Q&A loop."),
-        QuestionOption(label="No", description="Skip and answer with free text."),
-    ]
-    zh_opts = [
-        QuestionOption(label="是", description="开始症状问答流程。"),
-        QuestionOption(label="否", description="跳过，按自由文本回答。"),
-    ]
     return Question(
-        question=zh_text if language == "zh" else en_text,
-        header="Try follow-up?" if language != "zh" else "试一下吗?",
-        options=zh_opts if language == "zh" else en_opts,
+        question=t("symptoms.confirm.text", lang=language),
+        header=t("symptoms.confirm.header", lang=language),
+        options=[
+            QuestionOption(
+                label=t("symptoms.confirm.yes_label", lang=language),
+                description=t("symptoms.confirm.yes_description", lang=language),
+            ),
+            QuestionOption(
+                label=t("symptoms.confirm.no_label", lang=language),
+                description=t("symptoms.confirm.no_description", lang=language),
+            ),
+        ],
     )
 
 
@@ -161,32 +192,32 @@ def _initial_batch(profile: Profile, language: str) -> AskUserQuestionInput:
 
 
 def _age_question(language: str) -> Question:
-    en_q = "How old are you, in years?"
-    zh_q = "请问您今年多大（岁）？"
     return Question(
-        question=zh_q if language == "zh" else en_q,
-        header="Age" if language != "zh" else "年龄",
-        numeric=NumericSpec(min=0, max=120, step=1, unit="years"),
+        question=t("symptoms.age.question", lang=language),
+        header=t("symptoms.age.header", lang=language),
+        numeric=NumericSpec(
+            min=0,
+            max=120,
+            step=1,
+            unit=t("symptoms.age.unit", lang=language),
+        ),
     )
 
 
 def _sex_question(language: str) -> Question:
-    en_q = "Biological sex (for the differential model)?"
-    zh_q = "生理性别（用于鉴别诊断模型）？"
-    if language == "zh":
-        opts = [
-            QuestionOption(label="女", description="生理性别为女。"),
-            QuestionOption(label="男", description="生理性别为男。"),
-        ]
-    else:
-        opts = [
-            QuestionOption(label="Female", description="Biological sex female."),
-            QuestionOption(label="Male", description="Biological sex male."),
-        ]
     return Question(
-        question=zh_q if language == "zh" else en_q,
-        header="Sex" if language != "zh" else "性别",
-        options=opts,
+        question=t("symptoms.sex.question", lang=language),
+        header=t("symptoms.sex.header", lang=language),
+        options=[
+            QuestionOption(
+                label=t("symptoms.sex.female_label", lang=language),
+                description=t("symptoms.sex.female_description", lang=language),
+            ),
+            QuestionOption(
+                label=t("symptoms.sex.male_label", lang=language),
+                description=t("symptoms.sex.male_description", lang=language),
+            ),
+        ],
     )
 
 
@@ -206,12 +237,28 @@ def _resolve_initial_batch(
     (``"female"`` / ``"male"`` / ``"intersex"`` / ``"unknown"``);
     :func:`_map_sex` handles both spellings.
     """
-    age = result.numeric_values.get("How old are you, in years?")
-    age = age or result.numeric_values.get("请问您今年多大（岁）？")
+    # Answers come back keyed by the rendered question string — look up
+    # the active language's rendering first, fall back to EN so a modal
+    # rendered in one locale and resolved in another (mid-session
+    # language flip) still picks up the answer.
+    age_keys = (
+        t("symptoms.age.question", lang=language),
+        t("symptoms.age.question", lang="en"),
+    )
+    age = next(
+        (result.numeric_values[k] for k in age_keys if k in result.numeric_values),
+        None,
+    )
     if age is None:
         age = profile.age if profile.age is not None else 30
-    sex_raw = result.answers.get("Biological sex (for the differential model)?")
-    sex_raw = sex_raw or result.answers.get("生理性别（用于鉴别诊断模型）？")
+    sex_keys = (
+        t("symptoms.sex.question", lang=language),
+        t("symptoms.sex.question", lang="en"),
+    )
+    sex_raw = next(
+        (result.answers[k] for k in sex_keys if k in result.answers),
+        None,
+    )
     sex = _map_sex(sex_raw) or _map_sex(profile.sex) or "M"
     return {"age_years": int(age), "sex": sex}
 
@@ -311,6 +358,7 @@ class SymptomsFeature:
         self._prompt_registry = prompt_registry or PromptRegistry()
         self._profile_loader = profile_loader or _default_profile_loader
         _validate_symptoms_prompts(self._prompt_registry)
+        _validate_safety_keywords()
         # Per-request post_process state — keyed by request_id. Cleared
         # after post_process consumes it.
         self._stash: dict[str, dict[str, Any]] = {}
@@ -375,7 +423,8 @@ class SymptomsFeature:
         if dataset is None:
             return {"eligible": False, "reason": "out_of_scope"}
 
-        elig = await self._run_eligibility(deps, complaint, dataset, language)
+        eligibility_input = self._eligibility_input(complaint, symptom_summary)
+        elig = await self._run_eligibility(deps, eligibility_input, dataset, language)
         if not elig.eligible:
             return self._reject(dataset.id, elig)
 
@@ -424,6 +473,20 @@ class SymptomsFeature:
         )
 
     # --- helpers ------------------------------------------------------------
+
+    def _eligibility_input(self, complaint: str, symptom_summary: str | None) -> str:
+        """Pick the eligibility-check input per the catalog config.
+
+        ``input_source="symptom_summary"`` opts into the LLM-distilled
+        clinical phrase when it exists; falls back to ``complaint`` if
+        the LLM omitted the optional argument or sent whitespace. The
+        default (``"complaint"``) always returns the raw user text —
+        see :class:`EligibilityCatalogConfig` for the tradeoff.
+        """
+        source = self._config.eligibility.input_source
+        if source == "symptom_summary" and symptom_summary and symptom_summary.strip():
+            return symptom_summary.strip()
+        return complaint
 
     def _resolve_dataset(self, hint: str | None, complaint: str) -> DatasetSpec | None:
         dataset = self._registry.resolve(hint)
@@ -778,9 +841,10 @@ class SymptomsFeature:
 
         Always returns ``text`` unchanged. Emits
         ``symptoms.safety_keywords.missing`` when a Critical / Urgent
-        tier reply does not contain a tier-appropriate keyword from
-        ``configs/symptoms.yaml.safety_keywords_by_tier`` in the first
-        :data:`_AUDIT_LEADING_CHARS` characters.
+        tier reply does not contain a tier-appropriate keyword. The
+        keyword lists live in ``configs/i18n/<lang>/symptoms.yaml``
+        under ``symptoms.safety_keywords.<tier>`` and are read via
+        :func:`t_list` so translators own them.
         """
         try:
             request_id, _, language = get_context_or_raise()
@@ -795,8 +859,7 @@ class SymptomsFeature:
         tier = tier_for_severity(max_sev)
         if tier not in _AUDIT_TIERS:
             return text
-        keywords_block = self._config.safety_keywords_by_tier.for_tier(tier)
-        keywords = keywords_block.en if language != "zh" else keywords_block.zh
+        keywords = t_list(f"symptoms.safety_keywords.{tier}", lang=language)
         leading = text[:_AUDIT_LEADING_CHARS].lower()
         if any(kw.lower() in leading for kw in keywords):
             return text

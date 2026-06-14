@@ -11,11 +11,12 @@ manifest's own digest from this file, so a tampered manifest pointing at
 different weights cannot pass the file-against-manifest check the server
 runs on startup. The chain is rooted in the committed config.
 
-``safety_keywords_by_tier`` is the audit-only allow-list consumed by the
-plugin's ``post_process`` hook — it is NOT a verbatim safety-sentence
-template. Per-tier behavioural prose lives in the prompt registry
-(``symptoms_final_reply.yaml``); this section only feeds the
-``symptoms.safety_keywords.missing`` audit signal.
+Audit-only safety keywords are NOT part of this schema — they live in
+``configs/i18n/<lang>/symptoms.yaml`` under
+``symptoms.safety_keywords.<tier>`` and are read by the plugin's
+``post_process`` hook via :func:`claritymed.core.i18n.loader.t_list`.
+Keeping them in the i18n bundle lets translators edit them alongside
+the rest of the localized copy without touching Pydantic.
 """
 
 from __future__ import annotations
@@ -167,6 +168,14 @@ class DatasetSpec(BaseModel):
     maxstep: int = Field(ge=1, le=50)
     partial_min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     severity_high_specificity_evidence_ids: list[str] = Field(default_factory=list)
+    # Native language of the dataset's evidence vocab — the language
+    # the ``direct`` matcher expects to see. Drives the translation
+    # eligibility strategy: complaints in any other language get
+    # translated **to this** before the direct match runs. DDXPlus
+    # ships English questions/values, so ``"en"`` is the right default;
+    # a future Chinese dataset would set ``"zh"`` here without code
+    # changes elsewhere.
+    native_language: Literal["en", "zh"] = "en"
     # KTD-12: in-memory session TTL. Default 30 minutes; raise to 7200 if
     # dogfood shows TTL eviction dominates the cancel reason. Config-driven
     # so the change is one line, not an architectural shift.
@@ -312,13 +321,39 @@ EligibilityCatalogEntry = Annotated[
 ]
 
 
+EligibilityInputSource = Literal["complaint", "symptom_summary"]
+
+
 class EligibilityCatalogConfig(BaseModel):
-    """The catalog + active-id resolution for symptom eligibility."""
+    """The catalog + active-id resolution for symptom eligibility.
+
+    ``input_source`` selects which LLM-supplied string the plugin
+    feeds into the active strategy's ``check``:
+
+    * ``"complaint"`` (default) — the user's raw text. Preserves
+      original-language tokens; lets ``term_service`` exploit the
+      cross-lingual surface forms and lets ``translation`` start from
+      the user's tongue. Audit-friendliest: the eligibility verdict
+      references what the user actually said, not a paraphrase.
+    * ``"symptom_summary"`` — the LLM-distilled 1-2 sentence English
+      clinical phrase. Useful when the active strategy is ``direct``
+      and the user often types in EN but with noisy / lay phrasing
+      that the summary's tight tokens clean up. Adds a hidden
+      "the model thought you meant…" step in the audit trail and
+      makes eligibility depend on the calling LLM being up.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     active: str = Field(min_length=1)
     catalog: list[EligibilityCatalogEntry] = Field(min_length=1)
+    input_source: EligibilityInputSource = Field(
+        default="complaint",
+        description=(
+            "Which input the plugin forwards to the active eligibility "
+            "strategy. See class docstring for tradeoffs."
+        ),
+    )
 
     @model_validator(mode="after")
     def _resolve_active(self) -> "EligibilityCatalogConfig":
@@ -337,54 +372,6 @@ class EligibilityCatalogConfig(BaseModel):
         raise UnknownEligibilityStrategyError(self.active)
 
 
-# --- safety keywords (audit-only allow-list) -------------------------------
-
-
-class SafetyKeywordsLang(BaseModel):
-    """Per-language keyword allow-list for one severity tier.
-
-    The post_process audit scans the LLM's reply for any keyword in the
-    active language; absence at tiers ≤2 emits
-    ``symptoms.safety_keywords.missing``. Empty lists are rejected so a
-    bilingual omission cannot silently disable the audit signal.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    en: list[str] = Field(min_length=1)
-    zh: list[str] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _no_blank_keywords(self) -> "SafetyKeywordsLang":
-        for lang, items in (("en", self.en), ("zh", self.zh)):
-            for kw in items:
-                if not kw.strip():
-                    raise ValueError(
-                        f"safety_keywords_by_tier.*.{lang} contains an "
-                        f"empty / whitespace-only keyword"
-                    )
-        return self
-
-
-class SafetyKeywordsByTier(BaseModel):
-    """Required keyword allow-list for every severity tier.
-
-    Missing a tier is a validation error — the audit pipeline depends on
-    being able to look up every tier by name. Adding a future tier means
-    updating both this model and :data:`SeverityTier`.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    Critical: SafetyKeywordsLang
-    Urgent: SafetyKeywordsLang
-    Moderate: SafetyKeywordsLang
-    Mild: SafetyKeywordsLang
-
-    def for_tier(self, tier: SeverityTier) -> SafetyKeywordsLang:
-        return getattr(self, tier)
-
-
 # --- top-level symptoms config --------------------------------------------
 
 
@@ -401,7 +388,6 @@ class SymptomsConfig(BaseModel):
     datasets: list[DatasetSpec] = Field(min_length=1)
     models: list[ModelSpec] = Field(min_length=1)
     eligibility: EligibilityCatalogConfig
-    safety_keywords_by_tier: SafetyKeywordsByTier
     init_matcher: InitMatcherConfig = Field(default_factory=lambda: InitMatcherConfig())
 
     @model_validator(mode="after")

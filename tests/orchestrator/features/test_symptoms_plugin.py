@@ -28,8 +28,6 @@ from claritymed.core.symptoms.schemas import (
     DirectEligibilityEntry,
     EligibilityCatalogConfig,
     ModelSpec,
-    SafetyKeywordsByTier,
-    SafetyKeywordsLang,
     SymptomsConfig,
 )
 from claritymed.errors import SymptomsServerUnreachableError
@@ -60,7 +58,10 @@ def _dataset_spec(*, id_: str = "ddxplus") -> DatasetSpec:
     )
 
 
-def _symptoms_config() -> SymptomsConfig:
+def _symptoms_config(
+    *,
+    input_source: str = "complaint",
+) -> SymptomsConfig:
     return SymptomsConfig(
         datasets=[_dataset_spec()],
         models=[
@@ -74,14 +75,7 @@ def _symptoms_config() -> SymptomsConfig:
         eligibility=EligibilityCatalogConfig(
             active="direct",
             catalog=[DirectEligibilityEntry(id="direct", kind="direct")],
-        ),
-        safety_keywords_by_tier=SafetyKeywordsByTier(
-            Critical=SafetyKeywordsLang(
-                en=["call 911", "emergency"], zh=["120", "急救"]
-            ),
-            Urgent=SafetyKeywordsLang(en=["urgent care today"], zh=["今日就诊"]),
-            Moderate=SafetyKeywordsLang(en=["see your doctor"], zh=["门诊"]),
-            Mild=SafetyKeywordsLang(en=["rest"], zh=["休息"]),
+            input_source=input_source,  # type: ignore[arg-type]
         ),
     )
 
@@ -90,9 +84,11 @@ class _StubEligibility:
     def __init__(self, result: EligibilityResult) -> None:
         self.result = result
         self.calls = 0
+        self.last_complaint: str | None = None
 
     async def check(self, complaint, language, profile, dataset) -> EligibilityResult:
         self.calls += 1
+        self.last_complaint = complaint
         return self.result
 
 
@@ -174,8 +170,9 @@ def _make_plugin(
     eligibility: _StubEligibility | None = None,
     client: _StubClient | None = None,
     profile: Profile | None = None,
+    input_source: str = "complaint",
 ) -> SymptomsFeature:
-    config = _symptoms_config()
+    config = _symptoms_config(input_source=input_source)
     registry = DatasetRegistry(config.datasets)
     return SymptomsFeature(
         config=config,
@@ -334,6 +331,61 @@ async def test_ineligible_returns_silent_reason(tmp_path) -> None:
         reset_context(token)
     assert result == {"eligible": False, "reason": "out_of_scope"}
     assert elig.calls == 1
+    # input_source default == "complaint": raw user text reaches the strategy.
+    assert elig.last_complaint == "reset password"
+
+
+async def test_eligibility_input_uses_summary_when_configured() -> None:
+    """input_source=symptom_summary forwards the LLM-distilled phrase.
+
+    Audit-relevant: the eligibility check now references the summary,
+    so any downstream "what did we check?" log entry should hold the
+    summary string. Verified by checking the stub strategy's
+    ``last_complaint`` capture.
+    """
+    elig = _StubEligibility(EligibilityResult(eligible=False, reason="out_of_scope"))
+    plugin = _make_plugin(eligibility=elig, input_source="symptom_summary")
+    deps = _deps()
+    token = apply_context(
+        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
+    )
+    try:
+        await plugin._predict(
+            SimpleNamespace(deps=deps),
+            complaint="i feel terrible, my chest hurts a lot and i cant breathe",
+            symptom_summary="acute chest pain with dyspnea",
+        )
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    assert elig.last_complaint == "acute chest pain with dyspnea"
+
+
+async def test_eligibility_input_falls_back_to_complaint_when_summary_blank() -> None:
+    """A blank summary under input_source=symptom_summary falls back.
+
+    Default fallback prevents an LLM that forgot the optional argument
+    (or sent whitespace) from accidentally feeding the matcher an
+    empty string and getting back ``out_of_scope`` for that reason.
+    """
+    elig = _StubEligibility(EligibilityResult(eligible=False, reason="out_of_scope"))
+    plugin = _make_plugin(eligibility=elig, input_source="symptom_summary")
+    deps = _deps()
+    token = apply_context(
+        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
+    )
+    try:
+        await plugin._predict(
+            SimpleNamespace(deps=deps),
+            complaint="chest pain",
+            symptom_summary="   ",
+        )
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    assert elig.last_complaint == "chest pain"
 
 
 async def test_user_declines_confirm_modal() -> None:
@@ -684,3 +736,70 @@ def test_validate_prompts_raises_when_missing(tmp_path) -> None:
     empty_registry = PromptRegistry(store_dir=tmp_path)
     with pytest.raises(RuntimeError, match="Missing symptoms prompts"):
         _validate_symptoms_prompts(empty_registry)
+
+
+def test_validate_safety_keywords_raises_when_missing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup guard fires when an i18n tier list is absent.
+
+    Replaces the old ``SafetyKeywordsByTier`` Pydantic validator. Point
+    the loader at an empty i18n dir and confirm the construct-time
+    check raises rather than silently degrading the audit signal.
+    """
+    from claritymed.core.i18n import loader as i18n_loader
+    from claritymed.orchestrator.features.symptoms_plugin import (
+        _validate_safety_keywords,
+    )
+
+    empty_i18n = tmp_path / "i18n"
+    empty_i18n.mkdir()
+    monkeypatch.setattr(i18n_loader, "I18N_DIR", empty_i18n)
+    i18n_loader._reset_for_tests()
+    try:
+        with pytest.raises(RuntimeError, match="safety_keywords"):
+            _validate_safety_keywords()
+    finally:
+        i18n_loader._reset_for_tests()
+
+
+def test_validate_safety_keywords_raises_on_blank_entry(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A whitespace-only keyword in any tier is rejected.
+
+    Mirrors the old ``SafetyKeywordsLang._no_blank_keywords`` validator
+    — empty strings can never satisfy the post_process keyword scan, so
+    the operator should hear about them at boot.
+    """
+    import yaml
+
+    from claritymed.core.i18n import loader as i18n_loader
+    from claritymed.orchestrator.features.symptoms_plugin import (
+        _validate_safety_keywords,
+    )
+
+    i18n_dir = tmp_path / "i18n"
+    (i18n_dir / "en").mkdir(parents=True)
+    (i18n_dir / "zh").mkdir(parents=True)
+    payload = {
+        "symptoms": {
+            "safety_keywords": {
+                "Critical": ["call 911", "  "],
+                "Urgent": ["urgent care"],
+                "Moderate": ["see your doctor"],
+                "Mild": ["rest"],
+            }
+        }
+    }
+    for lang in ("en", "zh"):
+        (i18n_dir / lang / "symptoms.yaml").write_text(
+            yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8"
+        )
+    monkeypatch.setattr(i18n_loader, "I18N_DIR", i18n_dir)
+    i18n_loader._reset_for_tests()
+    try:
+        with pytest.raises(RuntimeError, match="blank"):
+            _validate_safety_keywords()
+    finally:
+        i18n_loader._reset_for_tests()

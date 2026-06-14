@@ -117,13 +117,20 @@ def _load(lang: str) -> dict[str, Any]:
         return merged
 
 
-def _flatten(data: dict[str, Any], prefix: str = "") -> dict[str, str]:
-    """Convert nested YAML to dotted keys: ``{"ui": {"x": "y"}}`` -> ``{"ui.x": "y"}``."""
-    out: dict[str, str] = {}
+def _flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    """Convert nested YAML to dotted keys: ``{"ui": {"x": "y"}}`` -> ``{"ui.x": "y"}``.
+
+    Strings are stored as-is, lists are preserved (consumed by
+    :func:`t_list`). Scalars other than strings/lists are coerced via
+    ``str()`` so numbers in YAML still address as text via :func:`t`.
+    """
+    out: dict[str, Any] = {}
     for key, value in data.items():
         full = f"{prefix}.{key}" if prefix else key
         if isinstance(value, dict):
             out.update(_flatten(value, full))
+        elif isinstance(value, list):
+            out[full] = list(value)
         elif value is not None:
             out[full] = str(value)
     return out
@@ -142,6 +149,9 @@ def t(key: str, lang: str | None = None, **fmt: Any) -> str:
         value = _load("en").get(key)
     if value is None:
         return key
+    if isinstance(value, list):
+        logger.warning("i18n: t() called on list key %r; use t_list() instead", key)
+        return key
     if fmt:
         try:
             return value.format(**fmt)
@@ -149,6 +159,26 @@ def t(key: str, lang: str | None = None, **fmt: Any) -> str:
             logger.warning("i18n: format failed for %r: %s", key, exc)
             return value
     return value
+
+
+def t_list(key: str, lang: str | None = None) -> list[str]:
+    """Translate ``key`` to a list-valued entry.
+
+    Lookup order matches :func:`t`: active locale -> English -> empty
+    list. A scalar at the requested key is a type mismatch — log a
+    warning and return an empty list so the caller doesn't crash.
+    Lists are copied so callers can't mutate the cached dict.
+    """
+    active = resolve_lang(lang)
+    value = _load(active).get(key)
+    if value is None and active != "en":
+        value = _load("en").get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        logger.warning("i18n: t_list() called on scalar key %r", key)
+        return []
+    return [str(item) for item in value]
 
 
 def _reset_for_tests() -> None:

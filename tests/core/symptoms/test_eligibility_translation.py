@@ -121,7 +121,7 @@ def _make_strategy(
     """Construct the strategy with all collaborators stubbed."""
     return TranslationEligibility(
         provider_id="omlx",
-        prompt_name="translate_complaint_to_en",
+        prompt_name="translate_complaint",
         direct_strategy=direct or DirectEligibility(vocabs=_vocabs()),
         agent_factory=lambda sys_prompt, prov: agent,
         provider_resolver=lambda pid: provider or _local_provider(pid),
@@ -216,7 +216,7 @@ def test_cloud_provider_rejected_at_construct() -> None:
     with pytest.raises(EligibilityStrategyConfigError) as info:
         TranslationEligibility(
             provider_id="anthropic",
-            prompt_name="translate_complaint_to_en",
+            prompt_name="translate_complaint",
             direct_strategy=DirectEligibility(vocabs=_vocabs()),
             agent_factory=lambda s, p: _StubAgent(),
             provider_resolver=lambda pid: _cloud_provider(),
@@ -232,7 +232,7 @@ def test_local_provider_unreachable_at_construct() -> None:
     with pytest.raises(EligibilityStrategyUnavailableError) as info:
         TranslationEligibility(
             provider_id="omlx",
-            prompt_name="translate_complaint_to_en",
+            prompt_name="translate_complaint",
             direct_strategy=DirectEligibility(vocabs=_vocabs()),
             agent_factory=lambda s, p: _StubAgent(),
             provider_resolver=lambda pid: _local_provider(pid),
@@ -240,6 +240,104 @@ def test_local_provider_unreachable_at_construct() -> None:
             registry=_StubRegistry(),
         )
     assert "reachable" in str(info.value).lower()
+
+
+def _zh_dataset() -> DatasetSpec:
+    """A ZH-native dataset variant for target-language tests."""
+    return DatasetSpec(
+        id="ddxplus",
+        enabled=True,
+        model_ids=["typed_basd_v1"],
+        maxstep=8,
+        native_language="zh",
+    )
+
+
+def _zh_vocabs() -> dict[str, dict[str, frozenset[str]]]:
+    return {
+        "ddxplus": {
+            "E_1": frozenset({"胸口疼"}),
+            "E_2": frozenset({"恶心"}),
+            "E_3": frozenset({"呼吸困难"}),
+        }
+    }
+
+
+async def test_zh_dataset_short_circuits_on_zh_complaint() -> None:
+    """Dataset with native_language=zh + zh complaint must skip the LLM.
+
+    Generalization of the earlier en-short-circuit test: the language
+    that triggers the short-circuit is the dataset's, not a hardcoded
+    "en". A regression here would re-introduce the train/serve skew
+    (the model would translate ZH→ZH and add latency for nothing).
+    """
+    strict_agent = _StrictAgentNotInvoked()
+    strategy = _make_strategy(
+        agent=strict_agent,
+        direct=DirectEligibility(vocabs=_zh_vocabs()),
+    )
+    result = await strategy.check(
+        complaint="胸口疼 恶心",
+        language="zh",
+        profile=_profile(),
+        dataset=_zh_dataset(),
+    )
+    assert result.eligible is True
+    assert strict_agent.calls == []
+
+
+async def test_zh_dataset_translates_en_complaint_into_zh() -> None:
+    """EN complaint against a ZH-native dataset goes through translation.
+
+    Verifies both that the matcher accepts the translated text *in
+    the dataset's language* (not en), and that the agent was actually
+    invoked.
+    """
+    agent = _StubAgent(translation="胸口疼 恶心")
+    strategy = _make_strategy(
+        agent=agent,
+        direct=DirectEligibility(vocabs=_zh_vocabs()),
+    )
+    result = await strategy.check(
+        complaint="I have chest pain and nausea",
+        language="en",
+        profile=_profile(),
+        dataset=_zh_dataset(),
+    )
+    assert agent.calls == ["I have chest pain and nausea"]
+    assert result.eligible is True
+
+
+async def test_prompt_language_follows_dataset_native_language() -> None:
+    """Registry.get must be called with language=dataset.native_language.
+
+    The translate prompt YAML is indexed by target language; pulling
+    the wrong locale would feed the model a system prompt telling it
+    to produce the other language. This locks the contract.
+    """
+    captured: list[str] = []
+
+    class _CapturingRegistry(_StubRegistry):
+        def get(self, name: str, version: str = "latest", language: Any = None) -> str:
+            captured.append(language)
+            return self._template
+
+    strategy = TranslationEligibility(
+        provider_id="omlx",
+        prompt_name="translate_complaint",
+        direct_strategy=DirectEligibility(vocabs=_zh_vocabs()),
+        agent_factory=lambda s, p: _StubAgent(translation="胸口疼 恶心"),
+        provider_resolver=lambda pid: _local_provider(pid),
+        availability_check=lambda prov: True,
+        registry=_CapturingRegistry(),
+    )
+    await strategy.check(
+        complaint="I have chest pain",
+        language="en",
+        profile=_profile(),
+        dataset=_zh_dataset(),
+    )
+    assert captured == ["zh"]
 
 
 async def test_agent_factory_receives_system_prompt_from_registry() -> None:
@@ -254,7 +352,7 @@ async def test_agent_factory_receives_system_prompt_from_registry() -> None:
 
     strategy = TranslationEligibility(
         provider_id="omlx",
-        prompt_name="translate_complaint_to_en",
+        prompt_name="translate_complaint",
         direct_strategy=DirectEligibility(vocabs=_vocabs()),
         agent_factory=_factory,
         provider_resolver=lambda pid: _local_provider(pid),
@@ -284,7 +382,7 @@ async def test_factory_dispatches_translation_kind() -> None:
                 id="translation",
                 kind="translation",
                 provider_id="omlx",
-                prompt_name="translate_complaint_to_en",
+                prompt_name="translate_complaint",
             )
         ],
     )

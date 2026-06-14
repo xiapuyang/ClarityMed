@@ -58,7 +58,7 @@ def _translation_cfg() -> EligibilityCatalogConfig:
                 id="translation",
                 kind="translation",
                 provider_id="omlx",
-                prompt_name="translate_complaint_to_en",
+                prompt_name="translate_complaint",
             )
         ],
     )

@@ -46,8 +46,6 @@ from claritymed.core.symptoms.schemas import (
     DirectEligibilityEntry,
     EligibilityCatalogConfig,
     ModelSpec,
-    SafetyKeywordsByTier,
-    SafetyKeywordsLang,
     SymptomsConfig,
 )
 from claritymed.ingest.symptoms.typed_basd import build_layout
@@ -224,12 +222,6 @@ def _config() -> SymptomsConfig:
         eligibility=EligibilityCatalogConfig(
             active="direct",
             catalog=[DirectEligibilityEntry(id="direct", kind="direct")],
-        ),
-        safety_keywords_by_tier=SafetyKeywordsByTier(
-            Critical=SafetyKeywordsLang(en=["call 911"], zh=["120"]),
-            Urgent=SafetyKeywordsLang(en=["urgent care"], zh=["急诊"]),
-            Moderate=SafetyKeywordsLang(en=["see your doctor"], zh=["门诊"]),
-            Mild=SafetyKeywordsLang(en=["rest"], zh=["休息"]),
         ),
     )
 

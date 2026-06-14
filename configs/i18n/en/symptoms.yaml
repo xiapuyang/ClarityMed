@@ -1,0 +1,51 @@
+# User-facing copy for the symptoms feature's interactive modals.
+# Loaded via core/i18n/loader.py; keys are addressed as `symptoms.<…>`.
+# Plugin code (orchestrator/features/symptoms_plugin.py) reads these
+# via t() / t_list() — keep both en + zh in sync; missing keys fall
+# back to the bare key string, which surfaces as obviously broken
+# copy.
+symptoms:
+  confirm:
+    text: "I can run a short symptom-driven differential (~5-12 follow-up questions) to narrow down what this might be. Try it?"
+    header: "Try follow-up?"
+    yes_label: "Yes"
+    yes_description: "Run the symptom Q&A loop."
+    no_label: "No"
+    no_description: "Skip and answer with free text."
+  age:
+    question: "How old are you, in years?"
+    header: "Age"
+    unit: "years"
+  sex:
+    question: "Biological sex (for the differential model)?"
+    header: "Sex"
+    female_label: "Female"
+    female_description: "Biological sex female."
+    male_label: "Male"
+    male_description: "Biological sex male."
+  # Audit-only allow-list. NOT a verbatim safety-sentence template — the
+  # LLM composes prose per symptoms_final_reply.yaml; the post_process
+  # hook scans the reply for any keyword below. Absence at Critical /
+  # Urgent emits symptoms.safety_keywords.missing.
+  safety_keywords:
+    Critical:                          # severity 1
+      - "call 911"
+      - "emergency services"
+      - "ER now"
+      - "do not self-transport"
+      - "call emergency"
+    Urgent:                            # severity 2
+      - "same-day"
+      - "urgent care"
+      - "ER if"
+      - "today"
+    Moderate:                          # severity 3-4
+      - "within a week"
+      - "primary care"
+      - "watch for"
+      - "see your doctor"
+    Mild:                              # severity 5
+      - "self-care"
+      - "if it worsens"
+      - "if it persists"
+      - "rest"

@@ -53,7 +53,7 @@ from claritymed.core.rag.reranking.factory import build_reranker
 from claritymed.core.rag.retriever import HybridRetriever
 from claritymed.core.rag.routing.factory import build_router
 from claritymed.core.rag.schemas import RetrievalConfig, load_retrieval_config
-from claritymed.core.rag.terms.factory import build_term_service
+from claritymed.core.rag.terms.factory import build_term_service, get_term_service
 from claritymed.stores.paths import (
     shared_parent_docstore_path,
     user_parent_docstore_library_path,
@@ -92,7 +92,12 @@ def build_hybrid_retriever(
 
     embedder = build_embedder(cfg.embedders)
     reranker = build_reranker(cfg.rerankers)
-    term_service = build_term_service(cfg.term_service)
+    # When the caller passes an explicit config (typically a test), build
+    # against it directly so the override flows through. Default path
+    # hits the process-wide singleton so the UMLS JSONL is read once.
+    term_service = (
+        get_term_service() if config is None else build_term_service(cfg.term_service)
+    )
     # Pass the embedder unconditionally — the rule-based branch ignores
     # it; the centroid-based branch needs it to embed queries at routing
     # time.

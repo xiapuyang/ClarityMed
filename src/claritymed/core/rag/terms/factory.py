@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Lock
 
 from claritymed.core.rag.schemas import TermServiceConfig, load_retrieval_config
 from claritymed.core.rag.terms.base import TermService
@@ -12,6 +13,40 @@ from claritymed.core.rag.terms.umls_cmekg import (
 )
 from claritymed.errors import UnknownTermServiceError
 from claritymed.stores.paths import shared_terminology_jsonl
+
+_singleton: TermService | None = None
+_singleton_lock = Lock()
+
+
+def get_term_service() -> TermService:
+    """Process-wide :class:`TermService` singleton.
+
+    First call constructs from the default
+    :func:`load_retrieval_config` view; subsequent calls return the
+    same instance. Use this from production code paths (RAG retriever,
+    ingest prepare, symptoms eligibility) instead of repeatedly calling
+    :func:`build_term_service`, which would re-parse the JSONL on each
+    invocation.
+
+    Tests that need a fresh instance (or a different
+    :class:`TermServiceConfig`) should call
+    :func:`build_term_service` directly and reset via
+    :func:`_reset_term_service_singleton`.
+    """
+    global _singleton
+    if _singleton is not None:
+        return _singleton
+    with _singleton_lock:
+        if _singleton is None:
+            _singleton = build_term_service()
+        return _singleton
+
+
+def _reset_term_service_singleton() -> None:
+    """Test helper — drop the cached singleton so the next call rebuilds."""
+    global _singleton
+    with _singleton_lock:
+        _singleton = None
 
 
 def build_term_service(config: TermServiceConfig | None = None) -> TermService:

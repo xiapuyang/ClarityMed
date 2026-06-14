@@ -44,7 +44,7 @@ from claritymed.core.rag.terms.base import (
     TermService,
 )
 from claritymed.core.rag.terms.expansion import expand_query
-from claritymed.core.rag.terms.factory import build_term_service
+from claritymed.core.rag.terms.factory import build_term_service, get_term_service
 from claritymed.core.rag.terms.umls_cmekg import (
     NoOpTermService,
     UmlsCmekgLocalService,
@@ -60,4 +60,5 @@ __all__ = [
     "UmlsCmekgLocalService",
     "build_term_service",
     "expand_query",
+    "get_term_service",
 ]

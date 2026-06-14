@@ -63,6 +63,15 @@ eligibility:
   # Production default chosen by Phase 2 A/B (Unit 10). `direct` is the
   # cheapest fallback while the eval set is being labeled.
   active: direct
+  # Which LLM-supplied string the plugin forwards to the active
+  # strategy. `complaint` (default) is the user's raw text — preserves
+  # original-language surfaces, keeps audit honest. `symptom_summary`
+  # is the LLM-distilled 1-2 sentence EN clinical phrase — useful when
+  # the active strategy is `direct` and the user's typing tends to be
+  # lay/noisy. The summary requires the calling LLM to be up and adds
+  # a "model thought you meant…" step to the audit trail; pick
+  # accordingly. See EligibilityCatalogConfig for the full tradeoff.
+  input_source: complaint
   catalog:
     - id: direct
       kind: direct
@@ -71,57 +80,10 @@ eligibility:
     - id: translation
       kind: translation
       provider_id: omlx               # MUST be ProviderConfig.kind == "local"
-      prompt_name: translate_complaint_to_en
+      prompt_name: translate_complaint
       max_tokens: 256
 
-# Audit-only allow-list. NOT a verbatim safety-sentence template — the
-# LLM composes prose per `symptoms_final_reply.yaml` (the prompt
-# registry), and the post_process hook scans the reply for any keyword
-# below. Absence at tiers ≤2 emits `symptoms.safety_keywords.missing`.
-safety_keywords_by_tier:
-  Critical:                          # severity 1
-    en:
-      - "call 911"
-      - "emergency services"
-      - "ER now"
-      - "do not self-transport"
-      - "call emergency"
-    zh:
-      - "立即拨打120"
-      - "立即拨打"
-      - "急救"
-      - "急诊"
-      - "不要自行前往"
-  Urgent:                            # severity 2
-    en:
-      - "same-day"
-      - "urgent care"
-      - "ER if"
-      - "today"
-    zh:
-      - "今日就诊"
-      - "急诊"
-      - "出现以下情况"
-      - "24小时内"
-  Moderate:                          # severity 3-4
-    en:
-      - "within a week"
-      - "primary care"
-      - "watch for"
-      - "see your doctor"
-    zh:
-      - "一周内"
-      - "门诊"
-      - "如果出现"
-      - "建议就诊"
-  Mild:                              # severity 5
-    en:
-      - "self-care"
-      - "if it worsens"
-      - "if it persists"
-      - "rest"
-    zh:
-      - "居家护理"
-      - "如加重"
-      - "如持续"
-      - "休息"
+# Audit-only safety keywords moved to configs/i18n/<lang>/symptoms.yaml
+# under `symptoms.safety_keywords.<tier>` so they stay alongside the
+# rest of the localized user-facing strings. The post_process hook
+# reads them via `t_list("symptoms.safety_keywords.<tier>")`.

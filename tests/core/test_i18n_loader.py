@@ -12,7 +12,7 @@ import yaml
 
 from claritymed.context import language_ctx
 from claritymed.core.i18n import loader as i18n_loader
-from claritymed.core.i18n.loader import _reset_for_tests, resolve_lang, t
+from claritymed.core.i18n.loader import _reset_for_tests, resolve_lang, t, t_list
 
 
 @pytest.fixture
@@ -216,3 +216,42 @@ def test_resolve_lang_prefers_explicit_over_ctx():
         assert resolve_lang("en") == "en"
     finally:
         language_ctx.reset(token)
+
+
+# --- t_list -------------------------------------------------------------
+
+
+def test_t_list_returns_list_from_yaml(i18n_dir):
+    _write(
+        i18n_dir / "en.yaml",
+        {"safety": {"keywords": ["call 911", "emergency services"]}},
+    )
+    assert t_list("safety.keywords", lang="en") == ["call 911", "emergency services"]
+
+
+def test_t_list_falls_back_to_en_when_lang_missing(i18n_dir):
+    _write(i18n_dir / "en.yaml", {"safety": {"keywords": ["call 911"]}})
+    _write(i18n_dir / "zh.yaml", {"safety": {"other": "..."}})
+    # zh has no 'keywords' under safety; falls back to en list.
+    assert t_list("safety.keywords", lang="zh") == ["call 911"]
+
+
+def test_t_list_returns_empty_on_missing_key(i18n_dir):
+    _write(i18n_dir / "en.yaml", {"unrelated": "x"})
+    assert t_list("safety.keywords", lang="en") == []
+
+
+def test_t_list_warns_and_returns_empty_on_scalar(i18n_dir, caplog):
+    _write(i18n_dir / "en.yaml", {"ui": {"greeting": "Hi"}})
+    with caplog.at_level(logging.WARNING):
+        result = t_list("ui.greeting", lang="en")
+    assert result == []
+    assert any("scalar" in rec.message for rec in caplog.records)
+
+
+def test_t_warns_on_list_key(i18n_dir, caplog):
+    _write(i18n_dir / "en.yaml", {"safety": {"keywords": ["a", "b"]}})
+    with caplog.at_level(logging.WARNING):
+        result = t("safety.keywords", lang="en")
+    assert result == "safety.keywords"
+    assert any("list key" in rec.message for rec in caplog.records)

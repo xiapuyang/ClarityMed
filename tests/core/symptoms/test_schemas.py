@@ -10,8 +10,6 @@ from claritymed.core.symptoms.schemas import (
     DatasetSpec,
     EligibilityCatalogConfig,
     ModelSpec,
-    SafetyKeywordsByTier,
-    SafetyKeywordsLang,
     SymptomsConfig,
     TranslationEligibilityEntry,
 )
@@ -24,16 +22,6 @@ from claritymed.errors import (
 )
 
 _DUMMY_SHA = "a" * 64
-
-
-def _safety() -> SafetyKeywordsByTier:
-    """Minimal valid SafetyKeywordsByTier for tests that don't focus on it."""
-    return SafetyKeywordsByTier(
-        Critical=SafetyKeywordsLang(en=["call 911"], zh=["立即拨打120"]),
-        Urgent=SafetyKeywordsLang(en=["urgent care"], zh=["急诊"]),
-        Moderate=SafetyKeywordsLang(en=["see your doctor"], zh=["门诊"]),
-        Mild=SafetyKeywordsLang(en=["rest"], zh=["休息"]),
-    )
 
 
 def _cfg(**overrides) -> SymptomsConfig:
@@ -58,7 +46,6 @@ def _cfg(**overrides) -> SymptomsConfig:
             "active": "direct",
             "catalog": [{"id": "direct", "kind": "direct"}],
         },
-        "safety_keywords_by_tier": _safety().model_dump(),
     }
     payload.update(overrides)
     return SymptomsConfig.model_validate(payload)
@@ -75,7 +62,6 @@ def test_shipped_configs_symptoms_yaml_loads() -> None:
     cfg = load_symptoms_config()
     assert cfg.datasets[0].id == "ddxplus"
     assert cfg.eligibility.resolved().id == "direct"
-    assert cfg.safety_keywords_by_tier.for_tier("Critical").en
 
 
 def test_resolved_eligibility_returns_active_entry() -> None:
@@ -88,7 +74,7 @@ def test_resolved_eligibility_returns_active_entry() -> None:
                     "id": "translation",
                     "kind": "translation",
                     "provider_id": "omlx",
-                    "prompt_name": "translate_complaint_to_en",
+                    "prompt_name": "translate_complaint",
                 },
             ],
         }
@@ -159,32 +145,6 @@ def test_dataset_default_model_selection_is_first() -> None:
     cfg = _cfg()
     assert cfg.datasets[0].model_selection == "first"
     assert cfg.datasets[0].primary_model_id() == "typed_basd_v1"
-
-
-def test_safety_keywords_missing_tier_rejected() -> None:
-    with pytest.raises(ValidationError):
-        SafetyKeywordsByTier.model_validate(
-            {
-                "Critical": {"en": ["call 911"], "zh": ["120"]},
-                "Urgent": {"en": ["urgent care"], "zh": ["急诊"]},
-                "Moderate": {"en": ["doctor"], "zh": ["门诊"]},
-                # Mild missing
-            }
-        )
-
-
-def test_safety_keywords_empty_list_rejected() -> None:
-    with pytest.raises(ValidationError):
-        SafetyKeywordsLang.model_validate({"en": [], "zh": ["120"]})
-
-
-def test_safety_keywords_blank_string_rejected() -> None:
-    with pytest.raises(ValidationError) as excinfo:
-        SafetyKeywordsLang.model_validate({"en": ["call 911", "  "], "zh": ["120"]})
-    assert (
-        "whitespace" in str(excinfo.value).lower()
-        or "empty" in str(excinfo.value).lower()
-    )
 
 
 def test_partial_min_confidence_out_of_range_rejected() -> None:
