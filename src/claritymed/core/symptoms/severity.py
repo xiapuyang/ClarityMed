@@ -53,7 +53,7 @@ def tier_for_differential(severities: Iterable[int]) -> SeverityTier:
     a normal answer from whatever RAG / free-text path it falls back
     to upstream).
     """
-    sev_list = [s for s in severities]
+    sev_list = list(severities)
     if not sev_list:
         return "Mild"
     return tier_for_severity(min(sev_list))

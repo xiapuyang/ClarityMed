@@ -95,7 +95,10 @@ def build_eligibility_strategy(
             sidecars=sidecars or {},
         )
     if entry.kind == "translation":
-        assert isinstance(entry, TranslationEligibilityEntry)
+        if not isinstance(entry, TranslationEligibilityEntry):
+            raise UnknownEligibilityStrategyError(
+                f"Expected TranslationEligibilityEntry, got {type(entry).__name__}"
+            )
         # Translation always needs a direct strategy underneath — it's
         # the matcher for the translated EN string. The same vocabs map
         # feeds both layers so EN short-circuit and ZH-via-translation

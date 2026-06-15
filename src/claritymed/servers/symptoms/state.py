@@ -88,6 +88,6 @@ def prune_expired_sessions(now: float | None = None) -> int:
         if ds is None:
             continue
         if (now - sub.started_at) > ds.spec.session_ttl_seconds:
-            del SERVER_STATE.sessions[sid]
+            SERVER_STATE.sessions.pop(sid, None)
             purged += 1
     return purged

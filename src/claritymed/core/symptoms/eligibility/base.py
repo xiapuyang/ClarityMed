@@ -24,6 +24,15 @@ from claritymed.core.rag.terms.base import ConceptLanguage
 from claritymed.core.schemas.patient import Profile
 from claritymed.core.symptoms.schemas import DatasetSpec
 
+# Shared eligibility thresholds used by direct and term_service strategies.
+# Origin D7: ≥2 distinct evidence vocabulary hits = in_scope.
+_MIN_DISTINCT_HITS = 2
+
+# Confidence saturation anchor: matching this many distinct evidences pegs
+# confidence at 1.0. Five separate evidence vocabularies hitting at once is
+# more than enough signal.
+_CONFIDENCE_SATURATION = 5.0
+
 EligibilityReason = Literal[
     "in_scope",
     "out_of_scope",

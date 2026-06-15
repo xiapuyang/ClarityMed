@@ -14,7 +14,7 @@ catches this once at the tool-body top and degrades to free-text.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
@@ -27,9 +27,6 @@ from claritymed.servers.symptoms.wire import (
     TurnRequest,
     TurnResponse,
 )
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

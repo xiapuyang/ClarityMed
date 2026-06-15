@@ -92,7 +92,7 @@ class _StubAgent:
         self.translation = translation
         self.calls: list[str] = []
 
-    async def run(self, prompt: str) -> _AgentRunResult:
+    async def run(self, prompt: str, **kwargs: object) -> _AgentRunResult:
         self.calls.append(prompt)
         return _AgentRunResult(output=self.translation)
 
@@ -103,7 +103,9 @@ class _StrictAgentNotInvoked:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def run(self, prompt: str) -> _AgentRunResult:  # pragma: no cover
+    async def run(
+        self, prompt: str, **kwargs: object
+    ) -> _AgentRunResult:  # pragma: no cover
         self.calls.append(prompt)
         raise AssertionError(
             "Translation agent was invoked but EN short-circuit should have prevented it"

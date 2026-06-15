@@ -204,6 +204,7 @@ app = FastAPI(title="claritymed-symptoms-server", lifespan=lifespan)
 
 
 def _require_dataset(dataset_id: str) -> LoadedDataset:
+    """Return the loaded dataset or raise HTTP 404 if not found."""
     ds = SERVER_STATE.datasets.get(dataset_id)
     if ds is None:
         raise HTTPException(
@@ -217,6 +218,7 @@ def _require_dataset(dataset_id: str) -> LoadedDataset:
 
 
 def _require_session(session_id: str) -> SubSessionState:
+    """Return the active session state or raise HTTP 404 if expired or unknown."""
     sub = SERVER_STATE.sessions.get(session_id)
     if sub is None:
         raise HTTPException(status_code=404, detail="session expired or unknown")
@@ -261,10 +263,10 @@ def _maybe_inject_initial_symptom(
     result = matcher.match(text, ds.init_catalog)
     if result.evidence_idx is None:
         logger.debug(
-            "init-matcher: no injection (score=%.3f < threshold=%.2f) text=%r",
+            "init-matcher: no injection (score=%.3f < threshold=%.2f) text_len=%d",
             result.score,
             ds.init_catalog.threshold,
-            text[:80],
+            len(text),
         )
         return None
     ev = ds.canonical.evidence_by_idx(result.evidence_idx)
@@ -476,7 +478,7 @@ def turn(
     if bool(stop[0]):
         probs = _diagnose(ds, sub)
         diff, evidence_rows = format_differential(ds, sub, probs)
-        del SERVER_STATE.sessions[session_id]
+        SERVER_STATE.sessions.pop(session_id, None)
         logger.info(
             "session done: session=%s turn=%d differential=%d req_id=%s",
             session_id,
@@ -495,7 +497,7 @@ def turn(
     if sub.turn_count >= model.spec.maxstep:
         probs = _diagnose(ds, sub)
         outcome = format_cancel_outcome(ds, sub, probs)
-        del SERVER_STATE.sessions[session_id]
+        SERVER_STATE.sessions.pop(session_id, None)
         logger.info(
             "session cap: session=%s turn=%d confidence=%.3f req_id=%s",
             session_id,

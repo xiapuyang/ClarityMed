@@ -166,11 +166,16 @@ def _numeric_question(
     ev: CanonicalEvidence, spec: DatasetSpec, raw_values: list[str], language: str
 ) -> Question:
     nums = [float(v) for v in raw_values]
-    numeric = NumericSpec(
-        min=int(min(nums)) if all(n.is_integer() for n in nums) else min(nums),
-        max=int(max(nums)) if all(n.is_integer() for n in nums) else max(nums),
-        step=1,
-    )
+    all_int = all(n.is_integer() for n in nums)
+    low = int(min(nums)) if all_int else min(nums)
+    high = int(max(nums)) if all_int else max(nums)
+    try:
+        numeric = NumericSpec(min=low, max=high, step=1)
+    except Exception as exc:
+        raise QuestionPayloadError(
+            f"evidence {ev.id!r} numeric range invalid (min={low}, max={high}): {exc}",
+            status_code=500,
+        ) from exc
     return Question(
         question=_question_text(ev, spec, language),
         header=_header(ev.id),

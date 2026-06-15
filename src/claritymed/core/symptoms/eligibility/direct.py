@@ -24,17 +24,10 @@ from claritymed.core.schemas.patient import Profile
 from claritymed.core.symptoms.eligibility.base import (
     EligibilityResult,
     EligibilityStrategy,
+    _CONFIDENCE_SATURATION,
+    _MIN_DISTINCT_HITS,
 )
 from claritymed.core.symptoms.schemas import DatasetSpec
-
-# Origin D7 threshold: ≥2 distinct vocabulary hits = in_scope.
-_MIN_DISTINCT_HITS = 2
-
-# Cap for the normalized confidence score: matching this many distinct
-# evidences saturates at 1.0. Picked as a "this is clearly in-scope"
-# anchor — five separate evidence vocabularies hitting at once is more
-# than enough signal.
-_CONFIDENCE_SATURATION = 5.0
 
 # Per-dataset vocab map. Outer key is ``DatasetSpec.id``, inner key is
 # the evidence id (e.g. DDXPlus ``E_91``), value is the set of EN

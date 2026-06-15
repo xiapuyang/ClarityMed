@@ -249,9 +249,11 @@ class DatasetSpec(BaseModel):
         return self.i18n_key_prefix or f"symptoms.{self.id}"
 
     def question_key(self, evidence_id: str) -> str:
+        """Return the i18n key for the question text of a given evidence."""
         return f"{self.resolved_i18n_prefix()}.{evidence_id}.question"
 
     def value_key(self, evidence_id: str, raw_value: str) -> str:
+        """Return the i18n key for a categorical value label."""
         return f"{self.resolved_i18n_prefix()}.{evidence_id}.values.{raw_value}"
 
     def condition_name_key(self, condition_slug: str) -> str:
@@ -391,6 +393,7 @@ class EligibilityCatalogConfig(BaseModel):
         return self
 
     def resolved(self) -> EligibilityCatalogEntry:
+        """Return the active catalog entry; raises if not found (unreachable after validation)."""
         for entry in self.catalog:
             if entry.id == self.active:
                 return entry

@@ -102,7 +102,7 @@ def severity_override(ds: LoadedDataset, probs: np.ndarray) -> tuple[bool, int |
     if not mask.any():
         return False, None
     seen_severities = sev[mask].astype(int)
-    return True, int(seen_severities.max())
+    return True, int(seen_severities.min())
 
 
 def format_cancel_outcome(

@@ -156,7 +156,7 @@ AuditKind = Literal[
     # and disease *names* live in audit_payloads/, never here.
     #
     # tool.predict_disease_from_symptoms — tool invocation.
-    #   payload allowlist: tool_name, dataset_hint
+    #   payload allowlist: tool_name, dataset_hint, has_symptom_summary
     "tool.predict_disease_from_symptoms",
     # symptoms.session.started — server accepted the start request.
     #   payload allowlist: dataset_id, model_id, session_id

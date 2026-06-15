@@ -33,19 +33,11 @@ from claritymed.core.schemas.patient import Profile
 from claritymed.core.symptoms.eligibility.base import (
     EligibilityResult,
     EligibilityStrategy,
+    _CONFIDENCE_SATURATION,
+    _MIN_DISTINCT_HITS,
 )
 from claritymed.core.symptoms.schemas import DatasetSpec
 from claritymed.errors import EligibilityStrategyUnavailableError
-
-# Origin D7 threshold mirrors the direct strategy: ≥2 distinct evidence
-# vocabularies hit OR ≥1 high-specificity hit.
-_MIN_DISTINCT_HITS = 2
-
-# Confidence-saturation anchor: matching this many distinct evidence ids
-# pegs confidence at 1.0. Same value as DirectEligibility for parity in
-# the registry's tiebreaker — a strategy swap shouldn't change the
-# score distribution shape.
-_CONFIDENCE_SATURATION = 5.0
 
 # Concept types worth treating as eligibility signal. Drug / procedure
 # matches still contribute to retrieval but are noise for the "is this

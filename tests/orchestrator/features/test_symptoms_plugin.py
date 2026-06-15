@@ -664,6 +664,8 @@ async def test_post_process_critical_with_keyword_no_audit() -> None:
 async def test_post_process_critical_missing_keyword_emits_audit_unchanged_text(
     caplog,
 ) -> None:
+    import logging
+
     plugin = _make_plugin(
         eligibility=_StubEligibility(
             EligibilityResult(eligible=True, reason="in_scope")
@@ -677,15 +679,21 @@ async def test_post_process_critical_missing_keyword_emits_audit_unchanged_text(
         plugin._stash["20260613000000ABCDEFAB"] = {"max_severity": 1}
         # Reply describes the differential but never mentions the
         # emergency keywords — Critical tier audit must fire.
-        out = await plugin.post_process(
-            "You might want to see a doctor about that.", {}
-        )
+        with caplog.at_level(logging.INFO, logger="claritymed.audit"):
+            out = await plugin.post_process(
+                "You might want to see a doctor about that.", {}
+            )
     finally:
         from claritymed.context import reset_context
 
         reset_context(token)
     # Text always returned unchanged.
     assert out == "You might want to see a doctor about that."
+    # Audit event must have been emitted for the missing safety keyword.
+    assert any(
+        "symptoms.safety_keywords.missing" in record.message
+        for record in caplog.records
+    ), "Expected symptoms.safety_keywords.missing audit event in log"
 
 
 async def test_post_process_moderate_tier_skipped() -> None:

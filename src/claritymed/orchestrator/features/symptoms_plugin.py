@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+import httpx
+
 from claritymed.context import get_context_or_raise
 from claritymed.core.features.base import FeatureMode, TurnContext
 from claritymed.core.i18n.loader import t, t_list
@@ -48,7 +50,7 @@ from claritymed.core.symptoms.eligibility.base import (
     EligibilityStrategy,
 )
 from claritymed.core.symptoms.registry import DatasetRegistry
-from claritymed.core.symptoms.schemas import DatasetSpec, SymptomsConfig
+from claritymed.core.symptoms.schemas import DatasetSpec, SeverityTier, SymptomsConfig
 from claritymed.core.symptoms.severity import tier_for_severity
 from claritymed.errors import SymptomsServerUnreachableError
 from claritymed.servers.symptoms.wire import (
@@ -90,7 +92,12 @@ _AUDIT_TIERS = {"Critical", "Urgent"}
 _AUDIT_LEADING_CHARS = 600
 
 
-_SAFETY_KEYWORD_TIERS = ("Critical", "Urgent", "Moderate", "Mild")
+_SAFETY_KEYWORD_TIERS: tuple[SeverityTier, ...] = (
+    "Critical",
+    "Urgent",
+    "Moderate",
+    "Mild",
+)
 
 
 def _validate_safety_keywords() -> None:
@@ -298,6 +305,7 @@ def _attach_symptoms_baggage(
     try:
         from opentelemetry import baggage
         from opentelemetry import context as otel_context
+        from opentelemetry.trace import get_current_span
 
         ctx = otel_context.get_current()
         ctx = baggage.set_baggage(
@@ -307,6 +315,11 @@ def _attach_symptoms_baggage(
         ctx = baggage.set_baggage(
             "claritymed.symptoms.session_id", session_id, context=ctx
         )
+        span = get_current_span()
+        if span.get_span_context() is not None and span.get_span_context().is_valid:
+            span.set_attribute("claritymed.symptoms.dataset_id", dataset_id)
+            span.set_attribute("claritymed.symptoms.model_id", model_id)
+            span.set_attribute("claritymed.symptoms.session_id", session_id)
         return otel_context.attach(ctx)
     except ImportError:
         return None
@@ -364,6 +377,7 @@ class SymptomsFeature:
         self._stash: dict[str, dict[str, Any]] = {}
 
     async def pre_invoke(self, ctx: TurnContext) -> str:
+        """No-op pre-invoke hook; symptoms feature needs no preamble injection."""
         return ""
 
     def system_prompt_fn(self) -> "Callable":
@@ -382,9 +396,11 @@ class SymptomsFeature:
         return _fn
 
     def as_toolset(self) -> "AbstractToolset[Any] | None":
+        """Return None; this feature exposes a single tool, not a toolset."""
         return None
 
     def as_tool(self) -> Callable | None:
+        """Return a pydantic-ai Tool wrapping the predict_disease_from_symptoms body."""
         from pydantic_ai import Tool
 
         return Tool(
@@ -445,6 +461,10 @@ class SymptomsFeature:
         """
         deps = ctx.deps
         language = getattr(deps, "language", "en") or "en"
+        # Guard against oversized inputs before they hit the wire schema validator.
+        complaint = complaint[:4000] if complaint else complaint
+        if symptom_summary:
+            symptom_summary = symptom_summary[:4000]
         request_id, user_id, _ = get_context_or_raise()
         audit_event(
             "tool.predict_disease_from_symptoms",
@@ -512,6 +532,8 @@ class SymptomsFeature:
                 {"phase": "initial_batch", "turn_index": 0},
             )
             return {"eligible": True, "user_declined": True}
+        except InteractiveChannelUnavailable:
+            return {"eligible": False, "reason": "no_interactive_channel"}
 
         result = await self._run_sub_session(
             deps=deps,
@@ -720,6 +742,12 @@ class SymptomsFeature:
                 {"phase": "start", "reason": "server_unreachable"},
             )
             return {"eligible": True, "server_error": True}
+        except httpx.HTTPStatusError:
+            audit_event(
+                "symptoms.session.cancelled",
+                {"phase": "start", "reason": "server_error"},
+            )
+            return {"eligible": True, "server_error": True}
 
         baggage_token = _attach_symptoms_baggage(
             dataset.id, dataset.primary_model_id(), start.session_id
@@ -756,6 +784,7 @@ class SymptomsFeature:
         request_id: str,
         user_id: str,
     ) -> dict[str, Any]:
+        """Drive the question-answer loop until done, cap-hit, cancel, or error."""
         question = start.first_question
         turn_index = 0
         transcript: list[dict[str, Any]] = []
@@ -772,6 +801,16 @@ class SymptomsFeature:
                     transcript=transcript,
                     turn_index=turn_index,
                 )
+            except InteractiveChannelUnavailable:
+                await self._handle_cancel(
+                    dataset=dataset,
+                    session_id=start.session_id,
+                    request_id=request_id,
+                    user_id=user_id,
+                    transcript=transcript,
+                    turn_index=turn_index,
+                )
+                return {"eligible": False, "reason": "no_interactive_channel"}
             answer_text = _first_answer(answer)
             answer_value = _pick_answer_value(answer, question)
             transcript.append({"question": question.question, "answer": answer_text})
@@ -789,6 +828,10 @@ class SymptomsFeature:
                     "symptoms.session.cancelled",
                     {"phase": "turn", "reason": "server_unreachable"},
                 )
+                return {"eligible": True, "server_error": True}
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    return {"eligible": True, "session_expired": True}
                 return {"eligible": True, "server_error": True}
 
             turn_index += 1
@@ -912,6 +955,7 @@ class SymptomsFeature:
         transcript: list[dict[str, Any]],
         turn_index: int,
     ) -> dict[str, Any]:
+        """Cancel the active session and return a structured partial-result payload."""
         try:
             cancel = await self._client.cancel(
                 dataset.id, session_id, request_id=request_id

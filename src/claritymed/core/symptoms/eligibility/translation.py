@@ -141,6 +141,7 @@ class TranslationEligibility(EligibilityStrategy):
         profile: Profile,
         dataset: DatasetSpec,
     ) -> EligibilityResult:
+        """Translate the complaint to the dataset's native language then run direct matching."""
         # Same-language short-circuit — skip the LLM entirely when the
         # complaint already speaks the dataset's vocab language. The
         # injected direct strategy's check is already async.
@@ -175,10 +176,14 @@ class TranslationEligibility(EligibilityStrategy):
         instructing "translate to Chinese". The user's chat language
         does not enter this lookup.
         """
+        from pydantic_ai.settings import ModelSettings
+
         system_prompt = self._registry.get(
             self._prompt_name,
             language=target_language,  # type: ignore[arg-type]
         )
         agent = self._agent_factory(system_prompt, self._provider)
-        result = await agent.run(complaint)
+        result = await agent.run(
+            complaint, model_settings=ModelSettings(max_tokens=self._max_tokens)
+        )
         return getattr(result, "output", str(result))
