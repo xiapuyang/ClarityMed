@@ -63,14 +63,14 @@ def test_fmt_messages_renders_each_part_type():
     out = _fmt_messages(messages)
     assert "[sys]" in out and "sys text" in out
     assert "[user]" in out and "user text" in out
-    assert "[tool]" in out and "lookup" in out and "tool result" in out
+    assert "[tool_result]" in out and "lookup" in out and "tool result" in out
 
 
 def test_fmt_messages_includes_model_response():
     """ModelResponse (assistant turns) are now included in the thread."""
     resp = ModelResponse(parts=[TextPart(content="hi")])
     out = _fmt_messages([resp])
-    assert "[asst]" in out and "hi" in out
+    assert "[assistant]" in out and "hi" in out
 
 
 def test_fmt_messages_renders_assistant_tool_call():

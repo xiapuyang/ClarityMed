@@ -7,10 +7,10 @@ produces a REQ/RES block in ``~/.claritymed/logs/llm.log``:
     ==== REQ 2026-06-10T03:27:24 rid=2026...  call#1 ====
     model: claude-sonnet-4-5  system: anthropic
     history: 4 messages  tools: ask_user_question, retrieve_medical_literature
-      [1] [sys]   You are ClarityMed ...
-      [2] [user]  which health checkup package should I choose
-      [3] [asst]  ← tool_call: retrieve_medical_literature({"query": "..."})
-      [4] [tool]  retrieve_medical_literature → [{"chunk": "..."}]
+      [1] [sys]       You are ClarityMed ...
+      [2] [user]      which health checkup package should I choose
+      [3] [assistant] ← tool_call: retrieve_medical_literature({"query": "..."})
+      [4] [tool_result] retrieve_medical_literature → [{"chunk": "..."}]
     ==== RES  total_ms=7213  ttft_ms=6195  call#1 ====
     finish: stop  tokens: in=1234 out=45 total=1279
       text: Based on your profile ...
@@ -55,10 +55,10 @@ def _fmt_messages(messages: list[ModelMessage]) -> str:
     """Return a human-readable conversation thread (full content, all roles).
 
     Format:
-        [N] [sys]   <system prompt>
-        [N] [user]  <user text>
-        [N] [asst]  ← tool_call: name(args)
-        [N] [tool]  name → result
+        [N] [sys]         <system prompt>
+        [N] [user]        <user text>
+        [N] [assistant]   ← tool_call: name(args)
+        [N] [tool_result] name → result
     """
     from pydantic_ai.messages import (
         ModelRequest,
@@ -84,20 +84,20 @@ def _fmt_messages(messages: list[ModelMessage]) -> str:
                     lines.append(f"  {n} [user]  {_safe(str(part.content))}")
                 elif isinstance(part, ToolReturnPart):
                     lines.append(
-                        f"  {n} [tool]  {part.tool_name} → {_safe(str(part.content))}"
+                        f"  {n} [tool_result]  {part.tool_name} → {_safe(str(part.content))}"
                     )
         elif isinstance(msg, ModelResponse):
             for part in msg.parts:
                 idx += 1
                 n = f"[{idx}]"
                 if isinstance(part, TextPart):
-                    lines.append(f"  {n} [asst]  {_safe(part.content)}")
+                    lines.append(f"  {n} [assistant]  {_safe(part.content)}")
                 elif isinstance(part, ToolCallPart):
                     lines.append(
-                        f"  {n} [asst]  ← tool_call: {part.tool_name}({_safe(str(part.args))})"
+                        f"  {n} [assistant]  ← tool_call: {part.tool_name}({_safe(str(part.args))})"
                     )
                 elif isinstance(part, ThinkingPart):
-                    lines.append(f"  {n} [asst/thinking]  {_safe(part.content)}")
+                    lines.append(f"  {n} [assistant/thinking]  {_safe(part.content)}")
     return "\n".join(lines) if lines else "  (no messages)"
 
 

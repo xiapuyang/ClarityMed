@@ -3,11 +3,13 @@
 The tool's input schema is what the LLM actually sees — pydantic-ai
 emits it as the tool's JSON Schema, and field descriptions are visible
 to the model. So every constraint here doubles as a teaching aid:
-``max_length=20`` on ``header`` isn't just enforcement, it is the only
+``max_length=30`` on ``header`` isn't just enforcement, it is the only
 hint the model gets that headers must be short chips. (Bumped from 12
 to 20 after benchmark runs showed small models routinely emit 13-18
 char headers like ``Which report?`` / ``Severity level`` that fit the
-TUI chip area but tripped the old limit, burning a retry slot.)
+TUI chip area but tripped the old limit, burning a retry slot. Bumped
+again to 30 to accommodate medical phrasing like ``Analyze breast
+ultrasound?`` without forcing awkward truncation.)
 
 Validation errors are not fatal — pydantic-ai retries the tool call with
 the error attached, so the model gets a chance to re-emit a well-formed
@@ -135,9 +137,9 @@ class Question(BaseModel):
     header: str = Field(
         ...,
         min_length=1,
-        max_length=20,
+        max_length=30,
         description=(
-            "Short chip label, up to 20 characters. Examples: "
+            "Short chip label, up to 30 characters. Examples: "
             "'Auth method', 'Severity level', 'Which report?'."
         ),
     )

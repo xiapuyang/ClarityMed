@@ -27,7 +27,7 @@ vision:
   # Per-disease display name shown in confirm modals + LLM-side text.
   disease:
     breast_cancer_ultrasound:
-      name: "breast ultrasound"
+      name: "breast cancer"
 
   # Per-label localized names + short descriptions. Descriptions are
   # surfaced by the LLM when the user asks "what does X mean here?".
@@ -48,7 +48,7 @@ vision:
   # `no` label the two options (descriptions are optional flavor).
   confirm:
     breast_cancer_ultrasound:
-      title: "Run BUS model?"
+      title: "Analyze breast ultrasound?"
       body: |
         I can run a small breast-ultrasound model on this image to
         estimate whether the lesion looks benign, malignant, or normal.

@@ -297,11 +297,13 @@ def run_training_trial(
     model = _build_model(params["backbone"], pretrained=True).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=params["lr"])
 
+    # num_workers=0: hparam trials run sequentially — multiple workers would
+    # accumulate FDs across trials and hit the OS limit (macOS: 256) by trial 3.
     loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=16, shuffle=True, num_workers=2
+        train_ds, batch_size=16, shuffle=True, num_workers=0
     )
     val_loader = torch.utils.data.DataLoader(
-        val_ds, batch_size=16, shuffle=False, num_workers=2
+        val_ds, batch_size=16, shuffle=False, num_workers=0
     )
 
     best_score = -float("inf")
@@ -358,6 +360,7 @@ def run_training_trial(
         # feasibility / deficits without re-evaluating.
         if trial is not None and best_breakdown is not None:
             trial.set_user_attr("breakdown", best_breakdown)
+    del loader, val_loader
     return best_score
 
 

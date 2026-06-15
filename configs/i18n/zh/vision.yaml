@@ -20,7 +20,7 @@ vision:
   # 各疾病的显示名 —— 出现在确认弹窗与 LLM 回复正文中。
   disease:
     breast_cancer_ultrasound:
-      name: "乳腺超声"
+      name: "乳腺癌"
 
   # 各标签的本地化名称 + 简短描述。当用户追问「X 是什么意思」时，LLM
   # 可以引用 description。

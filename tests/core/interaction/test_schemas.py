@@ -38,18 +38,17 @@ def test_question_accepts_minimum_valid_shape():
     assert len(q.options) == 2
 
 
-def test_question_accepts_header_up_to_twenty_chars():
-    """Bumped from 12 → 20 after benchmark runs against omlx kept burning
-    a retry slot on ``Which report?`` (13) / ``Severity level`` (14) —
-    headers that fit the TUI chip area but tripped the old limit."""
-    # 20 chars exactly — must pass.
-    q = _question(header="A" * 20)
-    assert q.header == "A" * 20
+def test_question_accepts_header_up_to_thirty_chars():
+    """Bumped from 12 → 20 → 30 to accommodate medical phrasing like
+    "Analyze breast ultrasound?" (26 chars) that fits the TUI chip area."""
+    # 30 chars exactly — must pass.
+    q = _question(header="A" * 30)
+    assert q.header == "A" * 30
 
 
-def test_question_rejects_header_over_twenty_chars():
+def test_question_rejects_header_over_thirty_chars():
     with pytest.raises(ValidationError) as exc:
-        _question(header="A" * 21)
+        _question(header="A" * 31)
     assert "header" in str(exc.value).lower()
 
 

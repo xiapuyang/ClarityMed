@@ -297,3 +297,189 @@ versions:
 
         如果当前通道不可用（无 UI、非交互运行），工具会返回一段简短说明字符串。
         遇到这种返回**不要重试**——按你目前最合理的理解用普通文本作答即可。
+  - version: v3
+    created_at: 2026-06-15
+    notes: |
+      Bumped header chip-label limit from 20 to 30 characters. Medical
+      confirm-modal phrases like "Analyze breast ultrasound?" (26 chars)
+      fit the TUI chip area but tripped the old 20-char limit. The
+      teaching-aid number in the prompt body must stay in sync with
+      the schema's max_length to avoid contradictory signals to the model.
+    languages:
+      en: |
+        Ask the user a structured multiple-choice question when you need
+        information you cannot reasonably infer AND the answer space is
+        small and enumerable (2-4 options per question, up to 4 questions
+        per call).
+
+        Pre-call check — read this BEFORE composing the payload:
+        Can you, right now, list at least 2 distinct concrete options
+        the user would meaningfully choose between? If not, this tool
+        is the wrong tool. Answer with a free-text clarifying question
+        in your reply instead. A single-option "picker" is not valid
+        — the user has nothing to pick. The schema will reject it and
+        the retry loop cannot manufacture a second option that doesn't
+        exist.
+
+        Use it for:
+          - Gathering a missing preference or parameter when the choice
+            materially changes your answer (target age group, target
+            unit system, which of two interpretations).
+          - Resolving ambiguity when the user's message has multiple
+            plausible readings.
+          - Confirming a risky or irreversible direction before
+            committing.
+
+        Do NOT use it:
+          - When you can reasonably proceed and let the user redirect
+            you. Default to acting, not asking.
+          - For open-ended questions ('describe your symptoms', 'what
+            brings you in', 'what would you like to save'). Ask in
+            plain text instead.
+          - When options would exceed 4. Split into multiple questions
+            or ask in plain text.
+          - To re-confirm something the user already stated.
+          - When you only have 1 candidate option in mind. See the
+            pre-call check above.
+
+        Payload shape — the tool takes one argument, ``questions``, a
+        list of 1-4 Question objects. Each Question has these fields:
+          - ``question`` (str, 4-300 chars): the full prompt, ending in
+            '?'. Self-contained — do not assume the user recalls prior
+            turns. Example: "Which exam report do you want to open?"
+          - ``header`` (str, 1-30 chars): short chip label shown in the
+            UI above the question. Examples: "Which report?",
+            "Severity level", "Auth method".
+          - ``options`` (list of 2-4 Option objects). Each Option has:
+              * ``label`` (str, 1-40 chars): the choice text the user
+                picks. Must be unique within the same question.
+              * ``description`` (str, 1-160 chars): one sentence on
+                what choosing this option means or does.
+          - ``multi_select`` (bool, default false): set true only when
+            choices genuinely are NOT mutually exclusive.
+
+        Example call (one question, three options, single-select):
+
+            {
+              "questions": [
+                {
+                  "question": "Which exam report do you want me to open?",
+                  "header": "Which report?",
+                  "options": [
+                    {
+                      "label": "2026-03-12 annual checkup",
+                      "description": "Routine visit with Dr. Chen."
+                    },
+                    {
+                      "label": "2026-01-05 lipid panel",
+                      "description": "Fasting bloodwork ordered after the dec visit."
+                    },
+                    {
+                      "label": "2025-11-20 chest X-ray",
+                      "description": "Imaging for the persistent cough."
+                    }
+                  ],
+                  "multi_select": false
+                }
+              ]
+            }
+
+        Hard rules — the validator rejects payloads that violate any:
+          - Each option must be mutually exclusive unless multi_select
+            is true. Overlapping options waste the user's time.
+          - Never include an 'Other' option yourself — the UI adds a
+            free-text fallback automatically.
+          - At most one ``ask_user_question`` call per turn. If you call
+            it, do not also write a long answer in the same turn — wait
+            for the user's response and then answer.
+
+        Bad option set: ['Maybe diabetes', 'Could be diabetes',
+        'Diabetes-related']  — overlapping, all mean the same thing.
+
+        Bad option set: ['Check my recommendations']  — a single option
+        is not a picker. Ask in free text.
+
+        Good option set: ['Type 1 diabetes', 'Type 2 diabetes',
+        'Gestational diabetes', 'Not diabetes-related']  — clearly
+        distinct.
+
+        If the channel is unavailable (no UI, non-interactive run), the
+        tool returns a short string saying so. When that happens, do
+        not retry the tool — answer with your best understanding in
+        plain text.
+      zh: |
+        当你需要用户提供信息、且这些信息**无法**从已知上下文推断、**并且**答案空间
+        小到可以枚举时（每题 2-4 个选项，单次调用最多 4 个问题），使用这个工具向
+        用户呈现一个结构化多选题。
+
+        调用前自检 —— 编 payload 之前先读这一段：
+        此刻你能不能立刻列出**至少 2 个**用户真的会在其中做选择的、彼此**不重叠**
+        的具体选项？如果不能——本工具就**不适用**。在回复里用普通文本反问就行。
+        只有 1 个选项的"选择题"**不是选择题**——用户没东西可挑。schema 会拒，
+        retry 也凑不出一个本来就不存在的第 2 个选项。
+
+        适用场景：
+          - 收集会**实质改变答复**的缺失偏好或参数（目标年龄段、
+            单位制、两种解读里选哪一种）。
+          - 用户消息存在多种合理理解时进行澄清。
+          - 在采取风险高或不可逆动作前确认方向。
+
+        不适用场景：
+          - 你完全可以基于现有信息合理推进、让用户事后纠偏时——优先**直接作答**，
+            而不是反问。
+          - 开放式问题（"描述一下你的症状"、"哪里不舒服"、"你想保存什么"），
+            用普通文本反问即可。
+          - 选项超过 4 个——拆成多个问题，或者改用普通文本反问。
+          - 用户已经说过的内容，**不要再问一遍**。
+          - 心里只有 1 个备选——见上面的调用前自检。
+
+        Payload 结构 —— 工具只有一个参数 ``questions``，是 1-4 个 Question
+        对象的列表。每个 Question 包含以下字段：
+          - ``question`` (str, 4-300 字符)：完整的问题，以 "?"/"？" 结尾。
+            自包含——不要假设用户还记得之前的轮次。例："你想打开哪份体检报告？"
+          - ``header`` (str, 1-30 字符)：UI 里显示在问题上方的 chip 标签。
+            例："选哪份报告？"、"严重程度"、"鉴权方式"。
+          - ``options`` (list, 2-4 个 Option 对象)。每个 Option 包含：
+              * ``label`` (str, 1-40 字符)：用户实际点击的选项文字，同一题内必须唯一。
+              * ``description`` (str, 1-160 字符)：一句话解释这个选项的含义或后果。
+          - ``multi_select`` (bool, 默认 false)：仅当选项**真正**非互斥时设为 true。
+
+        调用示例（单题、三选项、单选）：
+
+            {
+              "questions": [
+                {
+                  "question": "你想让我打开哪份体检报告？",
+                  "header": "选哪份报告？",
+                  "options": [
+                    {
+                      "label": "2026-03-12 年度体检",
+                      "description": "陈医生那次常规随访。"
+                    },
+                    {
+                      "label": "2026-01-05 血脂检查",
+                      "description": "12 月就诊后开的空腹抽血。"
+                    },
+                    {
+                      "label": "2025-11-20 胸片",
+                      "description": "针对持续咳嗽做的影像。"
+                    }
+                  ],
+                  "multi_select": false
+                }
+              ]
+            }
+
+        硬性规则 —— validator 会拒绝违反以下任一条款的 payload：
+          - 同一题内选项必须**互斥**（除非 multi_select=true）。重叠选项浪费用户时间。
+          - **绝不**自己加 "其他/Other" 选项——UI 会自动提供自由文本兜底。
+          - 单轮最多调用一次。调用了就**不要**同时再写一段长答复——等用户回答后再作答。
+
+        反例选项组：["可能是糖尿病", "应该是糖尿病", "糖尿病相关"]  —— 三个意思一样，重叠。
+
+        反例选项组：["查看我的推荐"]  —— 单个选项不是选择题。直接用文本反问。
+
+        正例选项组：["1 型糖尿病", "2 型糖尿病", "妊娠糖尿病", "与糖尿病无关"]  —— 边界清晰。
+
+        如果当前通道不可用（无 UI、非交互运行），工具会返回一段简短说明字符串。
+        遇到这种返回**不要重试**——按你目前最合理的理解用普通文本作答即可。
