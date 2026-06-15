@@ -424,6 +424,68 @@ def test_manifest_non_cancer_class_skips_mapping_requirement() -> None:
     Manifest.model_validate(payload)  # does not raise
 
 
+# --- tuned inference params (new tuning pipeline output) --------------------
+
+
+def test_confidence_thresholds_requires_low_below_medium() -> None:
+    """A degenerate confidence band (low_max ≥ medium_max) is rejected."""
+    from claritymed.core.vision.schemas import ConfidenceThresholds
+
+    with pytest.raises(ValidationError) as exc:
+        ConfidenceThresholds.model_validate({"low_max": 0.8, "medium_max": 0.5})
+    assert "less than medium_max" in str(exc.value)
+
+
+def test_tuned_inference_classification_threshold_out_of_unit_rejected() -> None:
+    """A threshold like 1.5 has no meaning — reject before it lands in a manifest."""
+    from claritymed.core.vision.schemas import TunedInferenceParams
+
+    with pytest.raises(ValidationError) as exc:
+        TunedInferenceParams.model_validate(
+            {"classification_thresholds": {"malignant": 1.5}}
+        )
+    assert "must be in [0, 1]" in str(exc.value)
+
+
+def test_manifest_tuned_inference_unknown_label_rejected() -> None:
+    """A tune output pointing at a missing label means train/tune drifted."""
+    payload = _minimal_manifest(
+        tuned_inference={
+            "temperature": 1.0,
+            "classification_thresholds": {"NOT_A_LABEL": 0.5},
+        }
+    )
+    with pytest.raises(ValidationError) as exc:
+        Manifest.model_validate(payload)
+    assert "NOT_A_LABEL" in str(exc.value)
+
+
+def test_manifest_tuned_inference_roundtrip() -> None:
+    """Happy path: a fully-populated tuned block round-trips through the schema."""
+    payload = _minimal_manifest(
+        tuned_inference={
+            "temperature": 1.2,
+            "classification_thresholds": {"malignant": 0.45},
+            "seg_threshold": 0.5,
+            "confidence_thresholds": {"low_max": 0.55, "medium_max": 0.8},
+            "tta_default": True,
+        }
+    )
+    manifest = Manifest.model_validate(payload)
+    assert manifest.tuned_inference is not None
+    assert manifest.tuned_inference.temperature == 1.2
+    assert manifest.tuned_inference.classification_thresholds == {"malignant": 0.45}
+    assert manifest.tuned_inference.confidence_thresholds.low_max == 0.55
+    assert manifest.tuned_inference.tta_default is True
+
+
+def test_manifest_tuned_inference_optional_for_backwards_compat() -> None:
+    """Manifests written before the tune phase shipped must still load."""
+    payload = _minimal_manifest()
+    manifest = Manifest.model_validate(payload)
+    assert manifest.tuned_inference is None
+
+
 # --- result models ---------------------------------------------------------
 
 

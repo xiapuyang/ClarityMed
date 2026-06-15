@@ -351,6 +351,81 @@ class LabelMeta(BaseModel):
     clinical_action: ClinicalAction | None = None
 
 
+class ConfidenceThresholds(BaseModel):
+    """Top1-probability boundaries between low/medium/high confidence tiers.
+
+    Written by the tune phase per-checkpoint so each model's calibration
+    curve sets its own tier boundaries. The adapter applies
+    ``low_max < p ≤ medium_max → medium``, ``p > medium_max → high``,
+    everything below ``low_max`` is ``"low"`` (which triggers KTD-V10).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    low_max: float = Field(ge=0.0, le=1.0)
+    medium_max: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> ConfidenceThresholds:
+        if not self.low_max < self.medium_max:
+            raise ValueError(
+                f"confidence_thresholds.low_max ({self.low_max}) must be "
+                f"strictly less than medium_max ({self.medium_max})"
+            )
+        return self
+
+
+class TunedInferenceParams(BaseModel):
+    """Inference-time parameters tuned by the post-training tune phase.
+
+    Every field is optional with a sane fallback baked into the adapter,
+    so a manifest written before the tune phase landed (or by a server
+    that doesn't tune) still loads. The fields collectively cover the
+    non-HP knobs that materially shift the production composite score
+    (recall × dice). Carrying them on the manifest — not in
+    ``configs/vision.yaml`` — keeps tuning a per-checkpoint concern: a
+    re-trained model gets re-tuned without any config churn.
+
+    Field semantics:
+
+    * ``temperature`` — logit scaling applied **before** softmax in
+      ``calibrate()``. ``T > 1`` softens probabilities (spreads mass),
+      ``T < 1`` sharpens. Default behavior when absent: ``T = 1.0``
+      (bare softmax).
+    * ``classification_thresholds`` — per-label probability cutoffs
+      for "treat this class as the prediction". When present, the
+      top1 selection still uses argmax for tie-breaking but a class
+      is only allowed to be top1 if its probability ≥ its threshold.
+      v1 BUSI primarily uses the malignant cutoff to trade recall vs
+      precision on the medically-critical class.
+    * ``seg_threshold`` — sigmoid cutoff for binarizing the soft
+      segmentation mask. Affects dice + bbox + area_ratio.
+    * ``confidence_thresholds`` — see :class:`ConfidenceThresholds`.
+    * ``tta_default`` — default value of ``DetectOptions.tta`` when
+      the client doesn't override. ``None`` defers to the client's
+      explicit choice (`False` in the schema default).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    temperature: float | None = Field(default=None, gt=0.0, le=10.0)
+    classification_thresholds: dict[str, float] | None = None
+    seg_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence_thresholds: ConfidenceThresholds | None = None
+    tta_default: bool | None = None
+
+    @model_validator(mode="after")
+    def _thresholds_in_unit(self) -> TunedInferenceParams:
+        if self.classification_thresholds is None:
+            return self
+        for label, value in self.classification_thresholds.items():
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    f"classification_thresholds[{label!r}]={value} must be in [0, 1]"
+                )
+        return self
+
+
 class Manifest(BaseModel):
     """On-disk ``manifest.json`` describing one trained checkpoint.
 
@@ -382,6 +457,30 @@ class Manifest(BaseModel):
     supports_saliency: bool = False
     supports_tta: bool = False
     model_card_url: str | None = None
+    tuned_inference: TunedInferenceParams | None = None
+
+    @model_validator(mode="after")
+    def _tuned_threshold_keys_valid(self) -> Manifest:
+        """Reject classification_thresholds with unknown label keys.
+
+        Pre-launch invariant: a tune output that points at a missing
+        label means train/tune ran against a different label set than
+        the manifest declares — that's drift we want to catch at boot,
+        not silently ignore.
+        """
+        if self.tuned_inference is None:
+            return self
+        keys = self.tuned_inference.classification_thresholds
+        if keys is None:
+            return self
+        unknown = sorted(set(keys) - set(self.labels))
+        if unknown:
+            raise ValueError(
+                f"manifest(model_id={self.model_id!r}).tuned_inference."
+                f"classification_thresholds has unknown labels {unknown!r}; "
+                f"known labels: {sorted(self.labels)!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _labels_meta_covers_labels(self) -> Manifest:

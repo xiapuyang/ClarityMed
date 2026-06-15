@@ -242,15 +242,18 @@ class BUSIUnetAdapter(TorchAdapter):
     def calibrate(self, raw: Any) -> ClassificationResult:
         """Build the wire-shaped ``ClassificationResult`` from logits.
 
-        Temperature scaling lands when the per-class reliability curves
-        from Unit 6's tune sweep are available; v1 uses bare softmax so
-        the schema is exercised end to end.
+        Reads ``manifest.tuned_inference`` for temperature scaling and
+        per-class classification thresholds. Without a tuned manifest,
+        falls back to ``T=1`` (bare softmax) and argmax top1 selection
+        so v0 weights still load cleanly.
         """
         cls_logits, _ = raw if isinstance(raw, tuple) else (raw, None)
         torch = self._torch
 
-        probs = torch.softmax(cls_logits, dim=1)[0].cpu().tolist()
-        top1_idx = int(max(range(len(probs)), key=probs.__getitem__))
+        temperature = self._tuned_temperature()
+        scaled = cls_logits / temperature if temperature != 1.0 else cls_logits
+        probs = torch.softmax(scaled, dim=1)[0].cpu().tolist()
+        top1_idx = self._top1_under_thresholds(probs)
         top1 = self._labels[top1_idx]
         top1_prob = float(probs[top1_idx])
         return ClassificationResult(
@@ -262,12 +265,18 @@ class BUSIUnetAdapter(TorchAdapter):
         )
 
     def segment(self, x: Any) -> SegmentationResult | None:
-        """Run the segmentation head and binarize for the wire payload."""
+        """Run the segmentation head and binarize for the wire payload.
+
+        Mask binarization cutoff comes from
+        ``manifest.tuned_inference.seg_threshold`` when present;
+        otherwise falls back to the v1 default of ``0.5``.
+        """
         torch = self._torch
 
         with torch.no_grad():
             _, seg_logits = self._model(x)
-        mask = (seg_logits.sigmoid()[0, 0] > 0.5).cpu().numpy()
+        seg_threshold = self._tuned_seg_threshold()
+        mask = (seg_logits.sigmoid()[0, 0] > seg_threshold).cpu().numpy()
         area_ratio = float(mask.sum()) / float(mask.size)
         if area_ratio < 1e-4:
             return None
@@ -333,13 +342,64 @@ class BUSIUnetAdapter(TorchAdapter):
         )
         return InputQuality(passed=passed, checks=checks)
 
-    @staticmethod
-    def _tier(prob: float) -> ConfidenceTier:
-        if prob < _LOW_TIER_CEILING:
+    def _tier(self, prob: float) -> ConfidenceTier:
+        """Tier ``prob`` against tuned (or default) confidence boundaries."""
+        low_max, med_max = self._tuned_confidence_bounds()
+        if prob < low_max:
             return "low"
-        if prob < _MEDIUM_TIER_CEILING:
+        if prob < med_max:
             return "medium"
         return "high"
+
+    # --- tuned-param accessors --------------------------------------------
+
+    def _tuned(self):
+        """Return ``manifest.tuned_inference`` or ``None``."""
+        return getattr(self.manifest, "tuned_inference", None)
+
+    def _tuned_temperature(self) -> float:
+        tuned = self._tuned()
+        if tuned is None or tuned.temperature is None:
+            return 1.0
+        return float(tuned.temperature)
+
+    def _tuned_seg_threshold(self) -> float:
+        tuned = self._tuned()
+        if tuned is None or tuned.seg_threshold is None:
+            return 0.5
+        return float(tuned.seg_threshold)
+
+    def _tuned_confidence_bounds(self) -> tuple[float, float]:
+        tuned = self._tuned()
+        if tuned is None or tuned.confidence_thresholds is None:
+            return (_LOW_TIER_CEILING, _MEDIUM_TIER_CEILING)
+        return (
+            tuned.confidence_thresholds.low_max,
+            tuned.confidence_thresholds.medium_max,
+        )
+
+    def _top1_under_thresholds(self, probs: list[float]) -> int:
+        """Pick the argmax that also clears its per-class threshold.
+
+        Without thresholds (or when nothing clears them), falls back to
+        plain argmax so the response always has a top1 — calling code
+        further upstream (KTD-V10) downgrades low-confidence top1s into
+        ``inconclusive_review``.
+        """
+        tuned = self._tuned()
+        thresholds = (
+            tuned.classification_thresholds
+            if tuned and tuned.classification_thresholds
+            else None
+        )
+        if not thresholds:
+            return int(max(range(len(probs)), key=probs.__getitem__))
+        eligible = [
+            i for i, p in enumerate(probs) if p >= thresholds.get(self._labels[i], 0.0)
+        ]
+        if not eligible:
+            return int(max(range(len(probs)), key=probs.__getitem__))
+        return int(max(eligible, key=lambda i: probs[i]))
 
 
 def register() -> None:

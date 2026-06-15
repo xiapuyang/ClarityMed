@@ -11,7 +11,8 @@ Modules:
   split deterministic by patient id; returns ``(image, mask, label)``
   tuples. Stratified to keep the rare ``normal`` class in every split.
 * ``hparam`` — Optuna search over backbone + LR + segmentation-loss
-  weight; persists trials to ``hparam.db``.
+  weight; persists trials to the shared
+  ``CLARITYMED_HOME/tracking/optuna.db`` (study name disambiguates).
 * ``train`` — production training. Outputs ``weights.pt`` +
   ``manifest.json`` (with sha256s, eval metrics,
   ``cancer_status_mapping``, ``clinical_action_mapping``,

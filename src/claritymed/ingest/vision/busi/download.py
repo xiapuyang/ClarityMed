@@ -85,7 +85,7 @@ def download(root: Path | None = None, *, force: bool = False) -> Path:
     return out
 
 
-def _main(argv: list[str]) -> int:
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=None, help="Override target root")
     parser.add_argument("--force", action="store_true", help="Force re-download")

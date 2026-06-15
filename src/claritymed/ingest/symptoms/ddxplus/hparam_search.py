@@ -213,8 +213,9 @@ def main() -> None:
     ap.add_argument(
         "--storage",
         default=None,
-        help="Optuna storage URL. Defaults to "
-        "sqlite:///<run_dir>/hparam.db so trials survive interruptions.",
+        help="Optuna storage URL. Defaults to the shared "
+        "CLARITYMED_HOME/tracking/optuna.db so trials from every "
+        "feature live in one DB (disambiguated by --study-name).",
     )
     ap.add_argument("--study-name", default="typed_basd_hparam")
     args = ap.parse_args()
@@ -232,7 +233,9 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     out = args.out or run_dir / "hparam_best.pt"
     if args.storage is None:
-        args.storage = f"sqlite:///{run_dir / 'hparam.db'}"
+        from claritymed.ingest.mlflow_utils import optuna_storage_uri
+
+        args.storage = optuna_storage_uri()
     # Persistent so weights survive across --storage resumptions.
     trial_dir = run_dir / f".{args.study_name}_trials"
     trial_dir.mkdir(parents=True, exist_ok=True)

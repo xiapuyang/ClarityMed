@@ -640,6 +640,7 @@ symptoms-server = [
 vision-server = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "mlflow" },
     { name = "pillow" },
     { name = "torch" },
     { name = "uvicorn", extra = ["standard"] },
@@ -683,6 +684,7 @@ requires-dist = [
     { name = "magika", specifier = ">=0.6" },
     { name = "marker-pdf", marker = "extra == 'ocr-scanned'", specifier = ">=0.2" },
     { name = "mlflow", marker = "extra == 'symptoms-server'", specifier = ">=2.0" },
+    { name = "mlflow", marker = "extra == 'vision-server'", specifier = ">=2.0" },
     { name = "onnxruntime", specifier = ">=1.17" },
     { name = "open-clip-torch", marker = "extra == 'medical-clip-server'", specifier = ">=2.24" },
     { name = "openinference-instrumentation-pydantic-ai", specifier = ">=0.1.16" },

@@ -121,6 +121,10 @@ vision-server = [
     "httpx>=0.27",
     "torch>=2.0",
     "pillow>=10.0",
+    # Training/tuning pipeline tracking (BUSI search/train/tune/deploy).
+    # Bundled here mirroring the symptoms-server convention — same extra
+    # serves both inference hosts and operators running the train CLIs.
+    "mlflow>=2.0",
 ]
 # E2E quality evaluation — requires live local services (embedder + reranker +
 # Qdrant) and the project's configured LLM. Run with:
@@ -193,6 +197,8 @@ claritymed-vision-download-busi = "claritymed.ingest.vision.busi.download:_main"
 claritymed-vision-hparam-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.hparam:cli"
 claritymed-vision-train-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.train:cli"
 claritymed-vision-tune-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.tune:cli"
+claritymed-vision-deploy-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.deploy:cli"
+claritymed-vision-pipeline-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.pipeline:cli"
 
 [build-system]
 requires = ["hatchling"]

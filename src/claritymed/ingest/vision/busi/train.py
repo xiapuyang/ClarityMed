@@ -6,16 +6,33 @@ module ships the wiring so an operator can run it with confidence. The
 implementer can verify the loader / model / loss / optimizer all wire
 together before committing to the full run.
 
+**Hyperparameters come from the Optuna search study** (study name from
+:func:`~claritymed.ingest.vision.busi.hparam.study_id`). Running
+production training without a completed search study fails fast — the
+operator is expected to run hparam search first.
+
+**Early stopping** runs against the val split composite. ``--max-epochs``
+sets the ceiling; ``--patience`` controls how many epochs of stagnation
+trigger an early stop. The default ceiling is high enough (100) that
+overfitting curves are visible end-to-end before patience kicks in;
+the operator can inspect ``training_curve.json`` to confirm.
+
+The checkpoint persisted to disk is the **best-epoch** state dict, not
+the last epoch — overfitting after the early-stopping window doesn't
+contaminate the deployed weights.
+
 Outputs land at::
 
     ~/.claritymed/models/vision/breast_cancer_ultrasound/run/<model_id>_<timestamp>/
-        weights.pt
-        manifest.json
-        eval_metrics.json
+        weights.pt              # best-epoch checkpoint
+        manifest.json           # tuned_inference is None until tune.py runs
+        eval_metrics.json       # val + held-out test composite + breakdown
+        training_curve.json     # per-epoch loss / val composite
+        provenance.json         # mlflow + optuna run/study ids for deploy log
 
-Promotion to the stable directory is a manual step (a separate ``cp -r``
-+ ``configs/vision.yaml`` sha256 commit). See
-``docs/vision-model-workflow.md`` for the recipe.
+The downstream tune phase reads from the staging dir, writes tuned
+params into ``manifest.json``, then deploy promotes the dir to a
+versioned sibling stable path (see ``deploy.py``).
 
 Manifest fields are written via :class:`~claritymed.core.vision.schemas.Manifest`
 so the same validation that runs at server boot catches a malformed
@@ -25,6 +42,7 @@ write here.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import logging
@@ -100,7 +118,13 @@ def _write_manifest(
     eval_metrics: dict,
     supports_tta: bool,
 ) -> None:
-    """Compose the manifest, validate, then write."""
+    """Compose the manifest, validate, then write.
+
+    ``tuned_inference`` is left as ``None``; the tune phase
+    (``tune.py``) reads the manifest, runs its inference-time sweep,
+    and writes the tuned block back in place. Train writing
+    ``tuned_inference`` itself would couple the two phases.
+    """
     from claritymed.core.vision.schemas import Manifest
 
     manifest = Manifest(
@@ -129,10 +153,79 @@ def _write_manifest(
         supports_saliency=False,
         supports_tta=supports_tta,
         model_card_url=None,
+        tuned_inference=None,
     )
-    body = manifest.model_dump(mode="json")
-    body["eval_metrics"] = eval_metrics
-    target.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+    # ``manifest.json`` must roundtrip through ``Manifest.model_validate``
+    # cleanly — eval metrics live in the sibling ``eval_metrics.json``
+    # so we don't have to relax ``extra="forbid"`` on the schema.
+    _ = eval_metrics  # kept in signature for backwards-compat; written by caller.
+    target.write_text(
+        json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+# --- best-HP loader -------------------------------------------------------
+
+
+class _NoSearchStudyError(SystemExit):
+    """Raised when the operator tries to train without running hparam first."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _BestHpPick:
+    """Resolved best-HP record carrying lineage back to the source trial."""
+
+    params: dict[str, Any]
+    trial_number: int
+    trial_task_id: str | None
+
+
+def _load_best_hp(*, task_id: str) -> _BestHpPick:
+    """Read the best trial from the hparam study owned by ``task_id``.
+
+    Per-task study naming (see :func:`hparam.study_id`) means the study
+    only holds this pipeline run's own trials — no cross-run
+    contamination, so the picker just takes ``best_trial`` directly. To
+    train from a prior search, re-invoke with that run's ``task_id``.
+
+    Refuses to fall back to a hardcoded default — silent fallback would
+    let an operator promote a model trained with stale defaults after a
+    search-space change, which is exactly the kind of "looks fine until
+    eval surprises you" regression the pipeline is supposed to prevent.
+    """
+    try:
+        import optuna
+    except ImportError as exc:
+        raise SystemExit(
+            "optuna not installed — run `uv sync --extra vision-server`."
+        ) from exc
+    from claritymed.ingest.mlflow_utils import optuna_storage_uri
+    from claritymed.ingest.vision.busi.hparam import study_id
+
+    name = study_id(task_id)
+    try:
+        study = optuna.load_study(study_name=name, storage=optuna_storage_uri())
+    except KeyError as exc:
+        raise _NoSearchStudyError(
+            f"Optuna study {name!r} not found in {optuna_storage_uri()}. "
+            f"Run `claritymed-vision-hparam-breast-cancer-ultrasound "
+            f"--task-id {task_id}` first."
+        ) from exc
+
+    completed = [t for t in study.trials if t.state.name == "COMPLETE"]
+    if not completed:
+        raise _NoSearchStudyError(
+            f"Optuna study {name!r} has no completed trials. "
+            f"Run the hparam search before production training."
+        )
+
+    best = max(completed, key=lambda t: float("-inf") if t.value is None else t.value)
+    return _BestHpPick(
+        params=dict(best.params),
+        trial_number=best.number,
+        trial_task_id=best.user_attrs.get("task_id"),
+    )
 
 
 def run_training_trial(
@@ -220,49 +313,383 @@ def run_training_trial(
     return best_score
 
 
-def run_production_training(*, epochs: int, smoke: bool) -> Path:
+def run_production_training(
+    *,
+    max_epochs: int,
+    patience: int,
+    smoke: bool,
+    task_id: str | None = None,
+) -> Path:
     """Train one production checkpoint and write the manifest.
 
-    Returns the staging directory; promotion is operator-driven.
+    Reads best HP from the Optuna study, runs early-stopping training
+    against the val split composite, persists best-epoch weights plus
+    per-epoch curves, and finally evaluates on the held-out test split
+    so the deploy phase has a regression-gate metric that's never been
+    used for optimization.
+
+    The ``task_id`` (auto-generated when absent) lands on the MLflow
+    train run tag, on every Optuna tune trial later, and in
+    ``provenance.json`` next to the winning search trial's task_id —
+    so the whole lineage is reconstructable from any artifact.
+
+    Returns the staging directory path.
     """
-    params = {
-        "backbone": "resnet50",
-        "lr": 1e-3,
-        "seg_loss_weight": 1.0,
-    }
-    score = run_training_trial(params, epochs=epochs, smoke=smoke)
-    staging = _staging_dir(MODEL_ID)
-    staging.mkdir(parents=True, exist_ok=True)
-    weights = staging / "weights.pt"
+    from claritymed.ingest.mlflow_utils import generate_task_id
+
+    if task_id is None:
+        task_id = generate_task_id()
+    logger.info("train task_id=%s", task_id)
 
     if smoke:
-        # Smoke writes a tiny torch tensor so the manifest write can be
-        # exercised end-to-end.
-        try:
-            import torch
-
-            torch.save({"backbone": params["backbone"], "smoke": True}, weights)
-        except ImportError:
-            weights.write_bytes(b"smoke")
+        # Smoke runs the wiring without requiring a real search study —
+        # the pipeline-orchestrator smoke test should be able to drive
+        # all four phases on a fresh box, so we synthesize HP here
+        # instead of failing on a missing study.
+        params: dict[str, Any] = {
+            "backbone": "custom_unet",
+            "lr": 1e-3,
+            "seg_loss_weight": 1.0,
+        }
+        hp_pick = _BestHpPick(params=params, trial_number=-1, trial_task_id=task_id)
+        logger.info("smoke training with synthetic HP: %s", params)
     else:
-        # The real write happens inside ``run_training_trial`` — but the
-        # production training loop here is responsible for persisting
-        # the checkpoint after the search finishes. Write a marker so
-        # the staging dir is recognizably incomplete.
-        weights.write_bytes(b"PLACEHOLDER -- wire actual torch.save here")
+        hp_pick = _load_best_hp(task_id=task_id)
+        params = hp_pick.params
+        logger.info(
+            "training with best HP from study trial #%d (task_id=%s): %s",
+            hp_pick.trial_number,
+            hp_pick.trial_task_id,
+            params,
+        )
 
+    staging = _staging_dir(MODEL_ID)
+    staging.mkdir(parents=True, exist_ok=True)
+
+    history = _train_with_early_stopping(
+        params,
+        max_epochs=max_epochs,
+        patience=patience,
+        smoke=smoke,
+        task_id=task_id,
+    )
+
+    # Persist the best-epoch state dict, then re-hash for the manifest.
+    weights = staging / "weights.pt"
+    _persist_weights(history.best_state_dict, weights, params=params, smoke=smoke)
     weights_sha = _sha256_file(weights)
+
+    eval_metrics = {
+        "params": params,
+        "best_epoch": history.best_epoch,
+        "best_val_score": history.best_val_score,
+        "epochs_trained": history.epochs_trained,
+        "early_stopped": history.early_stopped,
+        "val_breakdown": history.val_breakdown,
+        "test_breakdown": history.test_breakdown,
+        "test_score": history.test_score,
+    }
+
     _write_manifest(
         target=staging / "manifest.json",
         weights_sha=weights_sha,
-        eval_metrics={"val_score": score},
+        eval_metrics=eval_metrics,
         supports_tta=True,
     )
     (staging / "eval_metrics.json").write_text(
-        json.dumps({"val_score": score, "params": params}, indent=2),
-        encoding="utf-8",
+        json.dumps(eval_metrics, indent=2), encoding="utf-8"
+    )
+    (staging / "training_curve.json").write_text(
+        json.dumps(history.curves, indent=2), encoding="utf-8"
+    )
+    _write_provenance(
+        staging,
+        params=params,
+        mlflow_info=history.mlflow_info,
+        task_id=task_id,
+        hp_pick=hp_pick,
     )
     return staging
+
+
+@dataclasses.dataclass
+class _TrainingHistory:
+    """Bundle returned from :func:`_train_with_early_stopping`.
+
+    Carries everything the surrounding writer needs to persist the
+    staging dir without re-reading torch state.
+    """
+
+    best_state_dict: Any
+    best_val_score: float
+    best_epoch: int
+    epochs_trained: int
+    early_stopped: bool
+    curves: list[dict[str, float]]
+    val_breakdown: dict[str, float]
+    test_breakdown: dict[str, float]
+    test_score: float
+    mlflow_info: dict[str, str]
+
+
+def _train_with_early_stopping(
+    params: dict[str, Any],
+    *,
+    max_epochs: int,
+    patience: int,
+    smoke: bool,
+    task_id: str,
+) -> _TrainingHistory:
+    """Run the training loop with patience-based early stopping.
+
+    The composite ``score = 0.6 * malignant_recall + 0.4 * dice`` drives
+    both the per-epoch early-stop trigger and the final selection. Each
+    epoch logs (train_loss, val_loss, val_score, val_breakdown) to
+    MLflow and accumulates ``curves`` so an operator can plot the
+    overfitting onset without parsing MLflow's API.
+    """
+    if smoke:
+        return _smoke_training_history(params)
+
+    try:
+        import torch
+    except ImportError as exc:
+        raise SystemExit(
+            "torch not installed — run `uv sync --extra vision-server`."
+        ) from exc
+
+    from claritymed.ingest.mlflow_utils import mlflow_run, experiment_name
+
+    root = busi_data_root() / DATASET_SUBDIR
+    if not root.is_dir():
+        raise SystemExit(
+            f"BUSI not present at {root}. Run "
+            "`uv run python -m claritymed.ingest.vision.busi.download` first."
+        )
+
+    samples = discover(root)
+    splits = stratified_split(samples)
+    train_ds = build_dataset(splits["train"])
+    val_ds = build_dataset(splits["val"])
+    test_ds = build_dataset(splits["test"])
+
+    device = _select_device(torch)
+    model = _build_model(params["backbone"]).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=params["lr"])
+
+    loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=16, shuffle=True, num_workers=2
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_ds, batch_size=16, shuffle=False, num_workers=2
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_ds, batch_size=16, shuffle=False, num_workers=2
+    )
+
+    best_val_score = -1.0
+    best_epoch = 0
+    best_state_dict: Any = None
+    curves: list[dict[str, float]] = []
+    epochs_since_improve = 0
+    early_stopped = False
+
+    from claritymed.ingest.mlflow_utils import TASK_ID_TAG
+
+    with mlflow_run(
+        "vision",
+        DATASET_ID,
+        run_name=f"train-{MODEL_ID}",
+        run_type="train",
+        params={**params, "max_epochs": max_epochs, "patience": patience},
+        tags={TASK_ID_TAG: task_id},
+    ) as run:
+        run_id = run.info.run_id
+        for epoch in range(max_epochs):
+            train_loss = _train_one_epoch(
+                model, loader, optimizer, device, params["seg_loss_weight"]
+            )
+            val_loss, val_breakdown = _eval_full(
+                model, val_loader, device, params["seg_loss_weight"]
+            )
+            val_score = val_breakdown["composite"]
+            curves.append(
+                {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "val_score": val_score,
+                    **{f"val_{k}": v for k, v in val_breakdown.items()},
+                }
+            )
+            _log_epoch_to_mlflow(epoch, train_loss, val_loss, val_breakdown)
+            if val_score > best_val_score:
+                best_val_score = val_score
+                best_epoch = epoch
+                best_state_dict = {
+                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                }
+                epochs_since_improve = 0
+            else:
+                epochs_since_improve += 1
+            logger.info(
+                "epoch=%d train_loss=%.4f val_loss=%.4f val_score=%.4f "
+                "best=%.4f (epoch %d) stale=%d",
+                epoch,
+                train_loss,
+                val_loss,
+                val_score,
+                best_val_score,
+                best_epoch,
+                epochs_since_improve,
+            )
+            if epochs_since_improve >= patience:
+                logger.info("early stop at epoch %d (patience=%d)", epoch, patience)
+                early_stopped = True
+                break
+
+        # Restore best weights, evaluate on the held-out test split.
+        if best_state_dict is not None:
+            model.load_state_dict(best_state_dict)
+        _, test_breakdown = _eval_full(
+            model, test_loader, device, params["seg_loss_weight"]
+        )
+        test_score = test_breakdown["composite"]
+        _log_test_to_mlflow(test_breakdown)
+
+        mlflow_info = {
+            "experiment_name": experiment_name("vision", DATASET_ID),
+            "run_id": run_id,
+        }
+
+    return _TrainingHistory(
+        best_state_dict=best_state_dict,
+        best_val_score=best_val_score,
+        best_epoch=best_epoch,
+        epochs_trained=len(curves),
+        early_stopped=early_stopped,
+        curves=curves,
+        val_breakdown=_pluck_breakdown(curves[-1] if curves else {}),
+        test_breakdown=test_breakdown,
+        test_score=test_score,
+        mlflow_info=mlflow_info,
+    )
+
+
+def _smoke_training_history(params: dict[str, Any]) -> _TrainingHistory:
+    """Return a fake training history that exercises the full output write path.
+
+    Used when ``--smoke`` is set so the surrounding pipeline (deploy
+    gate, manifest write, provenance log) can be unit-tested without
+    touching torch.
+    """
+    _smoke_forward_pass(params)
+    breakdown = {
+        "composite": 0.55,
+        "malignant_recall": 0.86,
+        "dice": 0.71,
+        "accuracy": 0.84,
+    }
+    return _TrainingHistory(
+        best_state_dict={"smoke": True, "backbone": params.get("backbone")},
+        best_val_score=breakdown["composite"],
+        best_epoch=0,
+        epochs_trained=1,
+        early_stopped=False,
+        curves=[
+            {
+                "epoch": 0,
+                "train_loss": 0.42,
+                "val_loss": 0.40,
+                "val_score": breakdown["composite"],
+                "val_composite": breakdown["composite"],
+                "val_malignant_recall": breakdown["malignant_recall"],
+                "val_dice": breakdown["dice"],
+                "val_accuracy": breakdown["accuracy"],
+            }
+        ],
+        val_breakdown=breakdown,
+        test_breakdown=breakdown,
+        test_score=breakdown["composite"],
+        mlflow_info={"experiment_name": "smoke", "run_id": "smoke"},
+    )
+
+
+def _pluck_breakdown(curve_row: dict[str, float]) -> dict[str, float]:
+    """Extract the val_* breakdown fields from one curve row."""
+    return {
+        key[len("val_") :]: value
+        for key, value in curve_row.items()
+        if key.startswith("val_") and key != "val_loss" and key != "val_score"
+    }
+
+
+def _persist_weights(
+    state_dict: Any, target: Path, *, params: dict[str, Any], smoke: bool
+) -> None:
+    """Save the best-epoch state dict (or a tiny smoke sentinel)."""
+    try:
+        import torch
+
+        if smoke:
+            torch.save(
+                {
+                    "backbone": params.get("backbone"),
+                    "smoke": True,
+                    "state": state_dict,
+                },
+                target,
+            )
+        else:
+            torch.save(state_dict, target)
+    except ImportError:
+        target.write_bytes(b"smoke")
+
+
+def _write_provenance(
+    staging: Path,
+    *,
+    params: dict[str, Any],
+    mlflow_info: dict[str, str],
+    task_id: str,
+    hp_pick: _BestHpPick,
+) -> None:
+    """Drop a provenance.json file the deploy phase can splice into the log.
+
+    Keeping it in the staging dir means each candidate carries its own
+    breadcrumb trail. ``task_id`` is the lineage anchor — every MLflow
+    run + Optuna trial in the same pipeline execution shares it.
+    ``search_trial_number`` + ``search_trial_task_id`` close the loop on
+    "where did this HP come from?" — a winning trial from a different
+    pipeline run is recorded (not masked) for full traceability.
+
+    Deploy reads it verbatim into LATEST.jsonl.
+    """
+    from claritymed.ingest.mlflow_utils import (
+        optuna_storage_uri,
+        tracking_uri,
+    )
+    from claritymed.ingest.vision.busi.hparam import study_id
+
+    payload = {
+        "phase": "train",
+        "task_id": task_id,
+        "params": params,
+        "mlflow": {
+            "tracking_uri": tracking_uri(),
+            "experiment_name": mlflow_info.get("experiment_name"),
+            "train_run_id": mlflow_info.get("run_id"),
+        },
+        "optuna": {
+            "storage_uri": optuna_storage_uri(),
+            "search_study_name": study_id(task_id),
+            "search_trial_number": hp_pick.trial_number,
+            "search_trial_task_id": hp_pick.trial_task_id,
+        },
+    }
+    (staging / "provenance.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
 
 
 # --- internal helpers -----------------------------------------------------
@@ -300,29 +727,103 @@ def _composite_loss(cls_logits, seg_logits, labels, masks, seg_weight):
 
 
 def _eval_one_epoch(model, loader, device) -> float:
-    """Compute the composite eval score: 0.6 * malignant_recall + 0.4 * dice."""
+    """Composite score (back-compat shim used by ``run_training_trial``)."""
+    _, breakdown = _eval_full(model, loader, device, seg_weight=1.0)
+    return breakdown["composite"]
+
+
+def _train_one_epoch(model, loader, optimizer, device, seg_weight: float) -> float:
+    """Run one training epoch and return the mean batch loss."""
+    import torch  # noqa: F401 — already imported at call site, keeps adapter local
+
+    model.train()
+    losses: list[float] = []
+    for imgs, masks, labels in loader:
+        imgs = imgs.to(device)
+        masks = masks.to(device)
+        labels = labels.to(device)
+        cls_logits, seg_logits = model(imgs)
+        loss = _composite_loss(cls_logits, seg_logits, labels, masks, seg_weight)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach()))
+    return sum(losses) / max(len(losses), 1)
+
+
+def _eval_full(
+    model, loader, device, seg_weight: float
+) -> tuple[float, dict[str, float]]:
+    """Compute composite + breakdown + mean eval loss.
+
+    The breakdown carries the individual components the deploy gate
+    cares about (``malignant_recall``, ``dice``, ``accuracy``) so a
+    single tensor pass produces everything downstream needs.
+    """
     import torch
 
     model.eval()
     malig_idx = BUSI_LABELS.index("malignant")
-    tp = fn = 0
+    tp = fn = correct = total = 0
     dice_sum = 0.0
-    n = 0
+    loss_sum = 0.0
+    n_batches = 0
     with torch.no_grad():
         for imgs, masks, labels in loader:
             imgs = imgs.to(device)
             masks = masks.to(device)
             labels = labels.to(device)
             cls_logits, seg_logits = model(imgs)
+            loss_sum += float(
+                _composite_loss(cls_logits, seg_logits, labels, masks, seg_weight)
+            )
             preds = cls_logits.argmax(dim=1)
             tp += int(((preds == malig_idx) & (labels == malig_idx)).sum())
             fn += int(((preds != malig_idx) & (labels == malig_idx)).sum())
-            dice = _dice_score(seg_logits.sigmoid(), masks)
-            dice_sum += float(dice)
-            n += 1
+            correct += int((preds == labels).sum())
+            total += int(labels.numel())
+            dice_sum += float(_dice_score(seg_logits.sigmoid(), masks))
+            n_batches += 1
     recall = tp / max(tp + fn, 1)
-    dice = dice_sum / max(n, 1)
-    return 0.6 * recall + 0.4 * dice
+    dice = dice_sum / max(n_batches, 1)
+    accuracy = correct / max(total, 1)
+    breakdown = {
+        "composite": 0.6 * recall + 0.4 * dice,
+        "malignant_recall": recall,
+        "dice": dice,
+        "accuracy": accuracy,
+    }
+    mean_loss = loss_sum / max(n_batches, 1)
+    return mean_loss, breakdown
+
+
+def _log_epoch_to_mlflow(
+    epoch: int, train_loss: float, val_loss: float, val_breakdown: dict[str, float]
+) -> None:
+    """Log per-epoch scalars to the active MLflow run.
+
+    Lazy mlflow import keeps the train module importable without the
+    extra installed (used by tests / docs).
+    """
+    try:
+        import mlflow
+    except ImportError:
+        return
+    metrics = {
+        "train/loss": train_loss,
+        "val/loss": val_loss,
+        **{f"val/{k}": v for k, v in val_breakdown.items()},
+    }
+    mlflow.log_metrics(metrics, step=epoch)
+
+
+def _log_test_to_mlflow(test_breakdown: dict[str, float]) -> None:
+    """Log the final test-split breakdown to the active MLflow run."""
+    try:
+        import mlflow
+    except ImportError:
+        return
+    mlflow.log_metrics({f"test/{k}": v for k, v in test_breakdown.items()})
 
 
 def _dice_score(pred, target, eps: float = 1e-6) -> float:
@@ -353,7 +854,31 @@ def _smoke_forward_pass(params: dict[str, Any]) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument(
+        "--max-epochs",
+        type=int,
+        default=100,
+        help=(
+            "Ceiling on training epochs. Default high enough that the "
+            "loss curves visibly diverge before patience triggers; the "
+            "early-stop logic picks the best epoch."
+        ),
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=15,
+        help="Epochs without val/composite improvement before early stop.",
+    )
+    parser.add_argument(
+        "--task-id",
+        default=None,
+        help=(
+            "Pipeline lineage id. Generated when absent. Recorded in "
+            "MLflow + provenance + LATEST.jsonl; pass the same value "
+            "across phases to keep one task_id end-to-end."
+        ),
+    )
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -364,7 +889,12 @@ def main(argv: list[str]) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     started = time.monotonic()
-    staging = run_production_training(epochs=args.epochs, smoke=args.smoke)
+    staging = run_production_training(
+        max_epochs=args.max_epochs,
+        patience=args.patience,
+        smoke=args.smoke,
+        task_id=args.task_id,
+    )
     elapsed = time.monotonic() - started
     print(f"wrote {staging} in {elapsed:.1f}s")
     return 0

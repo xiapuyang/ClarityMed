@@ -111,37 +111,14 @@ def stratified_split(
     return out
 
 
-def _torch_import():
-    """Lazy import keeps the module importable without the heavy extra."""
-    try:
-        import torch  # noqa: F401
-        from torch.utils.data import Dataset as _Dataset
+try:
+    import numpy as _np
+    import torch as _torch
+    from PIL import Image as _Image
+    from torch.utils.data import Dataset as _DatasetBase
 
-        return _Dataset
-    except ImportError as exc:
-        raise SystemExit(
-            "torch not installed — run `uv sync --extra vision-server`."
-        ) from exc
-
-
-def build_dataset(
-    samples: list[BUSISample],
-    *,
-    input_size: int = DEFAULT_INPUT_SIZE,
-):
-    """Construct a ``BUSIDataset`` for these samples.
-
-    The class itself is defined inside the closure so the ``Dataset``
-    base class is only imported when this constructor is called. Tests
-    that import the module without ``torch`` installed can still
-    exercise :func:`discover` + :func:`stratified_split`.
-    """
-    _DatasetBase = _torch_import()
-    from PIL import Image
-    import numpy as np
-    import torch
-
-    class BUSIDataset(_DatasetBase):
+    class BUSIDataset(_DatasetBase):  # type: ignore[misc, valid-type]
+        # Module-level so DataLoader workers using macOS `spawn` can pickle it.
         def __init__(self, items: list[BUSISample], size: int) -> None:
             self._items = items
             self._size = size
@@ -152,21 +129,38 @@ def build_dataset(
         def __getitem__(self, idx: int):
             sample = self._items[idx]
             image = (
-                Image.open(sample.image_path)
+                _Image.open(sample.image_path)
                 .convert("RGB")
-                .resize((self._size, self._size), Image.BILINEAR)
+                .resize((self._size, self._size), _Image.BILINEAR)
             )
             mask = (
-                Image.open(sample.mask_path)
+                _Image.open(sample.mask_path)
                 .convert("L")
-                .resize((self._size, self._size), Image.NEAREST)
+                .resize((self._size, self._size), _Image.NEAREST)
             )
-            img_arr = np.asarray(image, dtype=np.float32) / 255.0  # HWC
-            mask_arr = (np.asarray(mask, dtype=np.float32) > 127).astype(
-                np.float32
+            img_arr = _np.asarray(image, dtype=_np.float32) / 255.0  # HWC
+            mask_arr = (_np.asarray(mask, dtype=_np.float32) > 127).astype(
+                _np.float32
             )  # HW
-            img_t = torch.from_numpy(img_arr).permute(2, 0, 1)  # C H W
-            mask_t = torch.from_numpy(mask_arr).unsqueeze(0)  # 1 H W
+            img_t = _torch.from_numpy(img_arr).permute(2, 0, 1)  # C H W
+            mask_t = _torch.from_numpy(mask_arr).unsqueeze(0)  # 1 H W
             return img_t, mask_t, sample.label
 
+except ImportError:  # pragma: no cover — torch-less envs hit discover/split only
+    BUSIDataset = None  # type: ignore[assignment, misc]
+
+
+def build_dataset(
+    samples: list[BUSISample],
+    *,
+    input_size: int = DEFAULT_INPUT_SIZE,
+):
+    """Construct a ``BUSIDataset`` for these samples.
+
+    Tests that import the module without ``torch`` installed can still
+    exercise :func:`discover` + :func:`stratified_split`; only this
+    constructor requires the heavy deps.
+    """
+    if BUSIDataset is None:
+        raise SystemExit("torch not installed — run `uv sync --extra vision-server`.")
     return BUSIDataset(samples, input_size)
