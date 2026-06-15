@@ -60,6 +60,13 @@ from claritymed.ingest.vision.busi.dataset import (
     stratified_split,
 )
 from claritymed.ingest.vision.busi.download import busi_data_root, DATASET_SUBDIR
+from claritymed.ingest.vision.busi.scoring import (
+    FEASIBLE_OFFSET,
+    SEARCH_FLOORS,
+    TRAIN_FLOORS,
+    feasibility_aware_score,
+    is_feasible,
+)
 from claritymed.ingest.mlflow_utils import mlflow_run
 
 logger = logging.getLogger(__name__)
@@ -117,6 +124,7 @@ def _write_manifest(
     weights_sha: str,
     eval_metrics: dict,
     supports_tta: bool,
+    backbone: str,
 ) -> None:
     """Compose the manifest, validate, then write.
 
@@ -153,6 +161,7 @@ def _write_manifest(
         supports_saliency=False,
         supports_tta=supports_tta,
         model_card_url=None,
+        backbone=backbone,
         tuned_inference=None,
     )
     # ``manifest.json`` must roundtrip through ``Manifest.model_validate``
@@ -235,19 +244,35 @@ def run_training_trial(
     smoke: bool,
     trial=None,
 ) -> float:
-    """One Optuna trial — train + return a composite score.
+    """One Optuna trial — train + return a feasibility-aware score.
+
+    Returns :func:`~claritymed.ingest.vision.busi.scoring.feasibility_aware_score`
+    applied at ``SEARCH_FLOORS`` to the best epoch's val breakdown.
+    Search has a tiny per-trial budget (~5 epochs), so its bar is
+    "shows signs of life" — recall + accuracy clearly above random,
+    dice clearly above noise — not the deploy bar (which is what
+    train/tune later optimize against). Trials infeasible at
+    SEARCH_FLOORS still get a distance-to-feasibility score so Optuna's
+    acquisition function has a gradient.
+
+    Historically returned the raw composite, which let trials with
+    ``recall=1, dice≈0`` win the search and silently hand the downstream
+    training a degenerate HP combo; the new behaviour matches what the
+    search is actually paid to find.
 
     The full forward pass requires torch + a real BUSI download. The
-    smoke path stubs the score so the Optuna machinery itself can be
+    smoke path returns a synthetic feasibility-aware score (lifted just
+    above ``FEASIBLE_OFFSET``) so the Optuna machinery itself can be
     verified offline.
     """
     if smoke:
         # 1 epoch on 10 samples — verifies the dataset loader + model
-        # + loss + optimizer wire together. Returns a fixed score so
-        # Optuna can record the trial.
+        # + loss + optimizer wire together. Returns a synthetic
+        # feasibility-aware score (just above FEASIBLE_OFFSET) so Optuna
+        # records the trial as feasible.
         logger.info("smoke trial: params=%s", params)
         _smoke_forward_pass(params)
-        return 0.5
+        return FEASIBLE_OFFSET + 0.5
 
     try:
         import torch
@@ -269,7 +294,7 @@ def run_training_trial(
     val_ds = build_dataset(splits["val"])
 
     device = _select_device(torch)
-    model = _build_model(params["backbone"]).to(device)
+    model = _build_model(params["backbone"], pretrained=True).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=params["lr"])
 
     loader = torch.utils.data.DataLoader(
@@ -279,7 +304,8 @@ def run_training_trial(
         val_ds, batch_size=16, shuffle=False, num_workers=2
     )
 
-    best_score = -1.0
+    best_score = -float("inf")
+    best_breakdown: dict[str, float] | None = None
     with mlflow_run(
         "vision",
         DATASET_ID,
@@ -301,15 +327,37 @@ def run_training_trial(
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            score = _eval_one_epoch(model, val_loader, device)
-            best_score = max(best_score, score)
-            logger.info("epoch=%d val_score=%.4f", epoch, score)
+            _, breakdown = _eval_full(
+                model, val_loader, device, params["seg_loss_weight"]
+            )
+            # Search-phase budget is tiny (~5 epochs); judge HP combos
+            # by SEARCH_FLOORS, not the deploy floor — a HP combo that
+            # can't reach recall 0.65 in 5 epochs isn't going to reach
+            # 0.85 in 100. Using deploy floor here would make every
+            # trial infeasible and rob Optuna of feasible-region
+            # gradient.
+            score = feasibility_aware_score(breakdown, SEARCH_FLOORS)
+            if score > best_score:
+                best_score = score
+                best_breakdown = breakdown
+            logger.info(
+                "epoch=%d val_composite=%.4f val_feasibility=%.4f (best=%.4f)",
+                epoch,
+                breakdown["composite"],
+                score,
+                best_score,
+            )
             if trial is not None:
                 trial.report(score, epoch)
                 if trial.should_prune():
                     import optuna  # type: ignore[import-not-found]
 
                     raise optuna.TrialPruned()
+        # Stash the winning breakdown on the trial (when present) so
+        # ``study_feasibility_summary`` downstream can reconstruct
+        # feasibility / deficits without re-evaluating.
+        if trial is not None and best_breakdown is not None:
+            trial.set_user_attr("breakdown", best_breakdown)
     return best_score
 
 
@@ -382,9 +430,12 @@ def run_production_training(
     eval_metrics = {
         "params": params,
         "best_epoch": history.best_epoch,
-        "best_val_score": history.best_val_score,
+        "best_val_composite": history.best_val_composite,
+        "best_val_feasibility": history.best_val_feasibility,
+        "best_val_feasible": history.best_val_feasible,
         "epochs_trained": history.epochs_trained,
         "early_stopped": history.early_stopped,
+        "feasible_epoch_count": history.feasible_epoch_count,
         "val_breakdown": history.val_breakdown,
         "test_breakdown": history.test_breakdown,
         "test_score": history.test_score,
@@ -395,6 +446,7 @@ def run_production_training(
         weights_sha=weights_sha,
         eval_metrics=eval_metrics,
         supports_tta=True,
+        backbone=params["backbone"],
     )
     (staging / "eval_metrics.json").write_text(
         json.dumps(eval_metrics, indent=2), encoding="utf-8"
@@ -421,12 +473,15 @@ class _TrainingHistory:
     """
 
     best_state_dict: Any
-    best_val_score: float
+    best_val_composite: float  # raw 0.6*recall + 0.4*dice at the chosen best epoch
+    best_val_feasibility: float  # feasibility-aware score at the chosen best epoch
+    best_val_feasible: bool  # True iff best epoch met every deploy floor
     best_epoch: int
     epochs_trained: int
     early_stopped: bool
+    feasible_epoch_count: int  # # of epochs that met every floor during the run
     curves: list[dict[str, float]]
-    val_breakdown: dict[str, float]
+    val_breakdown: dict[str, float]  # best-epoch breakdown (not last-epoch)
     test_breakdown: dict[str, float]
     test_score: float
     mlflow_info: dict[str, str]
@@ -474,7 +529,7 @@ def _train_with_early_stopping(
     test_ds = build_dataset(splits["test"])
 
     device = _select_device(torch)
-    model = _build_model(params["backbone"]).to(device)
+    model = _build_model(params["backbone"], pretrained=True).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=params["lr"])
 
     loader = torch.utils.data.DataLoader(
@@ -487,10 +542,18 @@ def _train_with_early_stopping(
         test_ds, batch_size=16, shuffle=False, num_workers=2
     )
 
-    best_val_score = -1.0
+    # Best-epoch selection is driven by feasibility-aware scoring so a
+    # noisy first epoch with high recall but ~0 dice cannot lock the
+    # best slot for the rest of the run. Raw composite is preserved on
+    # the curves + history for human readability (eval_metrics.json
+    # keeps the historical `best_val_score` field semantics).
+    best_selection_score = -float("inf")
+    best_val_composite = -1.0
+    best_val_breakdown: dict[str, float] = {}
     best_epoch = 0
     best_state_dict: Any = None
     curves: list[dict[str, float]] = []
+    feasible_epoch_count = 0
     epochs_since_improve = 0
     early_stopped = False
 
@@ -512,19 +575,33 @@ def _train_with_early_stopping(
             val_loss, val_breakdown = _eval_full(
                 model, val_loader, device, params["seg_loss_weight"]
             )
-            val_score = val_breakdown["composite"]
+            val_composite = val_breakdown["composite"]
+            # Best-epoch selection runs against TRAIN_FLOORS — the "is
+            # this within tune's reach of the deploy bar?" bar, lower
+            # than deploy by enough headroom that tune can close the
+            # gap. Using deploy floor here would mean a near-feasible
+            # epoch (e.g. recall 0.84) gets ranked the same as a wildly
+            # infeasible one, hiding the genuinely-close run.
+            val_selection_score = feasibility_aware_score(val_breakdown, TRAIN_FLOORS)
+            epoch_is_feasible = is_feasible(val_breakdown, TRAIN_FLOORS)
+            if epoch_is_feasible:
+                feasible_epoch_count += 1
             curves.append(
                 {
                     "epoch": epoch,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
-                    "val_score": val_score,
+                    "val_score": val_composite,
+                    "val_selection_score": val_selection_score,
+                    "val_feasible": float(epoch_is_feasible),
                     **{f"val_{k}": v for k, v in val_breakdown.items()},
                 }
             )
             _log_epoch_to_mlflow(epoch, train_loss, val_loss, val_breakdown)
-            if val_score > best_val_score:
-                best_val_score = val_score
+            if val_selection_score > best_selection_score:
+                best_selection_score = val_selection_score
+                best_val_composite = val_composite
+                best_val_breakdown = val_breakdown
                 best_epoch = epoch
                 best_state_dict = {
                     k: v.detach().cpu().clone() for k, v in model.state_dict().items()
@@ -533,13 +610,16 @@ def _train_with_early_stopping(
             else:
                 epochs_since_improve += 1
             logger.info(
-                "epoch=%d train_loss=%.4f val_loss=%.4f val_score=%.4f "
-                "best=%.4f (epoch %d) stale=%d",
+                "epoch=%d train_loss=%.4f val_loss=%.4f "
+                "val_composite=%.4f val_selection=%.4f feasible=%s "
+                "best_selection=%.4f (epoch %d) stale=%d",
                 epoch,
                 train_loss,
                 val_loss,
-                val_score,
-                best_val_score,
+                val_composite,
+                val_selection_score,
+                epoch_is_feasible,
+                best_selection_score,
                 best_epoch,
                 epochs_since_improve,
             )
@@ -547,6 +627,26 @@ def _train_with_early_stopping(
                 logger.info("early stop at epoch %d (patience=%d)", epoch, patience)
                 early_stopped = True
                 break
+
+        if best_selection_score < FEASIBLE_OFFSET:
+            # No epoch met TRAIN_FLOORS. We still persist the
+            # best-available state dict so the downstream pipeline
+            # (tune → deploy) produces a consistent failure naming the
+            # exact floors, rather than crashing mid-run after hours of
+            # GPU time. The warning here is the operator's first signal
+            # that even an ideal tune can't save this run.
+            deficits = TRAIN_FLOORS.deficits(best_val_breakdown)
+            logger.warning(
+                "train: no epoch met TRAIN_FLOORS in %d trained "
+                "(feasible=%d). Best epoch %d val composite=%.4f, "
+                "deficits=%s. Deploy gate will almost certainly reject; "
+                "retrain with stronger model / loss / more data.",
+                len(curves),
+                feasible_epoch_count,
+                best_epoch,
+                best_val_composite,
+                {k: f"{v:.3f}" for k, v in deficits.items()},
+            )
 
         # Restore best weights, evaluate on the held-out test split.
         if best_state_dict is not None:
@@ -564,12 +664,15 @@ def _train_with_early_stopping(
 
     return _TrainingHistory(
         best_state_dict=best_state_dict,
-        best_val_score=best_val_score,
+        best_val_composite=best_val_composite,
+        best_val_feasibility=best_selection_score,
+        best_val_feasible=best_selection_score >= FEASIBLE_OFFSET,
         best_epoch=best_epoch,
         epochs_trained=len(curves),
         early_stopped=early_stopped,
+        feasible_epoch_count=feasible_epoch_count,
         curves=curves,
-        val_breakdown=_pluck_breakdown(curves[-1] if curves else {}),
+        val_breakdown=best_val_breakdown,
         test_breakdown=test_breakdown,
         test_score=test_score,
         mlflow_info=mlflow_info,
@@ -581,27 +684,37 @@ def _smoke_training_history(params: dict[str, Any]) -> _TrainingHistory:
 
     Used when ``--smoke`` is set so the surrounding pipeline (deploy
     gate, manifest write, provenance log) can be unit-tested without
-    touching torch.
+    touching torch. The synthetic breakdown is constructed to be
+    feasible (every floor met) so the smoke run produces a manifest
+    that survives the deploy gate's structural checks; the gate's
+    regression-vs-previous comparison happens against the LATEST.jsonl
+    log and is independent of these numbers.
     """
     _smoke_forward_pass(params)
     breakdown = {
         "composite": 0.55,
         "malignant_recall": 0.86,
         "dice": 0.71,
-        "accuracy": 0.84,
+        "accuracy": 0.86,
     }
+    selection_score = feasibility_aware_score(breakdown, TRAIN_FLOORS)
     return _TrainingHistory(
         best_state_dict={"smoke": True, "backbone": params.get("backbone")},
-        best_val_score=breakdown["composite"],
+        best_val_composite=breakdown["composite"],
+        best_val_feasibility=selection_score,
+        best_val_feasible=is_feasible(breakdown, TRAIN_FLOORS),
         best_epoch=0,
         epochs_trained=1,
         early_stopped=False,
+        feasible_epoch_count=1,
         curves=[
             {
                 "epoch": 0,
                 "train_loss": 0.42,
                 "val_loss": 0.40,
                 "val_score": breakdown["composite"],
+                "val_selection_score": selection_score,
+                "val_feasible": 1.0,
                 "val_composite": breakdown["composite"],
                 "val_malignant_recall": breakdown["malignant_recall"],
                 "val_dice": breakdown["dice"],
@@ -613,15 +726,6 @@ def _smoke_training_history(params: dict[str, Any]) -> _TrainingHistory:
         test_score=breakdown["composite"],
         mlflow_info={"experiment_name": "smoke", "run_id": "smoke"},
     )
-
-
-def _pluck_breakdown(curve_row: dict[str, float]) -> dict[str, float]:
-    """Extract the val_* breakdown fields from one curve row."""
-    return {
-        key[len("val_") :]: value
-        for key, value in curve_row.items()
-        if key.startswith("val_") and key != "val_loss" and key != "val_score"
-    }
 
 
 def _persist_weights(
@@ -706,16 +810,24 @@ def _select_device(torch):
     )
 
 
-def _build_model(backbone: str):
+def _build_model(backbone: str, *, pretrained: bool = False):
     """Build a U-Net with the requested encoder + a classification head.
 
     The real model definition lives in
     ``servers/vision/adapters/busi_unet.py`` so the same forward pass
     is shared between training and inference.
+
+    ``pretrained=True`` should be passed only from real training (not
+    smoke or inference). It triggers a one-time ImageNet checkpoint
+    download for the resnet50 / efficientnet_b0 encoders; the cached
+    weights warm-start the encoder so dice converges within the
+    search-phase epoch budget.
     """
     from claritymed.servers.vision.adapters.busi_unet import build_busi_model
 
-    return build_busi_model(backbone=backbone, num_classes=len(BUSI_LABELS))
+    return build_busi_model(
+        backbone=backbone, num_classes=len(BUSI_LABELS), pretrained=pretrained
+    )
 
 
 def _composite_loss(cls_logits, seg_logits, labels, masks, seg_weight):

@@ -49,17 +49,21 @@ import yaml
 
 from claritymed import config as _cfg
 from claritymed.core.vision.schemas import Manifest, VisionConfig
+from claritymed.ingest.vision.busi.scoring import (
+    FLOOR_ACCURACY,
+    FLOOR_DICE,
+    FLOOR_MALIGNANT_RECALL,
+)
 from claritymed.ingest.vision.busi.train import DATASET_ID, MODEL_ID
 from claritymed.ingest.vision.busi.tune import _latest_staging_dir
 
 logger = logging.getLogger(__name__)
 
-# Medically-real floors. Failing any one of these means the model is
-# not safe to ship — the deploy step refuses regardless of how much
-# the candidate beats the active model on composite.
-FLOOR_MALIGNANT_RECALL = 0.85
-FLOOR_ACCURACY = 0.85
-FLOOR_DICE = 0.70
+# Medically-real floors live in :mod:`scoring` so the deploy gate, the
+# tune objective, and the train-side selection all read the same bar.
+# Re-exported here for back-compat with callers that imported them from
+# this module (e.g. existing tests at ``tests/ingest/vision/busi/test_deploy.py``).
+__all__ = ["FLOOR_MALIGNANT_RECALL", "FLOOR_ACCURACY", "FLOOR_DICE", "run_deploy"]
 
 
 def run_deploy(*, staging_dir: Path, smoke: bool = False) -> Path:

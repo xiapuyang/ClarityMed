@@ -60,6 +60,7 @@ def test_smoke_pipeline_writes_versioned_deploy(
     stable = _run_pipeline(
         phases=ALL_PHASES,
         trials=1,
+        search_epochs=1,
         max_epochs=1,
         patience=1,
         tune_trials=2,
@@ -113,6 +114,7 @@ def test_smoke_pipeline_second_deploy_blocked_by_regression_gate(
     _run_pipeline(
         phases=ALL_PHASES,
         trials=1,
+        search_epochs=1,
         max_epochs=1,
         patience=1,
         tune_trials=2,
@@ -123,6 +125,7 @@ def test_smoke_pipeline_second_deploy_blocked_by_regression_gate(
         _run_pipeline(
             phases=ALL_PHASES,
             trials=1,
+            search_epochs=1,
             max_epochs=1,
             patience=1,
             tune_trials=2,

@@ -17,15 +17,31 @@ performance:
 * ``tta_default`` — boolean; when ``True`` the catalog advertises TTA
   as the default and inference uses the averaged logits
 
-The objective is the same composite as the search phase
-(``0.6 * malignant_recall + 0.4 * dice``) evaluated on the val split.
+The objective is **constraint-aware**: a trial scores ``1 + composite``
+(in ``(1, 2]``) when it meets every deploy floor (malignant recall
+≥ 0.85, accuracy ≥ 0.85, dice ≥ 0.70), or a negative
+"distance-to-feasibility" penalty when it does not. Feasible always
+strictly beats infeasible, so Optuna's maximize naturally picks the
+best feasible trial when one exists, while infeasible trials still
+provide a gradient toward feasibility. The composite itself stays
+``0.6 * malignant_recall + 0.4 * dice`` — same as the search phase.
+
+Floors live in :mod:`~claritymed.ingest.vision.busi.deploy` so the gate
+and the optimizer share one source of truth. Tune mirrors the constants
+locally to avoid a circular import (deploy imports ``_latest_staging_dir``
+from this module); a test asserts the two are in sync.
+
 Since per-image logits are cached, each Optuna trial is a cheap numpy
 pass — 30+ trials run in well under a minute even on CPU.
 
 After Optuna picks the best trial, the tuned params are written into
 ``manifest.json::tuned_inference`` and the test-split breakdown is
 re-evaluated under those params so the deploy phase has an unbiased
-metric for the regression gate.
+metric for the regression gate. When **no** trial reached feasibility
+in the budget, tune still writes the best-available block (so deploy's
+gate produces a clean failure with the same floors) and logs a warning
+naming the worst-violated floor — the operator's signal that the
+checkpoint cannot be tuned into compliance and retraining is needed.
 """
 
 from __future__ import annotations
@@ -63,8 +79,19 @@ from claritymed.ingest.vision.busi.train import DATASET_ID, MODEL_ID
 logger = logging.getLogger(__name__)
 
 PHASE = "tune"
-COMPOSITE_RECALL_WEIGHT = 0.6
-COMPOSITE_DICE_WEIGHT = 0.4
+
+# Composite weights + floors + feasibility scoring all live in
+# :mod:`scoring` so this module, ``train.py``, ``hparam.py``, and
+# ``deploy.py`` share one definition. Anything below that talks about
+# "feasible" / "the floor" is parameterised by those constants.
+from claritymed.ingest.vision.busi.scoring import (  # noqa: E402
+    COMPOSITE_DICE_WEIGHT,
+    COMPOSITE_RECALL_WEIGHT,
+    FEASIBLE_OFFSET,
+    TUNE_FLOORS,
+    feasibility_aware_score,
+    study_feasibility_summary,
+)
 
 
 def study_id(task_id: str) -> str:
@@ -326,7 +353,11 @@ def _run_optuna_study(
             # than catching the validator post-hoc and lets Optuna's
             # acquisition function steer away from infeasible cells.
             raise optuna.TrialPruned()
-        return _evaluate_cache(cache_val, params)["composite"]
+        breakdown = _evaluate_cache(cache_val, params)
+        # Stash the breakdown on the trial so study_feasibility_summary
+        # can reconstruct feasibility / deficits without re-evaluating.
+        trial.set_user_attr("breakdown", breakdown)
+        return feasibility_aware_score(breakdown, TUNE_FLOORS)
 
     with mlflow_run(
         "vision",
@@ -349,6 +380,30 @@ def _run_optuna_study(
         # deploy log + eval_metrics).
         tuned_val = _evaluate_cache(cache_val, best_params)
         tuned_test = _evaluate_cache(cache_test, best_params)
+
+        summary = study_feasibility_summary(study, TUNE_FLOORS)
+        if study.best_trial.value < FEASIBLE_OFFSET:
+            # Every trial violated at least one floor. Tune still writes
+            # the best-available block so deploy's gate produces a
+            # consistent error with the same floors — but the operator
+            # needs to know retuning won't help.
+            logger.warning(
+                "tune: no feasible trial in %d trials "
+                "(feasible=%d, infeasible=%d). Best trial still violates "
+                "floors; deploy gate will reject. Worst deficits: %s. "
+                "Retrain with stronger model / more epochs.",
+                trials,
+                summary["feasible_trials"],
+                summary["infeasible_trials"],
+                summary["worst_deficits"],
+            )
+        else:
+            logger.info(
+                "tune: %d feasible trial(s) of %d completed; best val composite=%.4f",
+                summary["feasible_trials"],
+                summary["feasible_trials"] + summary["infeasible_trials"],
+                tuned_val["composite"],
+            )
         try:
             import mlflow
 
@@ -474,24 +529,25 @@ def _load_model_from_staging(manifest: Manifest, weights: Path, device):
 
     from claritymed.servers.vision.adapters.busi_unet import build_busi_model
 
-    # The backbone choice was baked into the params at train time; the
-    # adapter accepts it through build_busi_model. v1 only stores the
-    # backbone in eval_metrics, so we read it from there.
-    backbone = "custom_unet"
-    eval_path = weights.parent / "eval_metrics.json"
-    if eval_path.exists():
-        try:
-            backbone = (
-                json.loads(eval_path.read_text(encoding="utf-8"))
-                .get("params", {})
-                .get("backbone", backbone)
-            )
-        except (json.JSONDecodeError, KeyError):
-            pass
+    # The manifest is the authoritative record of the trained backbone.
+    # eval_metrics.json is kept as a fallback for legacy staging dirs
+    # written before the manifest.backbone field existed.
+    backbone = manifest.backbone
+    if backbone == "custom_unet":
+        eval_path = weights.parent / "eval_metrics.json"
+        if eval_path.exists():
+            try:
+                backbone = (
+                    json.loads(eval_path.read_text(encoding="utf-8"))
+                    .get("params", {})
+                    .get("backbone", backbone)
+                )
+            except (json.JSONDecodeError, KeyError):
+                pass
 
-    model = build_busi_model(backbone=backbone, num_classes=len(manifest.labels)).to(
-        device
-    )
+    model = build_busi_model(
+        backbone=backbone, num_classes=len(manifest.labels), pretrained=False
+    ).to(device)
     state = torch.load(weights, map_location=device, weights_only=False)
     if isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]

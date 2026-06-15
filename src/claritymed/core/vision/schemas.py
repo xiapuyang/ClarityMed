@@ -457,6 +457,12 @@ class Manifest(BaseModel):
     supports_saliency: bool = False
     supports_tta: bool = False
     model_card_url: str | None = None
+    # Encoder architecture identifier — the adapter passes this to
+    # build_busi_model at load time so resnet50 / efficientnet_b0
+    # checkpoints get the right matching architecture (the seg head's
+    # decoder channels depend on the encoder). Default keeps old
+    # manifests valid; train.py always writes the concrete choice.
+    backbone: str = "custom_unet"
     tuned_inference: TunedInferenceParams | None = None
 
     @model_validator(mode="after")

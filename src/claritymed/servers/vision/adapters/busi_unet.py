@@ -50,13 +50,68 @@ logger = logging.getLogger(__name__)
 _DEFAULT_INPUT_SIZE = 256
 
 
-def build_busi_model(*, backbone: str, num_classes: int):
+_SMP_ENCODER_NAMES = {
+    "resnet50": "resnet50",
+    "efficientnet_b0": "efficientnet-b0",
+}
+
+
+def _build_smp_unet(*, backbone: str, num_classes: int, pretrained: bool, nn):
+    """U-Net wrapper around an smp encoder + aux classification head.
+
+    smp's ``Unet`` returns ``(masks, labels)`` when ``aux_params`` is
+    set; we flip that to ``(cls_logits, seg_logits)`` so the
+    forward-pass contract matches the custom_unet branch — train.py +
+    BUSIUnetAdapter consume the two heads in that order.
+    """
+    try:
+        import segmentation_models_pytorch as smp
+    except ImportError as exc:
+        raise SystemExit(
+            "segmentation-models-pytorch not installed — run "
+            "`uv sync --extra vision-server`."
+        ) from exc
+
+    smp_model = smp.Unet(
+        encoder_name=_SMP_ENCODER_NAMES[backbone],
+        encoder_weights="imagenet" if pretrained else None,
+        in_channels=3,
+        classes=1,  # binary lesion mask; sigmoid threshold at inference time
+        aux_params={"classes": num_classes},
+    )
+
+    class _SmpWrapper(nn.Module):
+        def __init__(self, inner, name: str) -> None:
+            super().__init__()
+            self.inner = inner
+            self.backbone = name
+
+        def forward(self, x):
+            seg_logits, cls_logits = self.inner(x)
+            return cls_logits, seg_logits
+
+    return _SmpWrapper(smp_model, backbone)
+
+
+def build_busi_model(*, backbone: str, num_classes: int, pretrained: bool = False):
     """Construct a U-Net + classification head from the named backbone.
 
     Lazy torch import keeps the rest of the module importable in
     environments without the heavy extra. The model returns
     ``(cls_logits, seg_logits)`` so both heads can be supervised
     jointly during training.
+
+    Backbones:
+
+    * ``custom_unet`` — the small base=32 from-scratch baseline (no
+      external deps beyond torch). Useful as a no-pretrain reference
+      and on boxes that can't fetch ImageNet weights.
+    * ``resnet50`` / ``efficientnet_b0`` — torchvision encoders inside
+      a `segmentation_models_pytorch` U-Net with an auxiliary
+      classification head. With ``pretrained=True`` the encoder loads
+      ImageNet weights (downloaded + cached on first run, ~100 MB);
+      inference paths pass ``pretrained=False`` since the checkpoint
+      provides every weight.
     """
     try:
         import torch
@@ -65,6 +120,16 @@ def build_busi_model(*, backbone: str, num_classes: int):
         raise SystemExit(
             "torch not installed — run `uv sync --extra vision-server`."
         ) from exc
+
+    if backbone in _SMP_ENCODER_NAMES:
+        return _build_smp_unet(
+            backbone=backbone, num_classes=num_classes, pretrained=pretrained, nn=nn
+        )
+    if backbone != "custom_unet":
+        raise ValueError(
+            f"unknown backbone {backbone!r}; expected one of "
+            f"{sorted({'custom_unet', *_SMP_ENCODER_NAMES})}"
+        )
 
     class _DoubleConv(nn.Module):
         def __init__(self, in_ch: int, out_ch: int) -> None:
@@ -180,9 +245,12 @@ class BUSIUnetAdapter(TorchAdapter):
         import torch
 
         self._torch = torch
-        backbone = "custom_unet"
+        # ``pretrained=False`` — the checkpoint provides every weight,
+        # so we don't want a network round-trip on server boot.
         self._model = build_busi_model(
-            backbone=backbone, num_classes=len(self._labels)
+            backbone=manifest.backbone,
+            num_classes=len(self._labels),
+            pretrained=False,
         ).to(device)
         try:
             state = torch.load(weights_path, map_location=device, weights_only=False)

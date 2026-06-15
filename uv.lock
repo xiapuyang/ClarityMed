@@ -642,7 +642,9 @@ vision-server = [
     { name = "httpx" },
     { name = "mlflow" },
     { name = "pillow" },
+    { name = "segmentation-models-pytorch" },
     { name = "torch" },
+    { name = "torchvision" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -706,6 +708,7 @@ requires-dist = [
     { name = "rapidocr-onnxruntime", marker = "extra == 'ocr-image'", specifier = ">=1.4" },
     { name = "rich", specifier = ">=13.6.0" },
     { name = "scipy", specifier = ">=1.17.1" },
+    { name = "segmentation-models-pytorch", marker = "extra == 'vision-server'", specifier = ">=0.4" },
     { name = "sentence-transformers", marker = "extra == 'symptoms-server'", specifier = ">=3.0" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "starlette", specifier = ">=0.41.0" },
@@ -713,6 +716,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'medical-clip-server'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'symptoms-server'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'vision-server'", specifier = ">=2.0" },
+    { name = "torchvision", marker = "extra == 'vision-server'", specifier = ">=0.19" },
     { name = "transformers", specifier = ">=4.40" },
     { name = "typer", specifier = ">=0.26.7" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'medical-clip-server'", specifier = ">=0.32" },
@@ -5326,6 +5330,25 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/52/52/e57eceff0e342a1f50e274264ed47497b59e6a4e3118808ee58ddda7b74a/scipy-1.17.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:a77cbd07b940d326d39a1d1b37817e2ee4d79cb30e7338f3d0cddffae70fcaa2", size = 37682317, upload-time = "2026-02-23T00:22:18.513Z" },
     { url = "https://files.pythonhosted.org/packages/11/2f/b29eafe4a3fbc3d6de9662b36e028d5f039e72d345e05c250e121a230dd4/scipy-1.17.1-cp314-cp314t-win_amd64.whl", hash = "sha256:eb092099205ef62cd1782b006658db09e2fed75bffcae7cc0d44052d8aa0f484", size = 37345327, upload-time = "2026-02-23T00:22:24.442Z" },
     { url = "https://files.pythonhosted.org/packages/07/39/338d9219c4e87f3e708f18857ecd24d22a0c3094752393319553096b98af/scipy-1.17.1-cp314-cp314t-win_arm64.whl", hash = "sha256:200e1050faffacc162be6a486a984a0497866ec54149a01270adc8a59b7c7d21", size = 25489165, upload-time = "2026-02-23T00:22:29.563Z" },
+]
+
+[[package]]
+name = "segmentation-models-pytorch"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "safetensors" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/15/fa/d5a29d49240fb10bdead608b4d0c6805684a8f63b1f65863502be65b1ca4/segmentation_models_pytorch-0.5.0.tar.gz", hash = "sha256:cabba8aced6ef7bdcd6288dd9e1dc2840848aa819d539c455bd07aeceb2fdf96", size = 105150, upload-time = "2025-04-17T10:43:45.755Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/62/a50e5ac6191a498ad631e54df13d7e2d7eeb1325b15ee9ea1ee3ec065aaa/segmentation_models_pytorch-0.5.0-py3-none-any.whl", hash = "sha256:c34e09047771aa4dd8878b4f899e8125700cd1f8f7db16e58c37204154151a05", size = 154789, upload-time = "2025-04-17T10:43:43.668Z" },
 ]
 
 [[package]]

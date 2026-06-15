@@ -6,7 +6,7 @@ Search space:
 * ``lr`` — log-uniform in ``[1e-5, 5e-3]``
 * ``seg_loss_weight`` — uniform in ``[0.1, 2.0]``
 
-Each trial runs a short training loop (default 5 epochs) and reports
+Each trial runs a short training loop (default 15 epochs) and reports
 the early-stopping composite score (``val/malignant_recall * 0.6 +
 val/dice * 0.4``) — `malignant` recall is the medically-real bar
 (see plan §"Unit 6 Verification"). Trials persist to the shared Optuna
@@ -109,7 +109,7 @@ def _build_objective(*, epochs: int, smoke: bool, task_id: str):
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trials", type=int, default=20)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument(
         "--task-id",
         default=None,

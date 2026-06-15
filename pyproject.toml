@@ -120,6 +120,13 @@ vision-server = [
     "uvicorn[standard]>=0.32",
     "httpx>=0.27",
     "torch>=2.0",
+    # Pretrained encoders for BUSI U-Net (resnet50 / efficientnet_b0
+    # branches in build_busi_model). torchvision is required by smp's
+    # encoder loaders; smp wraps a U-Net decoder + aux classification
+    # head around any timm/torchvision backbone so we don't hand-roll
+    # the encoder → decoder channel plumbing per architecture.
+    "torchvision>=0.19",
+    "segmentation-models-pytorch>=0.4",
     "pillow>=10.0",
     # Training/tuning pipeline tracking (BUSI search/train/tune/deploy).
     # Bundled here mirroring the symptoms-server convention — same extra

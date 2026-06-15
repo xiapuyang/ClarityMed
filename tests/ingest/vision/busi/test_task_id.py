@@ -67,6 +67,7 @@ def test_pipeline_threads_single_task_id_through_every_artifact(
     stable = run_pipeline(
         phases=ALL_PHASES,
         trials=1,
+        search_epochs=1,
         max_epochs=1,
         patience=1,
         tune_trials=2,
@@ -101,6 +102,7 @@ def test_pipeline_generates_task_id_when_absent(
     stable = run_pipeline(
         phases=ALL_PHASES,
         trials=1,
+        search_epochs=1,
         max_epochs=1,
         patience=1,
         tune_trials=2,
