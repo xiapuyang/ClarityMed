@@ -102,6 +102,11 @@ class BlobStore:
         reason: str | None,
         text: str,
         original_filename: str | None = None,
+        modality: str | None = None,
+        modality_confidence: float | None = None,
+        is_medical: bool | None = None,
+        ocr_has_report: bool | None = None,
+        vision_warnings: list[str] | None = None,
     ) -> None:
         """Write the OCR/text-extraction sentinel for this blob.
 
@@ -160,6 +165,21 @@ class BlobStore:
         }
         if safe_name is not None:
             payload["original_filename"] = safe_name
+        # Vision-tag fields (Unit 3, plan KTD-V3 + KTD-V6). Omitted when
+        # the worker doesn't supply them — preserves the legacy sentinel
+        # shape so back-compat readers don't trip on unknown keys, and
+        # keeps non-image blobs (PDF, plain text) free of fields that
+        # have no meaning for them.
+        if modality is not None:
+            payload["modality"] = modality
+        if modality_confidence is not None:
+            payload["modality_confidence"] = modality_confidence
+        if is_medical is not None:
+            payload["is_medical"] = is_medical
+        if ocr_has_report is not None:
+            payload["ocr_has_report"] = ocr_has_report
+        if vision_warnings:
+            payload["vision_warnings"] = list(vision_warnings)
         tmp_json.write_text(
             # ensure_ascii=False keeps CJK / emoji / accented names readable
             # on disk — the audit and recovery story leans on people
@@ -238,6 +258,26 @@ class BlobStore:
         consults this file's presence — never ``ocr.md`` alone.
         """
         return user_blob_dir(self.user_id, sha256) / "ocr.json"
+
+    def read_ocr_metadata(self, sha256: str) -> dict | None:
+        """Return the parsed ``ocr.json`` contents, or ``None`` if absent.
+
+        Used by readers that need the vision-tag fields (``modality``,
+        ``is_medical``, ``ocr_has_report``) without separately copying
+        them into ``SessionAttachments``. Silent on corruption: returns
+        ``None`` so callers fall through to the legacy "no extra attrs"
+        path rather than crashing the prompt-assembly step on a malformed
+        sentinel.
+        """
+        _validate_sha256(sha256)
+        path = self.ocr_meta_path(sha256)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def ocr_done(self, sha256: str) -> bool:
         """True iff the sentinel ``ocr.json`` exists.

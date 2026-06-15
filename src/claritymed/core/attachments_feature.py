@@ -139,9 +139,17 @@ def _render_inline_tag(blob_store: BlobStore, kind: str, att) -> str:
     references (``pending`` / ``failed`` / ``empty``) plus an explicit
     ``missing`` value for the "sentinel says done but file is gone"
     corruption case.
+
+    For ``<image>`` tags we additionally surface the vision-tag fields
+    written by the OCR worker (``modality`` / ``is_medical`` /
+    ``ocr_has_report``) so the LLM-side routing rules in the tool
+    description can branch on them without parsing prose. Files
+    (``<file>``) never carry these — they're meaningless for non-image
+    blobs.
     """
     tag = "image" if kind == "image" else "file"
     sha = att.sha256
+    vision_attrs = _vision_attrs(blob_store, sha) if tag == "image" else ""
     if att.ocr_status == "done":
         try:
             ocr = blob_store.read_extracted_text(sha).strip()
@@ -151,19 +159,49 @@ def _render_inline_tag(blob_store: BlobStore, kind: str, att) -> str:
             # JSON corrupt. Both mean the rendered tag can't carry the
             # text — fall through to the "missing" attribute so the
             # model branches on it instead of seeing a torn payload.
-            return f'<{tag} sha="{sha}" ocr_status="missing"/>'
+            return f'<{tag} sha="{sha}"{vision_attrs} ocr_status="missing"/>'
         if not ocr:
-            return f'<{tag} sha="{sha}" ocr_status="empty"/>'
-        return f'<{tag} sha="{sha}">\n{ocr}\n</{tag}>'
+            return f'<{tag} sha="{sha}"{vision_attrs} ocr_status="empty"/>'
+        return f'<{tag} sha="{sha}"{vision_attrs}>\n{ocr}\n</{tag}>'
     if att.ocr_status == "pending":
-        return f'<{tag} sha="{sha}" ocr_status="pending"/>'
+        return f'<{tag} sha="{sha}"{vision_attrs} ocr_status="pending"/>'
     if att.ocr_status == "failed":
         # Reason text can contain double quotes (e.g. an upstream
         # provider's error message); escape so the tag stays parseable.
         reason = (att.ocr_reason or "unknown").replace('"', "&quot;")
-        return f'<{tag} sha="{sha}" ocr_status="failed" reason="{reason}"/>'
+        return (
+            f'<{tag} sha="{sha}"{vision_attrs} ocr_status="failed" reason="{reason}"/>'
+        )
     if att.ocr_status == "empty":
-        return f'<{tag} sha="{sha}" ocr_status="empty"/>'
+        return f'<{tag} sha="{sha}"{vision_attrs} ocr_status="empty"/>'
     # Unknown / future status — surface verbatim rather than silently
     # dropping so a status-vocab drift fails loudly in the prompt.
-    return f'<{tag} sha="{sha}" ocr_status="{att.ocr_status}"/>'
+    return f'<{tag} sha="{sha}"{vision_attrs} ocr_status="{att.ocr_status}"/>'
+
+
+def _vision_attrs(blob_store: BlobStore, sha: str) -> str:
+    """Build the leading-space attribute string for vision-tag fields.
+
+    Reads ``ocr.json`` once. Returns ``""`` when no sentinel exists yet
+    (pre-OCR placeholder) or the worker omitted the vision fields
+    (server unavailable when this blob was ingested, or the blob is
+    legacy from before this PR). Field absence is the signal — the
+    rendered tag simply lacks those attributes and the LLM routing
+    description treats absence as "no vision metadata; ask the user
+    via askuserquestion if you'd otherwise need it" (per origin §9 [B]).
+    """
+    meta = blob_store.read_ocr_metadata(sha)
+    if not meta:
+        return ""
+    parts: list[str] = []
+    if "modality" in meta and isinstance(meta["modality"], str):
+        parts.append(f' modality="{meta["modality"]}"')
+    if "is_medical" in meta and meta["is_medical"] is not None:
+        # JSON True/False → "true"/"false" so the LLM sees the canonical
+        # XML boolean spelling rather than Python's "True"/"False".
+        parts.append(f' is_medical="{"true" if meta["is_medical"] else "false"}"')
+    if "ocr_has_report" in meta and meta["ocr_has_report"] is not None:
+        parts.append(
+            f' ocr_has_report="{"true" if meta["ocr_has_report"] else "false"}"'
+        )
+    return "".join(parts)

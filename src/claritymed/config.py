@@ -168,6 +168,33 @@ def load_symptoms_config() -> "SymptomsConfig":
     return SymptomsConfig.model_validate(raw)
 
 
+def load_vision_config() -> "VisionConfig":
+    """Load and validate ``configs/vision.yaml``.
+
+    Single source of truth for the vision feature's disease/model catalog.
+    Loaded by both the vision-server (which honors ``enabled`` and loads
+    the manifest chain) and the orchestrator-side ``VisionRegistry``
+    (which cross-checks against ``/v1/catalog`` at boot — KTD-V2).
+
+    Raises:
+        FileNotFoundError: ``configs/vision.yaml`` does not exist. The
+            file is the feature's kill switch — its absence keeps the
+            vision plugin out of the agent's toolset entirely (same
+            semantic as ``configs/symptoms.yaml``).
+        pydantic.ValidationError: The YAML is structurally wrong.
+    """
+    from claritymed.core.vision.schemas import VisionConfig
+
+    raw = load_yaml("vision.yaml")
+    if not raw:
+        raise FileNotFoundError(
+            "configs/vision.yaml missing or empty — required when the "
+            "vision feature is enabled. Set diseases[0].enabled=false "
+            "to ship with the feature off rather than removing the file."
+        )
+    return VisionConfig.model_validate(raw)
+
+
 def load_env_file(path: Path | None = None) -> dict[str, str]:
     """Load ``KEY=VALUE`` lines from ``CLARITYMED_HOME/.env`` into ``os.environ``.
 
@@ -272,3 +299,4 @@ if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
     from claritymed.core.schemas.evals import EvalsConfig  # noqa: F401
     from claritymed.core.schemas.router import RouterConfig  # noqa: F401
     from claritymed.core.symptoms.schemas import SymptomsConfig  # noqa: F401
+    from claritymed.core.vision.schemas import VisionConfig  # noqa: F401

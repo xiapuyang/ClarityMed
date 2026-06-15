@@ -256,6 +256,42 @@ class MedicalClipUnreachableError(RuntimeError):
     """
 
 
+class VisionServerUnreachableError(RuntimeError):
+    """Vision server returned non-2xx, timed out, or sent a bad shape.
+
+    Mirrors ``SymptomsServerUnreachableError``: the tool body catches
+    this in the fallback flow (Unit 7) and either advances to the next
+    model in ``disease.flow`` or returns ``NoUsableResultError`` when
+    the budget is exhausted.
+    """
+
+
+class UnknownDiseaseError(KeyError):
+    """``VisionRegistry.route`` could not resolve the requested ``disease_id``.
+
+    Carries the ``available`` list of enabled disease ids so the tool
+    body can return a structured dict back to the LLM with actionable
+    context (the LLM may pick a different disease and retry).
+    """
+
+    def __init__(self, disease_id: str, available: list[str]) -> None:
+        self.disease_id = disease_id
+        self.available = available
+        super().__init__(
+            f"disease_id {disease_id!r} not in vision catalog; available: {available!r}"
+        )
+
+
+class VisionCatalogMismatchError(RuntimeError):
+    """Boot-time ``/v1/catalog`` cross-check found a server-vs-config drift.
+
+    The server is loading something the config doesn't claim (or vice
+    versa). Distinct from ``VisionServerUnreachableError`` because the
+    server **is** reachable — it just disagrees. Treated as a hard boot
+    failure so an operator notices before users hit it.
+    """
+
+
 class ImageHashMismatchError(ValueError):
     """``image.data_b64`` decoded to bytes whose sha256 disagrees with the claim.
 

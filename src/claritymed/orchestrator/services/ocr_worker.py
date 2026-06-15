@@ -29,12 +29,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from claritymed.core.medical_clip.client import MedicalClipClient
 from claritymed.core.ocr.base import OcrError, OcrProvider
 from claritymed.core.schemas.records import OcrStatus
+from claritymed.core.vision.ocr_report_detector import (
+    DEFAULT_MIN_CHARS,
+    has_structured_report,
+)
+from claritymed.errors import MedicalClipUnreachableError
 from claritymed.stores.session_attachments import SessionAttachments
 from claritymed.stores.blob_store import BlobStore
 
 logger = logging.getLogger(__name__)
+
+# Image extensions for which we run modality classification + the
+# OCR-report heuristic. PDFs / DOC / TXT skip both: BiomedCLIP only
+# accepts raster images, and a PDF that IS a clinician's report is
+# handled by the text path on the LLM side without needing the
+# `ocr_has_report` flag (the textual content speaks for itself).
+_IMAGE_EXTS: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".gif", ".heic"}
+)
+
+
+def _is_image(blob_path: Path) -> bool:
+    return blob_path.suffix.lower() in _IMAGE_EXTS
 
 
 @dataclass
@@ -70,16 +89,38 @@ CompletionListener = Callable[[OcrCompleted], Awaitable[None] | None]
 
 
 class OcrWorker:
-    """One background task per AskService instance. Single concurrent OCR."""
+    """One background task per AskService instance. Single concurrent OCR.
+
+    When ``medical_clip_client`` and ``ocr_report_config`` are supplied,
+    each image-blob job is additionally tagged with the BiomedCLIP
+    modality (``modality`` / ``modality_confidence`` / ``is_medical``)
+    and the structured-report heuristic (``ocr_has_report``). Both are
+    optional so non-image OCR (PDF, plain text) and environments without
+    a running medical-clip server still work — the worker just omits the
+    extra fields from the sentinel and the vision plugin treats absence
+    as "unknown" downstream.
+    """
 
     def __init__(
         self,
         provider: OcrProvider,
         *,
         listener: CompletionListener | None = None,
+        medical_clip_client: MedicalClipClient | None = None,
+        ocr_report_config: dict | None = None,
     ) -> None:
         self._provider = provider
         self._listener = listener
+        self._medical_clip = medical_clip_client
+        # ``ocr_report_config`` shape: ``{"min_chars": int, "markers": dict[str, list[str]]}``
+        # (the return value of :func:`load_ocr_report_config`). ``None``
+        # disables the report heuristic entirely — every blob gets
+        # ``ocr_has_report`` omitted, which the downstream renderer
+        # treats the same as ``ocr_has_report=false`` (vision tool may
+        # still run; it's the conservative default).
+        cfg = ocr_report_config or {}
+        self._ocr_report_min_chars = int(cfg.get("min_chars", DEFAULT_MIN_CHARS))
+        self._ocr_report_markers: dict[str, list[str]] = cfg.get("markers") or {}
         self._queue: asyncio.Queue[tuple[contextvars.Context, OcrJob]] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
 
@@ -233,6 +274,12 @@ class OcrWorker:
                 reason=str(exc),
             )
         status: OcrStatus = "done" if result.text.strip() else "empty"
+        # Single-writer sequence (plan KTD-V3 + KTD-V6): after OCR text
+        # is in hand, the same task runs modality classification + the
+        # report-override heuristic, then writes ocr.json once with
+        # every field populated. Two parallel writers to ocr.json would
+        # race; one writer with two sub-steps does not.
+        vision_tags = await self._compute_vision_tags(job, result.text)
         blob_store.write_ocr_result(
             job.sha256,
             status=status,
@@ -243,6 +290,7 @@ class OcrWorker:
             reason=None,
             text=result.text,
             original_filename=job.original_filename,
+            **vision_tags,
         )
         return OcrCompleted(
             user_id=job.user_id,
@@ -251,6 +299,79 @@ class OcrWorker:
             status=status,
             provider=result.provider_used,
         )
+
+    async def _compute_vision_tags(self, job: OcrJob, ocr_text: str) -> dict:
+        """Build the modality / is_medical / ocr_has_report kwargs.
+
+        Returns the subset of kwargs that should be threaded into
+        :meth:`BlobStore.write_ocr_result`. Skips silently for non-image
+        blobs (PDFs, plain text) so the sentinel stays free of
+        unmeaningful fields.
+        """
+        if not _is_image(job.blob_path):
+            return {}
+        tags: dict = {}
+        warnings: list[str] = []
+        if self._medical_clip is not None:
+            try:
+                image_bytes = job.blob_path.read_bytes()
+                response = await self._medical_clip.classify_modality(
+                    image_bytes,
+                    request_id=f"ocr_{job.sha256[:16]}",
+                    sha256=job.sha256,
+                )
+                tags["modality"] = response.modality
+                tags["modality_confidence"] = float(response.confidence)
+                tags["is_medical"] = bool(response.is_medical)
+            except MedicalClipUnreachableError as exc:
+                # KTD-V8 graceful: server down → keep OCR moving. The
+                # vision plugin treats missing/unknown modality the
+                # same as classifier-low-confidence (asks the user).
+                # ``is_medical`` deliberately omitted — write_ocr_result
+                # drops None-valued kwargs from the payload, and field
+                # absence is the LLM-side signal "no opinion" (a stale
+                # False would falsely claim "the classifier saw this
+                # and decided it isn't medical").
+                logger.warning(
+                    "medical-clip unreachable for %s: %s; tagging modality=unknown",
+                    job.sha256[:8],
+                    exc,
+                )
+                tags["modality"] = "unknown"
+                warnings.append(f"medical_clip_unreachable: {exc!s}")
+            except Exception as exc:  # noqa: BLE001
+                # 4xx (image_decode_failed, image_hash_mismatch) and any
+                # other unexpected shape land here. Same posture as the
+                # unreachable branch — OCR ingest is the priority.
+                logger.warning(
+                    "modality classification failed for %s: %s",
+                    job.sha256[:8],
+                    exc,
+                )
+                tags["modality"] = "unknown"
+                warnings.append(f"modality_classification_failed: {exc!s}")
+        # Report-override heuristic. Cheap; always run when configured,
+        # regardless of whether modality classification succeeded —
+        # ``ocr_has_report`` is independent of modality and the LLM-side
+        # branch in Unit 7 reads it before reading modality.
+        if self._ocr_report_markers:
+            try:
+                tags["ocr_has_report"] = has_structured_report(
+                    ocr_text,
+                    language=None,
+                    min_chars=self._ocr_report_min_chars,
+                    markers=self._ocr_report_markers,
+                )
+            except Exception as exc:  # noqa: BLE001 — pure function, but be paranoid
+                logger.warning(
+                    "ocr_has_report heuristic failed for %s: %s",
+                    job.sha256[:8],
+                    exc,
+                )
+                warnings.append(f"ocr_report_heuristic_failed: {exc!s}")
+        if warnings:
+            tags["vision_warnings"] = warnings
+        return tags
 
     def _read_cached_sentinel(self, blob_store: BlobStore, sha256: str) -> dict | None:
         """Return the parsed ocr.json contents, or None if no sentinel."""

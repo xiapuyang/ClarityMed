@@ -78,6 +78,16 @@ tools:
   ask_user_question:
     max_retries: 3
 
+# --- Medical-clip (modality classification) server ---------------------
+# Loopback-bound BiomedCLIP server consumed by the OCR ingest worker to
+# tag every uploaded image with `{modality, is_medical, ocr_has_report}`.
+# These tags drive the vision tool's hard gate (KTD-V3) and the OCR-report
+# override (KTD-V6). If the server is unreachable, OCR still completes;
+# the image is tagged `modality=unknown` and the vision plugin treats it
+# the same way the classifier-low-confidence path does.
+medical_clip:
+  base_url: http://127.0.0.1:8086
+
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 tracing:
   enabled: true

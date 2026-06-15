@@ -108,6 +108,20 @@ medical-clip-server = [
     # Pillow for decoding the base64 image bytes the client posts.
     "pillow>=10.0",
 ]
+# Vision server — the disease-detection inference path (port 8085).
+# torch is already in the medical-clip extra but listed here too so the
+# vision extra is self-contained (an operator can boot vision without
+# also pulling open_clip / BiomedCLIP). Pillow is needed for the Torch
+# adapter's preprocess step; httpx for the client used by Unit 5's
+# VisionRegistry; fastapi + uvicorn for the server itself.
+# Install with ``uv sync --extra vision-server``.
+vision-server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "torch>=2.0",
+    "pillow>=10.0",
+]
 # E2E quality evaluation — requires live local services (embedder + reranker +
 # Qdrant) and the project's configured LLM. Run with:
 #   uv sync --extra e2e
@@ -163,6 +177,11 @@ claritymed-symptoms-server = "claritymed.servers.symptoms.app:main"
 # + huggingface_hub + pillow + torch). Hosts BiomedCLIP zero-shot on
 # loopback :8086 for attachment-ingest modality classification.
 claritymed-medical-clip-server = "claritymed.servers.medical_clip.app:main"
+# Vision server — only usable after `uv sync --extra vision-server`
+# (fastapi + uvicorn + torch + pillow). Hosts the disease-detection
+# adapters on loopback :8085; consumed by the orchestrator's
+# vision_plugin tool body (Unit 7).
+claritymed-vision-server = "claritymed.servers.vision.app:main"
 claritymed-symptoms-train-ddxplus = "claritymed.ingest.symptoms.ddxplus.train:main"
 claritymed-symptoms-ablate-ddxplus = "claritymed.ingest.symptoms.ddxplus.ablate_maxstep:main"
 claritymed-symptoms-hparam-ddxplus = "claritymed.ingest.symptoms.ddxplus.hparam_search:main"

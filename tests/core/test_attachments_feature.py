@@ -335,6 +335,159 @@ async def test_zh_user_input_is_preserved(_ctx):
     assert f'<image sha="{sha}">' in out
 
 
+# ----- expand_placeholders: vision tags (Unit 3) -----------------------
+
+
+def _seed_ocr_done_with_tags(sha: str, text: str, **vision_fields) -> None:
+    """Write the sentinel with the worker's vision-tag fields populated."""
+    bs = BlobStore(_USER_ID)
+    bs.ocr_path(sha).parent.mkdir(parents=True, exist_ok=True)
+    bs.ocr_path(sha).write_text(text, encoding="utf-8")
+    payload = {"status": "done", **vision_fields}
+    bs.ocr_meta_path(sha).write_text(json.dumps(payload), encoding="utf-8")
+
+
+async def test_image_tag_includes_modality_is_medical_and_report_attrs(_ctx):
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"abc", "png")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="us.png", mime="image/png", size=3, source="paste"
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "done")
+    _seed_ocr_done_with_tags(
+        sha,
+        "extracted body",
+        modality="ultrasound",
+        is_medical=True,
+        ocr_has_report=False,
+    )
+
+    feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
+    out = await feature.expand_placeholders(_placeholder(sha), _make_ctx_obj())
+    # All three vision attributes appear on the opening tag, alongside
+    # the existing sha attribute. The tool description (Unit 7) branches
+    # off these values, so the exact attribute names + lowercased
+    # "true"/"false" XML booleans are load-bearing.
+    assert (
+        f'<image sha="{sha}" modality="ultrasound" is_medical="true" ocr_has_report="false">'
+        in out
+    )
+    assert "extracted body" in out
+
+
+async def test_image_tag_omits_attrs_when_sentinel_lacks_them(_ctx):
+    """Legacy blob (sentinel pre-dating Unit 3) → no vision attrs.
+
+    Field absence is the LLM-side signal "no opinion on modality"; we
+    must not invent defaults like ``modality="unknown"``, which would
+    pretend the classifier ran when it hadn't.
+    """
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"abc", "png")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="legacy.png", mime="image/png", size=3, source="paste"
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "done")
+    _seed_ocr_done(sha, "extracted body")  # legacy sentinel — no vision fields
+
+    feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
+    out = await feature.expand_placeholders(_placeholder(sha), _make_ctx_obj())
+    assert f'<image sha="{sha}">' in out
+    assert "modality=" not in out
+    assert "is_medical=" not in out
+    assert "ocr_has_report=" not in out
+
+
+async def test_image_tag_carries_modality_unknown_when_classifier_failed(_ctx):
+    """Worker tags ``modality=unknown`` when medical-clip was unreachable.
+
+    The LLM-side routing rule treats ``unknown`` the same as a missing
+    attribute (asks the user via askuserquestion). What matters for
+    this test is that the attribute round-trips verbatim — drift would
+    break Unit 7's tool-description contract.
+    """
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"abc", "png")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="us.png", mime="image/png", size=3, source="paste"
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "done")
+    _seed_ocr_done_with_tags(
+        sha,
+        "extracted body",
+        modality="unknown",
+        is_medical=None,  # None → omitted in renderer (KTD-V8 graceful)
+        ocr_has_report=False,
+    )
+
+    feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
+    out = await feature.expand_placeholders(_placeholder(sha), _make_ctx_obj())
+    assert f'<image sha="{sha}" modality="unknown" ocr_has_report="false">' in out
+    # ``is_medical`` is null when the classifier failed; renderer omits
+    # the attribute so the LLM doesn't read a default it didn't earn.
+    assert "is_medical=" not in out
+
+
+async def test_file_tag_does_not_carry_vision_attrs(_ctx):
+    """Vision tags are image-only — files (PDFs) never carry them.
+
+    A PDF sentinel won't normally have these fields (the worker skips
+    classification on non-images), but we belt-and-suspender it here so
+    a future worker change that *does* tag them can't leak into the
+    `<file>` rendering.
+    """
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"pdf-bytes", "pdf")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="r.pdf", mime="application/pdf", size=9, source="paste"
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "done")
+    _seed_ocr_done_with_tags(
+        sha,
+        "report text",
+        modality="document",  # would be wrong, but renderer must ignore for files
+        is_medical=False,
+        ocr_has_report=True,
+    )
+
+    feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
+    out = await feature.expand_placeholders(
+        _placeholder(sha, kind="File"), _make_ctx_obj()
+    )
+    assert out.startswith(f'<file sha="{sha}">')
+    assert "modality=" not in out
+    assert "is_medical=" not in out
+    assert "ocr_has_report=" not in out
+
+
+async def test_pending_image_with_vision_attrs_renders_self_closing_with_attrs(_ctx):
+    """Pre-OCR status branches still get the vision attrs — sentinel may
+    arrive before OCR text is ready when the classifier is fast and the
+    OCR provider is slow. The rendered tag still carries the modality
+    info the LLM needs to decide whether to ask askuserquestion."""
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"abc", "png")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="x.png", mime="image/png", size=3, source="paste"
+    )
+    # Sentinel exists but session row stays "pending" — exercises the
+    # status-branch path while still reading ocr.json.
+    _seed_ocr_done_with_tags(
+        sha,
+        "",  # OCR text empty / not ready
+        modality="ct",
+        is_medical=True,
+        ocr_has_report=False,
+    )
+
+    feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
+    out = await feature.expand_placeholders(_placeholder(sha), _make_ctx_obj())
+    assert (
+        f'<image sha="{sha}" modality="ct" is_medical="true" ocr_has_report="false" ocr_status="pending"/>'
+        in out
+    )
+
+
 async def test_ocr_with_brackets_doesnt_break_format(_ctx):
     """OCR'd content can contain ``[``/``]``/``"``; XML-style tags are
     robust because content lives between unambiguous open/close
