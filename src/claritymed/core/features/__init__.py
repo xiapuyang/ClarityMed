@@ -18,6 +18,7 @@ new ``FeaturePlugin`` class + one config branch.
 
 from claritymed.core.features.base import FeaturePlugin, TurnContext
 from claritymed.core.features.factory import build_features
+from claritymed.core.features.profile_context_plugin import ProfileContextFeature
 
 __all__ = [
     "FeaturePlugin",
@@ -25,13 +26,3 @@ __all__ = [
     "TurnContext",
     "build_features",
 ]
-
-
-def __getattr__(name: str):
-    if name == "ProfileContextFeature":
-        from claritymed.orchestrator.features.profile_context_plugin import (
-            ProfileContextFeature,
-        )
-
-        return ProfileContextFeature
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

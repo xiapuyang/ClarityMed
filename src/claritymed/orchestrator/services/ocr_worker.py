@@ -31,7 +31,7 @@ from typing import Awaitable, Callable
 
 from claritymed.core.ocr.base import OcrError, OcrProvider
 from claritymed.core.schemas.records import OcrStatus
-from claritymed.orchestrator.services.session_attachments import SessionAttachments
+from claritymed.stores.session_attachments import SessionAttachments
 from claritymed.stores.blob_store import BlobStore
 
 logger = logging.getLogger(__name__)

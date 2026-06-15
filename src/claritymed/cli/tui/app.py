@@ -1184,7 +1184,7 @@ class ClarityMedApp(App):
         import time
 
         from claritymed.orchestrator.services.ocr_worker import OcrJob
-        from claritymed.orchestrator.services.session_attachments import (
+        from claritymed.stores.session_attachments import (
             SessionAttachments,
         )
         from claritymed.stores.blob_store import BlobStore
@@ -1587,7 +1587,7 @@ class ClarityMedApp(App):
         still see, which beats a silent failure.
         """
         from claritymed.orchestrator.services.ocr_worker import OcrCompleted
-        from claritymed.orchestrator.services.session_attachments import (
+        from claritymed.stores.session_attachments import (
             SessionAttachments,
         )
 

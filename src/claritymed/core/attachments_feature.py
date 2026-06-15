@@ -35,7 +35,7 @@ import re
 from typing import Callable
 
 from claritymed.core.features.base import FeaturePlugin, TurnContext
-from claritymed.orchestrator.services.session_attachments import SessionAttachments
+from claritymed.stores.session_attachments import SessionAttachments
 from claritymed.stores.blob_store import BlobStore
 
 logger = logging.getLogger(__name__)

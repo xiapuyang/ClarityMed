@@ -272,7 +272,7 @@ class AskService:
             )
 
         if profile_context_mode != "off":
-            from claritymed.orchestrator.features.profile_context_plugin import (
+            from claritymed.core.features.profile_context_plugin import (
                 ProfileContextFeature,
             )
 
@@ -363,7 +363,7 @@ class AskService:
             IngestToolsFeature,
         )
         from claritymed.orchestrator.services.tool_dispatcher import ToolDispatcher
-        from claritymed.orchestrator.services.session_attachments import (
+        from claritymed.stores.session_attachments import (
             SessionAttachments,
         )
         from claritymed.stores.settings_store import SettingsStore
@@ -1427,7 +1427,7 @@ class AskService:
         the inline placeholder expansion still renders
         ``ocr_status="pending"`` so the LLM sees the state explicitly.
         """
-        from claritymed.orchestrator.services.session_attachments import (
+        from claritymed.stores.session_attachments import (
             SessionAttachments,
         )
         from claritymed.stores.blob_store import BlobStore
