@@ -1,6 +1,6 @@
 """LLM-as-judge over a benchmark run's ``trials.jsonl``.
 
-Stage 2 of the ingest-tool benchmark — see ``run.py`` for stage 1.
+Stage 2 of the tool_invoke benchmark — see each tool's ``run.py`` for stage 1.
 
 The judge is a one-shot LLM call per trial:
 
@@ -13,10 +13,12 @@ The judge is a one-shot LLM call per trial:
   deterministic and judge calls there are wasted spend. Override with
   ``--tiers``.
 
+Works with trials.jsonl from any tool runner (ingest, symptoms, …).
+
 Example::
 
-    uv run python -m tests.benchmarks.ingest_tools.judge \\
-        --trials data/bench/20260612_104500/trials.jsonl \\
+    uv run python -m tests.benchmarks.tool_invoke.judge \\
+        --trials data/bench/ingest/20260612_104500/trials.jsonl \\
         --judge-provider omlx
 """
 
@@ -81,7 +83,6 @@ def _format_tool_calls(tool_calls: list[dict]) -> str:
         return "(none)"
     lines = []
     for c in tool_calls:
-        # Keep args compact; full args present in jsonl already.
         args_json = json.dumps(c["args"], ensure_ascii=False)
         lines.append(f"- {c['tool_name']}({args_json})")
     return "\n".join(lines)
@@ -101,9 +102,9 @@ def _format_ask_block(ask_questions: list[dict]) -> str:
 def _expected_target_hint(trial: dict) -> str:
     eb = trial["expected_behavior"]
     if eb == "call_tool":
-        return f"expected tool: {trial['expected_tool']}"
+        return f"expected tool: {trial.get('expected_tool')}"
     if eb == "call_tools":
-        return f"expected tools (any order): {trial['expected_tools']}"
+        return f"expected tools (any order): {trial.get('expected_tools')}"
     if eb == "decline":
         return "no destructive tool should fire"
     if eb == "ask_tool":
@@ -129,9 +130,9 @@ def _render_prompt(template: str, trial: dict) -> str:
         user_prompt=trial["user_prompt"],
         expected_behavior=trial["expected_behavior"],
         expected_target_hint=_expected_target_hint(trial),
-        tool_calls_block=_format_tool_calls(trial["tool_calls"]),
-        ask_count=trial["ask_user_q_count"],
-        ask_block=_format_ask_block(trial["ask_questions"]),
+        tool_calls_block=_format_tool_calls(trial.get("tool_calls") or []),
+        ask_count=trial.get("ask_user_q_count", 0),
+        ask_block=_format_ask_block(trial.get("ask_questions") or []),
         final_response_text=(trial["final_response_text"] or "(empty)").strip()[:2000],
         outcome=trial["outcome"],
         predicate_pass=trial["predicate_pass"],
@@ -218,7 +219,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--trials",
         required=True,
-        help="path to trials.jsonl emitted by run.py",
+        help="path to trials.jsonl emitted by a tool runner",
     )
     p.add_argument(
         "--judge-provider",
@@ -305,8 +306,6 @@ async def _main_async(args: argparse.Namespace) -> int:
     tasks = [_bounded(t, i, len(trials)) for i, t in enumerate(trials)]
 
     with jsonl_path.open("w", encoding="utf-8") as fh:
-        # gather collects in order; writing all at end keeps JSONL ordered
-        # the same as trials, which is the easiest to eyeball.
         for coro in asyncio.as_completed(tasks):
             rec = await coro
             results.append(rec)

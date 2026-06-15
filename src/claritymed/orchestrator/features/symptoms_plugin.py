@@ -387,17 +387,39 @@ class SymptomsFeature:
     def as_tool(self) -> Callable | None:
         from pydantic_ai import Tool
 
-        try:
-            description = self._prompt_registry.get(
-                "predict_disease_from_symptoms_tool", language="en"
-            )
-        except Exception:  # noqa: BLE001
-            description = None
         return Tool(
             self._predict,
             name=TOOL_NAME,
-            description=description,
+            description=self._build_tool_description(),
         )
+
+    def _build_tool_description(self) -> str | None:
+        """Build the tool description, injecting per-dataset domain text.
+
+        The prompt YAML (v3+) contains a ``{covered_conditions}``
+        placeholder where the dataset domain descriptions go.  This
+        method reads each enabled dataset's ``domain_description["en"]``
+        and substitutes the block so adding a new dataset only requires
+        a config entry, not a prompt edit.  Falls back gracefully when
+        the prompt is missing or the placeholder is absent (v1/v2).
+        """
+        try:
+            template = self._prompt_registry.get(
+                "predict_disease_from_symptoms_tool", language="en"
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if "{covered_conditions}" not in template:
+            return template
+        parts: list[str] = []
+        for ds in self._registry.list_enabled():
+            desc = ds.domain_description.get("en", "").strip()
+            if desc:
+                parts.append(desc)
+        covered = (
+            "\n\n".join(parts) if parts else "(no dataset descriptions configured)"
+        )
+        return template.replace("{covered_conditions}", covered)
 
     # --- tool body ----------------------------------------------------------
 
@@ -434,12 +456,28 @@ class SymptomsFeature:
             },
         )
 
-        dataset = self._resolve_dataset(dataset_hint, complaint)
-        if dataset is None:
+        eligibility_input = self._eligibility_input(complaint, symptom_summary)
+
+        # Dataset routing: hint or single dataset → fast path.
+        # No hint + multiple enabled datasets → score all via eligibility.
+        enabled = self._registry.list_enabled()
+        if not enabled:
             return {"eligible": False, "reason": "out_of_scope"}
 
-        eligibility_input = self._eligibility_input(complaint, symptom_summary)
-        elig = await self._run_eligibility(deps, eligibility_input, dataset, language)
+        if dataset_hint or len(enabled) == 1:
+            dataset = self._resolve_dataset(dataset_hint, complaint)
+            if dataset is None:
+                return {"eligible": False, "reason": "out_of_scope"}
+            elig = await self._run_eligibility(
+                deps, eligibility_input, dataset, language
+            )
+        else:
+            dataset, elig = await self._route_by_eligibility(
+                deps, eligibility_input, language
+            )
+            if dataset is None:
+                return {"eligible": False, "reason": "out_of_scope"}
+
         if not elig.eligible:
             return self._reject(dataset.id, elig)
 
@@ -563,6 +601,50 @@ class SymptomsFeature:
             },
         )
         return result
+
+    async def _route_by_eligibility(
+        self,
+        deps: "TurnState",
+        eligibility_input: str,
+        language: str,
+    ) -> "tuple[DatasetSpec | None, EligibilityResult]":
+        """Score all enabled datasets and return the best match.
+
+        Called only when no dataset_hint is provided and more than one
+        dataset is enabled.  Each dataset gets its own eligibility check
+        and audit event so the routing decision is fully traceable.
+        Single-dataset deployments never reach this path.
+        """
+        from claritymed.core.symptoms.eligibility.base import EligibilityResult as _ER
+
+        profile = await self._load_profile(deps.user_id)
+        strategy_id = self._strategy_id()
+        scores: dict[str, float] = {}
+        results: dict[str, EligibilityResult] = {}
+        for ds in self._registry.list_enabled():
+            r = await self._eligibility.check(eligibility_input, language, profile, ds)
+            logger.info(
+                "eligibility routing: dataset=%s strategy=%s eligible=%s confidence=%.3f",
+                ds.id,
+                strategy_id,
+                r.eligible,
+                r.confidence,
+            )
+            scores[ds.id] = r.confidence
+            results[ds.id] = r
+            audit_event(
+                "symptoms.eligibility.checked",
+                {
+                    "dataset_id": ds.id,
+                    "strategy_id": strategy_id,
+                    "confidence": r.confidence,
+                    "eligible": r.eligible,
+                },
+            )
+        dataset = self._registry.resolve(None, eligibility_scores=scores)
+        if dataset is None:
+            return None, _ER(eligible=False, reason="out_of_scope", confidence=0.0)
+        return dataset, results[dataset.id]
 
     def _reject(self, dataset_id: str, elig: EligibilityResult) -> dict[str, Any]:
         audit_event(

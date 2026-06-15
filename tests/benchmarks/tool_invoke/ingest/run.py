@@ -7,18 +7,19 @@ Runs (case × model × lang × trial) matrix. Each trial is independent:
 * fresh ``ChatSession`` (no chat history leakage)
 * fresh approval + prompt channels (no cross-trial call accumulation)
 
-Outputs land under ``--out`` (default ``data/bench/<timestamp>/``):
+Outputs land under ``--out`` (default ``data/bench/ingest/<timestamp>/``):
 
 * ``trials.jsonl``  — one line per trial, self-contained payload that
                       ``judge.py`` reads without rerunning anything
 * ``summary.csv``   — aggregated per (model, lang, case) cell
+* ``outcomes.csv``  — long-format per (cell × outcome) counts
 
-The runner does NOT call any LLM judge — that's ``judge.py``'s job.
+The runner does NOT call any LLM judge — that's ``tool_invoke/judge.py``.
 Predicate grading happens here because it's deterministic and free.
 
 Example::
 
-    uv run python -m tests.benchmarks.ingest_tools.run \\
+    uv run python -m tests.benchmarks.tool_invoke.ingest.run \\
         --models omlx,deepseek-v4-pro \\
         --langs en,zh --trials 5
 """
@@ -27,12 +28,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import csv
-import importlib
 import json
 import logging
 import os
-import shutil
 import statistics
 import sys
 import time
@@ -41,7 +39,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from claritymed import config as _cfg
 from claritymed.config import load_env_file
 from claritymed.context import apply_context, new_request_id, reset_context
 from claritymed.core.interaction import ApprovalDecision
@@ -54,18 +51,33 @@ from claritymed.core.rag import load_retrieval_config
 from claritymed.orchestrator.services import AskService
 from claritymed.orchestrator.services.chat_session import ChatSession
 
-from tests.benchmarks.ingest_tools.cases import (
+from tests.benchmarks.tool_invoke import base
+from tests.benchmarks.tool_invoke.ingest.cases import (
     CASES,
     INGEST_TOOLS,
-    USER_ID,
     Case,
 )
 
 logger = logging.getLogger(__name__)
 
 PER_TURN_TIMEOUT_S = 90.0
-BENCH_HOME = Path.home() / ".claritymed"
-BENCH_USER_DIR = BENCH_HOME / "data" / "users" / USER_ID
+
+CORRECT_OUTCOMES: frozenset[str] = frozenset(
+    {
+        "correct",
+        "correct_with_extra",
+        "asked_with_call",
+        # ``ask`` / ``ask_text`` cases where the model clarified in plain
+        # prose. The system prompt explicitly permits this for open-ended
+        # questions, so it's a pass — not a degraded outcome.
+        "correct_text_ask",
+        # ``ask_then_call_tool`` cases where the model skipped the
+        # clarifying question and went straight to the correct ingest
+        # tool with sensible args. Predicate already validates the args,
+        # so the action is right; only the flow shortcut is non-ideal.
+        "called_without_asking",
+    }
+)
 
 
 # --- channels --------------------------------------------------------
@@ -133,32 +145,6 @@ class _AutoAnswerFirstOptionChannel:
         return AskUserQuestionResult(answers=answers)
 
 
-# --- bench env helpers ----------------------------------------------
-
-
-def _wipe_bench_user_dir() -> None:
-    if BENCH_USER_DIR.exists():
-        shutil.rmtree(BENCH_USER_DIR)
-
-
-def _reload_runtime() -> None:
-    """Re-resolve config + clear per-user caches so the next trial sees
-    a clean store layer.
-
-    We don't touch ``CLARITYMED_HOME`` between trials (we leave it at
-    the user's real ``~/.claritymed/``). Instead we wipe the ``bench``
-    user subtree directly, then clear caches that hold per-user engines.
-    """
-    importlib.reload(_cfg)
-    _cfg.reload_configs()
-    from claritymed.stores import profile as _profile
-
-    _profile._ENGINES.clear()
-    from claritymed.stores.account import reset_account_cache
-
-    reset_account_cache()
-
-
 # --- trial dataclass -------------------------------------------------
 
 
@@ -185,7 +171,7 @@ class TrialRecord:
     ask_questions: list[dict]
     final_response_text: str
     # Predicate / classification
-    outcome: str  # see classify()
+    outcome: str  # see _classify()
     predicate_pass: bool
     predicate_reason: str
     correct_tool: bool
@@ -229,8 +215,8 @@ async def _run_one_trial(
     # also avoids racing the per-trial dir wipe against the background
     # embed task (which manifested as sqlite "readonly database" errors).
     os.environ["CLARITYMED_DISABLE_INGEST_HOOKS"] = "1"
-    _wipe_bench_user_dir()
-    _reload_runtime()
+    base.wipe_bench_user_dir()
+    base.reload_runtime()
 
     seed: dict | None = case.seed() if case.seed else None
     prompt = case.prompts[user_lang]
@@ -241,7 +227,7 @@ async def _run_one_trial(
     # in one shot. Same value lands in audit log lines and Phoenix span
     # baggage, so a JSONL row identifies the corresponding traces.
     request_id = new_request_id()
-    tokens = apply_context(request_id, USER_ID, user_lang)
+    tokens = apply_context(request_id, base.USER_ID, user_lang)
 
     approval = _AutoApproveChannel()
     # ask_then_call_tool cases need the model to receive a real answer so it
@@ -260,7 +246,7 @@ async def _run_one_trial(
     try:
         provider = resolve_provider(override=provider_id)
         model = build_model(provider)
-        chat = ChatSession.new(USER_ID)
+        chat = ChatSession.new(base.USER_ID)
         rag_mode = load_retrieval_config().rag.mode
 
         service = AskService(
@@ -276,7 +262,7 @@ async def _run_one_trial(
 
         try:
             async with asyncio.timeout(PER_TURN_TIMEOUT_S):
-                async for ev in service.run(prompt, user_id=USER_ID):
+                async for ev in service.run(prompt, user_id=base.USER_ID):
                     # AskService swallows ``UnexpectedModelBehavior`` etc.
                     # inside ``_producer`` and emits an ``Error`` event
                     # instead of raising. Capture it here so the trial
@@ -630,33 +616,8 @@ def _classify(
 # --- aggregate -------------------------------------------------------
 
 
-CORRECT_OUTCOMES: frozenset[str] = frozenset(
-    {
-        "correct",
-        "correct_with_extra",
-        "asked_with_call",
-        # ``ask`` / ``ask_text`` cases where the model clarified in plain
-        # prose. The system prompt explicitly permits this for open-ended
-        # questions, so it's a pass — not a degraded outcome.
-        "correct_text_ask",
-        # ``ask_then_call_tool`` cases where the model skipped the
-        # clarifying question and went straight to the correct ingest
-        # tool with sensible args. Predicate already validates the args,
-        # so the action is right; only the flow shortcut is non-ideal.
-        "called_without_asking",
-    }
-)
-
-
 def _summary_rows(trials: list[TrialRecord]) -> list[dict]:
-    """One row per (model, user_lang, tool_prompt_lang, case) cell.
-
-    Trimmed to the columns that mean something for *every* expected
-    behavior: ``correct_rate`` and ``fail_rate`` are always meaningful,
-    ``no_tool_rate`` flags the "model said nothing" failure mode common
-    across call_tool / ask cases, and the latency stats are universal.
-    The full outcome breakdown lives in ``outcomes.csv`` (long format).
-    """
+    """One row per (model, user_lang, tool_prompt_lang, case) cell."""
     by_cell: dict[tuple[str, str, str, str], list[TrialRecord]] = {}
     for t in trials:
         key = (t.model, t.lang, t.tool_prompt_lang, t.case_name)
@@ -692,20 +653,14 @@ def _summary_rows(trials: list[TrialRecord]) -> list[dict]:
                 "p50_latency_ms": round(statistics.median(latencies), 1)
                 if latencies
                 else "",
-                "p95_latency_ms": _p95(latencies),
+                "p95_latency_ms": base.p95(latencies),
             }
         )
     return rows
 
 
 def _outcomes_rows(trials: list[TrialRecord]) -> list[dict]:
-    """Long-format breakdown: one row per (cell × outcome) with count.
-
-    Survives the curse of fixed CSV columns — every outcome label
-    (``correct``, ``no_ask``, ``predicate_fail``, ``missing_tools``,
-    etc.) gets its own line, so adding a new outcome later doesn't
-    silently zero out columns nobody notices.
-    """
+    """Long-format breakdown: one row per (cell × outcome) with count."""
     by_cell: dict[tuple[str, str, str, str, str, str, str], int] = {}
     for t in trials:
         key = (
@@ -737,31 +692,12 @@ def _outcomes_rows(trials: list[TrialRecord]) -> list[dict]:
     return rows
 
 
-def _p95(xs: list[float]) -> float | str:
-    if not xs:
-        return ""
-    s = sorted(xs)
-    idx = max(0, int(round(0.95 * (len(s) - 1))))
-    return round(s[idx], 1)
-
-
 # --- CLI -------------------------------------------------------------
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--models",
-        required=True,
-        help="comma-separated provider ids (e.g. omlx,deepseek-v4-pro)",
-    )
-    p.add_argument(
-        "--user-langs",
-        "--langs",
-        dest="user_langs",
-        default="en,zh",
-        help="comma-separated user-input languages (default: en,zh)",
-    )
+    base.add_common_args(p)
     p.add_argument(
         "--tool-prompt-langs",
         dest="tool_prompt_langs",
@@ -773,37 +709,7 @@ def _parse_args() -> argparse.Namespace:
             "a separate trial cell for each tool-prompt-lang per user-lang."
         ),
     )
-    p.add_argument(
-        "--trials",
-        type=int,
-        default=3,
-        help="trials per (model, user-lang, tool-prompt-lang, case) cell (default: 3)",
-    )
-    p.add_argument(
-        "--tiers",
-        default="base,hard,fp",
-        help="case tiers to include (default: base,hard,fp)",
-    )
-    p.add_argument(
-        "--cases",
-        default=None,
-        help="optional comma-separated case names to include (filters within tiers)",
-    )
-    p.add_argument(
-        "--out",
-        default=None,
-        help="output dir (default: data/bench/<timestamp>/)",
-    )
-    p.add_argument("--verbose", action="store_true")
     return p.parse_args()
-
-
-def _select_cases(tiers: list[str], names: list[str] | None) -> list[Case]:
-    out = [c for c in CASES if c.tier in tiers]
-    if names:
-        wanted = set(names)
-        out = [c for c in out if c.name in wanted]
-    return out
 
 
 async def _main_async(args: argparse.Namespace) -> int:
@@ -823,14 +729,14 @@ async def _main_async(args: argparse.Namespace) -> int:
     names = (
         [n.strip() for n in args.cases.split(",") if n.strip()] if args.cases else None
     )
-    selected = _select_cases(tiers, names)
+    selected = base.select_cases(CASES, tiers, names)
     if not selected:
         print("no cases selected", file=sys.stderr)
         return 2
 
     _now = datetime.now()
     ts = _now.strftime("%Y%m%d_%H%M%S_") + f"{_now.microsecond // 1000:03d}"
-    out_dir = Path(args.out) if args.out else Path("data/bench") / ts
+    out_dir = Path(args.out) if args.out else Path("data/bench/ingest") / ts
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / "trials.jsonl"
     csv_path = out_dir / "summary.csv"
@@ -875,25 +781,12 @@ async def _main_async(args: argparse.Namespace) -> int:
                                 f"{rec.outcome:<18} {elapsed_ms:>6.0f}ms"
                             )
 
-    rows = _summary_rows(trials)
-    if rows:
-        with csv_path.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
-
-    outcome_rows = _outcomes_rows(trials)
-    if outcome_rows:
-        with outcomes_csv_path.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(outcome_rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(outcome_rows)
+    base.write_csv(csv_path, _summary_rows(trials))
+    base.write_csv(outcomes_csv_path, _outcomes_rows(trials))
 
     print(f"\nwrote {len(trials)} trials → {jsonl_path}")
-    print(f"wrote {len(rows)} cell summaries → {csv_path}")
-    print(f"wrote {len(outcome_rows)} outcome rows → {outcomes_csv_path}")
     print(
-        f"\nrender HTML: uv run python -m tests.benchmarks.ingest_tools.report "
+        f"render HTML: uv run python -m tests.benchmarks.tool_invoke.report "
         f"--run {out_dir}"
     )
     return 0

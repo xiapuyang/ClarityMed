@@ -229,6 +229,21 @@ class DatasetSpec(BaseModel):
         max_length=128,
     )
 
+    # Human-facing scope description per language code.  Used by the
+    # plugin's as_tool() to build the covered-conditions block of the
+    # tool description dynamically so the LLM can pick dataset_hint
+    # correctly when multiple datasets are enabled.  Not used for
+    # runtime eligibility scoring — that stays evidence-based.
+    domain_description: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-language scope descriptions keyed by language code "
+            "('en', 'zh'). The plugin substitutes these into the "
+            "{covered_conditions} placeholder in the tool description "
+            "YAML so the LLM knows which dataset covers which domain."
+        ),
+    )
+
     def resolved_i18n_prefix(self) -> str:
         """Return the active prefix (explicit override or convention)."""
         return self.i18n_key_prefix or f"symptoms.{self.id}"

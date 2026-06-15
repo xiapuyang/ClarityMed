@@ -51,7 +51,7 @@ from typing import Callable, Optional
 from claritymed.stores.manifest_store import ManifestStore
 from claritymed.stores.profile import ProfileStore
 
-USER_ID = "bench"
+from tests.benchmarks.tool_invoke.base import USER_ID
 
 INGEST_TOOLS: frozenset[str] = frozenset(
     {

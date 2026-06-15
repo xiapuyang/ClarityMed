@@ -1,9 +1,11 @@
 """Inspect failing trials in a benchmark run.
 
 Filters ``trials.jsonl`` by outcome and pretty-prints user prompt, tool
-calls, ask_user_question payloads, and the final text reply. When a
-``judge_<provider>.jsonl`` sits alongside in the same run dir, judge
-scores + reasons are joined in.
+calls, modal call count, ask_user_question payloads, and the final text
+reply. When a ``judge_<provider>.jsonl`` sits alongside in the same run
+dir, judge scores + reasons are joined in.
+
+Works with trials.jsonl from any tool runner (ingest, symptoms, …).
 
 Default: shows every trial whose ``outcome != "correct"``. Use
 ``--outcomes`` to filter to a specific failure category, or
@@ -12,12 +14,12 @@ Default: shows every trial whose ``outcome != "correct"``. Use
 Examples::
 
     # all fails in a run
-    uv run python -m tests.benchmarks.ingest_tools.inspect_fails \\
-        --run data/bench/20260612_104500/
+    uv run python -m tests.benchmarks.tool_invoke.inspect_fails \\
+        --run data/bench/ingest/20260612_104500/
 
     # only the ask_* failures on omlx
-    uv run python -m tests.benchmarks.ingest_tools.inspect_fails \\
-        --run data/bench/20260612_104500/ \\
+    uv run python -m tests.benchmarks.tool_invoke.inspect_fails \\
+        --run data/bench/ingest/20260612_104500/ \\
         --outcomes no_ask,asked_instead --models omlx
 
 For wire-level debugging (system prompt, raw model messages, tool
@@ -60,8 +62,6 @@ def _load_judge_index(run_dir: Path) -> dict[str, dict]:
     index: dict[str, dict] = {}
     for path in sorted(run_dir.glob("judge_*.jsonl")):
         for rec in _load_jsonl(path):
-            # If multiple judges exist, last write wins; user can pass
-            # one specific path via --judge if they need precision.
             index[rec["request_id"]] = rec
     return index
 
@@ -91,11 +91,11 @@ def _format_ask(ask_questions: list[dict]) -> str:
 
 
 def _print_trial(trial: dict, judge: dict | None) -> None:
+    tpl = trial.get("tool_prompt_lang", trial["lang"])
     print("=" * 78)
     print(
         f"{trial['case_name']:<28} {trial['model']:<22} "
-        f"u={trial['lang']} t={trial.get('tool_prompt_lang', trial['lang'])}  "
-        f"tier={trial['tier']}"
+        f"u={trial['lang']} t={tpl}  tier={trial['tier']}"
     )
     print(f"request_id={trial['request_id']}  (grep audit.log / Phoenix)")
     print(
@@ -113,16 +113,27 @@ def _print_trial(trial: dict, judge: dict | None) -> None:
     print(f"predicate_reason: {trial['predicate_reason']}")
     if trial.get("had_error"):
         print(f"error: {trial.get('error_msg', '<missing>')}")
+
+    # Detection signal differs between tools.
+    if "modal_call_count" in trial:
+        print(f"modal_call_count: {trial['modal_call_count']}")
+
     print("\n--- USER PROMPT ---")
     print(f"  {trial['user_prompt']}")
-    print("\n--- TOOL CALLS ---")
-    print(_format_tool_calls(trial["tool_calls"]))
-    print("\n--- ASK_USER_QUESTION ---")
-    print(_format_ask(trial["ask_questions"]))
+
+    if trial.get("tool_calls") is not None:
+        print("\n--- TOOL CALLS ---")
+        print(_format_tool_calls(trial["tool_calls"]))
+
+    if trial.get("ask_questions") is not None:
+        print("\n--- ASK_USER_QUESTION ---")
+        print(_format_ask(trial["ask_questions"]))
+
     print("\n--- FINAL TEXT ---")
     text = trial["final_response_text"] or "(empty)"
     for line in text.splitlines() or [""]:
         print(f"  {line}")
+
     if judge is not None:
         print("\n--- JUDGE ---")
         print(f"  provider: {judge['judge_provider']}  score: {judge['score']}")

@@ -274,3 +274,166 @@ versions:
         每轮最多一次调用。若返回 ``{eligible: false}`` 或
         ``{user_declined: true}``，请改走自由文本——**不要**重试，
         也**不要**改用其他工具补救。
+  - version: v3
+    created_at: 2026-06-14
+    notes: |
+      Covered-conditions list moved out of this YAML into DatasetSpec
+      .domain_description (configs/symptoms.yaml).  as_tool() injects
+      the live dataset descriptions at build time via the
+      {covered_conditions} placeholder, so adding a new dataset only
+      requires a YAML config entry — no prompt edit needed.
+
+      Trigger criteria tightened: complaint must name specific,
+      currently-active symptoms.  Vague expressions ("I feel off",
+      "something seems wrong") and past/resolved symptoms are now
+      explicit DO NOT CALL entries so small local models do not
+      over-trigger on fp_past_resolved_symptoms and the vague-discomfort
+      cases.
+
+      dataset_hint guidance updated: instructs the LLM to match the
+      complaint to the dataset id shown in {covered_conditions}.
+    languages:
+      en: |
+        Run a structured differential-diagnosis sub-session from the
+        user's symptoms. Call this tool only when the user presents
+        named, currently-active symptoms — vague expressions like
+        "I feel off" or "something seems wrong" are NOT sufficient.
+
+        How it works (the LLM does NOT drive the loop):
+          1. The plugin runs an eligibility filter on the complaint.
+             If the complaint is out of scope, it returns
+             ``{eligible: false}`` and you should answer with normal
+             RAG / free text — no second tool call needed.
+          2. The plugin asks the user a one-tap confirm modal
+             ("Try follow-up Q&A?"). If the user declines, you get
+             ``{user_declined: true}`` and should answer with normal
+             RAG / free text.
+          3. The plugin then collects age + sex via a modal (if
+             missing from profile), then loops 5-12 structured
+             questions with the user. You will NOT be invoked during
+             that loop.
+          4. When the loop finishes (done / cap / cancel), you receive
+             a structured payload and compose the final reply per
+             ``symptoms_final_reply.yaml``.
+
+        Available datasets:
+
+        {covered_conditions}
+
+        DO call when:
+          - The user names specific symptoms they are currently
+            experiencing ("I have chest pain and shortness of breath",
+            "cough and fever for three days").
+          - A single high-specificity symptom warrants differential
+            diagnosis (sudden severe headache, acute chest pain).
+          - The complaint falls plausibly within a listed dataset's
+            scope.
+
+        DO NOT call for:
+          - Vague or diffuse expressions without named symptoms:
+            "I feel unwell", "something seems off", "not feeling
+            right", "I have several issues going on", "something
+            feels wrong with my body".
+          - Past or resolved symptoms: anything described in the
+            past tense that has since cleared up ("last month I
+            had...", "I used to get..."). Active + resolved mix is
+            also excluded unless the user explicitly asks about the
+            active portion.
+          - Third-party symptoms: the user describing someone else's
+            complaint, not their own.
+          - Medication questions, general health knowledge, profile
+            updates ("save this allergy"), or scheduling requests.
+          - Symptoms clearly outside all listed dataset scopes.
+
+        Arguments:
+          - ``complaint`` (required): the user's symptom description
+            in their own words. Pass the substantive text — do not
+            paraphrase or pre-classify. The plugin's eligibility check
+            runs against the raw complaint.
+          - ``symptom_summary`` (optional but recommended): a tight
+            English clinical chief-complaint distilled from the full
+            conversation, 1-2 sentences. Examples:
+              * "severe right-sided abdominal pain for 2 days with
+                 fever and vomiting"
+              * "sudden chest pain radiating to the left arm,
+                 shortness of breath, started 30 minutes ago"
+              * "rash and itching on both forearms after eating
+                 shellfish 1 hour ago"
+            Used ONLY as input to the differential model's chief
+            complaint matcher — the user never sees this text, and
+            it does not affect eligibility filtering. Omit only when
+            the conversation is so short that ``complaint`` already
+            reads like a clean chief complaint.
+          - ``dataset_hint`` (optional): when the available datasets
+            list above shows more than one dataset, pass the id
+            (the ``id:`` field from the list) of the dataset whose
+            scope best matches the complaint. If omitted or unknown,
+            the plugin picks the best-matching dataset automatically.
+
+        Single call per turn. If the result is
+        ``{eligible: false}`` or ``{user_declined: true}``, fall
+        through to free-text — do not retry or call a sibling tool.
+      zh: |
+        基于用户症状跑一次结构化的鉴别诊断子会话。仅当用户描述的是
+        当前正在经历、有具体名称的症状时才调用——"我感觉不太对"
+        或"身体有些不舒服"等模糊表述不足以触发本工具。
+
+        工作方式（LLM 不参与循环）：
+          1. 插件先对主诉跑一次资格过滤。若不在范围内，返回
+             ``{eligible: false}``，你应改用常规 RAG / 自由文本回答，
+             **不要**再调一次工具。
+          2. 插件给用户弹一次确认模态（"要做一轮跟进问答吗？"）。
+             用户点 No 则你收到 ``{user_declined: true}``，同样
+             改走常规 RAG / 自由文本。
+          3. 插件随后通过模态采集年龄 + 性别（profile 缺失时），
+             再与用户跑 5-12 轮结构化问答。**你不会在循环过程中
+             被再次调用。**
+          4. 循环结束（done / cap / cancel）后，你会收到一份结构化
+             payload，再依据 ``symptoms_final_reply.yaml`` 撰写
+             最终回复。
+
+        可用数据集：
+
+        {covered_conditions}
+
+        应当调用的场景：
+          - 用户明确指出当前正在经历的症状（"我胸痛伴气短"、
+            "咳嗽发烧已经三天"）。
+          - 单一高特异性症状需要鉴别（突发剧烈头痛、急性胸痛）。
+          - 主诉合理落在某个数据集的范围内。
+
+        **不**应调用的场景：
+          - 模糊、泛化的不适描述，没有具体症状名称：
+            "感觉不太对"、"身体有些异常"、"不确定是不是需要
+            担心"、"有好几个症状说不清楚"、"整体状态不对"。
+          - 过去 / 已解决的症状：以过去时态描述、后来自行好转
+            的情况（"上个月我…后来好了"、"以前会…"）。当前与
+            历史混合时，除非用户明确询问仍在持续的部分，否则
+            不调用。
+          - 第三方症状：用户描述的是别人的不适，不是自己的。
+          - 用药问题、一般健康知识、画像更新（"帮我记下这条
+            过敏"）、预约挂号等请求。
+          - 明显超出所有数据集范围的症状。
+
+        参数：
+          - ``complaint`` （必填）：用户对症状的原话描述。把原文
+            传进去——**不要**改写、**不要**预分类。资格过滤是
+            针对原始文本跑的。
+          - ``symptom_summary`` （可选但推荐）：用英文写一句紧凑
+            的临床主诉，从完整对话中提炼，1-2 句。例：
+              * "severe right-sided abdominal pain for 2 days with
+                 fever and vomiting"
+              * "sudden chest pain radiating to the left arm,
+                 shortness of breath, started 30 minutes ago"
+              * "rash and itching on both forearms after eating
+                 shellfish 1 hour ago"
+            仅用于鉴别诊断模型的主诉匹配——用户**看不到**这段
+            文字，也**不影响**资格过滤。除非对话很短、``complaint``
+            本身已经是一句干净的主诉，否则都建议传。
+          - ``dataset_hint`` （可选）：当上方列表有多个数据集时，
+            传入主诉最匹配的那个数据集的 id（列表中 ``id:`` 字段
+            的值）。不传或传错时，插件自动选最佳匹配数据集。
+
+        每轮最多一次调用。若返回 ``{eligible: false}`` 或
+        ``{user_declined: true}``，请改走自由文本——**不要**重试，
+        也**不要**改用其他工具补救。

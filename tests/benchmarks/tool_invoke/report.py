@@ -11,13 +11,17 @@ case. Below each filter set the page shows:
   outcome distribution, latency, and judge score if available
 * a per-trial detail table you can drill down into
 
+Works with trials.jsonl from any tool runner (ingest, symptoms, …).
+Tool-specific fields (tool_prompt_lang, tool_calls, modal_call_count)
+appear as available; missing fields render as "—" rather than errors.
+
 Pure HTML + vanilla JS. Data is embedded in a ``<script>`` block, so
 sharing the report = sending one file.
 
 Usage::
 
-    uv run python -m tests.benchmarks.ingest_tools.report \\
-        --run data/bench/<ts>/
+    uv run python -m tests.benchmarks.tool_invoke.report \\
+        --run data/bench/<tool>/<ts>/
 """
 
 from __future__ import annotations
@@ -46,30 +50,41 @@ def _load_judge_index(run_dir: Path) -> dict[str, dict]:
     return index
 
 
-# Trial fields kept in the embedded JSON — drops the verbose payloads
-# (full prompt, final text) so the HTML stays small. Inspector script
-# is the place to read full content.
-_TRIAL_FIELDS_LIGHT = [
+# Common fields present in every tool's TrialRecord.
+_TRIAL_FIELDS_COMMON = [
     "request_id",
     "model",
     "lang",
-    "tool_prompt_lang",
     "case_name",
     "tier",
     "expected_behavior",
     "outcome",
     "predicate_pass",
-    "no_tool",
-    "ask_user_q_count",
     "latency_ms",
     "had_error",
     "error_msg",
 ]
 
+# Ingest-specific fields (absent from symptoms runs — trial.get() returns None).
+_TRIAL_FIELDS_INGEST = [
+    "tool_prompt_lang",
+    "no_tool",
+    "ask_user_q_count",
+]
+
+# Symptoms-specific fields (absent from ingest runs).
+_TRIAL_FIELDS_SYMPTOMS = [
+    "modal_call_count",
+    "tool_invoked",
+]
+
 
 def _light_trial(trial: dict, judge: dict | None) -> dict:
-    out = {k: trial.get(k) for k in _TRIAL_FIELDS_LIGHT}
-    out["tool_calls"] = [c["tool_name"] for c in trial.get("tool_calls", [])]
+    out: dict = {}
+    for k in _TRIAL_FIELDS_COMMON + _TRIAL_FIELDS_INGEST + _TRIAL_FIELDS_SYMPTOMS:
+        out[k] = trial.get(k)
+    # Normalise tool_calls to a list of names; absent on symptoms runs → [].
+    out["tool_calls"] = [c["tool_name"] for c in (trial.get("tool_calls") or [])]
     if judge:
         out["judge_score"] = judge.get("score")
         out["judge_provider"] = judge.get("judge_provider")
@@ -83,7 +98,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Ingest-tool benchmark — {run_name}</title>
+<title>tool_invoke benchmark — {run_name}</title>
 <style>
   body {{ font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
          margin: 18px; color: #1a1a1a; }}
@@ -132,7 +147,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Ingest-tool benchmark — <code>{run_name}</code></h1>
+<h1>tool_invoke benchmark — <code>{run_name}</code></h1>
 <div class="sub">{n_trials} trials · {n_cells} cells · generated from
 <code>{trials_path}</code></div>
 
@@ -189,11 +204,10 @@ const FACETS = ["model","lang","tool_prompt_lang","tier","expected_behavior"];
 const FACET_LABELS = {{model:"f-model", lang:"f-lang", tool_prompt_lang:"f-tpl",
                        tier:"f-tier", expected_behavior:"f-eb"}};
 
-// per-facet active set; empty = all
 const active = {{}};
 FACETS.forEach(f => active[f] = new Set());
 
-function uniq(arr) {{ return [...new Set(arr)].sort(); }}
+function uniq(arr) {{ return [...new Set(arr)].sort((a,b) => String(a).localeCompare(String(b))); }}
 
 function buildPills() {{
   FACETS.forEach(f => {{
@@ -318,10 +332,14 @@ function renderOutcomeDist(rows) {{
 
 function renderTrials(rows) {{
   const capped = rows.slice(0, 500);
-  let html = `<table><thead><tr><th>request_id</th><th>model</th><th>u/t</th><th>case</th><th>outcome</th><th>tools</th><th class="num">ask</th><th class="num">ms</th><th class="num">judge</th></tr></thead><tbody>`;
+  let html = `<table><thead><tr><th>request_id</th><th>model</th><th>lang/tpl</th><th>case</th><th>outcome</th><th>tools/modal</th><th class="num">ask</th><th class="num">ms</th><th class="num">judge</th></tr></thead><tbody>`;
   capped.forEach(t => {{
     const cls = CORRECT_OUTCOMES.has(t.outcome) ? "outcome-correct" : "outcome-fail";
-    html += `<tr><td><code>${{t.request_id}}</code></td><td>${{t.model}}</td><td>${{t.lang}}/${{t.tool_prompt_lang}}</td><td>${{t.case_name}}</td><td class="${{cls}}">${{t.outcome}}</td><td>${{(t.tool_calls||[]).join(", ") || "—"}}</td><td class="num">${{t.ask_user_q_count}}</td><td class="num">${{t.latency_ms.toFixed(0)}}</td><td class="num">${{t.judge_score != null ? t.judge_score : "—"}}</td></tr>`;
+    const toolsOrModal = t.modal_call_count != null
+      ? `modal=${{t.modal_call_count}}`
+      : (t.tool_calls||[]).join(", ") || "—";
+    const tpl = t.tool_prompt_lang ?? "—";
+    html += `<tr><td><code>${{t.request_id}}</code></td><td>${{t.model}}</td><td>${{t.lang}}/${{tpl}}</td><td>${{t.case_name}}</td><td class="${{cls}}">${{t.outcome}}</td><td>${{toolsOrModal}}</td><td class="num">${{t.ask_user_q_count ?? "—"}}</td><td class="num">${{t.latency_ms.toFixed(0)}}</td><td class="num">${{t.judge_score != null ? t.judge_score : "—"}}</td></tr>`;
   }});
   html += `</tbody></table>`;
   if (rows.length > capped.length) html += `<div class="sub">… ${{rows.length-capped.length}} more rows hidden</div>`;
@@ -372,8 +390,17 @@ def main() -> int:
     judge_index = _load_judge_index(run_dir)
     light = [_light_trial(t, judge_index.get(t["request_id"])) for t in trials]
 
+    # Cell identity includes tool_prompt_lang only when it's present.
     n_cells = len(
-        {(t["model"], t["lang"], t["tool_prompt_lang"], t["case_name"]) for t in trials}
+        {
+            (
+                t["model"],
+                t.get("lang", ""),
+                t.get("tool_prompt_lang"),
+                t["case_name"],
+            )
+            for t in trials
+        }
     )
 
     html = _HTML_TEMPLATE.format(

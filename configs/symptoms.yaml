@@ -34,6 +34,36 @@ datasets:
     init_symptom_filter:
       exclude_antecedent: true
       allowed_dtypes: ["B"]
+    # Domain scope surfaced in the LLM tool description (as_tool builds
+    # the {covered_conditions} block from these).  Describes what this
+    # dataset covers so the LLM can choose the right dataset_hint when
+    # multiple datasets are enabled.  Not used for eligibility scoring.
+    domain_description:
+      en: |
+        id: ddxplus
+        DDXPlus — 49 acute and subacute conditions from ED triage scenarios.
+        Use this dataset when the user names specific, currently-active symptoms
+        plausibly within one of these categories:
+          - Cardiopulmonary: chest pain, pulmonary embolism, spontaneous
+            pneumothorax, myocardial infarction analogues, pericarditis.
+          - Respiratory / infectious: bronchitis, pneumonia, tuberculosis,
+            asthma exacerbation, COVID-19, influenza, URI / sinusitis.
+          - Gastrointestinal: abdominal pain, GERD, pancreatitis,
+            cholecystitis, bowel obstruction, gastroenteritis.
+          - Neurological: cluster headache, migraine, meningitis.
+          - Allergy / dermatology: urticaria, anaphylaxis, angioedema.
+          - Other systemic infectious / inflammatory presentations.
+      zh: |
+        id: ddxplus
+        DDXPlus — 急诊分诊场景下 49 类急 / 亚急性疾病。
+        当用户描述的是当前正在经历、有具体名称的症状，且合理地落在以下范围时使用：
+          - 心肺：胸痛、肺栓塞、自发性气胸、心肌梗死类、心包炎。
+          - 呼吸 / 感染：支气管炎、肺炎、肺结核、哮喘急性发作、新冠、
+            流感、上呼吸道感染 / 鼻窦炎。
+          - 消化：腹痛、胃食管反流、胰腺炎、胆囊炎、肠梗阻、肠胃炎。
+          - 神经：丛集性头痛、偏头痛、脑膜炎。
+          - 过敏 / 皮肤：荨麻疹、过敏性休克、血管性水肿。
+          - 其他系统性感染 / 炎症性表现。
 
 models:
   - id: typed_basd_v2

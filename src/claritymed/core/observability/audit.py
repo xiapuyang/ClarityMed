@@ -93,6 +93,9 @@ AuditKind = Literal[
     # and decide whether to switch a misbehaving provider to
     # deterministic mode.
     "mode.ask.tool_announced_but_skipped",
+    # Citation index out of range — clamped before delivery to user.
+    # payload: user_id, valid_max, offending (list of citation indices)
+    "ask.citation.out_of_range",
     # RAG retrieval lifecycle
     "rag.retrieval",
     "rag.retrieval.failed",
