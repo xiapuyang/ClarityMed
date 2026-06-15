@@ -188,6 +188,11 @@ claritymed-symptoms-hparam-ddxplus = "claritymed.ingest.symptoms.ddxplus.hparam_
 claritymed-symptoms-tune-ddxplus = "claritymed.ingest.symptoms.ddxplus.tune:main"
 claritymed-symptoms-generate-i18n = "claritymed.ingest.symptoms.generate_i18n:main"
 claritymed-symptoms-translate-i18n = "claritymed.ingest.symptoms.translate_i18n:main"
+# Vision (Unit 6 — BUSI breast-ultrasound training pipeline).
+claritymed-vision-download-busi = "claritymed.ingest.vision.busi.download:_main"
+claritymed-vision-hparam-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.hparam:cli"
+claritymed-vision-train-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.train:cli"
+claritymed-vision-tune-breast-cancer-ultrasound = "claritymed.ingest.vision.busi.tune:cli"
 
 [build-system]
 requires = ["hatchling"]

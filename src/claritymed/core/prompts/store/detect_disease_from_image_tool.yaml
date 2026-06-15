@@ -1,0 +1,173 @@
+name: detect_disease_from_image_tool
+description: |
+  Tool description shown to the LLM for ``detect_disease_from_image``.
+  The plugin substitutes ``{covered_diseases}`` at build time with the
+  i18n "use when…" one-liners for each enabled disease, so adding a
+  new disease entry in ``configs/vision.yaml`` ships with no prompt
+  edit. Routing rules are encoded here verbatim because the tool body
+  cannot enforce them — by the time the body runs the LLM has already
+  committed to a tool call. Defense-in-depth gates inside the body
+  (OCR override, is_medical, modality mismatch) protect the user
+  regardless of prompt compliance.
+versions:
+  - version: v1
+    created_at: 2026-06-14
+    notes: |
+      Initial version. Encodes the five-rule routing table from the
+      plan §"Approach > Tool description". OCR override is the
+      cost-optimization layer — tool body's step-2 short-circuit is
+      the load-bearing enforcement; feedback memory
+      ``feedback_tool_prompt_few_shot`` documents why small models
+      ignore conditional skip rules and need both layers.
+    languages:
+      en: |
+        Run a vision model on an attached medical image to produce a
+        structured detection payload (probabilities per label, cancer
+        status, recommended clinical action, optional segmentation).
+
+        The plugin owns confirmation, modality validation, fallback
+        flow, and the result transform. You receive one structured
+        ``dict`` per call and compose the user-facing reply per
+        ``vision_final_reply.yaml``.
+
+        Covered diseases:
+        {covered_diseases}
+
+        ROUTING RULES — read every ``<image>`` tag's attributes before
+        deciding to call this tool.
+
+          1. ``is_medical="false"`` OR ``modality="document"`` →
+             do NOT call this tool. Answer via normal RAG / free
+             text — the image is not a clinical scan.
+
+          2. ``ocr_has_report="true"`` → do NOT call this tool.
+             The OCR already extracted a clinician's reading, which
+             is authoritative; answer from the report text. (The
+             tool body also short-circuits this case, but reaching
+             that step wastes a tool call.)
+
+          3. ``is_medical="true"`` + ``ocr_has_report="false"`` +
+             ``modality`` matches one of the covered diseases'
+             accepted modalities + the user's text gives a clear
+             diagnostic intent → call ``detect_disease_from_image``
+             with the matching ``disease_id`` and the ``image_sha``
+             from the ``<image>`` tag.
+
+          4. ``is_medical="true"`` + ``ocr_has_report="false"`` but
+             the user's text gives no clear disease intent (one-word
+             prompts, free-form anxiety, ambiguous body part) →
+             emit ``askuserquestion`` with title and body from
+             ``vision.disambig.disease`` and options filtered to
+             diseases whose ``accepted_modality`` matches the
+             ``<image>`` tag. Wait for the user's pick before calling
+             the tool.
+
+          5. ``modality="unknown"`` (the modality classifier was
+             low-confidence) → emit ``askuserquestion`` with title
+             and body from ``vision.disambig.modality``. After the
+             user answers, treat the image as if the chosen modality
+             were the tagged one for the next turn.
+
+        Argument contract:
+          - ``disease_id`` (required) — must equal one of the covered
+            diseases below.
+          - ``image_sha`` (required) — copy the ``sha=...`` attribute
+            from the ``<image>`` tag verbatim. Truncated prefixes are
+            rejected.
+          - ``model_id_hint`` (optional) — pass only when the user
+            explicitly named a model. Otherwise omit and let the
+            plugin pick ``DiseaseSpec.primary_model_id``.
+
+        Return-value branches (``kind`` field on the returned dict):
+          - ``"detection"`` — normal result. Compose per
+            ``vision_final_reply.yaml`` — branch on ``clinical_action``.
+          - ``"ocr_override"`` — answer from the OCR report instead.
+          - ``"modality_mismatch"`` — the model's accepted modality
+            does not match the image. Apologize, explain the
+            mismatch from ``model_accepts`` / ``image_modality``, and
+            offer to retry with a correctly-typed image.
+          - ``"not_medical"`` — the image is not a clinical scan;
+            answer the user's question without this tool.
+          - ``"user_declined"`` — the user said no on the confirm
+            modal; respect that and continue without inference.
+          - ``"unknown_disease"`` — your ``disease_id`` is not in the
+            catalog. Re-emit the ``askuserquestion`` from rule 4 with
+            the list in ``available``.
+          - ``"missing_attachment"`` — your ``image_sha`` does not
+            resolve to a session attachment. Ask the user to re-paste
+            the image.
+          - ``"no_usable_result"`` — every model in the fallback flow
+            returned low-confidence within the budget. Surface the
+            ``warnings`` to the user and recommend a clinician review.
+
+        DO NOT call this tool when no ``<image>`` tag is present in
+        the current turn. DO NOT pass an ``image_sha`` that does not
+        appear in a ``<image>`` tag — making one up will fail loudly
+        and waste a turn.
+      zh: |
+        对一张附加的医学影像运行视觉模型，返回结构化的检测结果（每个
+        标签的概率、癌症状态、建议的临床动作、可选的分割掩码）。
+
+        插件负责确认、模态校验、回退流程和结果裁剪。每次调用你都会
+        收到一个结构化 ``dict``，再根据 ``vision_final_reply.yaml``
+        组织面向用户的回复。
+
+        已覆盖的疾病:
+        {covered_diseases}
+
+        路由规则 —— 调用本工具之前请先读每个 ``<image>`` 标签上的属性。
+
+          1. ``is_medical="false"`` 或 ``modality="document"`` →
+             **不要**调用本工具。这不是一张临床影像，按普通 RAG/
+             自由文本回答。
+
+          2. ``ocr_has_report="true"`` → **不要**调用本工具。
+             OCR 已经提取了医生出具的诊断报告，那是权威结果，
+             直接根据报告文本作答即可。（工具内部也会兜底拦截，
+             但走到那一步等于浪费了一次工具调用。）
+
+          3. ``is_medical="true"`` + ``ocr_has_report="false"`` +
+             ``modality`` 与某个已覆盖疾病的 ``accepted_modality``
+             匹配 + 用户文本表达了明确的诊断意图 → 调用
+             ``detect_disease_from_image``，``disease_id`` 选择
+             对应的疾病，``image_sha`` 从 ``<image>`` 标签里复制。
+
+          4. ``is_medical="true"`` + ``ocr_has_report="false"`` 但
+             用户意图不明确（一两个字的提问、一段焦虑情绪、模糊
+             的部位）→ 发出 ``askuserquestion``，标题与正文取自
+             ``vision.disambig.disease``，可选项过滤为
+             ``accepted_modality`` 与当前图像匹配的疾病。等用户选好
+             再调用工具。
+
+          5. ``modality="unknown"``（模态分类置信度过低）→ 发出
+             ``askuserquestion``，标题与正文取自
+             ``vision.disambig.modality``。用户选定后，把当前图像
+             视为该模态的图像并据此判断是否调用工具。
+
+        参数约定：
+          - ``disease_id``（必填）：必须是上面已覆盖疾病之一。
+          - ``image_sha``（必填）：直接复制 ``<image sha="...">`` 中
+             的完整哈希；截断的前缀会被拒绝。
+          - ``model_id_hint``（可选）：只有当用户明确指定某个模型时
+             才传；默认省略，由插件选 ``DiseaseSpec.primary_model_id``。
+
+        返回值 ``kind`` 字段对应的分支：
+          - ``"detection"``：正常结果。按 ``vision_final_reply.yaml``
+             根据 ``clinical_action`` 组织回答。
+          - ``"ocr_override"``：改为根据 OCR 报告作答。
+          - ``"modality_mismatch"``：模型接受的模态与图像模态不一致。
+             致歉并解释 ``model_accepts`` / ``image_modality``，
+             建议用户改换合适的图像再试。
+          - ``"not_medical"``：图像不是临床影像；忽略工具，
+             正常回答用户的问题。
+          - ``"user_declined"``：用户在确认弹窗中选择"不"，
+             尊重选择，不再调用模型。
+          - ``"unknown_disease"``：你给的 ``disease_id`` 不在目录里。
+             用 ``available`` 列表重新发起规则 4 的 ``askuserquestion``。
+          - ``"missing_attachment"``：``image_sha`` 找不到对应的会话
+             附件，请用户重新粘贴图像。
+          - ``"no_usable_result"``：回退链路里的每个模型都低置信度，
+             把 ``warnings`` 告诉用户并建议线下找临床医生复核。
+
+        若当前轮没有 ``<image>`` 标签，**不要**调用本工具。
+        不要凭空编造 ``image_sha`` —— 会失败并浪费一轮对话。

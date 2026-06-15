@@ -23,6 +23,7 @@ def build_features(
     get_session_id: Callable[[], str | None] | None = None,
     ingest_factory: Callable[[], FeaturePlugin] | None = None,
     symptoms_factory: Callable[[], FeaturePlugin] | None = None,
+    vision_factory: Callable[[], FeaturePlugin] | None = None,
     profile_context_factory: Callable[[], FeaturePlugin] | None = None,
 ) -> list[FeaturePlugin]:
     """Instantiate plugins from per-feature config.
@@ -53,6 +54,14 @@ def build_features(
             absent — operator either flagged
             ``configs/symptoms.yaml.datasets[0].enabled = false`` or
             never created the file.
+        vision_factory: When set, called once to build the vision
+            plugin (``detect_disease_from_image`` tool). Same
+            indirection rationale as ``ingest_factory`` /
+            ``symptoms_factory``: the plugin depends on
+            ``orchestrator.features.vision_plugin``. ``None`` (the
+            default) means the vision feature is absent — operator
+            either flagged every disease ``enabled: false`` or the
+            registry bootstrap failed.
         profile_context_factory: When set, called once to build the
             profile-context plugin. The factory lives in the caller
             (orchestrator layer) so ``core.features`` stays import-free
@@ -74,6 +83,8 @@ def build_features(
         plugins.append(ingest_factory())
     if symptoms_factory is not None:
         plugins.append(symptoms_factory())
+    if vision_factory is not None:
+        plugins.append(vision_factory())
     if profile_context_factory is not None:
         plugins.append(profile_context_factory())
 

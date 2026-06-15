@@ -48,7 +48,7 @@ vision:
   # `no` label the two options (descriptions are optional flavor).
   confirm:
     breast_cancer_ultrasound:
-      title: "Analyze breast ultrasound?"
+      title: "Run BUS model?"
       body: |
         I can run a small breast-ultrasound model on this image to
         estimate whether the lesion looks benign, malignant, or normal.

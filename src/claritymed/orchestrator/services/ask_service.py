@@ -229,6 +229,7 @@ class AskService:
         prompt_channel: "PromptChannel | None" = None,
         tool_approval_channel: "ToolApprovalChannel | None" = None,
         symptoms_factory: "Callable[[], FeaturePlugin] | None" = None,
+        vision_factory: "Callable[[], FeaturePlugin] | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or get_default_guard()
@@ -297,6 +298,7 @@ class AskService:
                     else None
                 ),
                 symptoms_factory=symptoms_factory,
+                vision_factory=vision_factory,
                 profile_context_factory=_profile_context_factory,
             )
         )

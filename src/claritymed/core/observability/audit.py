@@ -198,6 +198,42 @@ AuditKind = Literal[
     #   (observed_leading_chars is the count of characters scanned, not
     #    the reply text — that would be PHI-adjacent)
     "symptoms.safety_keywords.missing",
+    # --- vision feature (detect_disease_from_image) ---------------------
+    #
+    # KTD-V1: the full audit vocabulary lands in one structural commit so
+    # downstream units can call ``audit_event(...)`` without per-call enum
+    # extensions. PHI-bearing fields (image bytes, OCR text, segmentation
+    # masks) live in audit_payloads/ only; this enum carries non-PHI keys.
+    #
+    # tool.detect_disease_from_image — tool invocation entry.
+    #   payload allowlist: tool_name, disease_id, model_id_hint,
+    #                      image_sha_prefix (8-char only, never full)
+    "tool.detect_disease_from_image",
+    # vision_detection_event — lifecycle event for one tool call. Fires
+    # multiple times within a single tool body run (phase: confirm,
+    # fallback, post_process) so an operator can grep the request_id
+    # and see the whole flow.
+    #   payload allowlist: disease_id, model_id, server_id, elapsed_ms,
+    #                      top1, top1_prob, confidence_tier, cancer_status,
+    #                      clinical_action, quality_gate_passed,
+    #                      fallback_count, phase, outcome, reason,
+    #                      ocr_override_fired, user_declined,
+    #                      specialist_keyword_match
+    "vision_detection_event",
+    # vision_skipped_ocr_override — KTD-V6 short-circuit fired.
+    #   payload allowlist: disease_id, image_sha_prefix
+    "vision_skipped_ocr_override",
+    # vision_shadow_inference — KTD-V9 opt-in inference recorded for
+    # offline eval. Lifecycle marker — actual PHI lands in audit_payloads/.
+    #   payload allowlist: disease_id, reason, image_sha_prefix
+    "vision_shadow_inference",
+    # vision.specialist_keywords.missing — KTD-V1 audit-only signal. The
+    # post_process hook scanned an urgent_specialist / soon_specialist
+    # reply and found no phrase from configs/i18n/<lang>/vision.yaml
+    # vision.specialist_keywords.<action>.
+    #   payload allowlist: disease_id, clinical_action,
+    #                      observed_leading_chars (count, not text)
+    "vision.specialist_keywords.missing",
 ]
 
 
