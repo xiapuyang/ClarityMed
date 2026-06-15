@@ -1,0 +1,70 @@
+# Vision feature — disease detection from medical images.
+#
+# Schema lives at src/claritymed/core/vision/schemas.py. A typo here
+# fails loud at load (catalog + cross-reference pattern mirrors
+# configs/symptoms.yaml).
+#
+# Kill switch: set `diseases[0].enabled: false` to ship the file with
+# the plugin disabled. Removing this file entirely takes the plugin
+# out of the agent's toolset.
+#
+# `manifest_sha256` is the SHA-256 of the model's manifest.json (the
+# config-side root of the two-level integrity chain — KTD-V7). The
+# vision server hashes the manifest at startup and refuses to load on
+# mismatch. The placeholder below is overwritten by the BUSI training
+# pipeline (Unit 6 — `claritymed-vision-train-breast-cancer-ultrasound`);
+# pre-train, keep the disease disabled.
+
+diseases:
+  - id: breast_cancer_ultrasound
+    enabled: false                              # flips to true after Unit 6 promotes a real BUSI artifact
+    primary_model_id: breast_busi_unet_v1
+    flow: [breast_busi_unet_v1]                 # extend with fallback models later; same accepted_modality required
+    cancer_class: true                          # enables cancer_status + clinical_action post-processing
+    intent_hints_i18n_key: vision.intent.breast_cancer_ultrasound
+  # Future diseases land here, no Python changes:
+  # - id: skin_cancer_dermoscopy
+  #   enabled: false
+  #   primary_model_id: skin_resnet50_v1
+  #   flow: [skin_resnet50_v1]
+  #   cancer_class: true
+  #   intent_hints_i18n_key: vision.intent.skin_cancer_dermoscopy
+
+servers:
+  - id: local_default
+    base_url: http://127.0.0.1:8085             # loopback-only — KTD-V8
+    expected_ms: 800
+    health_check_interval_s: 300
+  # Multi-server example (deferred to v1.x when a second server actually lands):
+  # - id: gpu_box
+  #   base_url: http://10.0.0.4:8085
+  #   expected_ms: 250
+
+models:
+  - id: breast_busi_unet_v1
+    disease_id: breast_cancer_ultrasound
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: ultrasound               # KTD-V3 hard gate
+    weights_subpath: vision/breast_cancer_ultrasound/breast_busi_unet_v1
+    # Placeholder — replaced by Unit 6's train pipeline. Validator accepts any
+    # 64-char hex so the file shape is valid; the server's startup check is
+    # what catches a real mismatch.
+    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    expected_ms: 800
+
+tool:
+  total_budget_ms: 20000                        # per LLM tool call, all fallbacks summed
+  fallback_safety_factor: 1.5                   # skip secondary if remaining < expected_ms * 1.5
+  catalog_refresh_seconds: 300
+  confirm_before_run: true                      # set false for headless e2e
+  shadow_inference_on_report_override: false    # KTD-V9 — default OFF; opt-in only for offline-eval runs
+  top_k: 3                                      # labels surfaced in LLMDetectionPayload after result transform
+
+# OCR-report override (KTD-V6) — when the image already contains a clinician's
+# report, the vision tool stays out of the way and the LLM uses the OCR text.
+ocr_report:
+  min_chars: 200
+  markers:
+    en: [findings, impression, conclusion, diagnosis, recommendation]
+    zh: ["所见", "印象", "结论", "诊断", "建议"]

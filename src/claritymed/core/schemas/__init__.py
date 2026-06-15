@@ -42,12 +42,6 @@ from claritymed.core.schemas.uncertainty import (
     UncertaintySource,
     UncertaintyType,
 )
-from claritymed.core.schemas.vision import (
-    DiseaseVisionModel,
-    ModelMetadata,
-    PredictionSet,
-    QualityReport,
-)
 
 __all__ = [
     "Account",
@@ -55,7 +49,6 @@ __all__ = [
     "Citation",
     "Condition",
     "Disclaimer",
-    "DiseaseVisionModel",
     "EvalsConfig",
     "GroundedAnswer",
     "LabFlag",
@@ -64,17 +57,14 @@ __all__ = [
     "LongitudinalRecord",
     "MaritalStatus",
     "Medication",
-    "ModelMetadata",
     "ModelsConfig",
     "PASSIVE_PROFILE_FIELDS",
     "PROACTIVE_PROFILE_FIELDS",
     "Patient",
-    "PredictionSet",
     "Profile",
     "ProviderConfig",
     "ProviderKind",
     "Solicitation",
-    "QualityReport",
     "RedFlag",
     "ReferenceRange",
     "RequestContext",

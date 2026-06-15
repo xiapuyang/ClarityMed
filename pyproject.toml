@@ -85,6 +85,29 @@ symptoms-server = [
     # SentenceTransformer-compatible id works via `init_matcher.model_id`.
     "sentence-transformers>=3.0",
 ]
+# Medical-clip server (BiomedCLIP zero-shot modality / disease screening).
+# Optional because open_clip_torch + the BiomedCLIP weights (~400 MB FP16)
+# only matter for hosts running attachment-ingest modality classification
+# (KTD-V3 hard gate). The vision tool itself uses the HTTP client from
+# main deps; only operators booting the server need this extra.
+# Install with ``uv sync --extra medical-clip-server``.
+medical-clip-server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "torch>=2.0",
+    # open_clip is the canonical loader for BiomedCLIP — pulls the model
+    # via the ``hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224``
+    # URL scheme. Pin floor matches the first release with stable hf-hub
+    # support; CHK for revision drift sits in the engine wrapper.
+    "open-clip-torch>=2.24",
+    # huggingface_hub is the source of truth for "what revision did we
+    # actually pull" — the engine queries it at lifespan to fail-loud
+    # when HF Hub serves a different revision than the pinned hash.
+    "huggingface_hub>=0.23",
+    # Pillow for decoding the base64 image bytes the client posts.
+    "pillow>=10.0",
+]
 # E2E quality evaluation — requires live local services (embedder + reranker +
 # Qdrant) and the project's configured LLM. Run with:
 #   uv sync --extra e2e
@@ -135,6 +158,11 @@ claritymed-reranker = "claritymed.servers.reranker:main"
 # `uv sync --extra symptoms-server` (fastapi + uvicorn + httpx).
 # Training reuses torch already in the main deps.
 claritymed-symptoms-server = "claritymed.servers.symptoms.app:main"
+# Medical-clip server — only usable after
+# `uv sync --extra medical-clip-server` (fastapi + uvicorn + open_clip_torch
+# + huggingface_hub + pillow + torch). Hosts BiomedCLIP zero-shot on
+# loopback :8086 for attachment-ingest modality classification.
+claritymed-medical-clip-server = "claritymed.servers.medical_clip.app:main"
 claritymed-symptoms-train-ddxplus = "claritymed.ingest.symptoms.ddxplus.train:main"
 claritymed-symptoms-ablate-ddxplus = "claritymed.ingest.symptoms.ddxplus.ablate_maxstep:main"
 claritymed-symptoms-hparam-ddxplus = "claritymed.ingest.symptoms.ddxplus.hparam_search:main"

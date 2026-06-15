@@ -1,0 +1,95 @@
+# User-facing copy for the vision-detection feature.
+#
+# Loaded via core/i18n/loader.py (configs/i18n/<lang>/*.yaml are merged
+# into a per-language flat dict, keyed dotted). Vision deliberately
+# uses this `configs/i18n/` surface — rather than the prompt-registry
+# under `core/prompts/store/*.yaml` — so disease display names, label
+# translations, confirm-modal copy, and audit `specialist_keywords`
+# live alongside the rest of the localized strings. The prompt
+# registry stays scoped to LLM system prompts whose immutable-version
+# validator would be overkill for translator-edited UI strings.
+#
+# Plugin code (Unit 7's orchestrator/features/vision_plugin.py) reads
+# these via t() / t_list() — keep both en + zh in sync. Missing keys
+# fall back to the bare key string, which surfaces as obviously broken
+# copy.
+vision:
+  # 1-line "use when…" snippets fed into the LLM tool description so it
+  # can pick the right disease_id when multiple diseases are enabled.
+  intent:
+    breast_cancer_ultrasound: |
+      Use when the user uploads a breast-ultrasound image and asks
+      whether a lesion is concerning, benign, or malignant. Do NOT
+      call this tool when the image is not an ultrasound, when the
+      image already carries a radiologist's report (ocr_has_report),
+      or when the image is not medical.
+
+  # Per-disease display name shown in confirm modals + LLM-side text.
+  disease:
+    breast_cancer_ultrasound:
+      name: "breast ultrasound"
+
+  # Per-label localized names + short descriptions. Descriptions are
+  # surfaced by the LLM when the user asks "what does X mean here?".
+  label:
+    breast_cancer_ultrasound:
+      benign:
+        name: "benign"
+        description: "Non-cancerous lesion. Routine follow-up is usually appropriate."
+      malignant:
+        name: "malignant"
+        description: "Suspicious for cancer. A breast specialist should review the image."
+      normal:
+        name: "normal"
+        description: "No lesion identified. No action required from this image alone."
+
+  # Confirm modal copy — fired from the tool body before any HTTP call.
+  # `title` shows as the modal header; `body` is the question. `yes` /
+  # `no` label the two options (descriptions are optional flavor).
+  confirm:
+    breast_cancer_ultrasound:
+      title: "Analyze breast ultrasound?"
+      body: |
+        I can run a small breast-ultrasound model on this image to
+        estimate whether the lesion looks benign, malignant, or normal.
+        The result is an estimate — a clinician's reading is always
+        the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local breast-ultrasound model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+
+  # Audit-only allow-list (KTD-V1, mirrors symptoms.safety_keywords).
+  # The post_process hook in vision_plugin scans the LLM's reply for any
+  # phrase below when clinical_action is in _AUDIT_ACTIONS; absence emits
+  # `vision.specialist_keywords.missing`. NOT a verbatim template — the
+  # LLM composes prose per vision_final_reply.yaml.
+  specialist_keywords:
+    urgent_specialist:
+      - "see a specialist"
+      - "specialist within"
+      - "breast specialist"
+      - "oncologist"
+      - "schedule an appointment"
+    soon_specialist:
+      - "follow up"
+      - "specialist soon"
+      - "specialist visit"
+      - "see your doctor"
+
+  # askuserquestion modals the LLM emits when it cannot pick the right
+  # disease_id or confirm modality from the attachment tag alone (origin
+  # §9 [B]). Options are filled at runtime by the plugin — these keys
+  # only carry the human-readable prompt strings.
+  disambig:
+    disease:
+      title: "Which condition should I check for?"
+      body: |
+        I can run a vision model on this image, but I'm not sure which
+        condition you want me to check for. Pick one of the following:
+    modality:
+      title: "What kind of image is this?"
+      body: |
+        I'm not confident about what kind of scan this is. Knowing the
+        imaging type lets me pick the right model. Is this an
+        ultrasound, CT scan, X-ray, or something else?

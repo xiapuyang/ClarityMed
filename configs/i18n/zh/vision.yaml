@@ -1,0 +1,83 @@
+# 视觉检测功能的用户可见文案。
+#
+# 由 core/i18n/loader.py 加载（configs/i18n/<lang>/*.yaml 会合并到
+# 该语言的扁平字典）。Vision 有意把疾病显示名、标签翻译、确认弹窗、
+# 审计用的 specialist_keywords 放在 `configs/i18n/` 而不是 prompt-
+# registry —— 后者的「版本不可变 + 启动校验」对译者要常改的 UI 文案
+# 来说太重；prompt-registry 留给 LLM system prompt。
+#
+# 由 vision_plugin（Unit 7）通过 t() / t_list() 读取。en/zh 必须同步，
+# 缺键时 fallback 到裸 key 字符串（界面上一眼可见地坏掉）。
+vision:
+  # 喂给 LLM tool description 的「这种场景用这个 disease_id」一行说明。
+  intent:
+    breast_cancer_ultrasound: |
+      当用户上传一张乳腺超声图像，并询问可疑病灶是否需要担心、是良性
+      还是恶性时，使用这个工具。以下情况**不要**调用：图像不是超声；
+      图像已经带有放射科医生的报告（ocr_has_report=true）；图像本身
+      不是医学影像。
+
+  # 各疾病的显示名 —— 出现在确认弹窗与 LLM 回复正文中。
+  disease:
+    breast_cancer_ultrasound:
+      name: "乳腺超声"
+
+  # 各标签的本地化名称 + 简短描述。当用户追问「X 是什么意思」时，LLM
+  # 可以引用 description。
+  label:
+    breast_cancer_ultrasound:
+      benign:
+        name: "良性"
+        description: "非癌性病灶。通常按常规随访处理。"
+      malignant:
+        name: "恶性"
+        description: "可疑癌性病变。建议尽快请乳腺专科医生复核图像。"
+      normal:
+        name: "正常"
+        description: "未发现病灶。仅从这张图像看，无需采取行动。"
+
+  # 工具体在发任何 HTTP 请求之前弹出的确认框。
+  confirm:
+    breast_cancer_ultrasound:
+      title: "分析这张乳腺超声？"
+      body: |
+        我可以用一个小型乳腺超声模型对这张图像做估计，看病灶更像
+        良性、恶性还是正常。结果只是估计——临床医生的判读才是最终
+        依据。要运行模型吗？
+      yes_label: "好，运行"
+      yes_description: "把图像送到本地的乳腺超声模型。"
+      no_label: "不用了"
+      no_description: "跳过模型，只基于文字回答。"
+
+  # 审计 allow-list（KTD-V1，与 symptoms.safety_keywords 平行）。
+  # 当 clinical_action 落在 _AUDIT_ACTIONS 中时，post_process 会扫描
+  # LLM 的回复看是否包含下列任一短语；缺失会触发
+  # `vision.specialist_keywords.missing`。这不是模板原文，LLM 的措辞
+  # 由 vision_final_reply.yaml 决定。
+  specialist_keywords:
+    urgent_specialist:
+      - "尽快就诊"
+      - "乳腺专科"
+      - "肿瘤科"
+      - "尽快预约"
+      - "建议尽快"
+    soon_specialist:
+      - "建议复诊"
+      - "近期就诊"
+      - "随访"
+      - "请咨询医生"
+
+  # 当 LLM 无法仅凭附件 tag 判断 disease_id 或 modality 时，需要触发
+  # askuserquestion 弹窗（来源 §9 [B]）。选项由 plugin 在运行时填充，
+  # 此处只是文案。
+  disambig:
+    disease:
+      title: "需要我帮你检查哪种情况？"
+      body: |
+        我可以对这张图像跑视觉模型，但还不确定你希望检查哪种疾病。
+        请从下列选项中选择：
+    modality:
+      title: "这是什么类型的影像？"
+      body: |
+        我对这张影像的具体类型不太确定。明确成像方式后，我才能挑对
+        模型。这是超声、CT、X 光，还是其他类型？

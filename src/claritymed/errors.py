@@ -246,6 +246,26 @@ class SymptomsServerUnreachableError(RuntimeError):
     """
 
 
+class MedicalClipUnreachableError(RuntimeError):
+    """Medical-clip server (BiomedCLIP) returned non-2xx, timed out, or sent a bad shape.
+
+    The orchestrator's OCR worker catches this and tags the attachment
+    with ``modality="unknown", is_medical=null`` so OCR ingest still
+    succeeds — the modality classifier is best-effort, not a hard
+    dependency of the attachment pipeline (origin §5.5 failure modes).
+    """
+
+
+class ImageHashMismatchError(ValueError):
+    """``image.data_b64`` decoded to bytes whose sha256 disagrees with the claim.
+
+    Catches stale or tampered uploads that try to bypass the
+    attachment-ingest modality tag — the server is the ground truth on
+    "what bytes are these really". Vision and medical-clip endpoints
+    both raise this before any inference work.
+    """
+
+
 class EligibilityStrategyConfigError(RuntimeError):
     """An eligibility strategy was built against an invalid configuration.
 
