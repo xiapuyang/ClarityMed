@@ -33,7 +33,7 @@ from claritymed.ingest.symptoms.ddxplus.schema import (
     load_pidx,
 )
 from claritymed.ingest.symptoms.typed_basd import TypedEnv, build_basd
-from claritymed.servers.symptoms.state import DatasetLoaded
+from claritymed.core.symptoms.datasets import LoadedDataset as DatasetLoaded
 
 
 def sha256_file(path: Path) -> str:

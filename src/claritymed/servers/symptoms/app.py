@@ -58,6 +58,7 @@ from claritymed.servers.symptoms.questions import (
     build_question,
     synth_patient,
 )
+from claritymed.servers.symptoms.loader import flush_mps_cache
 from claritymed.servers.symptoms.state import (
     SERVER_STATE,
     SubSessionState,
@@ -111,6 +112,20 @@ async def _load_config_into_state() -> None:
     pre-populate ``SERVER_STATE.datasets`` and don't want the lifespan
     re-loading on top.
 
+    The blocking torch/weights I/O runs in a thread via
+    ``asyncio.to_thread`` so the event loop stays responsive during
+    startup — concurrent health-check polls won't time out while models
+    load.
+    """
+    if os.environ.get("CLARITYMED_SYMPTOMS_SKIP_LOAD") == "1":
+        SERVER_STATE.config_loaded = True
+        return
+    await asyncio.to_thread(_load_config_sync)
+
+
+def _load_config_sync() -> None:
+    """Blocking body of :func:`_load_config_into_state`; run via asyncio.to_thread.
+
     Init-symptom matcher: when ``config.init_matcher.enabled`` is True,
     the matcher embedder is constructed once and injected into every
     dataset's ``build_dataset`` call. Catalog encoding happens inline
@@ -118,9 +133,6 @@ async def _load_config_into_state() -> None:
     before the server reports ``status=ok``. Construction failures are
     logged but non-fatal — the runtime falls back to zero-init.
     """
-    if os.environ.get("CLARITYMED_SYMPTOMS_SKIP_LOAD") == "1":
-        SERVER_STATE.config_loaded = True
-        return
     try:
         config: SymptomsConfig = load_symptoms_config()
     except FileNotFoundError:
@@ -358,6 +370,7 @@ def _diagnose(ds: LoadedDataset, sub: SubSessionState) -> np.ndarray:
     """Run the model's pathology head and return the [n_dis] prob vector."""
     model = ds.select_model()
     _, probs = model.agent.diagnose(sub.state)
+    flush_mps_cache()
     return probs
 
 
@@ -400,6 +413,7 @@ def start_session(
     initial_evidence_idx = _maybe_inject_initial_symptom(ds, state, matcher_text)
     model = ds.select_model()
     first_ev_idx = int(model.agent.next_action(state)[0])
+    flush_mps_cache()
     question, ev_idx = _try_render_question(
         ds,
         SubSessionState(
@@ -475,6 +489,7 @@ def turn(
 
     # Stop gate first — same order as the demo's interactive_eval.
     stop = model.agent.should_stop(sub.state)
+    flush_mps_cache()
     if bool(stop[0]):
         probs = _diagnose(ds, sub)
         diff, evidence_rows = format_differential(ds, sub, probs)
@@ -514,6 +529,7 @@ def turn(
         )
 
     next_ev_idx = int(model.agent.next_action(sub.state)[0])
+    flush_mps_cache()
     question, ev_idx = _try_render_question(ds, sub, next_ev_idx)
     sub.last_ev_idx = ev_idx
     next_ev = ds.canonical.evidence_by_idx(ev_idx)
@@ -540,7 +556,7 @@ def cancel_session(
         )
     probs = _diagnose(ds, sub)
     outcome = format_cancel_outcome(ds, sub, probs)
-    del SERVER_STATE.sessions[session_id]
+    SERVER_STATE.sessions.pop(session_id, None)
     req_id = http_req.headers.get("X-Request-ID", "")
     logger.info(
         "session cancelled: session=%s dataset=%s turn=%d "

@@ -271,6 +271,19 @@ class AskService:
                 else None
             )
 
+        if profile_context_mode != "off":
+            from claritymed.orchestrator.features.profile_context_plugin import (
+                ProfileContextFeature,
+            )
+
+            _pcm = profile_context_mode
+
+            def _profile_context_factory() -> FeaturePlugin:
+                return ProfileContextFeature(mode=_pcm)
+
+        else:
+            _profile_context_factory = None
+
         self._features = (
             features
             if features is not None
@@ -284,7 +297,7 @@ class AskService:
                     else None
                 ),
                 symptoms_factory=symptoms_factory,
-                profile_context_mode=profile_context_mode,
+                profile_context_factory=_profile_context_factory,
             )
         )
         # Snapshot per-feature modes for the audit row; the LLM-facing

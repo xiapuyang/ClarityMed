@@ -69,19 +69,23 @@ def test_bad_mode_raises():
 
 
 def test_factory_deterministic_includes_plugin():
-    features = build_features(profile_context_mode="deterministic")
+    features = build_features(
+        profile_context_factory=lambda: ProfileContextFeature(mode="deterministic")
+    )
     names = [f.name for f in features]
     assert "profile_context" in names
 
 
 def test_factory_tool_includes_plugin():
-    features = build_features(profile_context_mode="tool")
+    features = build_features(
+        profile_context_factory=lambda: ProfileContextFeature(mode="tool")
+    )
     names = [f.name for f in features]
     assert "profile_context" in names
 
 
 def test_factory_off_excludes_plugin():
-    features = build_features(profile_context_mode="off")
+    features = build_features(profile_context_factory=None)
     names = [f.name for f in features]
     assert "profile_context" not in names
 

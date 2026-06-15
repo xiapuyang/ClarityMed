@@ -511,6 +511,44 @@ def test_start_session_no_injection_when_matcher_missing(client: TestClient) -> 
     assert sub.evidence_collected == []
 
 
+def test_prune_expired_sessions_handles_concurrent_eviction() -> None:
+    """prune_expired_sessions uses pop() so a session deleted between
+    list() and pop() does not raise KeyError."""
+    import time
+
+    from claritymed.servers.symptoms.state import (
+        SubSessionState,
+        prune_expired_sessions,
+    )
+
+    agent = _StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
+    SERVER_STATE.datasets["testds"] = _loaded_dataset(agent=agent)
+    SERVER_STATE.config_loaded = True
+
+    # Session TTL defaults to 1800 s — set started_at well in the past.
+    past = time.time() - 1801
+    for sid in ("s1", "s2"):
+        SERVER_STATE.sessions[sid] = SubSessionState(
+            session_id=sid,
+            dataset_id="testds",
+            model_id="m1",
+            state=np.zeros((1, 10)),
+            turn_count=0,
+            started_at=past,
+            last_ev_idx=None,
+        )
+
+    # Simulate another code path (e.g. a cancel request) evicting s1
+    # before the purge loop processes it.
+    del SERVER_STATE.sessions["s1"]
+
+    # pop(sid, None) must tolerate the already-gone entry without raising.
+    purged = prune_expired_sessions()
+    assert purged == 1  # only s2 was actually popped by prune
+    assert "s2" not in SERVER_STATE.sessions
+    assert "s1" not in SERVER_STATE.sessions
+
+
 def test_start_session_no_injection_when_below_threshold(client: TestClient) -> None:
     from claritymed.core.symptoms.init_matcher import MatchResult
 

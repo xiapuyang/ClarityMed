@@ -18,8 +18,7 @@ from typing import Any
 
 import httpx
 
-from claritymed.errors import SymptomsServerUnreachableError
-from claritymed.servers.symptoms.wire import (
+from claritymed.core.symptoms.wire import (
     CancelResponse,
     HealthResponse,
     StartSessionRequest,
@@ -27,6 +26,7 @@ from claritymed.servers.symptoms.wire import (
     TurnRequest,
     TurnResponse,
 )
+from claritymed.errors import SymptomsServerUnreachableError
 
 logger = logging.getLogger(__name__)
 

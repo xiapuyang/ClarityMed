@@ -53,7 +53,7 @@ from claritymed.core.symptoms.registry import DatasetRegistry
 from claritymed.core.symptoms.schemas import DatasetSpec, SeverityTier, SymptomsConfig
 from claritymed.core.symptoms.severity import tier_for_severity
 from claritymed.errors import SymptomsServerUnreachableError
-from claritymed.servers.symptoms.wire import (
+from claritymed.core.symptoms.wire import (
     DifferentialRow,
     StartSessionResponse,
     TurnResponse,
@@ -865,6 +865,32 @@ class SymptomsFeature:
                 return {"eligible": True, "server_error": True}
             question = turn_resp.next_question
 
+    def _finalize_session(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        diff: list[DifferentialRow],
+        transcript: list[dict[str, Any]],
+        payload_kind: str,
+        diff_key: str,
+    ) -> list[dict[str, Any]]:
+        """Write PHI payload and populate the post_process stash.
+
+        Shared by done and cap outcomes — both write the differential
+        (under different keys) and stash max_severity for keyword audit.
+        Returns the serialized diff_raw list so callers can reference it
+        in their audit events without serializing twice.
+        """
+        diff_raw = [d.model_dump() for d in diff]
+        write_payload(
+            user_id,
+            request_id,
+            {"kind": payload_kind, diff_key: diff_raw, "transcript": transcript},
+        )
+        self._stash[request_id] = {"max_severity": _max_severity(diff)}
+        return diff_raw
+
     def _handle_done(
         self,
         *,
@@ -874,7 +900,14 @@ class SymptomsFeature:
         user_id: str,
         transcript: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        diff_raw = [d.model_dump() for d in turn_resp.differential]
+        diff_raw = self._finalize_session(
+            user_id=user_id,
+            request_id=request_id,
+            diff=turn_resp.differential,
+            transcript=transcript,
+            payload_kind="symptoms.session.completed",
+            diff_key="differential",
+        )
         audit_event(
             "symptoms.session.completed",
             {
@@ -886,18 +919,6 @@ class SymptomsFeature:
                 "top_condition_id": diff_raw[0]["condition_id"] if diff_raw else None,
             },
         )
-        write_payload(
-            user_id,
-            request_id,
-            {
-                "kind": "symptoms.session.completed",
-                "differential": diff_raw,
-                "transcript": transcript,
-            },
-        )
-        self._stash[request_id] = {
-            "max_severity": _max_severity(turn_resp.differential),
-        }
         return {
             "eligible": True,
             "differential": _format_differential(turn_resp.differential),
@@ -913,28 +934,22 @@ class SymptomsFeature:
         user_id: str,
         transcript: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        diff_raw = [d.model_dump() for d in turn_resp.partial_differential]
-        tier = _tier_for(turn_resp.partial_differential)
+        self._finalize_session(
+            user_id=user_id,
+            request_id=request_id,
+            diff=turn_resp.partial_differential,
+            transcript=transcript,
+            payload_kind="symptoms.session.cap_hit",
+            diff_key="partial_differential",
+        )
         audit_event(
             "symptoms.session.cap_hit",
             {
                 "turns_used": turn_resp.turn_count,
                 "partial_confidence": turn_resp.partial_confidence,
-                "severity_tier": tier,
+                "severity_tier": _tier_for(turn_resp.partial_differential),
             },
         )
-        write_payload(
-            user_id,
-            request_id,
-            {
-                "kind": "symptoms.session.cap_hit",
-                "partial_differential": diff_raw,
-                "transcript": transcript,
-            },
-        )
-        self._stash[request_id] = {
-            "max_severity": _max_severity(turn_resp.partial_differential),
-        }
         return {
             "eligible": True,
             "hit_cap": True,

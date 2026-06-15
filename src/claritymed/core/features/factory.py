@@ -23,7 +23,7 @@ def build_features(
     get_session_id: Callable[[], str | None] | None = None,
     ingest_factory: Callable[[], FeaturePlugin] | None = None,
     symptoms_factory: Callable[[], FeaturePlugin] | None = None,
-    profile_context_mode: str = "deterministic",
+    profile_context_factory: Callable[[], FeaturePlugin] | None = None,
 ) -> list[FeaturePlugin]:
     """Instantiate plugins from per-feature config.
 
@@ -53,10 +53,10 @@ def build_features(
             absent — operator either flagged
             ``configs/symptoms.yaml.datasets[0].enabled = false`` or
             never created the file.
-        profile_context_mode: ``"deterministic"`` (default) splices the
-            patient profile block into every prompt; ``"tool"`` exposes
-            ``retrieve_profile`` as an agent tool; ``"off"`` disables the
-            plugin entirely.
+        profile_context_factory: When set, called once to build the
+            profile-context plugin. The factory lives in the caller
+            (orchestrator layer) so ``core.features`` stays import-free
+            of orchestrator code. ``None`` disables the plugin.
 
     Raises:
         NotImplementedError: any active feature requests ``agentic`` mode.
@@ -74,12 +74,8 @@ def build_features(
         plugins.append(ingest_factory())
     if symptoms_factory is not None:
         plugins.append(symptoms_factory())
-    if profile_context_mode != "off":
-        from claritymed.orchestrator.features.profile_context_plugin import (
-            ProfileContextFeature,
-        )
-
-        plugins.append(ProfileContextFeature(mode=profile_context_mode))
+    if profile_context_factory is not None:
+        plugins.append(profile_context_factory())
 
     agentic = [p for p in plugins if p.mode == "agentic"]
     if agentic:

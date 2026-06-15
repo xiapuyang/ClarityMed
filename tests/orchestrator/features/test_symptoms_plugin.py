@@ -48,6 +48,8 @@ from claritymed.servers.symptoms.wire import (
 
 _USER_ID = "test"
 
+_REQUEST_ID = "20260613000000ABCDEFAB"
+
 
 def _dataset_spec(*, id_: str = "ddxplus") -> DatasetSpec:
     return DatasetSpec(
@@ -312,7 +314,7 @@ def _with_context(coro):
     the returned token is discarded.
     """
     apply_context(
-        request_id="20260613000000ABCDEFAB",
+        request_id=_REQUEST_ID,
         user_id=_USER_ID,
         language="en",
     )
@@ -326,9 +328,7 @@ async def test_ineligible_returns_silent_reason(tmp_path) -> None:
     elig = _StubEligibility(EligibilityResult(eligible=False, reason="out_of_scope"))
     plugin = _make_plugin(eligibility=elig)
     deps = _deps()
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="reset password"
@@ -354,9 +354,7 @@ async def test_eligibility_input_uses_summary_when_configured() -> None:
     elig = _StubEligibility(EligibilityResult(eligible=False, reason="out_of_scope"))
     plugin = _make_plugin(eligibility=elig, input_source="symptom_summary")
     deps = _deps()
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         await plugin._predict(
             SimpleNamespace(deps=deps),
@@ -380,9 +378,7 @@ async def test_eligibility_input_falls_back_to_complaint_when_summary_blank() ->
     elig = _StubEligibility(EligibilityResult(eligible=False, reason="out_of_scope"))
     plugin = _make_plugin(eligibility=elig, input_source="symptom_summary")
     deps = _deps()
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         await plugin._predict(
             SimpleNamespace(deps=deps),
@@ -405,9 +401,7 @@ async def test_user_declines_confirm_modal() -> None:
     plugin = _make_plugin(eligibility=elig, client=client)
     deps = _deps()
     deps.prompt_channel = channel
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="my chest hurts"
@@ -435,9 +429,7 @@ async def test_happy_path_returns_differential() -> None:
     plugin = _make_plugin(eligibility=elig, client=client)
     deps = _deps()
     deps.prompt_channel = channel
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="my chest hurts"
@@ -473,9 +465,7 @@ async def test_initial_batch_skipped_when_profile_complete() -> None:
     plugin = _make_plugin(eligibility=elig, client=client, profile=profile)
     deps = _deps()
     deps.prompt_channel = channel
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(SimpleNamespace(deps=deps), complaint="ache")
     finally:
@@ -496,9 +486,7 @@ async def test_cap_hit_returns_partial_differential() -> None:
     plugin = _make_plugin(eligibility=elig, client=client)
     deps = _deps()
     deps.prompt_channel = channel
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="severe headache"
@@ -528,9 +516,7 @@ async def test_cancel_mid_loop_with_confidence_returns_partial() -> None:
     plugin = _make_plugin(eligibility=elig, client=client)
     deps = _deps()
     deps.prompt_channel = channel
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="my chest hurts"
@@ -553,9 +539,7 @@ async def test_cancel_without_confidence_drops_differential() -> None:
     plugin = _make_plugin(eligibility=elig, client=client)
     deps = _deps()
     deps.prompt_channel = channel
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="my chest hurts"
@@ -578,9 +562,7 @@ async def test_server_unreachable_returns_server_error() -> None:
     plugin = _make_plugin(eligibility=elig, client=client)
     deps = _deps()
     deps.prompt_channel = channel
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="chest pain"
@@ -599,9 +581,7 @@ async def test_headless_no_channel_returns_no_interactive_channel() -> None:
     plugin = _make_plugin(eligibility=elig, client=_StubClient(start=_start_resp()))
     deps = _deps()
     deps.prompt_channel = None
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         result = await plugin._predict(
             SimpleNamespace(deps=deps), complaint="chest pain"
@@ -624,9 +604,7 @@ async def test_post_process_returns_text_unchanged_when_no_stash() -> None:
         ),
         client=_StubClient(start=_start_resp()),
     )
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         out = await plugin.post_process("any reply text", {})
     finally:
@@ -643,12 +621,10 @@ async def test_post_process_critical_with_keyword_no_audit() -> None:
         ),
         client=_StubClient(start=_start_resp()),
     )
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
         # Simulate a completed sub-session with a severity-1 disease.
-        plugin._stash["20260613000000ABCDEFAB"] = {"max_severity": 1}
+        plugin._stash[_REQUEST_ID] = {"max_severity": 1}
         out = await plugin.post_process(
             "Call 911 right now — these symptoms could be a heart attack.", {}
         )
@@ -672,11 +648,9 @@ async def test_post_process_critical_missing_keyword_emits_audit_unchanged_text(
         ),
         client=_StubClient(start=_start_resp()),
     )
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
-        plugin._stash["20260613000000ABCDEFAB"] = {"max_severity": 1}
+        plugin._stash[_REQUEST_ID] = {"max_severity": 1}
         # Reply describes the differential but never mentions the
         # emergency keywords — Critical tier audit must fire.
         with caplog.at_level(logging.INFO, logger="claritymed.audit"):
@@ -704,11 +678,9 @@ async def test_post_process_moderate_tier_skipped() -> None:
         ),
         client=_StubClient(start=_start_resp()),
     )
-    token = apply_context(
-        request_id="20260613000000ABCDEFAB", user_id=_USER_ID, language="en"
-    )
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
     try:
-        plugin._stash["20260613000000ABCDEFAB"] = {"max_severity": 4}
+        plugin._stash[_REQUEST_ID] = {"max_severity": 4}
         out = await plugin.post_process("Just rest at home.", {})
     finally:
         from claritymed.context import reset_context
@@ -777,6 +749,209 @@ def test_validate_safety_keywords_raises_when_missing(
             _validate_safety_keywords()
     finally:
         i18n_loader._reset_for_tests()
+
+
+class _PerDatasetEligibility:
+    """Returns different EligibilityResult per dataset id."""
+
+    def __init__(self, results: "dict[str, EligibilityResult]") -> None:
+        self._results = results
+        self.calls: dict[str, int] = {}
+
+    async def check(self, complaint, language, profile, dataset) -> EligibilityResult:
+        self.calls[dataset.id] = self.calls.get(dataset.id, 0) + 1
+        return self._results.get(
+            dataset.id, EligibilityResult(eligible=False, reason="out_of_scope")
+        )
+
+
+def _two_dataset_config() -> SymptomsConfig:
+    from claritymed.core.symptoms.schemas import ModelSpec
+
+    return SymptomsConfig(
+        datasets=[_dataset_spec(id_="ddxplus"), _dataset_spec(id_="ddxplus2")],
+        models=[
+            ModelSpec(
+                id="typed_basd_v1",
+                algorithm_module="typed_basd",
+                weights_subpath="ddxplus/typed_basd_v1",
+                manifest_sha256="0" * 64,
+                maxstep=8,
+            )
+        ],
+        eligibility=EligibilityCatalogConfig(
+            active="direct",
+            catalog=[DirectEligibilityEntry(id="direct", kind="direct")],
+        ),
+    )
+
+
+async def test_route_by_eligibility_picks_best_scoring_dataset() -> None:
+    """Without dataset_hint and multiple enabled datasets, highest-confidence wins."""
+    elig = _PerDatasetEligibility(
+        {
+            "ddxplus": EligibilityResult(
+                eligible=True, reason="in_scope", confidence=0.8
+            ),
+            "ddxplus2": EligibilityResult(
+                eligible=False, reason="out_of_scope", confidence=0.1
+            ),
+        }
+    )
+    config = _two_dataset_config()
+    registry = DatasetRegistry(config.datasets)
+    client = _StubClient(start=_start_resp(), turns=[_done_turn()])
+    channel = _StubChannel([_yes(), _initial_batch_answer(), _turn_answer("Yes")])
+    plugin = SymptomsFeature(
+        config=config,
+        registry=registry,
+        client=client,
+        eligibility=elig,
+        profile_loader=lambda uid: Profile(),
+    )
+    deps = _deps()
+    deps.prompt_channel = channel
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
+    try:
+        result = await plugin._predict(
+            SimpleNamespace(deps=deps), complaint="chest pain"
+        )
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    assert result["eligible"] is True
+    assert result.get("differential") is not None
+    assert elig.calls.get("ddxplus", 0) == 1
+    assert elig.calls.get("ddxplus2", 0) == 1
+
+
+async def test_route_by_eligibility_all_out_of_scope_returns_ineligible() -> None:
+    """When all datasets score 0, no session is started."""
+    elig = _PerDatasetEligibility(
+        {
+            "ddxplus": EligibilityResult(
+                eligible=False, reason="out_of_scope", confidence=0.0
+            ),
+            "ddxplus2": EligibilityResult(
+                eligible=False, reason="out_of_scope", confidence=0.0
+            ),
+        }
+    )
+    config = _two_dataset_config()
+    registry = DatasetRegistry(config.datasets)
+    client = _StubClient(start=_start_resp())
+    plugin = SymptomsFeature(
+        config=config,
+        registry=registry,
+        client=client,
+        eligibility=elig,
+        profile_loader=lambda uid: Profile(),
+    )
+    deps = _deps()
+    deps.prompt_channel = _StubChannel([])
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
+    try:
+        result = await plugin._predict(
+            SimpleNamespace(deps=deps), complaint="reset password"
+        )
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    assert result == {"eligible": False, "reason": "out_of_scope"}
+    assert client.calls == []
+
+
+async def test_handle_done_writes_phi_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Completed session writes differential + transcript to the PHI payload."""
+    written: list[dict] = []
+    monkeypatch.setattr(
+        "claritymed.orchestrator.features.symptoms_plugin.write_payload",
+        lambda uid, req_id, payload: written.append(payload),
+    )
+    elig = _StubEligibility(
+        EligibilityResult(eligible=True, reason="in_scope", confidence=0.7)
+    )
+    channel = _StubChannel([_yes(), _initial_batch_answer(), _turn_answer("Yes")])
+    client = _StubClient(start=_start_resp(), turns=[_done_turn(severity=1)])
+    plugin = _make_plugin(eligibility=elig, client=client)
+    deps = _deps()
+    deps.prompt_channel = channel
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
+    try:
+        result = await plugin._predict(
+            SimpleNamespace(deps=deps), complaint="chest pain"
+        )
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    assert result["eligible"] is True
+    assert len(written) == 1
+    payload = written[0]
+    assert payload["kind"] == "symptoms.session.completed"
+    assert len(payload["differential"]) == 1
+    assert payload["differential"][0]["condition_id"] == "acute_appendicitis"
+    assert isinstance(payload["transcript"], list)
+    assert len(payload["transcript"]) >= 1
+
+
+async def test_handle_cap_writes_phi_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cap-hit session writes partial_differential + transcript to the PHI payload."""
+    written: list[dict] = []
+    monkeypatch.setattr(
+        "claritymed.orchestrator.features.symptoms_plugin.write_payload",
+        lambda uid, req_id, payload: written.append(payload),
+    )
+    elig = _StubEligibility(
+        EligibilityResult(eligible=True, reason="in_scope", confidence=0.7)
+    )
+    channel = _StubChannel([_yes(), _initial_batch_answer(), _turn_answer("Yes")])
+    client = _StubClient(start=_start_resp(), turns=[_cap_turn(severity=2)])
+    plugin = _make_plugin(eligibility=elig, client=client)
+    deps = _deps()
+    deps.prompt_channel = channel
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
+    try:
+        result = await plugin._predict(
+            SimpleNamespace(deps=deps), complaint="chest pain"
+        )
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    assert result["hit_cap"] is True
+    assert len(written) == 1
+    payload = written[0]
+    assert payload["kind"] == "symptoms.session.cap_hit"
+    assert len(payload["partial_differential"]) == 1
+    assert isinstance(payload["transcript"], list)
+
+
+async def test_cancel_severity_override_stashes_override_severity() -> None:
+    """severity_override=True → stash uses max_low_severity_seen, not diff severity."""
+    elig = _StubEligibility(
+        EligibilityResult(eligible=True, reason="in_scope", confidence=0.7)
+    )
+    channel = _StubChannel([_yes(), _initial_batch_answer(), UserDeclinedAnswer()])
+    cancel_resp = _cancel_resp(meets=False, severity_override=True, max_low=1)
+    client = _StubClient(start=_start_resp(), cancel=cancel_resp)
+    plugin = _make_plugin(eligibility=elig, client=client)
+    deps = _deps()
+    deps.prompt_channel = channel
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
+    try:
+        result = await plugin._predict(
+            SimpleNamespace(deps=deps), complaint="chest pain"
+        )
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    assert result["severity_override"] is True
+    assert result["cancelled"] is True
+    assert plugin._stash.get(_REQUEST_ID, {}).get("max_severity") == 1
 
 
 def test_validate_safety_keywords_raises_on_blank_entry(
