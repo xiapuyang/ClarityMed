@@ -4,6 +4,16 @@
 # fails loud at load (catalog + cross-reference pattern mirrors
 # configs/symptoms.yaml).
 #
+# Disease identity convention: a `disease` here is a two-dimensional
+# coordinate — `(condition × modality)`. Same condition under a
+# different modality (e.g. lung cancer on chest CT vs lung cancer on
+# histopathology) gets its OWN disease entry with its own disease_id,
+# its own i18n display name, and its own model(s). Two entries with
+# the same (condition × modality) coordinate must NOT exist — when
+# multiple checkpoints target the same coordinate (e.g. BUSI and the
+# breast_us_kaggle alternate), they share one disease_id and the
+# disease's `flow:` array enumerates the fallback order.
+#
 # Kill switch: set `diseases[0].enabled: false` to ship the file with
 # the plugin disabled. Removing this file entirely takes the plugin
 # out of the agent's toolset.
@@ -44,12 +54,33 @@ diseases:
     flow: [skin_isic_resnet50_v1]
     cancer_class: true
     intent_hints_i18n_key: vision.intent.skin_cancer_dermoscopy
-  # Lung histopathology (mohamedsameh0410 notebook → Lung+Colon Histopath)
-  # is intentionally NOT wired here: the Modality literal in
-  # core/medical_clip/schemas.py does not include `histopathology`, and the
-  # upstream BiomedCLIP tagger has no histopath head yet. Adding both
-  # together is a separate unit; see GH issue tracker for the histopath
-  # bring-up plan.
+  # Lung histopathology (LC25000 subset) — scaffolding landed in
+  # src/claritymed/ingest/vision/lung_histopath/. Trains on LC25000's
+  # lung_image_sets/ subdir only (3 classes: adenocarcinoma, normal,
+  # squamous_cell_carcinoma). The Modality literal in
+  # core/medical_clip/schemas.py and the BiomedCLIP candidate prompts
+  # in configs/medical_clip.yaml were extended with `histopathology`
+  # so the upstream tagger has a target. Stays disabled until the
+  # train pipeline produces a real artifact + manifest under
+  # ~/.claritymed/models/vision/lung_cancer_histopathology/.
+  - id: lung_cancer_histopathology
+    enabled: false
+    primary_model_id: lung_histopath_resnet50_v1
+    flow: [lung_histopath_resnet50_v1]
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.lung_cancer_histopathology
+  # Colon histopathology (LC25000 subset) — scaffolding landed in
+  # src/claritymed/ingest/vision/colon_histopath/. Trains on LC25000's
+  # colon_image_sets/ subdir only (2 classes: adenocarcinoma, normal).
+  # Same upstream archive as lung_histopath; the two share
+  # `histopathology` modality but get separate models because lung and
+  # colon biopsies are clinically independent.
+  - id: colon_cancer_histopathology
+    enabled: false
+    primary_model_id: colon_histopath_resnet50_v1
+    flow: [colon_histopath_resnet50_v1]
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.colon_cancer_histopathology
 
 servers:
   - id: local_default
@@ -73,6 +104,26 @@ models:
     # what catches a real mismatch.
     manifest_sha256: "bd12c1ed0f7cdb8679802a34fbc942bea5824b9e2c7550dbeb11526564157032"
     expected_ms: 800
+  # Alternative breast-US training source (Kaggle vuppalaadithyasairam
+  # ~9000 augmented 2-class images, no `normal` class). Scaffolded in
+  # src/claritymed/ingest/vision/breast_us_kaggle/ as a fallback for
+  # the breast_cancer_ultrasound disease — same disease_id, same
+  # accepted_modality, alternate training data and model checkpoint.
+  # Deliberately NOT in breast_cancer_ultrasound.flow yet: the vision
+  # server only loads flow models at startup (servers/vision/app.py:128),
+  # so a placeholder-sha entry here is safe for the enabled disease.
+  # Promotion procedure: train via forge → write real manifest sha
+  # here → add this model_id to the disease's flow array so the
+  # orchestrator can fall through to it when the BUSI checkpoint
+  # returns low confidence.
+  - id: breast_us_kaggle_resnet50_v1
+    disease_id: breast_cancer_ultrasound
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: ultrasound               # KTD-V3 hard gate
+    weights_subpath: vision/breast_cancer_ultrasound/breast_us_kaggle_resnet50_v1__placeholder
+    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    expected_ms: 700
   # Chest CT model entry — paired with the lung_cancer_chest_ct disease
   # above. Both stay disabled until the chest_ct training pipeline produces
   # a real manifest; the placeholder sha is the all-zeros 64-hex string so
@@ -97,6 +148,30 @@ models:
     framework: pytorch
     accepted_modality: dermoscopy               # KTD-V3 hard gate
     weights_subpath: vision/skin_cancer_dermoscopy/skin_isic_resnet50_v1__placeholder
+    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    expected_ms: 600
+  # Lung histopathology model entry — paired with the
+  # lung_cancer_histopathology disease above. Stays bound to the
+  # disabled disease until the lung_histopath training pipeline
+  # produces a real manifest; until then the all-zeros placeholder sha
+  # fails the integrity check loudly if the disease is flipped on.
+  - id: lung_histopath_resnet50_v1
+    disease_id: lung_cancer_histopathology
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: histopathology           # KTD-V3 hard gate
+    weights_subpath: vision/lung_cancer_histopathology/lung_histopath_resnet50_v1__placeholder
+    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    expected_ms: 600
+  # Colon histopathology model entry — paired with the
+  # colon_cancer_histopathology disease above. Same scaffolding-only
+  # status as lung_histopath above.
+  - id: colon_histopath_resnet50_v1
+    disease_id: colon_cancer_histopathology
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: histopathology           # KTD-V3 hard gate
+    weights_subpath: vision/colon_cancer_histopathology/colon_histopath_resnet50_v1__placeholder
     manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
     expected_ms: 600
 

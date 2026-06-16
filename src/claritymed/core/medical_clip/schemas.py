@@ -34,6 +34,7 @@ Modality = Literal[
     "ct",
     "xray",
     "dermoscopy",
+    "histopathology",
     "photo",
     "document",
     "unknown",

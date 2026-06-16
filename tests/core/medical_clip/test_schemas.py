@@ -150,7 +150,15 @@ def test_shipped_configs_medical_clip_yaml_loads() -> None:
     # Each candidate matches Modality literal values (minus 'unknown')
     candidate_labels = {entry["label"] for entry in modality["candidates"]}
     assert candidate_labels.issubset(
-        {"ultrasound", "ct", "xray", "dermoscopy", "photo", "document"}
+        {
+            "ultrasound",
+            "ct",
+            "xray",
+            "dermoscopy",
+            "histopathology",
+            "photo",
+            "document",
+        }
     )
 
     gating = modality["gating"]

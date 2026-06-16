@@ -40,15 +40,45 @@ vision:
       image is not a dermoscopy / close-up skin photo, when the
       image already carries a dermatologist's report
       (ocr_has_report), or when the image is not medical.
+    lung_cancer_histopathology: |
+      Use when the user uploads a lung histopathology (microscopy)
+      slide image — typically a stained tissue patch from a lung
+      biopsy — and asks whether the tissue shows adenocarcinoma,
+      squamous cell carcinoma, or healthy lung tissue. Do NOT call
+      this tool when the image is not a lung histology slide (e.g.
+      it's a colon biopsy, a chest CT, or a non-medical image), when
+      the image already carries a pathologist's report
+      (ocr_has_report), or when the image is not medical.
+    colon_cancer_histopathology: |
+      Use when the user uploads a colon histopathology (microscopy)
+      slide image — typically a stained tissue patch from a colon
+      biopsy — and asks whether the tissue shows adenocarcinoma or
+      healthy colon tissue. Do NOT call this tool when the image is
+      not a colon histology slide (e.g. it's a lung biopsy, a
+      colonoscopy photo, or a non-medical image), when the image
+      already carries a pathologist's report (ocr_has_report), or
+      when the image is not medical.
 
   # Per-disease display name shown in confirm modals + LLM-side text.
+  # Disease identity is two-dimensional: (condition × modality). Same
+  # condition under different modalities (e.g. lung cancer on chest CT
+  # vs lung cancer on histopathology) gets distinct disease_ids and
+  # distinct display names so the confirm modal can disambiguate
+  # which model is about to run. Multi-model fallback within ONE
+  # disease_id (same (condition × modality)) is expressed via the
+  # disease's `flow:` array in configs/vision.yaml, not by adding a
+  # new disease entry here.
   disease:
     breast_cancer_ultrasound:
-      name: "breast cancer"
+      name: "breast cancer (ultrasound)"
     lung_cancer_chest_ct:
-      name: "lung cancer"
+      name: "lung cancer (chest CT)"
     skin_cancer_dermoscopy:
-      name: "skin cancer"
+      name: "skin cancer (dermoscopy)"
+    lung_cancer_histopathology:
+      name: "lung cancer (histopathology)"
+    colon_cancer_histopathology:
+      name: "colon cancer (histopathology)"
 
   # Per-label localized names + short descriptions. Descriptions are
   # surfaced by the LLM when the user asks "what does X mean here?".
@@ -104,6 +134,23 @@ vision:
       vascular_lesion:
         name: "vascular lesion"
         description: "Benign vascular lesion (e.g. cherry angioma). Routine follow-up is appropriate."
+    lung_cancer_histopathology:
+      adenocarcinoma:
+        name: "adenocarcinoma"
+        description: "Lung adenocarcinoma on histology. Specialist review is recommended."
+      normal:
+        name: "normal"
+        description: "Healthy lung tissue on histology. No malignant features identified."
+      squamous_cell_carcinoma:
+        name: "squamous cell carcinoma"
+        description: "Lung squamous cell carcinoma on histology. Specialist review is recommended."
+    colon_cancer_histopathology:
+      adenocarcinoma:
+        name: "adenocarcinoma"
+        description: "Colon adenocarcinoma on histology. Specialist review is recommended."
+      normal:
+        name: "normal"
+        description: "Healthy colon tissue on histology. No malignant features identified."
 
   # Confirm modal copy — fired from the tool body before any HTTP call.
   # `title` shows as the modal header; `body` is the question. `yes` /
@@ -143,6 +190,30 @@ vision:
         reading is always the final word. Run the model?
       yes_label: "Yes, run it"
       yes_description: "Send the image to the local skin-lesion model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    lung_cancer_histopathology:
+      title: "Analyze lung histology slide?"
+      body: |
+        I can run a small histopathology model on this microscopy
+        slide to estimate whether the lung tissue shows
+        adenocarcinoma, squamous cell carcinoma, or looks healthy.
+        The result is an estimate — a pathologist's reading is
+        always the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local lung histopathology model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    colon_cancer_histopathology:
+      title: "Analyze colon histology slide?"
+      body: |
+        I can run a small histopathology model on this microscopy
+        slide to estimate whether the colon tissue shows
+        adenocarcinoma or looks healthy. The result is an estimate —
+        a pathologist's reading is always the final word. Run the
+        model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local colon histopathology model."
       no_label: "No, skip"
       no_description: "Skip the model and answer from text only."
 

@@ -29,15 +29,39 @@ vision:
       这个工具。以下情况**不要**调用：图像不是皮肤镜或近距离皮肤
       照片；图像已经带有皮肤科医生的报告（ocr_has_report=true）；
       图像本身不是医学影像。
+    lung_cancer_histopathology: |
+      当用户上传一张肺组织病理（显微镜下染色组织切片）图像 ——
+      通常来自肺活检 —— 并询问该组织是否显示腺癌、鳞状细胞癌，
+      或看起来是正常肺组织时，使用这个工具。以下情况**不要**
+      调用：图像不是肺组织病理切片（例如是结肠活检、胸部 CT 或
+      非医学图像）；图像已经带有病理科医生的报告
+      （ocr_has_report=true）；图像本身不是医学影像。
+    colon_cancer_histopathology: |
+      当用户上传一张结肠组织病理（显微镜下染色组织切片）图像 ——
+      通常来自结肠活检 —— 并询问该组织是否显示腺癌，或看起来是
+      正常结肠组织时，使用这个工具。以下情况**不要**调用：图像
+      不是结肠组织病理切片（例如是肺活检、肠镜下照片或非医学
+      图像）；图像已经带有病理科医生的报告（ocr_has_report=true）；
+      图像本身不是医学影像。
 
   # 各疾病的显示名 —— 出现在确认弹窗与 LLM 回复正文中。
+  # 疾病身份是二维的（病种 × 成像方式）。同一病种在不同成像方式下
+  # （例如「肺癌 + 胸部 CT」与「肺癌 + 组织病理」）使用不同的
+  # disease_id 和不同的显示名，确认弹窗才能让用户清楚知道即将运行
+  # 的是哪个模型。同一 disease_id（即同一 (病种 × 成像方式)）内的
+  # 多模型 fallback 由 configs/vision.yaml 中该 disease 的 `flow:`
+  # 数组表达，不在这里新增 disease 条目。
   disease:
     breast_cancer_ultrasound:
-      name: "乳腺癌"
+      name: "乳腺癌（超声）"
     lung_cancer_chest_ct:
-      name: "肺癌"
+      name: "肺癌（胸部 CT）"
     skin_cancer_dermoscopy:
-      name: "皮肤癌"
+      name: "皮肤癌（皮肤镜）"
+    lung_cancer_histopathology:
+      name: "肺癌（病理切片）"
+    colon_cancer_histopathology:
+      name: "结肠癌（病理切片）"
 
   # 各标签的本地化名称 + 简短描述。当用户追问「X 是什么意思」时，LLM
   # 可以引用 description。
@@ -93,6 +117,23 @@ vision:
       vascular_lesion:
         name: "血管病变"
         description: "良性血管病变（如樱桃状血管瘤）。通常按常规随访处理。"
+    lung_cancer_histopathology:
+      adenocarcinoma:
+        name: "腺癌"
+        description: "组织病理下的肺腺癌。建议请专科医生复核。"
+      normal:
+        name: "正常"
+        description: "组织病理下的正常肺组织。未发现恶性特征。"
+      squamous_cell_carcinoma:
+        name: "鳞状细胞癌"
+        description: "组织病理下的肺鳞状细胞癌。建议请专科医生复核。"
+    colon_cancer_histopathology:
+      adenocarcinoma:
+        name: "腺癌"
+        description: "组织病理下的结肠腺癌。建议请专科医生复核。"
+      normal:
+        name: "正常"
+        description: "组织病理下的正常结肠组织。未发现恶性特征。"
 
   # 工具体在发任何 HTTP 请求之前弹出的确认框。
   confirm:
@@ -126,6 +167,26 @@ vision:
         要运行模型吗？
       yes_label: "好，运行"
       yes_description: "把图像送到本地的皮肤镜模型。"
+      no_label: "不用了"
+      no_description: "跳过模型，只基于文字回答。"
+    lung_cancer_histopathology:
+      title: "分析这张肺组织病理切片？"
+      body: |
+        我可以用一个小型病理模型对这张显微镜图像做估计，看肺
+        组织更像腺癌、鳞状细胞癌，还是正常的肺组织。结果只是
+        估计——病理科医生的判读才是最终依据。要运行模型吗？
+      yes_label: "好，运行"
+      yes_description: "把图像送到本地的肺组织病理模型。"
+      no_label: "不用了"
+      no_description: "跳过模型，只基于文字回答。"
+    colon_cancer_histopathology:
+      title: "分析这张结肠组织病理切片？"
+      body: |
+        我可以用一个小型病理模型对这张显微镜图像做估计，看结肠
+        组织更像腺癌还是正常的结肠组织。结果只是估计——病理科
+        医生的判读才是最终依据。要运行模型吗？
+      yes_label: "好，运行"
+      yes_description: "把图像送到本地的结肠组织病理模型。"
       no_label: "不用了"
       no_description: "跳过模型，只基于文字回答。"
 

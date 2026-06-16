@@ -107,6 +107,22 @@ def _seed_skin(*, ocr_has_report: bool = False) -> Callable[[], dict]:
     return _f
 
 
+def _seed_histopath(*, ocr_has_report: bool = False) -> Callable[[], dict]:
+    """Seed a histopathology image. Same fixture subdir powers both the
+    lung and colon histopath cases — the prompt's disease_id is what
+    steers the LLM toward the right per-organ model."""
+
+    def _f() -> dict:
+        return {
+            "fixture_subdir": "histopath",
+            "modality": "histopathology",
+            "is_medical": True,
+            "ocr_has_report": ocr_has_report,
+        }
+
+    return _f
+
+
 def _seed_modality_mismatch() -> Callable[[], dict]:
     def _f() -> dict:
         return {
@@ -524,6 +540,316 @@ CASES: list[Case] = [
         args_predicate=_p_no_args,
         expected_tool=None,
         seed=_seed_non_medical(modality="photo"),
+    ),
+    # FN-prone implicit (mirror of ``hard_chest_ct_implicit_anxious``):
+    # the user defers to a clinician without naming the lesion, the
+    # disease, or the tool. A model that only triggers on explicit
+    # diagnostic verbs ("analyze", "diagnose") will under-fire here.
+    Case(
+        name="hard_skin_implicit_observe_en",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "My dermatologist said to keep an eye on this one — "
+                "what do you see? [Image sha:{sha8}]"
+            ),
+            "zh": "皮肤科医生让我留意一下这个，你看怎么样？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_skin(),
+    ),
+    # Knowledge-only TN: no image attached, generic dermoscopy concept
+    # question. The disease tool requires an image attachment to run —
+    # firing it here would be a clean false positive. Mirror of the
+    # generic ``fp_knowledge_question_no_image`` but phrased for skin.
+    Case(
+        name="fp_skin_knowledge_only_dermoscopy",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "What dermoscopic features distinguish melanoma from a benign nevus?"
+            ),
+            "zh": "皮肤镜下黑色素瘤和良性痣怎么区分？",
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=None,
+    ),
+    # Multi-class subtype phrasing — mirror of
+    # ``en_chest_ct_subtype_question``. The skin_lesion dataset is the
+    # ISIC 9-class set (melanoma / BCC / SCC / nevus / actinic keratosis
+    # / benign keratosis / dermatofibroma / vascular / suspicious). A
+    # prompt that names a few of the classes is the strongest TP signal
+    # short of explicit tool naming.
+    Case(
+        name="en_skin_isic_subtype_question",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Could you check whether this lesion is more consistent "
+                "with melanoma, basal cell carcinoma, a benign nevus, or "
+                "actinic keratosis? [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "麻烦帮我看一下这处皮损更像黑色素瘤、基底细胞癌、"
+                "良性痣还是日光性角化？[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_skin(),
+    ),
+    # -------------------------------------------------------------------
+    # Lung histopathology (``lung_cancer_histopathology``) — TP/FN/FP
+    # coverage. Both lung_cancer_chest_ct and lung_cancer_histopathology
+    # are "lung cancer" diseases; the disambiguation lives entirely in
+    # the image modality. The cases here exercise the LLM's ability to
+    # route a histopath image to the histopath tool rather than the CT
+    # tool. The disease ships ``enabled: false`` until weights are
+    # promoted; the bench still exercises tool-trigger decisions against
+    # the live plugin (which sees the disease in the catalog regardless
+    # of enabled state).
+    # -------------------------------------------------------------------
+    Case(
+        name="en_lung_histopath_explicit_biopsy",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Here's a lung histopathology slide from my biopsy. "
+                "Could this tissue be concerning? Please call the "
+                "detect_disease_from_image tool with "
+                "disease_id=lung_cancer_histopathology. [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "这是我活检的肺组织病理切片。这个组织会不会有问题？请调用 "
+                "detect_disease_from_image 工具，disease_id 用 "
+                "lung_cancer_histopathology。[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_histopath(),
+    ),
+    # Multi-class subtype phrasing — mirrors en_chest_ct_subtype_question
+    # for the histopath side. The strongest TP signal short of explicit
+    # tool naming: the user names the histopath labels directly.
+    Case(
+        name="en_lung_histopath_subtype_question",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Can the model tell me whether this lung biopsy tissue "
+                "looks like adenocarcinoma, squamous cell carcinoma, or "
+                "healthy lung tissue? [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "模型能告诉我这张肺活检组织更像腺癌、鳞状细胞癌"
+                "还是正常肺组织吗？[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_histopath(),
+    ),
+    # FN-prone implicit — the user defers to a clinician without naming
+    # the disease or the tool. A model that only triggers on explicit
+    # diagnostic verbs under-fires here.
+    Case(
+        name="hard_lung_histopath_implicit_pathologist",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "The pathologist sent over this lung slide — what do "
+                "you see? [Image sha:{sha8}]"
+            ),
+            "zh": "病理科送来这张肺切片，你看到什么？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_histopath(),
+    ),
+    # FP — same disease (lung cancer) but a CT image, not a histopath
+    # slide. The LLM should refuse on modality grounds (histopath tool
+    # accepts ``histopathology``, not ``ct``) and route to the chest_ct
+    # tool instead. This case asserts the tool is NOT called by the
+    # histopath path; aggregate "any vision tool fires" would pass for
+    # the wrong reason.
+    Case(
+        name="fp_lung_histopath_wrong_modality_ct",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "Could you check this lung tissue for cancer with the "
+                "histopathology model? [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "麻烦用组织病理模型检查一下这块肺组织有没有癌变？[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=_seed_chest_ct(),
+    ),
+    # FP — pathology context but the image carries the pathologist's
+    # report already (KTD-V6 OCR override). The tool must stay out.
+    Case(
+        name="fp_lung_histopath_ocr_report",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "The pathology report on this lung slide mentions "
+                "carcinoma — can you summarize? [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "这张肺切片的病理报告里提到癌变，请帮我总结一下。[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=_seed_report_overlay(),
+    ),
+    # Knowledge-only TN: no image attached. The disease tool requires
+    # an image to run — firing it here would be a clean false positive.
+    Case(
+        name="fp_lung_histopath_knowledge_only",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "What histological features distinguish lung "
+                "adenocarcinoma from squamous cell carcinoma?"
+            ),
+            "zh": "病理上肺腺癌和肺鳞状细胞癌怎么区分？",
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=None,
+    ),
+    # -------------------------------------------------------------------
+    # Colon histopathology (``colon_cancer_histopathology``) — TP/FN/FP
+    # coverage. Sister section to lung_histopath. The same fixture
+    # subdir feeds both diseases; the disease_id in the prompt steers
+    # the LLM toward the right per-organ tool.
+    # -------------------------------------------------------------------
+    Case(
+        name="en_colon_histopath_explicit_biopsy",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Here's a colon histopathology slide from my biopsy. "
+                "Could this tissue be concerning? Please call the "
+                "detect_disease_from_image tool with "
+                "disease_id=colon_cancer_histopathology. [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "这是我活检的结肠组织病理切片。这个组织会不会有问题？请调用 "
+                "detect_disease_from_image 工具，disease_id 用 "
+                "colon_cancer_histopathology。[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_histopath(),
+    ),
+    Case(
+        name="en_colon_histopath_subtype_question",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Can the model tell me whether this colon biopsy tissue "
+                "looks like adenocarcinoma or healthy colon tissue? "
+                "[Image sha:{sha8}]"
+            ),
+            "zh": (
+                "模型能告诉我这张结肠活检组织更像腺癌还是正常"
+                "结肠组织吗？[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_histopath(),
+    ),
+    Case(
+        name="hard_colon_histopath_implicit_followup",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "GI doc said to follow up on this colon slide — "
+                "thoughts? [Image sha:{sha8}]"
+            ),
+            "zh": "消化科医生让我复查这张结肠切片，怎么看？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_histopath(),
+    ),
+    # FP — non-medical photo with a colon-cancer-flavored prompt. The
+    # LLM should refuse on the not-medical sentinel (no image_modality
+    # match, no medical=True).
+    Case(
+        name="fp_colon_histopath_non_medical",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "Can you check this picture for signs of colon cancer? "
+                "[Image sha:{sha8}]"
+            ),
+            "zh": ("能帮我看看这张照片有没有结肠癌的迹象吗？[Image sha:{sha8}]"),
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=_seed_non_medical(modality="photo"),
+    ),
+    # FP — looks like a histopath prompt but the user names "lung", not
+    # "colon". The LLM should pick the lung tool, not the colon tool.
+    # We can't directly observe "which disease_id was picked" from the
+    # confirm-modal count alone, so this case is a NEGATIVE for the
+    # colon tool (the args_predicate doesn't distinguish — this case is
+    # primarily a fail-loud safeguard against modality drift in fixture
+    # generation rather than a strict bench gate).
+    Case(
+        name="fp_colon_histopath_wrong_organ_in_prompt",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "Please call the colon histopathology model on this "
+                "lung biopsy slide. [Image sha:{sha8}]"
+            ),
+            "zh": ("请用结肠组织病理模型分析这张肺活检切片。[Image sha:{sha8}]"),
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=_seed_histopath(),
+    ),
+    # Knowledge-only TN: no image, generic histology concept question.
+    Case(
+        name="fp_colon_histopath_knowledge_only",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "What histological features distinguish colon "
+                "adenocarcinoma from healthy colonic mucosa?"
+            ),
+            "zh": "病理上结肠腺癌和正常结肠黏膜怎么区分？",
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=None,
     ),
 ]
 
