@@ -18,12 +18,24 @@ Usage:
         --model claritymed.ingest.vision.busi.models.unet_resnet50:UNET_RESNET50 \\
         --staging-dir ~/.claritymed/models/vision/breast_cancer_ultrasound/run/...
 
+    # First end-to-end on real data (real dataset + real training,
+    # microscopic budgets, gates downgraded; takes minutes, not hours):
+    claritymed-vision-forge pipeline \\
+        --model claritymed.ingest.vision.chest_ct.models.resnet50_v1:RESNET50_V1 \\
+        --quick
+
 The ``--model`` flag is a dotted-path-plus-colon-attribute selector
 (``module.path:ATTR``). Forge ``importlib``-loads the module and reads
 the named attribute — which must be a
 :class:`~claritymed.ingest.vision.forge.spec.ModelSpec` instance. The
 single CLI replaces the five per-dataset console scripts of the
 original BUSI pipeline.
+
+Pipeline has two short-circuit modes: ``--smoke`` (synthetic everything,
+sub-second; verifies CLI / phase wiring without torch or a dataset) and
+``--quick`` (real torch + real dataset, microscopic budgets; smallest
+honest end-to-end). Use ``--smoke`` for wiring checks; ``--quick`` for
+the first run on a new dataset or fresh box.
 """
 
 from __future__ import annotations
@@ -148,8 +160,29 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the deploy floor gate (WARNING: development only).",
     )
+    sp.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Real-data shakedown with microscopic budgets: trials=3, "
+            "search-epochs=3, max-epochs=5, patience=3, tune-trials=5, "
+            "auto --force + --deploy-force. Needs real dataset + torch. "
+            "Mutually exclusive with --smoke."
+        ),
+    )
 
     return parser
+
+
+_QUICK_OVERRIDES = {
+    "trials": 3,
+    "search_epochs": 3,
+    "max_epochs": 5,
+    "patience": 3,
+    "tune_trials": 5,
+    "force": True,
+    "deploy_force": True,
+}
 
 
 def main(argv: list[str]) -> int:
@@ -203,6 +236,22 @@ def main(argv: list[str]) -> int:
         return 0
 
     if args.phase == "pipeline":
+        if args.quick and args.smoke:
+            raise SystemExit("--quick and --smoke are mutually exclusive.")
+        if args.quick:
+            for name, value in _QUICK_OVERRIDES.items():
+                setattr(args, name, value)
+            logger.info(
+                "quick mode: trials=%d search_epochs=%d max_epochs=%d "
+                "patience=%d tune_trials=%d force=%s deploy_force=%s",
+                args.trials,
+                args.search_epochs,
+                args.max_epochs,
+                args.patience,
+                args.tune_trials,
+                args.force,
+                args.deploy_force,
+            )
         phases = parse_phases(args.phases)
         stable = run_pipeline(
             spec,
@@ -219,7 +268,9 @@ def main(argv: list[str]) -> int:
             deploy_force=args.deploy_force,
         )
         elapsed = time.monotonic() - started
-        if stable is not None:
+        if args.smoke and stable is not None:
+            print(f"smoke ok in {elapsed:.1f}s — staging at {stable}")
+        elif stable is not None:
             print(f"pipeline ok in {elapsed:.1f}s — deployed {stable}")
         else:
             print(f"pipeline ok in {elapsed:.1f}s (no deploy phase)")

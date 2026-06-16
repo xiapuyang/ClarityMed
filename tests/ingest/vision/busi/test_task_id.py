@@ -44,13 +44,17 @@ def _reload_forge_for_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 def test_pipeline_threads_single_task_id_through_every_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Provenance.json on the staging dir carries the same task_id through
+    every phase. (Smoke doesn't write LATEST.jsonl, so the lineage check
+    is against the staging dir — for real runs, the same task_id also
+    lands in LATEST.jsonl from the deploy phase.)"""
     _reload_forge_for_home(monkeypatch, tmp_path)
     from claritymed.ingest.vision.busi.models.unet_resnet50 import UNET_RESNET50
     from claritymed.ingest.vision.forge.common import ALL_PHASES
     from claritymed.ingest.vision.forge.framework import run_pipeline
 
     pinned_task_id = "20260101T120000Z-abcdef12"
-    stable = run_pipeline(
+    staging = run_pipeline(
         UNET_RESNET50,
         phases=ALL_PHASES,
         trials=1,
@@ -62,17 +66,12 @@ def test_pipeline_threads_single_task_id_through_every_artifact(
         staging_dir=None,
         task_id=pinned_task_id,
     )
-    assert stable is not None
+    assert staging is not None
 
-    provenance = json.loads((stable / "provenance.json").read_text(encoding="utf-8"))
+    provenance = json.loads((staging / "provenance.json").read_text(encoding="utf-8"))
     assert provenance["task_id"] == pinned_task_id
     assert provenance["tune"]["task_id"] == pinned_task_id
     assert provenance["optuna"]["search_trial_task_id"] == pinned_task_id
-
-    latest = stable.parent / "LATEST.jsonl"
-    entry = json.loads(latest.read_text(encoding="utf-8").splitlines()[-1])
-    assert entry["task_id"] == pinned_task_id
-    assert entry["optuna"]["search_trial_task_id"] == pinned_task_id
 
 
 def test_pipeline_generates_task_id_when_absent(
@@ -83,7 +82,7 @@ def test_pipeline_generates_task_id_when_absent(
     from claritymed.ingest.vision.forge.common import ALL_PHASES
     from claritymed.ingest.vision.forge.framework import run_pipeline
 
-    stable = run_pipeline(
+    staging = run_pipeline(
         UNET_RESNET50,
         phases=ALL_PHASES,
         trials=1,
@@ -95,13 +94,9 @@ def test_pipeline_generates_task_id_when_absent(
         staging_dir=None,
         task_id=None,
     )
-    assert stable is not None
-    entry = json.loads(
-        (stable.parent / "LATEST.jsonl").read_text(encoding="utf-8").splitlines()[-1]
-    )
-    task_id = entry["task_id"]
-    assert re.match(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$", task_id), task_id
+    assert staging is not None
 
-    provenance = json.loads((stable / "provenance.json").read_text(encoding="utf-8"))
-    assert provenance["task_id"] == task_id
+    provenance = json.loads((staging / "provenance.json").read_text(encoding="utf-8"))
+    task_id = provenance["task_id"]
+    assert re.match(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$", task_id), task_id
     assert provenance["tune"]["task_id"] == task_id

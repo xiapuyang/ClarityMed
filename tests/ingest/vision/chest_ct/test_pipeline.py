@@ -33,15 +33,15 @@ def _reload_forge_for_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
         importlib.reload(__import__(mod_name, fromlist=["_"]))
 
 
-def test_smoke_pipeline_writes_versioned_deploy_for_chest_ct(
+def test_smoke_pipeline_stops_at_staging_for_chest_ct(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Full pipeline against the ResNet-50 chest CT spec."""
+    """Same smoke-no-promote contract as BUSI, exercised on the cls-only path."""
     _reload_forge_for_home(monkeypatch, tmp_path)
     from claritymed.ingest.vision.chest_ct.models.resnet50_v1 import RESNET50_V1
     from claritymed.ingest.vision.forge.framework import run_pipeline
 
-    stable = run_pipeline(
+    staging = run_pipeline(
         RESNET50_V1,
         phases=ALL_PHASES,
         trials=1,
@@ -52,25 +52,19 @@ def test_smoke_pipeline_writes_versioned_deploy_for_chest_ct(
         smoke=True,
         staging_dir=None,
     )
-    assert stable is not None
-    assert stable.exists()
-    assert stable.name.startswith("lung_chest_ct_resnet50_v1__")
+    assert staging is not None
+    assert staging.exists()
+    assert staging.parent.name == "run"
 
-    latest = stable.parent / "LATEST.jsonl"
-    rows = [
-        json.loads(line)
-        for line in latest.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    assert len(rows) == 1
-    entry = rows[0]
-    assert entry["model_id"] == "lung_chest_ct_resnet50_v1"
-    assert entry["disease_id"] == "lung_cancer_chest_ct"
-    # Floors map mentions cancer_recall, not malignant_recall (task-specific).
-    assert "cancer_recall" in entry["floors_passed"]
-    assert "dice" not in entry["floors_passed"]
-    assert entry["floors_passed"]["cancer_recall"] is True
-    assert entry["floors_passed"]["accuracy"] is True
+    # The cls-only manifest is the per-task artifact that proves the
+    # classification path was exercised (not the cls+seg one).
+    manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["task"] == "classification"
+
+    disease_root = staging.parent.parent
+    assert not list(disease_root.glob("lung_chest_ct_resnet50_v1__*"))
+    assert not (disease_root / "lung_chest_ct_resnet50_v1").exists()
+    assert not (disease_root / "LATEST.jsonl").exists()
 
 
 def test_chest_ct_modelspec_has_classification_task_shape() -> None:

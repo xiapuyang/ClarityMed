@@ -32,7 +32,13 @@ Phase contracts (mirror the BUSI pipeline this replaces):
 Smoke mode (``smoke=True``) wires every phase end-to-end on synthetic
 data so the pipeline can be CI-tested without GPU + real Kaggle
 download. The Task subclasses provide feasible-by-construction smoke
-breakdowns so deploy never gets gated out in smoke.
+breakdowns so deploy clears the floor gate. Smoke deploy intentionally
+**stops at the floor check** — it does not promote the staging dir to
+the disease's stable path, update the ``<model_id>`` stable symlink,
+append to ``LATEST.jsonl``, patch ``configs/vision.yaml``, or run the
+regression gate. The whole point is that a wiring check must not leave
+fake state the vision-server would later try to load, nor poison the
+next smoke's regression gate with its own previous output.
 """
 
 from __future__ import annotations
@@ -901,6 +907,22 @@ def run_deploy(
     else:
         check_floors(tuned_test, floors_map)
 
+    # Smoke deploy verifies floor wiring against Task.smoke_breakdown()
+    # but stops there: it must not touch the disease's stable directory,
+    # the <model_id> stable symlink, LATEST.jsonl, configs/vision.yaml,
+    # nor the regression gate. Otherwise a sub-second wiring check
+    # leaves a fake "deployed model" the vision-server would try to load
+    # at boot — and the regression gate would block the next smoke run
+    # against its own previous output.
+    if smoke:
+        logger.info(
+            "smoke deploy: floors cleared on synthetic breakdown; "
+            "skipped promote / LATEST.jsonl / symlink / vision.yaml / "
+            "regression-gate. Staging dir at %s.",
+            staging_dir,
+        )
+        return staging_dir
+
     previous = read_latest_entry(
         latest_jsonl_path(spec.dataset.disease_id), model_id=spec.model_id
     )
@@ -920,12 +942,11 @@ def run_deploy(
 
     new_manifest_sha = sha256_file(stable_path / "manifest.json")
     new_weights_subpath = f"vision/{spec.dataset.disease_id}/{stable_dirname}"
-    if not smoke:
-        patch_vision_yaml(
-            model_id=spec.model_id,
-            new_weights_subpath=new_weights_subpath,
-            new_manifest_sha=new_manifest_sha,
-        )
+    patch_vision_yaml(
+        model_id=spec.model_id,
+        new_weights_subpath=new_weights_subpath,
+        new_manifest_sha=new_manifest_sha,
+    )
     entry = _build_latest_entry(
         spec,
         version_tag=tag,
