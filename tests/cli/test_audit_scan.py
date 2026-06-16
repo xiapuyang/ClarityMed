@@ -126,6 +126,114 @@ def test_audit_scan_missing_log_dir_errors(runner, tmp_path, monkeypatch):
     assert result.exit_code == 1
 
 
+def _write_blob_sentinel(
+    users_root: Path,
+    user_id: str,
+    sha256: str,
+    *,
+    ocr_has_report: bool,
+    text: str = "",
+    modality: str = "ultrasound",
+) -> None:
+    blob_dir = users_root / user_id / "blobs" / sha256[:2] / sha256
+    blob_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "status": "done",
+        "kind": "ocr",
+        "ext": "png",
+        "provider": "bench-seed",
+        "chain_tried": ["bench-seed"],
+        "reason": None,
+        "chars": len(text),
+        "original_filename": f"{user_id}-report.png",
+        "modality": modality,
+        "modality_confidence": 0.9,
+        "is_medical": True,
+        "ocr_has_report": ocr_has_report,
+    }
+    (blob_dir / "ocr.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    if text:
+        (blob_dir / "ocr.md").write_text(text, encoding="utf-8")
+
+
+def _reload_with_data_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CLARITYMED_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLARITYMED_LOG_DIR", str(tmp_path / "logs"))
+    import importlib
+
+    from claritymed import config as cfg_mod
+
+    importlib.reload(cfg_mod)
+    # The audit module bound `_cfg` at import time — reload it too so the
+    # subcommand reads the patched DATA_DIR / LOG_DIR.
+    from claritymed.cli.commands import audit as audit_mod
+
+    importlib.reload(audit_mod)
+    from claritymed.cli import main as cli_main
+
+    importlib.reload(cli_main)
+
+
+def test_audit_ocr_overrides_filters_true(runner, tmp_path, monkeypatch):
+    _reload_with_data_dir(tmp_path, monkeypatch)
+    users_root = tmp_path / "data" / "users"
+    # 1 override, 1 non-override → only the override is listed.
+    _write_blob_sentinel(
+        users_root,
+        "alice",
+        "a" * 64,
+        ocr_has_report=True,
+        text="FINDINGS: …",
+    )
+    _write_blob_sentinel(
+        users_root,
+        "alice",
+        "b" * 64,
+        ocr_has_report=False,
+    )
+
+    from claritymed.cli.main import app as fresh_app
+
+    result = runner.invoke(fresh_app, ["audit", "ocr-overrides", "--json"])
+    assert result.exit_code == 0, result.stdout
+    rows = [json.loads(line) for line in result.stdout.strip().splitlines() if line]
+    assert len(rows) == 1
+    assert rows[0]["sha256"] == "a" * 64
+    assert rows[0]["user_id"] == "alice"
+    assert "ocr_text" not in rows[0]
+
+
+def test_audit_ocr_overrides_with_text_inlines_md(runner, tmp_path, monkeypatch):
+    _reload_with_data_dir(tmp_path, monkeypatch)
+    users_root = tmp_path / "data" / "users"
+    _write_blob_sentinel(
+        users_root,
+        "bob",
+        "c" * 64,
+        ocr_has_report=True,
+        text="IMPRESSION: cyst",
+    )
+
+    from claritymed.cli.main import app as fresh_app
+
+    result = runner.invoke(
+        fresh_app, ["audit", "ocr-overrides", "--json", "--with-text"]
+    )
+    assert result.exit_code == 0, result.stdout
+    row = json.loads(result.stdout.strip().splitlines()[0])
+    assert row["ocr_text"] == "IMPRESSION: cyst"
+
+
+def test_audit_ocr_overrides_empty_returns_nonzero(runner, tmp_path, monkeypatch):
+    _reload_with_data_dir(tmp_path, monkeypatch)
+    from claritymed.cli.main import app as fresh_app
+
+    result = runner.invoke(fresh_app, ["audit", "ocr-overrides"])
+    assert result.exit_code == 1
+
+
 def teardown_module(_module) -> None:
     """Restore real LOG_DIR after the env-mutating tests above."""
     import importlib
@@ -135,4 +243,8 @@ def teardown_module(_module) -> None:
     # Drop the env var we set, then reload so the rest of the suite gets
     # the actual user-config path back.
     os.environ.pop("CLARITYMED_LOG_DIR", None)
+    os.environ.pop("CLARITYMED_DATA_DIR", None)
     importlib.reload(cfg_mod)
+    from claritymed.cli.commands import audit as audit_mod
+
+    importlib.reload(audit_mod)

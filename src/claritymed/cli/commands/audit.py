@@ -1,9 +1,11 @@
 """``claritymed audit`` — inspect the structured audit log.
 
-Three subcommands: ``grep`` (filter by trace/request/user/kind/window),
-``list-rules`` (enumerate the registered analytics rules), and ``scan``
+Subcommands: ``grep`` (filter by trace/request/user/kind/window),
+``list-rules`` (enumerate the registered analytics rules), ``scan``
 (stream the log through all or a chosen subset of rules and emit a
-human-readable or JSON report).
+human-readable or JSON report), and ``ocr-overrides`` (walk blob
+sentinels and surface every uploaded image whose OCR text already
+carried a clinician report — the KTD-V6 short-circuit's input set).
 """
 
 from __future__ import annotations
@@ -221,3 +223,95 @@ def audit_scan(
                 snippet = s.get("snippet", "")
                 model = s.get("model", "?")
                 console.print(f"    [{model}] {snippet}")
+
+
+@audit_app.command("ocr-overrides")
+def audit_ocr_overrides(
+    user_id: str | None = typer.Option(
+        None,
+        "--user-id",
+        "-u",
+        help="Restrict to one user (default: walk every user under data/users/).",
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Stop after N matches."),
+    with_text: bool = typer.Option(
+        False,
+        "--with-text",
+        help="Also include the extracted OCR text under `ocr_text` (JSON mode only).",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit JSONL — one record per blob. Suitable as benchmark seed input.",
+    ),
+) -> None:
+    """List blobs whose ``ocr.json`` carries ``ocr_has_report=true``.
+
+    Walks ``data/users/<id>/blobs/<sha[:2]>/<sha>/ocr.json`` and prints
+    every sentinel where the OCR text already contained a clinician
+    report (KTD-V6 → ``kind == "ocr_override"`` in the vision tool reply).
+    Use ``--json`` to pipe matches into the vision benchmark as
+    real-world OCR-override seeds.
+
+    Reads only the sentinel by default; pass ``--with-text`` to also
+    inline the extracted markdown (sibling ``ocr.md``) — heavier, useful
+    when grading answer quality against the report content.
+    """
+    data_root = _cfg.DATA_DIR / "users"
+    if not data_root.exists():
+        logger.error("data root does not exist: %s", data_root)
+        raise typer.Exit(code=1)
+
+    user_dirs = (
+        [data_root / user_id]
+        if user_id
+        else sorted(p for p in data_root.iterdir() if p.is_dir())
+    )
+
+    matched = 0
+    for user_dir in user_dirs:
+        blobs_dir = user_dir / "blobs"
+        if not blobs_dir.is_dir():
+            continue
+        uid = user_dir.name
+        for sentinel in sorted(blobs_dir.glob("*/*/ocr.json")):
+            try:
+                payload = json.loads(sentinel.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("skip %s: %s", sentinel, exc)
+                continue
+            if payload.get("ocr_has_report") is not True:
+                continue
+            blob_dir = sentinel.parent
+            record = {
+                "user_id": uid,
+                "sha256": blob_dir.name,
+                "blob_dir": str(blob_dir),
+                "modality": payload.get("modality"),
+                "is_medical": payload.get("is_medical"),
+                "provider": payload.get("provider"),
+                "chars": payload.get("chars"),
+                "original_filename": payload.get("original_filename"),
+            }
+            if with_text:
+                ocr_md = blob_dir / "ocr.md"
+                try:
+                    record["ocr_text"] = ocr_md.read_text(encoding="utf-8")
+                except OSError:
+                    record["ocr_text"] = None
+            if json_out:
+                print(json.dumps(record, ensure_ascii=False))
+            else:
+                console.print(
+                    f"[cyan]{uid}[/]  {record['sha256'][:12]}…  "
+                    f"modality={record['modality']!s:<10} "
+                    f"chars={record['chars']!s:<5} "
+                    f"file={record['original_filename'] or '?'}"
+                )
+            matched += 1
+            if limit is not None and matched >= limit:
+                return
+
+    if matched == 0:
+        logger.info("no blobs with ocr_has_report=true")
+        raise typer.Exit(code=1)
