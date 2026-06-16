@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable
 
 from claritymed.core.device import resolve_device
 
@@ -49,10 +50,26 @@ LOG_CONFIG: dict = {
     },
 }
 
-# Cap on logged body characters. Large enough to show a meaningful
-# slice (a few sentence-length inputs, a kit of dense vector entries),
-# small enough that a base64 image (~50KB+) doesn't dump in full.
-DEFAULT_MAX_BODY_CHARS = 500
+# Cap on logged body characters. Applied AFTER redaction of binary
+# fields, so a 50KB base64 image redacted to ~30 chars frees the cap to
+# show the rest of the JSON (request_id, disease_id, model_id, etc.) in
+# full instead of a useless prefix slice of the base64 blob.
+DEFAULT_MAX_BODY_CHARS = 2000
+
+# JSON string fields that always carry base64-ish blobs across the
+# server fleet. Listed here so every server gets the same redaction
+# behavior without each call site having to repeat the list. Add new
+# entries when a server introduces another binary-bearing field name.
+DEFAULT_REDACT_FIELDS: tuple[str, ...] = (
+    "data_b64",
+    "mask_png_b64",
+    "saliency_b64",
+    "image_b64",
+)
+
+# How much of a redacted field's value to keep — enough to eyeball the
+# format (PNG header, JPEG header, etc.) without flooding the log.
+_REDACT_KEEP_CHARS = 16
 
 
 def default_device() -> str:
@@ -60,13 +77,49 @@ def default_device() -> str:
     return resolve_device("auto")
 
 
-def _summarize_body(data: bytes, max_chars: int) -> str:
+def _redact_binary_fields(text: str, fields: Iterable[str]) -> str:
+    """Replace each ``"<field>":"<value>"`` with a short ``<value>…<+N more>``.
+
+    Operates on the JSON-as-text directly because the bodies we log are
+    already JSON strings; a real json.loads/dumps round-trip would
+    reorder keys and lose grep-friendliness. The regex is conservative:
+    it matches a quoted string value with no embedded quotes (the b64
+    alphabet has none) so it won't accidentally chew through escaped
+    quotes inside arbitrary payloads.
+    """
+    for field in fields:
+        pattern = re.compile(rf'("{re.escape(field)}"\s*:\s*")([^"]+)(")')
+
+        def _shrink(match: re.Match[str]) -> str:
+            prefix, value, suffix = match.group(1), match.group(2), match.group(3)
+            if len(value) <= _REDACT_KEEP_CHARS:
+                return match.group(0)
+            return (
+                f"{prefix}{value[:_REDACT_KEEP_CHARS]}"
+                f"…<+{len(value) - _REDACT_KEEP_CHARS} more chars>{suffix}"
+            )
+
+        text = pattern.sub(_shrink, text)
+    return text
+
+
+def _summarize_body(
+    data: bytes,
+    max_chars: int,
+    redact_fields: Iterable[str] = DEFAULT_REDACT_FIELDS,
+) -> str:
     """Format a body for one-line INFO logging.
 
-    UTF-8 decodes get truncated to ``max_chars`` with a ``…<+N more>``
-    suffix when clipped. Bytes that fail UTF-8 decode (typically
-    multipart/protobuf payloads) are summarized as their length only —
-    rendering raw bytes in a log line is noise.
+    Order of operations: decode UTF-8 → collapse newlines → redact any
+    binary fields named in ``redact_fields`` → length-truncate. The
+    redaction step runs first so the length cap only kicks in for
+    bodies that are genuinely large for non-binary reasons; a 50KB
+    base64 image redacts to ~30 chars and the rest of the JSON
+    survives.
+
+    Bytes that fail UTF-8 decode (typically multipart/protobuf
+    payloads) are summarized as their length only — rendering raw
+    bytes in a log line is noise.
     """
     if not data:
         return "<empty>"
@@ -77,6 +130,7 @@ def _summarize_body(data: bytes, max_chars: int) -> str:
     # Collapse newlines so the log line stays grep-friendly. Tabs stay
     # — they show up rarely in JSON and help readability when they do.
     text = text.replace("\n", "\\n").replace("\r", "")
+    text = _redact_binary_fields(text, redact_fields)
     if len(text) > max_chars:
         return f"{text[:max_chars]}…<+{len(text) - max_chars} more chars>"
     return text
@@ -88,6 +142,7 @@ def add_logging_middleware(
     server_logger: logging.Logger,
     log_body: bool = True,
     max_body_chars: int = DEFAULT_MAX_BODY_CHARS,
+    redact_fields: Iterable[str] = DEFAULT_REDACT_FIELDS,
 ) -> None:
     """Register a request/response INFO-log middleware on a FastAPI app.
 
@@ -183,7 +238,7 @@ def add_logging_middleware(
         req_body_repr: str | None = None
         if log_body and not is_health:
             req_body = await request.body()
-            req_body_repr = _summarize_body(req_body, max_body_chars)
+            req_body_repr = _summarize_body(req_body, max_body_chars, redact_fields)
 
             async def _receive():
                 return {
@@ -227,7 +282,7 @@ def add_logging_middleware(
             resp_body = b""
             async for chunk in response.body_iterator:
                 resp_body += chunk
-            resp_body_repr = _summarize_body(resp_body, max_body_chars)
+            resp_body_repr = _summarize_body(resp_body, max_body_chars, redact_fields)
             # Replace the consumed streaming response with a buffered
             # one carrying the same status, headers, and content type.
             # Strip ``content-length`` from the propagated header set;

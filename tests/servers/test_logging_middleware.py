@@ -125,6 +125,47 @@ def test_body_truncation_for_large_payloads(caplog: pytest.LogCaptureFixture) ->
         assert "more chars>" in line
 
 
+def test_binary_fields_are_redacted_before_length_cap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``data_b64`` (and the rest of ``DEFAULT_REDACT_FIELDS``) shrink to
+    a head + count regardless of value length, so the body cap covers
+    the meaningful JSON fields instead of a useless base64 prefix.
+
+    Probes the path the vision-server and medical-clip both hit on every
+    ``/v1/detect`` / ``/v1/embed_image`` call. Pinning the head length
+    keeps the log eyeball-friendly: a PNG or JPEG header in the first
+    few chars is enough to spot bad payload shape.
+    """
+    caplog.set_level(logging.INFO, logger="tests.middleware")
+    logger = logging.getLogger("tests.middleware")
+    app = _build_app(logger)
+    client = TestClient(app)
+
+    big_b64 = "iVBORw0KGgoAAAA" * 1000  # ~15KB pretend-PNG base64
+    resp = client.post(
+        "/echo",
+        json={
+            "request_id": "20260616145546AB9C71BB",
+            "image": {"sha256": "1a08", "data_b64": big_b64},
+            "disease_id": "lung_cancer_chest_ct",
+        },
+    )
+    assert resp.status_code == 200
+    msgs = _drain(caplog)
+    arrival = [m for m in msgs if "→ POST /echo" in m]
+    assert arrival, msgs
+    line = arrival[0]
+    # data_b64 shrank to a 16-char head + ``…<+N more chars>`` counter.
+    assert '"data_b64":"iVBORw0KGgoAAAAi…<+' in line
+    assert "more chars>" in line
+    # Other JSON keys survive in full — that's the whole point.
+    assert "request_id" in line and "20260616145546AB9C71BB" in line
+    assert "disease_id" in line and "lung_cancer_chest_ct" in line
+    # And the line is well under the 2000-char default cap (no outer truncation).
+    assert not line.endswith("more chars>}'") and "more chars>'" not in line[-40:]
+
+
 def test_request_id_propagates_into_response_header(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
