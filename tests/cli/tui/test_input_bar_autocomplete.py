@@ -188,3 +188,25 @@ async def test_typing_non_slash_input_does_not_show_popup():
         await pilot.press("h", "e", "l", "l", "o")
         await pilot.pause()
         assert not bar._popup_visible
+
+
+@pytest.mark.asyncio
+async def test_paste_inserts_text_exactly_once():
+    """Regression for the Cmd+V double-paste bug.
+
+    Textual's ``_get_dispatch_methods`` yields every ``_on_paste`` it finds
+    in the MRO. Our ``_SlashInput`` subclass adds its own ``_on_paste`` for
+    diagnostic logging; if that override calls ``super()._on_paste(event)``,
+    ``Input._on_paste`` runs twice (once via super, once via the MRO walker)
+    and the pasted text shows up duplicated in the Input value.
+    """
+    from textual import events
+
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        inp = _input(app)
+        inp.post_message(events.Paste("hello"))
+        await pilot.pause()
+        assert inp.value == "hello"

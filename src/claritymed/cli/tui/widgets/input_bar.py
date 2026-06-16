@@ -279,18 +279,18 @@ class _SlashInput(Input):
     keys keep their default Input behaviour."""
 
     def _on_paste(self, event: events.Paste) -> None:
-        # Diagnostic for the "drag-drop landed as raw text" failure mode.
-        # If this fires WITHOUT a preceding App.on_paste log line, then
-        # Textual delivered the Paste event to the focused Input directly
-        # (normal flow). If this never fires but the input value still
-        # grows, bracketed-paste markers were not emitted by the terminal
-        # — that's the Ghostty paste-protection edge case.
+        # Diagnostic-only — do NOT call super().
+        #
+        # Textual's _get_dispatch_methods walks the MRO and yields every
+        # class in the chain that defines _on_paste in its own __dict__,
+        # invoking each independently. Input._on_paste is already in the
+        # dispatch list; calling super()._on_paste(event) here would run
+        # it a second time and insert the pasted text twice.
         logger.info(
             "_SlashInput._on_paste: len=%d head=%r",
             len(event.text) if event.text else 0,
             event.text[:120] if event.text else "",
         )
-        super()._on_paste(event)
 
     def on_key(self, event: events.Key) -> None:
         bar = self.parent
