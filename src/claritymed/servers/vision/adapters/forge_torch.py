@@ -30,6 +30,7 @@ from claritymed.core.vision.schemas import (
     ModelSpec,
     QualityCheck,
     SegmentationResult,
+    round_sig,
 )
 from claritymed.servers.vision.adapters.torch_adapter import (
     TorchAdapter,
@@ -365,10 +366,15 @@ class _ForgeAdapterBase(TorchAdapter):
         probs = torch.softmax(scaled, dim=1)[0].cpu().tolist()
         top1_idx = self._top1_under_thresholds(probs)
         top1 = self._labels[top1_idx]
-        top1_prob = float(probs[top1_idx])
+        # Sig-fig rounding belongs here, not in the schema validator:
+        # ``calibrate()`` is the "finalize the scoreboard" boundary, so
+        # any future adapter doing temperature scaling or ensembling
+        # rounds at the same point. Schema stays a pure contract.
+        rounded_probs = [round_sig(float(p)) for p in probs]
+        top1_prob = round_sig(float(probs[top1_idx]))
         return ClassificationResult(
             labels=list(self._labels),
-            probabilities=[float(p) for p in probs],
+            probabilities=rounded_probs,
             top1=top1,
             top1_prob=top1_prob,
             confidence_tier=self._tier(top1_prob),

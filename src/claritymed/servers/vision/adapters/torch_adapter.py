@@ -47,6 +47,7 @@ from claritymed.core.vision.schemas import (
     ModelSpec,
     QualityCheck,
     SegmentationResult,
+    round_sig,
 )
 from claritymed.servers.vision.loader import register_adapter
 
@@ -179,12 +180,18 @@ class TorchAdapter:
             probs = [
                 top1_p if i == top1_idx else other_p for i in range(len(self._labels))
             ]
+        # Sig-fig rounding at the producer: ``(1.0 - 0.7) / 3`` is
+        # ``0.10000000000000002`` from IEEE-754 — round here so the wire
+        # carries clean values without dragging the rounding into the
+        # schema validator. Real adapters do the same in ``calibrate()``.
+        probs = [round_sig(p) for p in probs]
+        top1_prob = round_sig(probs[top1_idx])
         return ClassificationResult(
             labels=list(self._labels),
             probabilities=probs,
             top1=top1_label,
-            top1_prob=probs[top1_idx],
-            confidence_tier=_confidence_tier(probs[top1_idx]),
+            top1_prob=top1_prob,
+            confidence_tier=_confidence_tier(top1_prob),
         )
 
     def calibrate(self, raw: Any) -> dict[str, float]:

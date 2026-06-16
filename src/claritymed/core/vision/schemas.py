@@ -28,11 +28,42 @@ owns its own enum, prompt file, and i18n bundle.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from claritymed.core.medical_clip.schemas import Modality
+
+# Default sig-fig count adapters use when finalizing wire-bound
+# probabilities. Two is the readability sweet spot: float-noise tails
+# (``0.10000000000000002``) collapse to ``0.10`` so logs and audit
+# payloads stay grep-friendly, while values below 0.01 (rare outlier
+# classes) still keep two meaningful digits (``0.0042`` survives, where
+# decimal-place rounding would collapse to ``0.00``).
+PROB_SIG_FIGS = 2
+
+
+def round_sig(value: float, sig_figs: int = PROB_SIG_FIGS) -> float:
+    """Round ``value`` to ``sig_figs`` significant figures.
+
+    ``round(0.001, 2)`` collapses to ``0.0`` (2 decimal places). For
+    classification probabilities we want ``0.0010`` to survive — hence
+    significant figures, not decimal places. NaN / inf / zero pass
+    through unchanged because ``log10`` is undefined there.
+
+    Adapters import this from the schemas module and apply it inside
+    ``calibrate()`` (or wherever they finalize the probabilities) before
+    constructing a :class:`ClassificationResult`. Keeping it out of the
+    schema validator means precise inputs are honored — debugging,
+    entropy calculations, and calibration audits all see the raw values
+    the producer computed.
+    """
+    if not math.isfinite(value) or value == 0:
+        return value
+    digits = sig_figs - int(math.floor(math.log10(abs(value)))) - 1
+    return round(value, digits)
+
 
 # --- enums shared across config + result models ----------------------------
 
