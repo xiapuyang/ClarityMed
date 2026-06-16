@@ -109,6 +109,7 @@ def run_pipeline(
     staging_dir: Path | None,
     task_id: str | None = None,
     force: bool = False,
+    deploy_force: bool = False,
 ) -> Path | None:
     """Run the requested phases in order. Returns the final stable path or None.
 
@@ -202,7 +203,9 @@ def run_pipeline(
             task_id,
         )
         target = staging or _latest_staging_dir()
-        stable_path = deploy.run_deploy(staging_dir=target, smoke=smoke)
+        stable_path = deploy.run_deploy(
+            staging_dir=target, smoke=smoke, force=deploy_force
+        )
         logger.info("deployed to: %s", stable_path)
 
     return stable_path
@@ -291,8 +294,16 @@ def main(argv: list[str]) -> int:
         help=(
             "Downgrade inter-phase floor gates to warnings. Default off; "
             "use only for diagnostic runs against a known-broken HP combo. "
-            "The deploy gate itself is never softened — it still refuses "
-            "to promote a checkpoint that misses the deploy floors."
+            "Does not affect the deploy floor gate — use --deploy-force for that."
+        ),
+    )
+    parser.add_argument(
+        "--deploy-force",
+        action="store_true",
+        help=(
+            "Skip the deploy floor gate and promote the checkpoint anyway. "
+            "WARNING: the deployed model may not meet medical safety thresholds. "
+            "Use only for development or pipeline-wiring tests."
         ),
     )
     args = parser.parse_args(argv)
@@ -313,6 +324,7 @@ def main(argv: list[str]) -> int:
         staging_dir=args.staging_dir,
         task_id=args.task_id,
         force=args.force,
+        deploy_force=args.deploy_force,
     )
     elapsed = time.monotonic() - started
     if stable is not None:

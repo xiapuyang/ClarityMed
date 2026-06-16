@@ -66,11 +66,15 @@ logger = logging.getLogger(__name__)
 __all__ = ["FLOOR_MALIGNANT_RECALL", "FLOOR_ACCURACY", "FLOOR_DICE", "run_deploy"]
 
 
-def run_deploy(*, staging_dir: Path, smoke: bool = False) -> Path:
+def run_deploy(*, staging_dir: Path, smoke: bool = False, force: bool = False) -> Path:
     """Promote ``staging_dir`` to a versioned stable path.
 
     Returns the new stable path on success. Raises ``SystemExit`` on
     floor or regression failure (no filesystem changes made).
+
+    ``force=True`` skips the floor gate with a WARNING — the model is
+    promoted as-is. Use only for development deploys; ``floors_passed``
+    in LATEST.jsonl will reflect the actual (failing) values.
     """
     manifest_path = staging_dir / "manifest.json"
     eval_path = staging_dir / "eval_metrics.json"
@@ -96,7 +100,20 @@ def run_deploy(*, staging_dir: Path, smoke: bool = False) -> Path:
         )
 
     # Step 1: floors.
-    _check_floors(tuned_test)
+    if force:
+        logger.warning(
+            "deploy --force: skipping floor gate. "
+            "recall=%.3f acc=%.3f dice=%.3f (floors: %.2f / %.2f / %.2f). "
+            "Do NOT use in production.",
+            tuned_test.get("malignant_recall", 0.0),
+            tuned_test.get("accuracy", 0.0),
+            tuned_test.get("dice", 0.0),
+            FLOOR_MALIGNANT_RECALL,
+            FLOOR_ACCURACY,
+            FLOOR_DICE,
+        )
+    else:
+        _check_floors(tuned_test)
 
     # Step 2: regression gate vs active deploy (if any).
     latest_path = _latest_jsonl_path()
@@ -440,13 +457,22 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Skip the configs/vision.yaml patch (useful for offline smoke runs).",
     )
+    parser.add_argument(
+        "--deploy-force",
+        action="store_true",
+        help=(
+            "Skip the floor gate and promote anyway. WARNING: the deployed "
+            "model may not meet medical safety thresholds. Use only for "
+            "development or pipeline-wiring tests."
+        ),
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
 
     staging = args.staging_dir or _latest_staging_dir()
-    stable = run_deploy(staging_dir=staging, smoke=args.smoke)
+    stable = run_deploy(staging_dir=staging, smoke=args.smoke, force=args.deploy_force)
     print(f"deployed {stable}")
     return 0
 

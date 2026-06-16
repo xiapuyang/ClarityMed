@@ -357,7 +357,19 @@ def _run_optuna_study(
         # Stash the breakdown on the trial so study_feasibility_summary
         # can reconstruct feasibility / deficits without re-evaluating.
         trial.set_user_attr("breakdown", breakdown)
-        return feasibility_aware_score(breakdown, TUNE_FLOORS)
+        score = feasibility_aware_score(breakdown, TUNE_FLOORS)
+        logger.info(
+            "tune trial %d: recall=%.3f/%.2f dice=%.3f/%.2f acc=%.3f/%.2f score=%.4f",
+            trial.number,
+            breakdown["malignant_recall"],
+            TUNE_FLOORS.malignant_recall,
+            breakdown["dice"],
+            TUNE_FLOORS.dice,
+            breakdown["accuracy"],
+            TUNE_FLOORS.accuracy,
+            score,
+        )
+        return score
 
     with mlflow_run(
         "vision",
@@ -390,19 +402,33 @@ def _run_optuna_study(
             logger.warning(
                 "tune: no feasible trial in %d trials "
                 "(feasible=%d, infeasible=%d). Best trial still violates "
-                "floors; deploy gate will reject. Worst deficits: %s. "
-                "Retrain with stronger model / more epochs.",
+                "floors; deploy gate will reject. "
+                "Best val: recall=%.3f/%.2f dice=%.3f/%.2f acc=%.3f/%.2f. "
+                "Worst deficits: %s. Retrain with stronger model / more epochs.",
                 trials,
                 summary["feasible_trials"],
                 summary["infeasible_trials"],
+                tuned_val["malignant_recall"],
+                TUNE_FLOORS.malignant_recall,
+                tuned_val["dice"],
+                TUNE_FLOORS.dice,
+                tuned_val["accuracy"],
+                TUNE_FLOORS.accuracy,
                 summary["worst_deficits"],
             )
         else:
             logger.info(
-                "tune: %d feasible trial(s) of %d completed; best val composite=%.4f",
+                "tune: %d feasible trial(s) of %d completed; "
+                "best val: composite=%.4f recall=%.3f/%.2f dice=%.3f/%.2f acc=%.3f/%.2f",
                 summary["feasible_trials"],
                 summary["feasible_trials"] + summary["infeasible_trials"],
                 tuned_val["composite"],
+                tuned_val["malignant_recall"],
+                TUNE_FLOORS.malignant_recall,
+                tuned_val["dice"],
+                TUNE_FLOORS.dice,
+                tuned_val["accuracy"],
+                TUNE_FLOORS.accuracy,
             )
         try:
             import mlflow

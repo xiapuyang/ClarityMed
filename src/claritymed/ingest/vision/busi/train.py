@@ -343,8 +343,15 @@ def run_training_trial(
                 best_score = score
                 best_breakdown = breakdown
             logger.info(
-                "epoch=%d val_composite=%.4f val_feasibility=%.4f (best=%.4f)",
+                "epoch=%d recall=%.3f/%.2f dice=%.3f/%.2f acc=%.3f/%.2f "
+                "val_composite=%.4f val_feasibility=%.4f (best=%.4f)",
                 epoch,
+                breakdown["malignant_recall"],
+                SEARCH_FLOORS.malignant_recall,
+                breakdown["dice"],
+                SEARCH_FLOORS.dice,
+                breakdown["accuracy"],
+                SEARCH_FLOORS.accuracy,
                 breakdown["composite"],
                 score,
                 best_score,
@@ -614,11 +621,18 @@ def _train_with_early_stopping(
                 epochs_since_improve += 1
             logger.info(
                 "epoch=%d train_loss=%.4f val_loss=%.4f "
+                "recall=%.3f/%.2f dice=%.3f/%.2f acc=%.3f/%.2f "
                 "val_composite=%.4f val_selection=%.4f feasible=%s "
                 "best_selection=%.4f (epoch %d) stale=%d",
                 epoch,
                 train_loss,
                 val_loss,
+                val_breakdown["malignant_recall"],
+                TRAIN_FLOORS.malignant_recall,
+                val_breakdown["dice"],
+                TRAIN_FLOORS.dice,
+                val_breakdown["accuracy"],
+                TRAIN_FLOORS.accuracy,
                 val_composite,
                 val_selection_score,
                 epoch_is_feasible,
