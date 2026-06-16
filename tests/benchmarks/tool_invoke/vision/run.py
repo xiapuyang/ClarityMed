@@ -75,7 +75,7 @@ _DEFAULT_MEDICAL_CLIP_URL = "http://127.0.0.1:8086"
 
 CORRECT_OUTCOMES: frozenset[str] = frozenset({"correct"})
 
-_FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "vision"
+_FIXTURES_ROOT = Path(__file__).resolve().parents[3] / "fixtures" / "vision"
 
 
 # --- channels ---------------------------------------------------------------
