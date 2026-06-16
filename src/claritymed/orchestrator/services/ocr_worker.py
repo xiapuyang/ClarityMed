@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from claritymed.core.medical_clip.client import MedicalClipClient
-from claritymed.core.ocr.base import OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 from claritymed.core.schemas.records import OcrStatus
 from claritymed.core.vision.ocr_report_detector import (
     DEFAULT_MIN_CHARS,
@@ -248,6 +248,30 @@ class OcrWorker:
                 result = await self._provider.extract_text(job.blob_path)
             finally:
                 reset_original_filename(filename_token)
+        except OcrEmpty as exc:
+            logger.debug(
+                "ocr: no text in %s (%s)",
+                job.sha256[:8],
+                job.blob_path.name,
+            )
+            blob_store.write_ocr_result(
+                job.sha256,
+                status="empty",
+                kind="ocr",
+                ext=job.blob_path.suffix.lstrip("."),
+                provider=None,
+                chain_tried=[],
+                reason=str(exc),
+                text="",
+                original_filename=job.original_filename,
+            )
+            return OcrCompleted(
+                user_id=job.user_id,
+                session_id=job.session_id,
+                sha256=job.sha256,
+                status="empty",
+                reason=str(exc),
+            )
         except OcrError as exc:
             logger.warning(
                 "ocr provider error for %s (%s): %s",
@@ -279,7 +303,7 @@ class OcrWorker:
         # report-override heuristic, then writes ocr.json once with
         # every field populated. Two parallel writers to ocr.json would
         # race; one writer with two sub-steps does not.
-        vision_tags = await self._compute_vision_tags(job, result.text)
+        vision_tags = await self._compute_vision_tags(job, result)
         blob_store.write_ocr_result(
             job.sha256,
             status=status,
@@ -300,13 +324,19 @@ class OcrWorker:
             provider=result.provider_used,
         )
 
-    async def _compute_vision_tags(self, job: OcrJob, ocr_text: str) -> dict:
+    async def _compute_vision_tags(self, job: OcrJob, result: ExtractResult) -> dict:
         """Build the modality / is_medical / ocr_has_report kwargs.
 
         Returns the subset of kwargs that should be threaded into
         :meth:`BlobStore.write_ocr_result`. Skips silently for non-image
         blobs (PDFs, plain text) so the sentinel stays free of
         unmeaningful fields.
+
+        When medical-clip returns ``modality='unknown'`` or omits
+        ``is_medical``, values supplied by the LLM OCR provider (via
+        ``result.modality`` / ``result.is_medical``) are used as a
+        fallback — the vision LLM reads both image and text, giving it
+        better coverage than the CLIP classifier alone.
         """
         if not _is_image(job.blob_path):
             return {}
@@ -350,6 +380,24 @@ class OcrWorker:
                 )
                 tags["modality"] = "unknown"
                 warnings.append(f"modality_classification_failed: {exc!s}")
+
+        # LLM-OCR override: when medical-clip is absent or returned uncertain
+        # values, the vision LLM (which also saw the image) may have a better
+        # signal.  Apply only when medical-clip said "unknown" / omitted
+        # is_medical — never downgrade a confident classifier result.
+        llm_modality = result.modality
+        llm_is_medical = result.is_medical
+        if (
+            tags.get("modality") in ("unknown", None)
+            and llm_modality
+            and llm_modality != "unknown"
+        ):
+            tags["modality"] = llm_modality
+            warnings.append("modality_from_llm_ocr")
+        if not tags.get("is_medical") and llm_is_medical is True:
+            tags["is_medical"] = True
+            warnings.append("is_medical_from_llm_ocr")
+
         # Report-override heuristic. Cheap; always run when configured,
         # regardless of whether modality classification succeeded —
         # ``ocr_has_report`` is independent of modality and the LLM-side
@@ -357,7 +405,7 @@ class OcrWorker:
         if self._ocr_report_markers:
             try:
                 tags["ocr_has_report"] = has_structured_report(
-                    ocr_text,
+                    result.text,
                     language=None,
                     min_chars=self._ocr_report_min_chars,
                     markers=self._ocr_report_markers,

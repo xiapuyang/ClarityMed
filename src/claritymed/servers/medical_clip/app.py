@@ -28,7 +28,11 @@ from typing import Any
 
 import yaml
 
-from claritymed.servers._devices import LOG_CONFIG, default_device
+from claritymed.servers._devices import (
+    LOG_CONFIG,
+    add_logging_middleware,
+    default_device,
+)
 
 try:
     import uvicorn
@@ -176,6 +180,7 @@ def _validate_gating(gating: dict[str, Any]) -> None:
 
 
 app = FastAPI(title="claritymed-medical-clip-server", lifespan=lifespan)
+add_logging_middleware(app, server_logger=logger)
 
 
 def _error_payload(

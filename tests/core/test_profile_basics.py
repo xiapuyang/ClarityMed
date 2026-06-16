@@ -103,10 +103,31 @@ def test_future_birth_date_rejected():
         Profile(birth_date=date(2999, 1, 1))
 
 
+def test_birth_date_over_130_years_rejected():
+    with pytest.raises(ValidationError, match="age > 130"):
+        Profile(birth_date=date(1800, 1, 1))
+
+
 def test_age_derived_from_birth_date():
     today = date.today()
     p = Profile(birth_date=date(today.year - 30, today.month, today.day))
     assert p.age == 30
+
+
+def test_age_birthday_not_yet_this_year():
+    """age property decrements by 1 when birthday hasn't occurred yet this year."""
+    from datetime import date
+
+    today = date.today()
+    # Pick a birthday that hasn't happened yet this year (next day in future)
+    # We need a birth day that is "after" today's month/day in the year.
+    # Use a birth date from 30 years ago with month/day set to tomorrow.
+    import datetime
+
+    tomorrow = today + datetime.timedelta(days=1)
+    birth = date(today.year - 30, tomorrow.month, tomorrow.day)
+    p = Profile(birth_date=birth)
+    assert p.age == 29
 
 
 def test_age_is_none_when_birth_date_unset():

@@ -35,7 +35,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from claritymed.servers._devices import LOG_CONFIG, default_device
+from claritymed.servers._devices import (
+    LOG_CONFIG,
+    add_logging_middleware,
+    default_device,
+)
 
 try:
     import uvicorn
@@ -63,6 +67,7 @@ class EmbedRequest(BaseModel):
     """TEI-shaped request: a list of strings under ``inputs``."""
 
     inputs: list[str] = Field(..., min_length=1)
+    request_id: str | None = Field(default=None, max_length=64)
 
 
 @asynccontextmanager
@@ -86,6 +91,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
 
 
 app = FastAPI(title="claritymed-embedder", lifespan=lifespan)
+add_logging_middleware(app, server_logger=logger)
 
 
 def _require_model() -> BGEM3FlagModel:
@@ -129,7 +135,7 @@ def embed(req: EmbedRequest, http_req: Request) -> list[list[float]]:
     """Dense embeddings only. Returns ``list[list[float]]`` (1024-dim each)."""
     _validate_batch(req.inputs)
     model = _require_model()
-    req_id = http_req.headers.get("X-Request-ID", "-")
+    req_id = req.request_id or http_req.headers.get("X-Request-ID", "-")
     t0 = time.monotonic()
     out = model.encode(
         req.inputs,
@@ -159,7 +165,7 @@ def embed_sparse(req: EmbedRequest, http_req: Request) -> list[dict[str, float]]
     """
     _validate_batch(req.inputs)
     model = _require_model()
-    req_id = http_req.headers.get("X-Request-ID", "-")
+    req_id = req.request_id or http_req.headers.get("X-Request-ID", "-")
     t0 = time.monotonic()
     out = model.encode(
         req.inputs,

@@ -25,7 +25,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 from claritymed.core.observability.silence import silence_fd_stderr
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ class RapidOcrProvider(OcrProvider):
             raise OcrError(f"rapidocr extraction failed: {exc}") from exc
 
         if not text.strip():
-            raise OcrError("rapidocr: no text extracted")
+            raise OcrEmpty("rapidocr: no text extracted")
         return ExtractResult(
             text=text, provider_used=self.label, chain_tried=[self.label]
         )

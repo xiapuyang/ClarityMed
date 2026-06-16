@@ -46,7 +46,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from claritymed.servers._devices import LOG_CONFIG, default_device
+from claritymed.servers._devices import (
+    LOG_CONFIG,
+    add_logging_middleware,
+    default_device,
+)
 
 try:
     import torch
@@ -108,6 +112,7 @@ class RerankRequest(BaseModel):
     # already holds the doc strings), so we accept-and-ignore for forward
     # compat without shipping the text back.
     return_text: bool = False
+    request_id: str | None = Field(default=None, max_length=64)
 
 
 class RerankHit(BaseModel):
@@ -148,6 +153,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 
 app = FastAPI(title="claritymed-reranker", lifespan=lifespan)
+add_logging_middleware(app, server_logger=logger)
 
 
 def _flush_mps_cache() -> None:
@@ -184,7 +190,7 @@ def rerank(req: RerankRequest, http_req: Request) -> list[RerankHit]:
             detail=f"batch size {len(req.texts)} exceeds {MAX_BATCH_TEXTS}",
         )
     model, tokenizer, device = _require_loaded()
-    req_id = http_req.headers.get("X-Request-ID", "-")
+    req_id = req.request_id or http_req.headers.get("X-Request-ID", "-")
     t0 = time.monotonic()
     effective_query = _apply_query_instruction(
         req.query, _state.get("query_instruction", "")

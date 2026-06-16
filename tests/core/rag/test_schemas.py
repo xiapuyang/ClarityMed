@@ -248,6 +248,65 @@ def test_authority_bias_keys_are_coerced_from_yaml_strings():
     assert bias[2] == 0.5
 
 
+def test_resolved_raises_unknown_chunker_when_bypassing_validator():
+    """model_construct skips _resolve_active; resolved() must still raise."""
+    from claritymed.core.rag.schemas import ChunkerConfig, ParentChildChunkerConfig
+
+    entry = ParentChildChunkerConfig.model_construct(
+        id="parent_child", child_tok=128, parent_tok=512, overlap_tok=0
+    )
+    cfg = ChunkerConfig.model_construct(active="missing", catalog=[entry])
+    with pytest.raises(UnknownChunkerError):
+        cfg.resolved()
+
+
+def test_resolved_raises_unknown_embedder_when_bypassing_validator():
+    from claritymed.core.rag.schemas import EmbedderConfig, EmbedderEntry
+
+    entry = EmbedderEntry.model_construct(
+        id="bge",
+        kind="http",
+        base_url="http://x",
+        dense_dim=1024,
+        batch_size=32,
+        timeout_s=30,
+    )
+    cfg = EmbedderConfig.model_construct(active="missing", catalog=[entry])
+    with pytest.raises(UnknownEmbedderError):
+        cfg.resolved()
+
+
+def test_resolved_raises_unknown_reranker_when_bypassing_validator():
+    from claritymed.core.rag.schemas import RerankerConfig, RerankerEntry
+
+    entry = RerankerEntry.model_construct(
+        id="bge", kind="http", base_url="http://x", batch_size=32, timeout_s=30
+    )
+    cfg = RerankerConfig.model_construct(active="missing", catalog=[entry])
+    with pytest.raises(UnknownRerankerError):
+        cfg.resolved()
+
+
+def test_resolved_raises_unknown_term_service_when_bypassing_validator():
+    from claritymed.core.rag.schemas import TermServiceConfig, TermServiceEntry
+
+    entry = TermServiceEntry.model_construct(id="snomed", kind="snomed_ct")
+    cfg = TermServiceConfig.model_construct(active="missing", catalog=[entry])
+    with pytest.raises(UnknownTermServiceError):
+        cfg.resolved()
+
+
+def test_resolved_raises_unknown_router_when_bypassing_validator():
+    from claritymed.core.rag.schemas import RouterConfig, RouterEntry
+
+    entry = RouterEntry.model_construct(
+        id="rule_based", max_active=3, authority_bias={1: 0.0}
+    )
+    cfg = RouterConfig.model_construct(active="missing", catalog=[entry])
+    with pytest.raises(UnknownRouterError):
+        cfg.resolved()
+
+
 # --- helpers ------------------------------------------------------------
 
 

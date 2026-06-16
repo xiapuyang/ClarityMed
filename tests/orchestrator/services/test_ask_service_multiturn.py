@@ -13,11 +13,61 @@ even with the old broken code, so it cannot serve as a regression guard.
 
 from __future__ import annotations
 
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+import json
+
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.models.test import TestModel
 
 from claritymed.core.events import Done
 from claritymed.orchestrator.services import AskService, ChatSession
+from claritymed.orchestrator.services.ask_service import _trim_message_history
+
+
+def _make_pair(text: str = "x"):
+    """Build a minimal (request, response) message pair."""
+    req = ModelRequest(parts=[UserPromptPart(content=text)])
+    resp = ModelResponse(parts=[TextPart(content=text)])
+    return [req, resp]
+
+
+def test_trim_empty_returns_empty():
+    result, dropped = _trim_message_history([], budget=10)
+    assert result == []
+    assert dropped == 0
+
+
+def test_trim_fits_in_budget_returns_unchanged():
+    pairs = _make_pair("hello")
+    size = len(ModelMessagesTypeAdapter.dump_json(pairs))
+    result, dropped = _trim_message_history(pairs, budget=size * 2)
+    assert len(result) == 2
+    assert dropped == 0
+
+
+def test_trim_at_min_keep_floor_returns_unchanged():
+    """When only HISTORY_MIN_KEEP messages remain, nothing can be dropped."""
+    from claritymed.orchestrator.services.ask_service import HISTORY_MIN_KEEP
+
+    # Build exactly HISTORY_MIN_KEEP messages (2 pairs)
+    pairs = _make_pair("a") + _make_pair("b")
+    assert len(pairs) == HISTORY_MIN_KEEP
+    # Budget so tiny that trimming is needed, but floor prevents it
+    result, dropped = _trim_message_history(pairs, budget=1)
+    assert len(result) == HISTORY_MIN_KEEP
+    assert dropped == 0
+
+
+def test_trim_drops_oldest_pair_when_over_budget():
+    """Over-budget history drops oldest pair first."""
+
+    # Build HISTORY_MIN_KEEP + 2 messages (one extra droppable pair)
+    pairs = _make_pair("old") + _make_pair("keep_a") + _make_pair("keep_b")
+    # Budget that fits the last 4 (HISTORY_MIN_KEEP) but not all 6
+    keep_size = len(ModelMessagesTypeAdapter.dump_json(pairs[2:]))
+    result, dropped = _trim_message_history(pairs, budget=keep_size)
+    assert dropped >= 2
+    assert len(result) <= len(pairs) - 2
 
 
 async def _consume_until_done(stream) -> list:
@@ -64,7 +114,6 @@ async def test_message_history_populated_after_tui_style_consumption():
 
 async def test_session_file_written_after_tui_style_consumption():
     """The JSONL file must contain a user + assistant pair after TUI break."""
-    import json
 
     session = ChatSession.new("alice")
     service = AskService(

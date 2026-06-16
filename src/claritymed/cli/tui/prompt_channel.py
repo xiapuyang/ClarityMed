@@ -54,6 +54,16 @@ class TextualPromptChannel:
         self._app = app
 
     async def ask(self, payload: AskUserQuestionInput) -> AskUserQuestionResult:
+        # Drop the active streaming bubble before the modal so the system turn
+        # (modal result) appears above the LLM's post-tool answer. This is the
+        # unified convention: [modal result] → [answer], regardless of whether
+        # prompt_channel.ask() is invoked directly by the LLM or from inside
+        # another tool body (e.g. vision confirm).
+        try:
+            self._app.query_one(Conversation).drop_active_streaming_bubble()
+        except Exception:  # noqa: BLE001 — widget absent in tests/teardown
+            pass
+
         q_count = len(payload.questions)
         logger.debug(
             "TextualPromptChannel.ask: ENTER push_screen_wait q_count=%d headers=%r",

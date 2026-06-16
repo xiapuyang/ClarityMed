@@ -17,7 +17,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class PyMuPDFOcrProvider(OcrProvider):
         if not text.strip():
             # Scanned PDFs return empty extracts. Signal explicitly so
             # the routing chain falls through to marker / vision-LLM.
-            raise OcrError("pymupdf: no text extracted (likely scanned PDF)")
+            raise OcrEmpty("pymupdf: no text extracted (likely scanned PDF)")
         return ExtractResult(
             text=text, provider_used=self.label, chain_tried=[self.label]
         )

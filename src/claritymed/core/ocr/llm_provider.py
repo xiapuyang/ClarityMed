@@ -94,14 +94,39 @@ class LLMOcrProvider(OcrProvider):
             raise OcrError(f"LLM OCR failed for {path.name}: {exc}") from exc
 
         extraction = result.output
-        if not extraction.success:
+
+        # Resolve outcome: prefer explicit status (v2 prompts), fall back to
+        # success bool (v1 prompts).  Neither set → treat as failed.
+        status = extraction.status
+        if status is None:
+            if extraction.success is True:
+                status = "done"
+            elif extraction.success is False:
+                status = "failed"
+            else:
+                status = "failed"
+
+        if status == "failed":
             raise OcrError(
                 f"LLM could not extract text from {path.name}: "
                 f"{extraction.failure_reason or 'no reason given'}"
             )
+        if status == "empty":
+            from claritymed.core.ocr.base import OcrEmpty
+
+            raise OcrEmpty(f"LLM: no text found in {path.name}")
 
         text = extraction.text.strip()
+        if not text:
+            from claritymed.core.ocr.base import OcrEmpty
+
+            raise OcrEmpty(f"LLM: extracted empty text from {path.name}")
+
         logger.debug("ocr: extracted %d chars from %s", len(text), path.name)
         return ExtractResult(
-            text=text, provider_used=self.label, chain_tried=[self.label]
+            text=text,
+            provider_used=self.label,
+            chain_tried=[self.label],
+            modality=extraction.modality,
+            is_medical=extraction.is_medical,
         )

@@ -21,7 +21,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class MarkerOcrProvider(OcrProvider):
             raise OcrError(f"marker-pdf extraction failed: {exc}") from exc
 
         if not text.strip():
-            raise OcrError("marker-pdf: no text extracted")
+            raise OcrEmpty("marker-pdf: no text extracted")
         return ExtractResult(
             text=text, provider_used=self.label, chain_tried=[self.label]
         )

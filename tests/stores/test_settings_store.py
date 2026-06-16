@@ -135,3 +135,51 @@ def test_malformed_single_rule_discards_full_list(_ctx):
     )
     store.path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     assert store.list_rules() == []
+
+
+def test_matches_skips_opaque_key_in_pattern(_ctx):
+    """ApprovalRule.matches() continues past opaque keys like sha256."""
+    now = datetime.now(timezone.utc)
+    rule = ApprovalRule.model_construct(
+        id="test-id",
+        tool="save_record",
+        action="allow",
+        args_pattern={"sha256": "a" * 64, "name": "exam"},
+        granted_at=now,
+        ttl_hours=24,
+        expires_at=now + timedelta(hours=24),
+    )
+    assert rule.matches("save_record", {"name": "exam"}) is True
+
+
+def test_matches_returns_false_when_arg_value_differs(_ctx):
+    """matches() returns False when a pattern value doesn't match the call args."""
+    now = datetime.now(timezone.utc)
+    rule = ApprovalRule.model_construct(
+        id="test-id",
+        tool="save_allergy",
+        action="allow",
+        args_pattern={"severity": "mild"},
+        granted_at=now,
+        ttl_hours=24,
+        expires_at=now + timedelta(hours=24),
+    )
+    assert rule.matches("save_allergy", {"severity": "severe"}) is False
+
+
+def test_save_raises_oserror_when_rename_fails(_ctx, monkeypatch):
+    """OSError during atomic rename propagates after tmp cleanup."""
+    from pathlib import Path
+
+    store = SettingsStore("alice")
+
+    _real_replace = Path.replace
+
+    def _bad_replace(self, target):
+        if str(self).endswith(".tmp"):
+            raise OSError("disk full")
+        return _real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _bad_replace)
+    with pytest.raises(OSError, match="disk full"):
+        store.add_rule("save_allergy", {})

@@ -178,6 +178,21 @@ class Conversation(VerticalScroll):
         if self._active_assistant is not None:
             self._active_assistant.streaming_text = ""
 
+    def drop_active_streaming_bubble(self) -> None:
+        """Remove the active streaming bubble from the DOM and deregister it.
+
+        Called by TextualPromptChannel before showing any modal so that the
+        modal result (系统 turn) mounts after it, and the LLM's post-tool
+        answer starts a fresh bubble after the system turn. This gives the
+        ordering: [modal result] → [answer], regardless of whether the
+        prompt channel was invoked directly by the LLM or from inside a tool
+        body. Pre-tool streaming text is discarded — the LLM generates a
+        proper post-tool answer once the modal resolves.
+        """
+        if self._active_assistant is not None:
+            self._active_assistant.remove()
+            self._active_assistant = None
+
     def start_assistant_turn(self) -> TurnBubble:
         bubble = TurnBubble("assistant", "")
         self.mount(bubble)

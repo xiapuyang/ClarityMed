@@ -11,7 +11,7 @@ import httpx
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 from claritymed.core.ocr.llm_provider import LLMOcrProvider
 from claritymed.core.ocr.mineru_provider import MineRUOcrProvider
 from claritymed.core.ocr.routing_provider import RoutingOcrProvider
@@ -137,6 +137,18 @@ def test_load_ocr_config_reads_yaml():
     assert cfg.llm.provider_id == "omlx"
 
 
+def test_load_ocr_config_raises_when_yaml_empty(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import claritymed.config as _cfg_module
+    from claritymed.core.schemas.ocr import load_ocr_config
+
+    mock_load_yaml = MagicMock(return_value=None)
+    monkeypatch.setattr(_cfg_module, "load_yaml", mock_load_yaml)
+    with pytest.raises(ValueError, match="missing or empty"):
+        load_ocr_config()
+
+
 # ---------------------------------------------------------------------------
 # OcrProvider interface
 # ---------------------------------------------------------------------------
@@ -196,6 +208,86 @@ async def test_llm_ocr_provider_wraps_model_errors(tmp_path: Path):
     ):
         with pytest.raises(OcrError):
             await LLMOcrProvider(TestModel(custom_output_text="x")).extract_text(fake)
+
+
+async def test_llm_ocr_provider_status_done_returns_text(tmp_path: Path):
+    """v2 path: status='done' returns text and threads modality/is_medical."""
+    fake = tmp_path / "ct.png"
+    fake.write_bytes(b"\x89PNG\r\n")
+
+    model = TestModel(
+        custom_output_args={
+            "status": "done",
+            "text": "CT头颅平扫：未见明显异常",
+            "modality": "ct",
+            "is_medical": True,
+        }
+    )
+    result = await LLMOcrProvider(model).extract_text(fake)
+    assert result.text == "CT头颅平扫：未见明显异常"
+    assert result.modality == "ct"
+    assert result.is_medical is True
+
+
+async def test_llm_ocr_provider_status_empty_raises_ocr_empty(tmp_path: Path):
+    """v2 path: status='empty' → OcrEmpty (not OcrError)."""
+    fake = tmp_path / "blank.png"
+    fake.write_bytes(b"\x89PNG\r\n")
+
+    model = TestModel(custom_output_args={"status": "empty", "text": ""})
+    with pytest.raises(OcrEmpty, match="no text found"):
+        await LLMOcrProvider(model).extract_text(fake)
+
+
+async def test_llm_ocr_provider_status_failed_raises_ocr_error(tmp_path: Path):
+    """v2 path: status='failed' → OcrError."""
+    fake = tmp_path / "bad.pdf"
+    fake.write_bytes(b"%PDF-1.4")
+
+    model = TestModel(
+        custom_output_args={
+            "status": "failed",
+            "failure_reason": "Unsupported format",
+        }
+    )
+    with pytest.raises(OcrError, match="Unsupported format"):
+        await LLMOcrProvider(model).extract_text(fake)
+
+
+async def test_llm_ocr_provider_empty_text_after_done_raises_ocr_empty(tmp_path: Path):
+    """status='done' but text is blank after strip → OcrEmpty."""
+    fake = tmp_path / "blank.png"
+    fake.write_bytes(b"\x89PNG\r\n")
+
+    model = TestModel(custom_output_args={"status": "done", "text": "   "})
+    with pytest.raises(OcrEmpty, match="empty text"):
+        await LLMOcrProvider(model).extract_text(fake)
+
+
+async def test_llm_ocr_provider_raises_when_agent_run_throws(tmp_path: Path):
+    """Exception from Agent.run is wrapped in OcrError."""
+    from unittest.mock import AsyncMock, patch
+
+    fake = tmp_path / "scan.png"
+    fake.write_bytes(b"\x89PNG\r\n")
+
+    model = TestModel(custom_output_args={"status": "done", "text": "x"})
+    with patch(
+        "pydantic_ai.Agent.run", new=AsyncMock(side_effect=RuntimeError("timeout"))
+    ):
+        with pytest.raises(OcrError, match="LLM OCR failed"):
+            await LLMOcrProvider(model).extract_text(fake)
+
+
+async def test_llm_ocr_provider_no_status_no_success_raises_ocr_error(tmp_path: Path):
+    """Neither status nor success set → treated as failed."""
+    fake = tmp_path / "scan.png"
+    fake.write_bytes(b"\x89PNG\r\n")
+
+    # Both fields default to None — the fallback else-branch fires
+    model = TestModel(custom_output_args={})
+    with pytest.raises(OcrError):
+        await LLMOcrProvider(model).extract_text(fake)
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +174,7 @@ class RoutingOcrProvider(OcrProvider):
 
         tried_labels: list[str] = []
         last_exc: OcrError | None = None
+        had_real_error = False
         for provider in chain:
             # Capability filter: a provider that declares it can't handle
             # this extension is silently skipped and does NOT enter
@@ -188,8 +189,12 @@ class RoutingOcrProvider(OcrProvider):
             tried_labels.append(label)
             try:
                 result = await provider.extract_text(path)
+            except OcrEmpty as exc:
+                last_exc = exc
+                continue
             except OcrError as exc:
                 last_exc = exc
+                had_real_error = True
                 continue
             duration_ms = int((time.perf_counter() - t0) * 1000)
             _emit_audit(
@@ -224,13 +229,37 @@ class RoutingOcrProvider(OcrProvider):
                 f"no chain provider supports extension {ext!r} "
                 f"(configured: {[p.label for p in chain]})"
             )
-        else:
-            error_msg = str(last_exc) if last_exc else "no providers"
+            _emit_audit(
+                _with_filename(
+                    {
+                        "status": "error",
+                        "provider": "unknown",
+                        "chain_tried": tried_labels,
+                        "blob_filename": path.name,
+                        "size_bytes": size_bytes,
+                        "duration_ms": duration_ms,
+                        "error": error_msg,
+                        "fallback": False,
+                    }
+                )
+            )
+            raise OcrError(error_msg)
+
+        # All providers were tried. Distinguish "image has no text" (every
+        # provider returned OcrEmpty) from "something broke" (at least one
+        # raised a real OcrError). Only the first case is not an error.
+        all_empty = not had_real_error and isinstance(last_exc, OcrEmpty)
+        audit_status = "empty" if all_empty else "error"
+        error_msg = (
+            f"all providers returned no text ({tried_labels})"
+            if all_empty
+            else f"all providers exhausted ({tried_labels}); last error: {last_exc}"
+        )
         _emit_audit(
             _with_filename(
                 {
-                    "status": "error",
-                    "provider": tried_labels[-1] if tried_labels else "unknown",
+                    "status": audit_status,
+                    "provider": tried_labels[-1],
                     "chain_tried": tried_labels,
                     "blob_filename": path.name,
                     "size_bytes": size_bytes,
@@ -240,8 +269,6 @@ class RoutingOcrProvider(OcrProvider):
                 }
             )
         )
-        if not tried_labels:
-            raise OcrError(error_msg)
-        raise OcrError(
-            f"all providers exhausted ({tried_labels}); last error: {last_exc}"
-        )
+        if all_empty:
+            raise OcrEmpty(error_msg)
+        raise OcrError(error_msg)

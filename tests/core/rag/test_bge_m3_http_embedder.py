@@ -219,3 +219,79 @@ def test_build_embedder_unknown_id_raises():
 def test_dimension_property():
     emb = BgeM3HttpEmbedder(base_url="http://x", dense_dim=DENSE_DIM)
     assert emb.dimension == DENSE_DIM
+
+
+# --- aclose / api_key / request_id injection ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_client_and_allows_reuse():
+    """aclose() drains the async client; calling it twice is safe."""
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.url.path)
+        return httpx.Response(200, json=[_dense_vec()])
+
+    emb = _embedder(handler)
+    await emb.embed_dense(["a"])  # forces client creation
+    assert emb._async_client is not None
+    await emb.aclose()
+    assert emb._async_client is None
+    await emb.aclose()  # second call must not raise
+
+
+@pytest.mark.asyncio
+async def test_api_key_env_set_sends_auth_header(monkeypatch):
+    """When api_key_env resolves to a value, Bearer header is sent."""
+    monkeypatch.setenv("EMBED_TEST_KEY", "sk-test-token")
+    received: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request.headers.get("authorization", ""))
+        return httpx.Response(200, json=[_dense_vec()])
+
+    import httpx as _httpx
+
+    emb = BgeM3HttpEmbedder(
+        base_url="http://embed.test",
+        dense_dim=DENSE_DIM,
+        api_key_env="EMBED_TEST_KEY",
+        transport=_httpx.MockTransport(handler),
+    )
+    await emb.embed_dense(["hello"])
+    assert received[0] == "Bearer sk-test-token"
+    await emb.aclose()
+
+
+@pytest.mark.asyncio
+async def test_request_id_injected_when_context_var_set():
+    """X-Request-ID header is injected from request_id_ctx when set."""
+    from claritymed.context import request_id_ctx
+
+    received: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request.headers.get("x-request-id", ""))
+        return httpx.Response(200, json=[_dense_vec()])
+
+    emb = _embedder(handler)
+    token = request_id_ctx.set("20260615120000ABCDEF12")
+    try:
+        await emb.embed_dense(["hello"])
+    finally:
+        request_id_ctx.reset(token)
+        await emb.aclose()
+
+    assert received[0] == "20260615120000ABCDEF12"
+
+
+@pytest.mark.asyncio
+async def test_sparse_connection_error_raises_embedder_unreachable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    emb = _embedder(handler)
+    with pytest.raises(EmbedderUnreachableError):
+        await emb.embed_sparse(["a"])
+    await emb.aclose()

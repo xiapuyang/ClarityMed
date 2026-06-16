@@ -217,3 +217,61 @@ def test_build_reranker_unknown_id_raises():
     cfg = RerankerConfig.model_construct(active="qwen3_rerank_http", catalog=[entry])
     with pytest.raises(UnknownRerankerError):
         build_reranker(cfg)
+
+
+# --- aclose / api_key / request_id injection ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_client_and_allows_reuse():
+    """aclose() drains the async client; calling it twice is safe."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"index": 0, "score": 0.8}])
+
+    rr = _reranker(handler)
+    await rr.rerank("q", ["a"], top_k=1)  # forces client creation
+    assert rr._async_client is not None
+    await rr.aclose()
+    assert rr._async_client is None
+    await rr.aclose()  # second call must not raise
+
+
+@pytest.mark.asyncio
+async def test_api_key_env_set_sends_auth_header(monkeypatch):
+    monkeypatch.setenv("RERANK_TEST_KEY", "sk-rerank-token")
+    received: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request.headers.get("authorization", ""))
+        return httpx.Response(200, json=[{"index": 0, "score": 0.9}])
+
+    rr = BgeRerankerV2M3HttpReranker(
+        base_url="http://rerank.test",
+        api_key_env="RERANK_TEST_KEY",
+        transport=httpx.MockTransport(handler),
+    )
+    await rr.rerank("q", ["a"], top_k=1)
+    assert received[0] == "Bearer sk-rerank-token"
+    await rr.aclose()
+
+
+@pytest.mark.asyncio
+async def test_request_id_injected_when_context_var_set():
+    from claritymed.context import request_id_ctx
+
+    received: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request.headers.get("x-request-id", ""))
+        return httpx.Response(200, json=[{"index": 0, "score": 0.9}])
+
+    rr = _reranker(handler)
+    token = request_id_ctx.set("20260615120000ABCDEF12")
+    try:
+        await rr.rerank("q", ["a"], top_k=1)
+    finally:
+        request_id_ctx.reset(token)
+        await rr.aclose()
+
+    assert received[0] == "20260615120000ABCDEF12"

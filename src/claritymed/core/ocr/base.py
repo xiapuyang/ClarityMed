@@ -29,6 +29,8 @@ class ExtractResult:
     text: str
     provider_used: str
     chain_tried: list[str] = field(default_factory=list)
+    modality: str | None = None
+    is_medical: bool | None = None
 
 
 class OcrProvider(ABC):
@@ -88,3 +90,14 @@ class OcrProvider(ABC):
 
 class OcrError(RuntimeError):
     """Raised by ``OcrProvider`` implementations on unrecoverable failure."""
+
+
+class OcrEmpty(OcrError):
+    """Raised when OCR ran successfully but found no text in the input.
+
+    Distinguishes "image has no readable text" from "something broke".
+    The routing layer re-raises this only when every provider in the chain
+    agreed the input was empty and no real error occurred. Callers can
+    catch ``OcrEmpty`` before ``OcrError`` to handle the two cases
+    differently (e.g. persist ``status="empty"`` without a WARNING log).
+    """

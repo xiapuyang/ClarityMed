@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from claritymed.context import apply_context, reset_context
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 from claritymed.orchestrator.services.ocr_worker import (
     OcrCompleted,
     OcrJob,
@@ -22,11 +22,20 @@ class _StubProvider(OcrProvider):
     is_local = True
     label = "stub"
 
-    def __init__(self, *, text: str = "extracted text", raise_with: str | None = None):
+    def __init__(
+        self,
+        *,
+        text: str = "extracted text",
+        raise_with: str | None = None,
+        raise_empty: bool = False,
+    ):
         self._text = text
         self._raise = raise_with
+        self._raise_empty = raise_empty
 
     async def extract_text(self, path: Path) -> ExtractResult:
+        if self._raise_empty:
+            raise OcrEmpty("no text in image")
         if self._raise:
             raise OcrError(self._raise)
         return ExtractResult(
@@ -254,3 +263,137 @@ async def test_cached_failure_triggers_retry(_ctx):
     sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
     assert sentinel["status"] == "done"
     assert sentinel["chars"] == len("recovered text")
+
+
+async def test_ocr_empty_marks_empty_not_failed(_ctx):
+    """OcrEmpty from the provider writes status='empty', not 'failed'.
+
+    Empty images (no extractable text) are not an error — the sentinel
+    must distinguish them so the UI can show "no text found" instead of
+    "extraction failed".
+    """
+    bs = BlobStore("test")
+    sha = bs.store(b"\x89PNG", "png")
+    sa = SessionAttachments("test", "sess-1")
+    sa.add(sha256=sha, filename="blank.png", mime="image/png", size=4)
+
+    completions: list[OcrCompleted] = []
+    worker = OcrWorker(
+        _StubProvider(raise_empty=True),
+        listener=lambda c: completions.append(c),
+    )
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "png"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "empty"
+    assert completions[0].status == "empty"
+    # Empty is NOT an error — the session row should reflect that.
+    row = sa.get(sha)
+    assert row is not None and row.ocr_status == "empty"
+
+
+class _LLMStubProvider(OcrProvider):
+    """Stub that returns ExtractResult with optional modality/is_medical."""
+
+    is_local = True
+    label = "stub"
+
+    def __init__(
+        self,
+        text: str = "report",
+        modality: str | None = None,
+        is_medical: bool | None = None,
+    ):
+        self._text = text
+        self._modality = modality
+        self._is_medical = is_medical
+
+    async def extract_text(self, path: Path) -> ExtractResult:
+        return ExtractResult(
+            text=self._text,
+            provider_used=self.label,
+            chain_tried=[self.label],
+            modality=self._modality,
+            is_medical=self._is_medical,
+        )
+
+
+@pytest.mark.asyncio
+async def test_compute_vision_tags_llm_override_when_clip_unknown(tmp_path):
+    """LLM modality/is_medical override medical-clip 'unknown' result."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from claritymed.core.ocr.base import ExtractResult
+    from claritymed.errors import MedicalClipUnreachableError
+
+    # Create a real PNG file so _is_image returns True
+    img = tmp_path / "ct.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    fake_clip = MagicMock()
+    # medical-clip is unreachable → tags["modality"] = "unknown", no is_medical
+    fake_clip.classify_modality = AsyncMock(
+        side_effect=MedicalClipUnreachableError("down")
+    )
+
+    worker = OcrWorker(
+        _LLMStubProvider(),
+        medical_clip_client=fake_clip,
+    )
+    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    result = ExtractResult(
+        text="CT头颅平扫报告",
+        provider_used="stub",
+        chain_tried=["stub"],
+        modality="ct",
+        is_medical=True,
+    )
+    tags = await worker._compute_vision_tags(job, result)
+
+    assert tags["modality"] == "ct"
+    assert tags["is_medical"] is True
+    assert "modality_from_llm_ocr" in tags.get("vision_warnings", [])
+    assert "is_medical_from_llm_ocr" in tags.get("vision_warnings", [])
+
+
+@pytest.mark.asyncio
+async def test_compute_vision_tags_clip_result_not_overridden_when_confident(tmp_path):
+    """Confident medical-clip result is NOT overridden even if LLM disagrees."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from claritymed.core.ocr.base import ExtractResult
+
+    img = tmp_path / "us.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    clip_response = MagicMock()
+    clip_response.modality = "ultrasound"
+    clip_response.confidence = 0.95
+    clip_response.is_medical = True
+
+    fake_clip = MagicMock()
+    fake_clip.classify_modality = AsyncMock(return_value=clip_response)
+
+    worker = OcrWorker(_LLMStubProvider(), medical_clip_client=fake_clip)
+    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    result = ExtractResult(
+        text="B超: 肝胆脾胰肾未见异常",
+        provider_used="stub",
+        chain_tried=["stub"],
+        modality="ct",  # LLM says ct — should NOT override confident clip
+        is_medical=True,
+    )
+    tags = await worker._compute_vision_tags(job, result)
+
+    assert tags["modality"] == "ultrasound"
+    assert "modality_from_llm_ocr" not in tags.get("vision_warnings", [])

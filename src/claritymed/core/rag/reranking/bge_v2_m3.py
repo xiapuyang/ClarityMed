@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from claritymed.context import request_id_ctx
 from claritymed.core.rag.reranking.base import RerankHit, Reranker
 from claritymed.errors import MissingApiKeyError, RerankerUnreachableError
 
@@ -115,10 +116,17 @@ class BgeRerankerV2M3HttpReranker(Reranker):
 
     def _client(self) -> httpx.AsyncClient:
         if self._async_client is None:
+
+            async def _inject_request_id(request: httpx.Request) -> None:
+                rid = request_id_ctx.get()
+                if rid:
+                    request.headers["X-Request-ID"] = rid
+
             kwargs: dict[str, Any] = {
                 "base_url": self._base_url,
                 "timeout": self._timeout_s,
                 "headers": self._headers(),
+                "event_hooks": {"request": [_inject_request_id]},
             }
             if self._transport is not None:
                 kwargs["transport"] = self._transport

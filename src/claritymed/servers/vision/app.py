@@ -33,7 +33,11 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from claritymed.servers._devices import LOG_CONFIG, default_device
+from claritymed.servers._devices import (
+    LOG_CONFIG,
+    add_logging_middleware,
+    default_device,
+)
 
 try:
     import uvicorn
@@ -163,6 +167,7 @@ def _find_model_spec(models: list[ModelSpec], model_id: str) -> ModelSpec:
 
 
 app = FastAPI(title="claritymed-vision-server", lifespan=lifespan)
+add_logging_middleware(app, server_logger=logger)
 
 
 def _error_payload(

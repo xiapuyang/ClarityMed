@@ -7,10 +7,13 @@ from unittest.mock import patch
 
 import pytest
 
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 from claritymed.core.ocr.routing_provider import (
     RoutingOcrProvider,
     _filter_chain_for_policy,
+    _with_filename,
+    reset_original_filename,
+    set_original_filename,
 )
 from claritymed.errors import MinerUNotAllowed
 
@@ -292,3 +295,80 @@ def test_mineru_is_local_false():
     from claritymed.core.ocr.mineru_provider import MineRUOcrProvider
 
     assert MineRUOcrProvider.is_local is False
+
+
+# --- OcrEmpty handling -----------------------------------------------
+
+
+class _EmptyProvider(OcrProvider):
+    """Provider that raises OcrEmpty (image has no extractable text)."""
+
+    is_local = True
+    label = "empty"
+    supported_extensions = frozenset({".pdf"})
+
+    async def extract_text(self, path: Path) -> ExtractResult:
+        raise OcrEmpty("no text found")
+
+
+async def test_all_empty_raises_ocr_empty(tmp_path: Path):
+    """When every provider raises OcrEmpty, the router raises OcrEmpty (not OcrError)."""
+    pdf = tmp_path / "blank.pdf"
+    pdf.write_bytes(b"%PDF")
+    router = RoutingOcrProvider(
+        document_chain=[_EmptyProvider(), _EmptyProvider()],
+        image_chain=[],
+    )
+    with pytest.raises(OcrEmpty, match="all providers returned no text"):
+        await router.extract_text(pdf)
+
+
+async def test_empty_then_real_error_raises_ocr_error(tmp_path: Path):
+    """OcrEmpty followed by a real OcrError → OcrError wins (had_real_error=True)."""
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF")
+    router = RoutingOcrProvider(
+        document_chain=[
+            _EmptyProvider(),
+            _LocalProvider(raise_with="provider crashed"),
+        ],
+        image_chain=[],
+    )
+    with pytest.raises(OcrError, match="all providers exhausted"):
+        await router.extract_text(pdf)
+
+
+async def test_empty_provider_then_success_returns_text(tmp_path: Path):
+    """OcrEmpty from first provider → chain continues → second succeeds."""
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF")
+    router = RoutingOcrProvider(
+        document_chain=[_EmptyProvider(), _LocalProvider(text="found it")],
+        image_chain=[],
+    )
+    from unittest.mock import patch
+
+    with patch("claritymed.core.ocr.routing_provider._emit_audit"):
+        result = await router.extract_text(pdf)
+    assert result.text == "found it"
+
+
+# --- _with_filename --------------------------------------------------
+
+
+def test_with_filename_attaches_name_when_set():
+    payload = {"status": "ok"}
+    token = set_original_filename("scan.pdf")
+    try:
+        out = _with_filename(payload)
+    finally:
+        reset_original_filename(token)
+    assert out == {"status": "ok", "original_filename": "scan.pdf"}
+    # Original dict is not mutated.
+    assert "original_filename" not in payload
+
+
+def test_with_filename_passthrough_when_unset():
+    payload = {"status": "ok"}
+    out = _with_filename(payload)
+    assert out is payload

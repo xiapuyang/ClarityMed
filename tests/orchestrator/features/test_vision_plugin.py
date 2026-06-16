@@ -447,3 +447,71 @@ def test_read_blob_bytes_finds_content_file(home):
     """``_read_blob_bytes`` returns the raw bytes regardless of extension."""
     sha = _seed_attachment(home, b"hello-world")
     assert _read_blob_bytes(_USER_ID, sha) == b"hello-world"
+
+
+# --- validator error-path tests -------------------------------------------
+
+
+def test_validate_vision_prompts_raises_when_prompt_missing():
+    """_validate_vision_prompts raises RuntimeError when any prompt is absent."""
+    from unittest.mock import MagicMock
+
+    from claritymed.orchestrator.features.vision_plugin import _validate_vision_prompts
+
+    mock_registry = MagicMock()
+    mock_registry.get.side_effect = Exception("no such prompt")
+    with pytest.raises(RuntimeError, match="Missing vision prompts"):
+        _validate_vision_prompts(mock_registry)
+
+
+def test_validate_specialist_keywords_raises_on_blank_entry(monkeypatch):
+    """A blank entry in the specialist keywords i18n list raises RuntimeError."""
+    from claritymed.orchestrator.features import vision_plugin as _vp
+
+    monkeypatch.setattr(
+        _vp, "t_list", lambda key, lang: [""] if "specialist" in key else ["specialist"]
+    )
+    with pytest.raises(RuntimeError, match="blank entry"):
+        _vp._validate_specialist_keywords()
+
+
+def test_validate_specialist_keywords_raises_on_missing_entry(monkeypatch):
+    """Missing entries (empty list) in specialist keywords raises RuntimeError."""
+    from claritymed.orchestrator.features import vision_plugin as _vp
+
+    monkeypatch.setattr(_vp, "t_list", lambda key, lang: [])
+    with pytest.raises(RuntimeError, match="Missing vision specialist_keywords"):
+        _vp._validate_specialist_keywords()
+
+
+def test_build_tool_description_template_without_placeholder():
+    """Template without {covered_diseases} is returned as-is."""
+    from unittest.mock import MagicMock
+
+    cfg = _vision_config()
+    mock_registry = MagicMock()
+    mock_registry.get.return_value = "Fixed description without placeholder."
+    feature = VisionFeature.__new__(VisionFeature)
+    feature._config = cfg
+    feature._registry = VisionRegistry(cfg)
+    feature._prompt_registry = mock_registry
+    feature._stash = {}
+    result = feature._build_tool_description()
+    assert result == "Fixed description without placeholder."
+
+
+def test_build_tool_description_no_diseases_enabled():
+    """No enabled diseases produces the no-op placeholder in the description."""
+    from unittest.mock import MagicMock
+
+    cfg = _vision_config(enabled=False)
+    mock_registry = MagicMock()
+    mock_registry.get.return_value = "Diseases:\n{covered_diseases}"
+    feature = VisionFeature.__new__(VisionFeature)
+    feature._config = cfg
+    feature._registry = VisionRegistry(cfg)
+    feature._prompt_registry = mock_registry
+    feature._stash = {}
+    result = feature._build_tool_description()
+    assert result is not None
+    assert "no diseases enabled" in result

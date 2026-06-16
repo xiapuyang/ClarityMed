@@ -13,7 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from claritymed.core.ocr.base import ExtractResult, OcrError, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class PandocOcrProvider(OcrProvider):
             raise OcrError(f"pypandoc extraction failed: {exc}") from exc
 
         if not text.strip():
-            raise OcrError("pypandoc: no text extracted")
+            raise OcrEmpty("pypandoc: no text extracted")
         return ExtractResult(
             text=text, provider_used=self.label, chain_tried=[self.label]
         )

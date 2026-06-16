@@ -713,17 +713,15 @@ class ClarityMedApp(App):
                         self._flash_routing(event.detected_mode, event.confidence)
                     elif isinstance(event, ToolStarted):
                         if event.tool_name == "ask_user_question":
-                            # The model may have generated text before calling
-                            # the tool in the same response. Clear the bubble
-                            # now so the user sees only the Q&A interaction,
-                            # not a half-answer. We track the byte offset so
-                            # we can discard that text if the user declines.
+                            # Track pre-tool text length so we can discard it
+                            # if the user declines. The bubble itself is removed
+                            # by TextualPromptChannel.ask() just before the modal
+                            # opens — that is the canonical clear point.
                             _ask_pre_tool_len = len("".join(final_text_parts))
                             logger.debug(
                                 "_run_stream: ToolStarted ask_user_question pre_tool_len=%d",
                                 _ask_pre_tool_len,
                             )
-                            conv.clear_active_streaming_text()
                         steps.push_start(event.tool_name, event.args_preview)
                     elif isinstance(event, ToolCompleted):
                         if event.tool_name == "ask_user_question":
@@ -932,6 +930,18 @@ class ClarityMedApp(App):
         from claritymed.orchestrator.features.symptoms_plugin import (
             make_symptoms_factory,
         )
+        from claritymed.orchestrator.features.vision_plugin import (
+            make_vision_factory,
+        )
+
+        _app = self
+
+        def _tui_session_id() -> str | None:
+            return (
+                _app._chat_session.session_id
+                if _app._chat_session is not None
+                else None
+            )
 
         service = AskService(
             model=model,
@@ -951,6 +961,7 @@ class ClarityMedApp(App):
                 self, language=self.query_one(StatusBar).language
             ),
             symptoms_factory=make_symptoms_factory(),
+            vision_factory=make_vision_factory(get_session_id=_tui_session_id),
         )
         self._cached_ask_service = service
         return service

@@ -32,15 +32,49 @@ class OcrExtraction(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    success: bool = Field(
-        description="True if document content was visible and extracted."
+    status: Literal["done", "empty", "failed"] | None = Field(
+        default=None,
+        description=(
+            "'done': text extracted successfully; "
+            "'empty': document visible but no readable text; "
+            "'failed': could not process (no attachment / unsupported format). "
+            "Preferred over success for v2+ prompts."
+        ),
+    )
+    success: bool | None = Field(
+        default=None,
+        description=(
+            "True when content was extracted. Kept for v1 prompt compatibility; "
+            "v2 prompts set status instead."
+        ),
     )
     text: str = Field(
-        default="", description="Extracted plain text. Empty when success=False."
+        default="",
+        description=(
+            "Extracted plain text exactly as written. "
+            "Exclude watermarks, decorative stamps, and page numbers. "
+            "Empty when status is 'empty' or 'failed'."
+        ),
     )
     failure_reason: str | None = Field(
         default=None,
-        description="Short reason string when success=False, else null.",
+        description="Short reason (≤50 words) when status='failed', else null.",
+    )
+    modality: str | None = Field(
+        default=None,
+        description=(
+            "Medical imaging modality inferred from image and text content. "
+            "One of: ultrasound, ct, xray, dermoscopy, photo, document, unknown. "
+            "Null when the input is clearly not a medical/clinical document."
+        ),
+    )
+    is_medical: bool | None = Field(
+        default=None,
+        description=(
+            "True if the content is clinical or medical "
+            "(imaging study, lab report, prescription, clinical note, etc.). "
+            "False for non-medical documents. Null when not determinable."
+        ),
     )
 
 
