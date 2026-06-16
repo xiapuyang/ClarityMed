@@ -105,13 +105,13 @@ async def _run_one_trial(
     try:
         from pydantic_ai import Agent, Tool
 
-        from claritymed.config import load_models_config
         from claritymed.core.llm.model import build_model, build_model_settings
+        from claritymed.stores.models import load_models
     except Exception as exc:  # noqa: BLE001
         return SpikeResult(provider_id, budget_ms, 0, False, f"import: {exc!s}")
 
     try:
-        models_cfg = load_models_config()
+        models_cfg = load_models()
         provider = next(p for p in models_cfg.providers if p.id == provider_id)
     except StopIteration:
         return SpikeResult(
@@ -210,6 +210,15 @@ def _writeup(results: list[SpikeResult]) -> str:
 
 
 async def _main(argv: list[str]) -> int:
+    # Load .env so OMLX_API_KEY / cloud provider keys land in os.environ
+    # before any provider build. The vision tool-trigger bench
+    # (tests/benchmarks/tool_invoke/vision/run.py) does the same; missing
+    # this here made the spike fail with "api_key_env unset" even when
+    # the project's .env had it.
+    from claritymed.config import load_env_file  # noqa: PLC0415
+
+    load_env_file()
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--providers",

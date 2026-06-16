@@ -604,6 +604,60 @@ class SegmentationResult(BaseModel):
     area_ratio: float = Field(ge=0.0, le=1.0)
 
 
+class DetectionBox(BaseModel):
+    """One bounding-box prediction from an object-detection model (YOLO).
+
+    Coordinates are normalized to ``[0, 1]`` against the input image's
+    pixel dimensions and laid out as ``xyxy`` (top-left, bottom-right).
+    Normalizing at the adapter boundary keeps the wire payload
+    resolution-independent — the TUI can render against the displayed
+    image size without re-knowing the network's letterbox target.
+
+    ``label`` is the manifest label (so the LLM-side reply prompt can
+    reuse ``LabelMeta`` lookups) and ``confidence`` is the model's
+    post-NMS class probability for this box.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    label: str = Field(min_length=1, max_length=64)
+    confidence: float = Field(ge=0.0, le=1.0)
+    x1: float = Field(ge=0.0, le=1.0)
+    y1: float = Field(ge=0.0, le=1.0)
+    x2: float = Field(ge=0.0, le=1.0)
+    y2: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _xyxy_ordered(self) -> DetectionBox:
+        if not (self.x2 >= self.x1 and self.y2 >= self.y1):
+            raise ValueError(
+                f"DetectionBox xyxy must satisfy x2>=x1 and y2>=y1; got "
+                f"({self.x1}, {self.y1}, {self.x2}, {self.y2})"
+            )
+        return self
+
+
+class ObjectDetectionResult(BaseModel):
+    """Per-image object-detection head output (YOLO and similar).
+
+    Returned alongside (not instead of) the per-disease
+    ``ClassificationResult``: detection-style models still expose a
+    derived "is this disease present" classification on
+    :class:`RawDetection` so the existing reply prompt branches
+    (``cancer_status`` / ``clinical_action``) keep working without a
+    schema fork. The boxes themselves are an additive payload for
+    detection-aware UIs and per-finding reasoning.
+
+    Empty ``boxes`` means "model ran, found nothing above the confidence
+    threshold" — distinct from "model didn't run" (sibling axis is
+    ``None`` on :attr:`RawDetection.object_detection`).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    boxes: list[DetectionBox] = Field(default_factory=list, max_length=1024)
+
+
 class QualityCheck(BaseModel):
     """One row of the input-quality gate's per-check breakdown."""
 
@@ -646,6 +700,7 @@ class RawDetection(BaseModel):
     cancer_status: CancerStatus | None = None
     clinical_action: ClinicalAction
     segmentation: SegmentationResult | None = None
+    object_detection: ObjectDetectionResult | None = None
     saliency_b64: str | None = None
     labels_meta: dict[str, LabelMeta]
     warnings: list[str] = Field(default_factory=list)
@@ -754,5 +809,7 @@ class DiseaseVisionModel(Protocol):
     def calibrate(self, raw: Any) -> dict[str, float]: ...
 
     def segment(self, x: Any) -> SegmentationResult | None: ...
+
+    def detect_boxes(self, x: Any) -> ObjectDetectionResult | None: ...
 
     def quality_gate(self, image: Any) -> InputQuality: ...

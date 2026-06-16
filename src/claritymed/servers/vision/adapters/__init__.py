@@ -16,4 +16,5 @@ from __future__ import annotations
 from claritymed.servers.vision.adapters import (  # noqa: F401
     onnx_adapter,
     torch_adapter,
+    yolo_adapter,
 )

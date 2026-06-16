@@ -45,6 +45,7 @@ from claritymed.core.vision.schemas import (
     InputQuality,
     Manifest,
     ModelSpec,
+    ObjectDetectionResult,
     QualityCheck,
     SegmentationResult,
     round_sig,
@@ -220,6 +221,10 @@ class TorchAdapter:
         ``DetectOptions.return_segmentation=False`` regardless of what
         we return here.
         """
+        return None
+
+    def detect_boxes(self, x: Any) -> ObjectDetectionResult | None:
+        """Classification-only adapter; YOLO lands in :mod:`yolo_adapter`."""
         return None
 
     def quality_gate(self, image: Any) -> InputQuality:

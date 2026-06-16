@@ -53,6 +53,7 @@ from claritymed.core.vision.schemas import (
     InputQuality,
     Manifest,
     ModelSpec,
+    ObjectDetectionResult,
     QualityCheck,
     SegmentationResult,
     round_sig,
@@ -234,6 +235,10 @@ class OnnxAdapter:
         second output head's spatial shape against the manifest's
         ``task`` field — deferred until a real cls+seg ONNX ships.
         """
+        return None
+
+    def detect_boxes(self, x: Any) -> ObjectDetectionResult | None:
+        """Classification-only adapter; YOLO detection lives in :mod:`yolo_adapter`."""
         return None
 
     def quality_gate(self, image: Any) -> InputQuality:
