@@ -16,6 +16,7 @@ Slash autocomplete:
 
 from __future__ import annotations
 
+import logging
 import time
 
 from textual import events
@@ -24,6 +25,8 @@ from textual.message import Message
 from textual.widgets import Input, Static
 
 from claritymed.cli.tui.slash_commands import KNOWN_COMMANDS
+
+logger = logging.getLogger(__name__)
 
 # Commands that take an argument get a trailing space so the user can keep
 # typing without backspacing. Pure-trigger commands land without the space.
@@ -93,6 +96,13 @@ class InputBar(Container):
         self._suppress_next_value: str | None = None
         self._stream_start: float | None = None
         self._stream_timer = None
+        # Drop-bug diagnostics: when Ghostty's drag-drop occasionally lands
+        # as raw keystrokes instead of bracketed paste, App.on_paste does
+        # NOT fire but the Input still grows. Tracking the prior length
+        # lets ``on_input_changed`` log a sudden burst (≥10 chars at once
+        # or 0→path-shaped) so future failures can be diagnosed by
+        # cross-referencing against ``on_paste:`` lines in app.log.
+        self._prev_value_len: int = 0
 
     def compose(self):
         yield Static("⟳  Responding…  (0s · Esc to cancel)", id="streaming-indicator")
@@ -144,6 +154,25 @@ class InputBar(Container):
     # ----- Textual event handlers ----------------------------------------
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        val = event.value
+        prev_len = self._prev_value_len
+        new_len = len(val)
+        self._prev_value_len = new_len
+        # Sudden growth signals a paste-like burst. A single keystroke is
+        # +1, IME composition lands as one combined update — anything ≥10
+        # is either a bracketed paste (logged by App.on_paste) or the
+        # drag-drop-as-raw-keystrokes failure mode we're trying to catch.
+        # The 0→non-empty transition is also logged because raw-keystroke
+        # drops arrive char-by-char and only the first event has prev=0.
+        growth = new_len - prev_len
+        if growth >= 10 or (prev_len == 0 and new_len > 0):
+            logger.info(
+                "input_changed: prev_len=%d new_len=%d growth=%d head=%r",
+                prev_len,
+                new_len,
+                growth,
+                val[:120],
+            )
         if (
             self._suppress_next_value is not None
             and event.value == self._suppress_next_value
@@ -248,6 +277,20 @@ class _SlashInput(Input):
     """Input subclass that lets the InputBar steer Up/Down/Tab/Esc while
     the slash-command popup is visible. When the popup is hidden these
     keys keep their default Input behaviour."""
+
+    def _on_paste(self, event: events.Paste) -> None:
+        # Diagnostic for the "drag-drop landed as raw text" failure mode.
+        # If this fires WITHOUT a preceding App.on_paste log line, then
+        # Textual delivered the Paste event to the focused Input directly
+        # (normal flow). If this never fires but the input value still
+        # grows, bracketed-paste markers were not emitted by the terminal
+        # — that's the Ghostty paste-protection edge case.
+        logger.info(
+            "_SlashInput._on_paste: len=%d head=%r",
+            len(event.text) if event.text else 0,
+            event.text[:120] if event.text else "",
+        )
+        super()._on_paste(event)
 
     def on_key(self, event: events.Key) -> None:
         bar = self.parent
