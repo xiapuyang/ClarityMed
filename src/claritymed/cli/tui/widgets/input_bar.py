@@ -291,6 +291,19 @@ class _SlashInput(Input):
             len(event.text) if event.text else 0,
             event.text[:120] if event.text else "",
         )
+        # Drag-drop file ingestion lives in App.on_paste, but when this
+        # Input is focused the paste lands here first and Textual's
+        # Input._on_paste (called next via the MRO walker) calls
+        # event.stop() after inserting, so the event never bubbles up.
+        # Detect drop-shaped payloads, zero out event.text so the
+        # inherited handler inserts nothing, and forward the original
+        # text to the App handler directly.
+        from claritymed.cli.tui.app import _looks_like_drop_attempt
+
+        text = event.text or ""
+        if text and _looks_like_drop_attempt(text):
+            event.text = ""
+            self.app.on_paste(events.Paste(text))
 
     def on_key(self, event: events.Key) -> None:
         bar = self.parent

@@ -210,3 +210,35 @@ async def test_paste_inserts_text_exactly_once():
         inp.post_message(events.Paste("hello"))
         await pilot.pause()
         assert inp.value == "hello"
+
+
+@pytest.mark.asyncio
+async def test_drag_drop_path_forwards_to_app_when_input_focused():
+    """Regression for the "raw path landed in input" bug.
+
+    Bracketed-paste of a file path delivered to a focused Input was being
+    inserted verbatim because Textual's ``Input._on_paste`` calls
+    ``event.stop()`` after inserting, which prevented the paste from
+    bubbling to ``App.on_paste`` — the only place that ingests dropped
+    files. ``_SlashInput._on_paste`` now detects drop-shaped payloads,
+    clears ``event.text`` so the inherited handler inserts nothing, and
+    forwards the original text to the App handler directly.
+    """
+    from textual import events
+
+    forwarded: list[str] = []
+
+    class _DropHost(_Host):
+        def on_paste(self, event: events.Paste) -> None:
+            forwarded.append(event.text)
+
+    async with _DropHost().run_test() as pilot:
+        app: _DropHost = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        inp = _input(app)
+        path_text = "/Users/sharp/Downloads/malignant\\ \\(3\\).png"
+        inp.post_message(events.Paste(path_text))
+        await pilot.pause()
+        assert inp.value == ""
+        assert forwarded == [path_text]
