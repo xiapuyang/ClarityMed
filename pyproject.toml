@@ -193,6 +193,7 @@ claritymed-medical-clip-server = "claritymed.servers.medical_clip.app:main"
 # adapters on loopback :8085; consumed by the orchestrator's
 # vision_plugin tool body (Unit 7).
 claritymed-vision-server = "claritymed.servers.vision.app:main"
+claritymed-symptoms-prepare-ddxplus = "claritymed.ingest.symptoms.ddxplus.prepare:main"
 claritymed-symptoms-train-ddxplus = "claritymed.ingest.symptoms.ddxplus.train:main"
 claritymed-symptoms-ablate-ddxplus = "claritymed.ingest.symptoms.ddxplus.ablate_maxstep:main"
 claritymed-symptoms-hparam-ddxplus = "claritymed.ingest.symptoms.ddxplus.hparam_search:main"

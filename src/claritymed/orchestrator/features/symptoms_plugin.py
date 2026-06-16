@@ -1179,6 +1179,25 @@ def _load_ddxplus_vocab(data_dir: str) -> "dict[str, frozenset[str]]":
     return per_evidence
 
 
+def _load_ddxplus_sidecar(data_dir: str) -> "dict[str, str]":
+    """Load evidence_id → concept_id map produced by ``prepare.py --build-sidecar``.
+
+    Consumed by :class:`~claritymed.core.symptoms.eligibility.term_service.TermServiceEligibility`.
+    Returns an empty dict when the file is absent (sidecar not yet built).
+    """
+    import json
+    from pathlib import Path as _Path
+
+    path = _Path(data_dir) / "evidence_concepts.json"
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
 def make_symptoms_factory(
     base_url: str = "http://127.0.0.1:8084",
 ) -> "Callable[[], SymptomsFeature] | None":
@@ -1197,8 +1216,10 @@ def make_symptoms_factory(
     from pathlib import Path as _Path
 
     from claritymed.config import DATA_DIR
+    from claritymed.core.rag.terms.factory import build_term_service
     from claritymed.core.symptoms.eligibility.direct import EvidenceVocabMap
     from claritymed.core.symptoms.eligibility.factory import build_eligibility_strategy
+    from claritymed.core.symptoms.eligibility.term_service import SidecarMap
     from claritymed.core.symptoms.registry import DatasetRegistry
     from claritymed.errors import (
         EligibilityStrategyConfigError,
@@ -1219,6 +1240,7 @@ def make_symptoms_factory(
         return None
 
     vocabs: EvidenceVocabMap = {}
+    sidecars: SidecarMap = {}
     for ds in enabled:
         if ds.id == "ddxplus":
             data_dir = _Path(str(DATA_DIR)) / "symptoms" / "ddxplus"
@@ -1231,9 +1253,24 @@ def make_symptoms_factory(
                     "eligibility direct-match will return strategy_unavailable",
                     data_dir,
                 )
+            ev_concepts = _load_ddxplus_sidecar(data_dir)
+            if ev_concepts:
+                sidecars[ds.id] = ev_concepts
+            else:
+                logger.info(
+                    "symptoms: ddxplus evidence_concepts.json not found at %s; "
+                    "term_service eligibility will report strategy_unavailable "
+                    "until `prepare.py --build-sidecar` is run",
+                    data_dir,
+                )
 
     try:
-        eligibility = build_eligibility_strategy(config.eligibility, vocabs=vocabs)
+        eligibility = build_eligibility_strategy(
+            config.eligibility,
+            vocabs=vocabs,
+            sidecars=sidecars,
+            term_service_factory=build_term_service,
+        )
     except (EligibilityStrategyConfigError, EligibilityStrategyUnavailableError) as exc:
         logger.warning(
             "symptoms: eligibility strategy unavailable (%s); feature disabled", exc

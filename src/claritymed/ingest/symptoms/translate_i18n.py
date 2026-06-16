@@ -15,9 +15,10 @@ schema-only refresh (re-run the generator) never accidentally overwrites
 a translator's hand edits, and a translation refresh (re-run this) never
 needs to touch the dataset's JSON.
 
-Usage (provider API keys are loaded from repo-root ``.env``)::
+Usage (provider API keys are loaded from ``~/.claritymed/.env`` via
+:func:`claritymed.config.load_env_file`)::
 
-    uv run python scripts/translate_symptoms_i18n.py \\
+    uv run claritymed-symptoms-translate-i18n \\
         --dataset-id ddxplus \\
         --source en \\
         --target zh \\
@@ -33,25 +34,17 @@ import argparse
 import asyncio
 import json
 import logging
-import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "src"))
-
-load_dotenv(REPO_ROOT / ".env")
-
-from claritymed.core.llm.model import build_model, build_model_settings  # noqa: E402
-from claritymed.stores.models import resolve_provider  # noqa: E402
+from claritymed.config import I18N_DIR, PROJECT_ROOT, load_env_file
+from claritymed.core.llm.model import build_model, build_model_settings
+from claritymed.stores.models import resolve_provider
 
 logger = logging.getLogger("translate_symptoms_i18n")
-
-I18N_DIR = REPO_ROOT / "configs" / "i18n"
 
 # Hard ceiling — too large a batch and small models drop entries from the
 # JSON dict; too small and we waste a model call's fixed overhead.
@@ -279,7 +272,7 @@ async def _run(args: argparse.Namespace) -> int:
     logger.info(
         "wrote %d translated entries to %s",
         translated_total,
-        target_path.relative_to(REPO_ROOT),
+        target_path.relative_to(PROJECT_ROOT),
     )
     if translated_total < len(pending):
         logger.warning(
@@ -323,6 +316,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    load_env_file()
     args = _build_arg_parser().parse_args()
     logging.basicConfig(
         level=logging.INFO if args.verbose or args.dry_run else logging.WARNING,

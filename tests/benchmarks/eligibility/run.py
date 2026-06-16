@@ -62,7 +62,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from claritymed.config import DATA_DIR, load_symptoms_config
+from claritymed.config import DATA_DIR, load_env_file, load_symptoms_config
 from claritymed.core.schemas.patient import Profile
 from claritymed.core.symptoms.eligibility.base import (
     EligibilityResult,
@@ -202,14 +202,13 @@ def _build_term_service() -> EligibilityStrategy | None:
 def _load_ddxplus_sidecars() -> "dict[str, dict[str, str]]":
     """Best-effort load of evidence→concept sidecar JSON.
 
-    The sidecar location isn't fixed — production code paths derive it
-    from the term_service config. For the benchmark we look in the
-    canonical ``data/symptoms/ddxplus/concept_sidecar.json`` first and
-    fall back to an empty map. Missing sidecars degrade term_service
-    to "strategy_unavailable for all", which the summary still
-    captures honestly.
+    Reads the same file the production plugin reads
+    (``DATA_DIR/symptoms/ddxplus/evidence_concepts.json``, produced by
+    ``prepare.py --build-sidecar``). Missing sidecars degrade
+    term_service to "strategy_unavailable for all", which the summary
+    still captures honestly.
     """
-    candidate = Path(str(DATA_DIR)) / "symptoms" / "ddxplus" / "concept_sidecar.json"
+    candidate = Path(str(DATA_DIR)) / "symptoms" / "ddxplus" / "evidence_concepts.json"
     if not candidate.exists():
         return {}
     try:
@@ -625,6 +624,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    load_env_file()
     args = _parse_args()
     try:
         return asyncio.run(_run(args))
