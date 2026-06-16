@@ -1,24 +1,27 @@
-"""BUSI dataset — breast-ultrasound image classification + segmentation.
+"""BUSI dataset — breast-ultrasound classification + segmentation.
 
 Modules:
 
 * ``download`` — Kaggle CLI wrapper. Pulls
-  ``aryashah2k/breast-ultrasound-images-dataset`` (Dataset_BUSI_with_GT)
+  ``aryashah2k/breast-ultrasound-images-dataset`` (``Dataset_BUSI_with_GT``)
   into ``~/.claritymed/data/vision/busi/``. Requires Kaggle credentials
   (``KAGGLE_USERNAME`` + ``KAGGLE_KEY`` env vars or
   ``~/.kaggle/kaggle.json``).
 * ``dataset`` — ``BUSIDataset(torch.utils.data.Dataset)``: train/val/test
   split deterministic by patient id; returns ``(image, mask, label)``
   tuples. Stratified to keep the rare ``normal`` class in every split.
-* ``hparam`` — Optuna search over backbone + LR + segmentation-loss
-  weight; persists trials to the shared
-  ``CLARITYMED_HOME/tracking/optuna.db`` (study name disambiguates).
-* ``train`` — production training. Outputs ``weights.pt`` +
-  ``manifest.json`` (with sha256s, eval metrics,
-  ``cancer_status_mapping``, ``clinical_action_mapping``,
-  ``labels_meta``).
-* ``tune`` — inference-time param sweep (classification threshold +
-  TTA on/off) against the held-out test split.
+* ``dataset_spec`` — :class:`~claritymed.ingest.vision.forge.spec.DatasetSpec`
+  instance ``BUSI_DATASET`` carrying labels, label-metadata, modality,
+  download slug, and the split-builder factory.
+* ``models/unet_resnet50`` — :class:`ModelSpec` for the U-Net + cls
+  head architecture; pick this up via the forge CLI:
 
-See ``docs/vision-model-workflow.md`` for the end-to-end recipe.
+  .. code-block:: bash
+
+      claritymed-vision-forge pipeline \\
+          --model claritymed.ingest.vision.busi.models.unet_resnet50:UNET_RESNET50
+
+Hparam search / training / tune / deploy live in
+``claritymed.ingest.vision.forge`` and are dataset-agnostic — the
+spec carries every per-dataset knob.
 """
