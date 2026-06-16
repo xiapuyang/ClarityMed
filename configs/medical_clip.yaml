@@ -31,7 +31,7 @@ tasks:
       - {label: ct,         prompts: ["a CT scan", "a computed tomography slice"]}
       - {label: xray,       prompts: ["a chest X-ray", "a radiograph"]}
       - {label: dermoscopy, prompts: ["a dermoscopy image of skin", "a skin lesion close-up"]}
-      - {label: histopathology, prompts: ["a histopathology slide", "a microscopy image of stained tissue", "a hematoxylin and eosin slide"]}
+      - {label: histopathology, prompts: ["a histopathology slide", "a microscopy image of stained tissue", "a hematoxylin and eosin slide", "an H&E stained tissue section", "a histological section under a microscope", "a tissue biopsy showing cell nuclei", "a pathology specimen at high magnification"]}
       - {label: photo,      prompts: ["a regular photograph", "a snapshot"]}
       - {label: document,   prompts: ["a document or screenshot", "a page of text"]}
     gating:

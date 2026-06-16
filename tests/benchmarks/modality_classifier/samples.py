@@ -87,6 +87,17 @@ _DATASET_SOURCES: tuple[DatasetSource, ...] = (
         # logs a skip line — no exception.
         relative_path="lung_colon_histopath",
     ),
+    DatasetSource(
+        name="chest_xray_pneumonia",
+        modality="xray",
+        # Kermany et al. 2018 chest radiographs via Paul Mooney's Kaggle
+        # mirror. Downloaded by
+        # ``claritymed.ingest.vision.chest_xray_pneumonia.download``; the
+        # canonical ``chest_xray/`` subdir holds train/test/val splits
+        # with NORMAL + PNEUMONIA classes. The bench treats all splits
+        # interchangeably — modality, not diagnosis, is the label here.
+        relative_path="chest_xray_pneumonia/chest_xray",
+    ),
 )
 
 

@@ -64,8 +64,9 @@ class OcrExtraction(BaseModel):
         default=None,
         description=(
             "Medical imaging modality inferred from image and text content. "
-            "One of: ultrasound, ct, xray, dermoscopy, photo, document, unknown. "
-            "Null when the input is clearly not a medical/clinical document."
+            "One of: ultrasound, ct, xray, dermoscopy, histopathology, photo, "
+            "document, unknown. Null when the input is clearly not a "
+            "medical/clinical document."
         ),
     )
     is_medical: bool | None = Field(

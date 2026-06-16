@@ -397,3 +397,81 @@ async def test_compute_vision_tags_clip_result_not_overridden_when_confident(tmp
 
     assert tags["modality"] == "ultrasound"
     assert "modality_from_llm_ocr" not in tags.get("vision_warnings", [])
+
+
+@pytest.mark.asyncio
+async def test_compute_vision_tags_llm_override_when_clip_document_but_llm_histopath(
+    tmp_path,
+):
+    """medical-clip drops H&E slides into ``document``; LLM-OCR must rescue."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from claritymed.core.ocr.base import ExtractResult
+
+    img = tmp_path / "slide.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    clip_response = MagicMock()
+    clip_response.modality = "document"
+    clip_response.confidence = 0.78
+    clip_response.is_medical = False  # gating forces False on photo/document/unknown
+
+    fake_clip = MagicMock()
+    fake_clip.classify_modality = AsyncMock(return_value=clip_response)
+
+    worker = OcrWorker(
+        _LLMStubProvider(modality="histopathology", is_medical=True),
+        medical_clip_client=fake_clip,
+    )
+    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    result = ExtractResult(
+        text="",
+        provider_used="stub",
+        chain_tried=["stub"],
+        modality="histopathology",
+        is_medical=True,
+    )
+    tags = await worker._compute_vision_tags(job, result)
+
+    assert tags["modality"] == "histopathology"
+    assert tags["is_medical"] is True
+    assert "modality_from_llm_ocr" in tags.get("vision_warnings", [])
+    assert "is_medical_from_llm_ocr" in tags.get("vision_warnings", [])
+
+
+@pytest.mark.asyncio
+async def test_compute_vision_tags_no_override_when_clip_document_llm_also_non_medical(
+    tmp_path,
+):
+    """Don't trade one non-medical bucket for another — override must be monotone."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from claritymed.core.ocr.base import ExtractResult
+
+    img = tmp_path / "receipt.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    clip_response = MagicMock()
+    clip_response.modality = "document"
+    clip_response.confidence = 0.82
+    clip_response.is_medical = False
+
+    fake_clip = MagicMock()
+    fake_clip.classify_modality = AsyncMock(return_value=clip_response)
+
+    worker = OcrWorker(
+        _LLMStubProvider(modality="photo", is_medical=False),
+        medical_clip_client=fake_clip,
+    )
+    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    result = ExtractResult(
+        text="thank you",
+        provider_used="stub",
+        chain_tried=["stub"],
+        modality="photo",
+        is_medical=False,
+    )
+    tags = await worker._compute_vision_tags(job, result)
+
+    assert tags["modality"] == "document"
+    assert "modality_from_llm_ocr" not in tags.get("vision_warnings", [])

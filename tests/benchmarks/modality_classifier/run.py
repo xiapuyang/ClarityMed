@@ -61,6 +61,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from claritymed.config import load_env_file
 from tests.benchmarks.modality_classifier.classifiers import (
     KNOWN_MODALITIES,
     DEFAULT_MEDICAL_CLIP_URL,
@@ -337,6 +338,7 @@ async def _run(args: argparse.Namespace) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    load_env_file()
 
     requested = [s.strip() for s in args.classifiers.split(",") if s.strip()]
     dataset_filter = (

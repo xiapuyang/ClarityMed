@@ -51,6 +51,23 @@ _IMAGE_EXTS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".gif", ".heic"}
 )
 
+# medical-clip's non-medical buckets — when ``classify_modality`` lands on
+# one of these, its ``is_medical`` is forced false by the server's gating
+# layer regardless of confidence (see ``servers/medical_clip/app.py``).
+# The LLM-OCR fallback treats these as "soft" decisions: a vision LLM
+# that read both the pixels and the surrounding text may legitimately
+# upgrade a histopath slide that BiomedCLIP bucketed as ``document``.
+_CLIP_NON_MEDICAL_BUCKETS: frozenset[str] = frozenset({"unknown", "photo", "document"})
+
+# Concrete medical imaging modalities. The LLM-OCR override only flips
+# medical-clip's non-medical bucket when the LLM names one of these AND
+# claims ``is_medical=True`` — refusing to swap one non-medical label for
+# another keeps the heuristic monotone (overrides only add medical
+# signal, never erase one).
+_LLM_MEDICAL_MODALITIES: frozenset[str] = frozenset(
+    {"ultrasound", "ct", "xray", "dermoscopy", "histopathology"}
+)
+
 
 def _is_image(blob_path: Path) -> bool:
     return blob_path.suffix.lower() in _IMAGE_EXTS
@@ -381,17 +398,39 @@ class OcrWorker:
                 tags["modality"] = "unknown"
                 warnings.append(f"modality_classification_failed: {exc!s}")
 
-        # LLM-OCR override: when medical-clip is absent or returned uncertain
-        # values, the vision LLM (which also saw the image) may have a better
-        # signal.  Apply only when medical-clip said "unknown" / omitted
-        # is_medical — never downgrade a confident classifier result.
+        # LLM-OCR override: the vision LLM saw both the pixels and the
+        # surrounding text, so it can recover signal medical-clip lost.
+        # Two override paths, both monotone (only add medical signal):
+        #
+        # 1. medical-clip is uncertain (``unknown``/absent) — accept any
+        #    non-unknown LLM label, including non-medical (``photo``,
+        #    ``document``). Refining "we don't know" to "it's a receipt"
+        #    is still useful provenance.
+        # 2. medical-clip landed on a non-medical bucket (``photo`` /
+        #    ``document``) but the LLM identified a concrete medical
+        #    modality AND flags ``is_medical=True``. This is the histopath
+        #    failure mode: BiomedCLIP buckets H&E slides as ``document``
+        #    even after prompt tuning catches >95% of cases, so the LLM
+        #    is the safety net for the long tail. Require the LLM to name
+        #    a real modality (not just unknown) so we never trade a
+        #    confident non-medical label for a vaguer one.
         llm_modality = result.modality
         llm_is_medical = result.is_medical
+        clip_modality = tags.get("modality")
+        should_override_modality = False
         if (
-            tags.get("modality") in ("unknown", None)
+            clip_modality in (None, "unknown")
             and llm_modality
             and llm_modality != "unknown"
         ):
+            should_override_modality = True
+        elif (
+            clip_modality in _CLIP_NON_MEDICAL_BUCKETS
+            and llm_modality in _LLM_MEDICAL_MODALITIES
+            and llm_is_medical is True
+        ):
+            should_override_modality = True
+        if should_override_modality:
             tags["modality"] = llm_modality
             warnings.append("modality_from_llm_ocr")
         if not tags.get("is_medical") and llm_is_medical is True:
