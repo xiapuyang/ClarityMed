@@ -25,8 +25,12 @@ table below with source URL + license.
 | Path | Source URL | License | Added |
 |---|---|---|---|
 | `busi/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `busi/benign_busi_001.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`benign (1).png`) | CC0 | 2026-06-15 |
+| `busi/malignant_busi_001.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`malignant (1).png`) | CC0 | 2026-06-15 |
 | `modality_mismatch/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `modality_mismatch/benign_busi_002_as_ct.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`benign (2).png`) — test injects modality="ct" | CC0 | 2026-06-15 |
 | `report_overlay/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `report_overlay/benign_busi_003_with_report.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`benign (3).png`) — test injects ocr_has_report=True | CC0 | 2026-06-15 |
 | `non_medical/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
 
 Operators populating these directories should source from:

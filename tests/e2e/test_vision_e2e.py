@@ -175,7 +175,8 @@ async def _run_one_attempt(
     own ``get_session_id`` closure against the new ``ChatSession``. The
     ``omlx`` provider runs locally so PHI never leaves the box.
     """
-    from claritymed.config import load_retrieval_config, load_vision_config
+    from claritymed.config import load_vision_config
+    from claritymed.core.rag.schemas import load_retrieval_config
     from claritymed.core.llm.model import build_model
     from claritymed.core.vision.registry import VisionRegistry
     from claritymed.orchestrator.features.vision_plugin import VisionFeature
