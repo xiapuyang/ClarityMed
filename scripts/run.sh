@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Start the BGE-M3 embedder + bge-reranker-v2-m3 reranker (RAG) and/or
-# the typed-BASD symptoms differential-diagnosis server as background
-# processes. Logs go to $CLARITYMED_LOG_DIR (default ~/.claritymed/logs/),
+# Start the BGE-M3 embedder + bge-reranker-v2-m3 reranker (RAG), the
+# typed-BASD symptoms differential-diagnosis server, and/or the BUSI
+# vision inference server as background processes.
+# Logs go to $CLARITYMED_LOG_DIR (default ~/.claritymed/logs/),
 # pidfiles to $CLARITYMED_HOME/run/.
 #
 # Idempotent: a server whose pidfile points to a live process is left
@@ -24,11 +25,30 @@
 #   - CLARITYMED_SYMPTOMS_SKIP_LOAD=1 boots without touching weights —
 #     useful when you only want the FastAPI surface up for plugin tests.
 #
+# Vision server notes:
+#   - port 8085; extra `vision-server`; console script
+#     `claritymed-vision-server`.
+#   - Requires `uv sync --extra vision-server` (torch/torchvision/smp).
+#   - Lifespan reads configs/vision.yaml and loads the model whose
+#     weights_subpath is listed there. Needs a deployed checkpoint
+#     (run the pipeline first).
+#   - CLARITYMED_VISION_SKIP_LOAD=1 boots without loading weights —
+#     useful when you only want the FastAPI surface up for plugin tests.
+#
+# Medical-CLIP server notes:
+#   - port 8086; extra `medical-clip-server`; console script
+#     `claritymed-medical-clip-server`.
+#   - Requires `uv sync --extra medical-clip-server` (open_clip_torch).
+#   - Tags images with DICOM modality — consumed by the vision plugin
+#     before sending to vision-server. Required for vision e2e tests.
+#
 # Usage:
-#   scripts/run.sh                # start all three (embedder + reranker + symptoms)
+#   scripts/run.sh                # start all five servers
 #   scripts/run.sh embedder       # only the embedder
 #   scripts/run.sh reranker
 #   scripts/run.sh symptoms       # only the symptoms server
+#   scripts/run.sh vision         # only the vision server
+#   scripts/run.sh medical-clip   # only the medical-clip server
 #   scripts/run.sh both           # RAG only (embedder + reranker), legacy
 #   scripts/run.sh all            # explicit form of the no-arg default
 
@@ -94,20 +114,24 @@ start_one() {
 }
 
 case "${1:-all}" in
-  embedder) start_one embedder 8082 rag-server      claritymed-embedder ;;
-  reranker) start_one reranker 8083 rag-server      claritymed-reranker ;;
-  symptoms) start_one symptoms 8084 symptoms-server claritymed-symptoms-server ;;
+  embedder)     start_one embedder     8082 rag-server           claritymed-embedder ;;
+  reranker)     start_one reranker     8083 rag-server           claritymed-reranker ;;
+  symptoms)     start_one symptoms     8084 symptoms-server      claritymed-symptoms-server ;;
+  vision)       start_one vision       8085 vision-server        claritymed-vision-server ;;
+  medical-clip) start_one medical-clip 8086 medical-clip-server  claritymed-medical-clip-server ;;
   both)
     start_one embedder 8082 rag-server claritymed-embedder
     start_one reranker 8083 rag-server claritymed-reranker
     ;;
   all)
-    start_one embedder 8082 rag-server      claritymed-embedder
-    start_one reranker 8083 rag-server      claritymed-reranker
-    start_one symptoms 8084 symptoms-server claritymed-symptoms-server
+    start_one embedder     8082 rag-server          claritymed-embedder
+    start_one reranker     8083 rag-server          claritymed-reranker
+    start_one symptoms     8084 symptoms-server     claritymed-symptoms-server
+    start_one vision       8085 vision-server       claritymed-vision-server
+    start_one medical-clip 8086 medical-clip-server claritymed-medical-clip-server
     ;;
   *)
-    echo "Usage: $0 [embedder|reranker|symptoms|both|all]" >&2
+    echo "Usage: $0 [embedder|reranker|symptoms|vision|medical-clip|both|all]" >&2
     exit 2
     ;;
 esac

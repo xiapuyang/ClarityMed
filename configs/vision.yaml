@@ -17,7 +17,7 @@
 
 diseases:
   - id: breast_cancer_ultrasound
-    enabled: false                              # flips to true after Unit 6 promotes a real BUSI artifact
+    enabled: true                               # promoted artifact present; deploy pipeline verified
     primary_model_id: breast_busi_unet_v1
     flow: [breast_busi_unet_v1]                 # extend with fallback models later; same accepted_modality required
     cancer_class: true                          # enables cancer_status + clinical_action post-processing

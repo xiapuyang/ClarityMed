@@ -151,6 +151,17 @@ def run_deploy(*, staging_dir: Path, smoke: bool = False, force: bool = False) -
     logger.info("promoting %s → %s", staging_dir, stable_path)
     shutil.copytree(staging_dir, stable_path)
 
+    # Step 3b: atomic stable symlink breast_busi_unet_v1 → versioned dir.
+    # Tests and operators use the symlink as a stable "current" pointer;
+    # the versioned dir is the immutable artifact. tmp + replace keeps the
+    # swap atomic so a concurrent reader never sees a dangling link.
+    stable_link = disease_root / MODEL_ID
+    tmp_link = disease_root / f"{MODEL_ID}.tmp"
+    tmp_link.unlink(missing_ok=True)
+    tmp_link.symlink_to(stable_dirname)
+    tmp_link.rename(stable_link)
+    logger.info("updated stable symlink %s → %s", stable_link.name, stable_dirname)
+
     # Step 4: re-hash the promoted manifest and edit configs/vision.yaml.
     new_manifest_sha = _sha256_file(stable_path / "manifest.json")
     new_weights_subpath = f"vision/{DATASET_ID}/{stable_dirname}"

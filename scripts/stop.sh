@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Stop the RAG servers (embedder, reranker) and/or the symptoms server
-# via pidfile. SIGTERM first, then SIGKILL after 10 s of grace. Falls
-# back to ``pkill -f <pattern>`` if the pidfile is missing or stale
-# (covers servers started outside this script).
+# Stop any combination of the five ClarityMed inference servers via pidfile.
+# SIGTERM first, then SIGKILL after 10 s of grace. Falls back to
+# ``pkill -f <pattern>`` if the pidfile is missing or stale (covers servers
+# started outside this script).
 #
 # Symptoms uses the full console-script name (`claritymed-symptoms-server`)
 # as its pkill pattern so it does NOT match the unrelated training CLI
-# `claritymed-symptoms-train-ddxplus`.
+# `claritymed-symptoms-train-ddxplus`. Same precision applied to vision and
+# medical-clip to avoid collateral kills.
 #
 # Usage:
-#   scripts/stop.sh                # stop all three (embedder + reranker + symptoms)
+#   scripts/stop.sh                # stop all five servers
 #   scripts/stop.sh embedder
 #   scripts/stop.sh reranker
 #   scripts/stop.sh symptoms       # only the symptoms server
+#   scripts/stop.sh vision         # only the vision server (:8085)
+#   scripts/stop.sh medical-clip   # only the medical-clip server (:8086)
 #   scripts/stop.sh both           # RAG only (embedder + reranker), legacy
 #   scripts/stop.sh all            # explicit form of the no-arg default
 
@@ -59,20 +62,24 @@ stop_one() {
 }
 
 case "${1:-all}" in
-  embedder) stop_one embedder claritymed-embedder ;;
-  reranker) stop_one reranker claritymed-reranker ;;
-  symptoms) stop_one symptoms claritymed-symptoms-server ;;
+  embedder)     stop_one embedder     claritymed-embedder ;;
+  reranker)     stop_one reranker     claritymed-reranker ;;
+  symptoms)     stop_one symptoms     claritymed-symptoms-server ;;
+  vision)       stop_one vision       claritymed-vision-server ;;
+  medical-clip) stop_one medical-clip claritymed-medical-clip-server ;;
   both)
     stop_one embedder claritymed-embedder
     stop_one reranker claritymed-reranker
     ;;
   all)
-    stop_one embedder claritymed-embedder
-    stop_one reranker claritymed-reranker
-    stop_one symptoms claritymed-symptoms-server
+    stop_one embedder     claritymed-embedder
+    stop_one reranker     claritymed-reranker
+    stop_one symptoms     claritymed-symptoms-server
+    stop_one vision       claritymed-vision-server
+    stop_one medical-clip claritymed-medical-clip-server
     ;;
   *)
-    echo "Usage: $0 [embedder|reranker|symptoms|both|all]" >&2
+    echo "Usage: $0 [embedder|reranker|symptoms|vision|medical-clip|both|all]" >&2
     exit 2
     ;;
 esac
