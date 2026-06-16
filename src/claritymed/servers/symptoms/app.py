@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from claritymed.servers._devices import LOG_CONFIG
+from claritymed.servers._devices import LOG_CONFIG, add_logging_middleware
 
 try:
     import uvicorn
@@ -210,6 +210,7 @@ async def _ttl_purge_loop() -> None:
 
 
 app = FastAPI(title="claritymed-symptoms-server", lifespan=lifespan)
+add_logging_middleware(app, server_logger=logger)
 
 
 # --- helpers --------------------------------------------------------------
