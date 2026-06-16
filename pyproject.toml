@@ -213,7 +213,28 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/claritymed"]
 
+[tool.uv]
+# Without this, bare ``uv sync`` only installs the ``dev`` group and
+# silently uninstalls runtime-ocr after every run. See dependency-groups
+# above for why these are mirrored from the ocr-image / ocr-office
+# extras instead of being moved into base deps.
+default-groups = ["dev", "runtime-ocr"]
+
 [dependency-groups]
+# Runtime OCR fallbacks for the TUI client. Mirrored from the
+# ocr-image / ocr-office extras so PyPI users keep the opt-in entry
+# (``pip install claritymed[ocr-image]``) while local dev environments
+# pick them up automatically via ``default-groups`` below — bare
+# ``uv sync`` would otherwise uninstall them on every run.
+#
+# Heavy paths stay opt-in extras (ocr-scanned pulls ~2GB of torch,
+# every *-server extra pulls torch + an inference stack) — install
+# those only on the host that actually runs that pipeline.
+runtime-ocr = [
+    "marker-pdf>=0.2",
+    "pypandoc-binary>=1.13",
+    "rapidocr-onnxruntime>=1.4",
+]
 dev = [
     "httpx>=0.28.1",
     "pre-commit>=4.6.0",

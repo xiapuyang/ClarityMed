@@ -664,6 +664,11 @@ dev = [
     { name = "ruff" },
     { name = "textual-dev" },
 ]
+runtime-ocr = [
+    { name = "marker-pdf" },
+    { name = "pypandoc-binary" },
+    { name = "rapidocr-onnxruntime" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -742,6 +747,11 @@ dev = [
     { name = "reportlab", specifier = ">=4.0" },
     { name = "ruff", specifier = ">=0.15.16" },
     { name = "textual-dev", specifier = ">=1.8.0" },
+]
+runtime-ocr = [
+    { name = "marker-pdf", specifier = ">=0.2" },
+    { name = "pypandoc-binary", specifier = ">=1.13" },
+    { name = "rapidocr-onnxruntime", specifier = ">=1.4" },
 ]
 
 [[package]]
