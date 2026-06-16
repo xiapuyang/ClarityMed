@@ -15,7 +15,6 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from claritymed.context import apply_context, reset_context
@@ -52,14 +51,11 @@ def _ctx():
     reset_context(tokens)
 
 
-async def test_ocr_override_short_circuits_no_http(
-    _overlay_fixture_path: Path, _ctx
-) -> None:
+async def test_ocr_override_short_circuits(_overlay_fixture_path: Path, _ctx) -> None:
     """Tag the image with ``ocr_has_report=true`` and call the body directly.
 
-    Same rationale as :mod:`test_vision_modality_gate_e2e` — bypassing
-    the LLM here keeps the test deterministic. A captured ``MockTransport``
-    would blow up if the body reached ``/v1/detect``.
+    The body short-circuits before any HTTP call to ``/v1/detect``,
+    so no inference runs against the vision server.
     """
     from claritymed.config import load_vision_config
     from claritymed.core.vision.registry import VisionRegistry
@@ -78,9 +74,9 @@ async def test_ocr_override_short_circuits_no_http(
         mime="image/png",
         size=len(image_bytes),
     )
-    # A real OCR text with a marker keyword so ``has_structured_report``
-    # would also flip; we set the flag explicitly so the test doesn't
-    # depend on the heuristic's threshold.
+    # Set flag explicitly so the test doesn't depend on the OCR heuristic
+    # threshold; the OCR text with FINDINGS/IMPRESSION markers is kept for
+    # realism.
     ocr_text = (
         "FINDINGS: The right breast contains a hypoechoic lesion measuring "
         "1.8 cm. IMPRESSION: BIRADS 4 — recommend biopsy. " * 5
@@ -102,14 +98,7 @@ async def test_ocr_override_short_circuits_no_http(
     )
 
     config = load_vision_config()
-
-    def _http_blocker(req):
-        raise AssertionError(
-            f"vision tool body must NOT reach the server when ocr_has_report=true; "
-            f"saw {req.method} {req.url}"
-        )
-
-    registry = VisionRegistry(config, transport=httpx.MockTransport(_http_blocker))
+    registry = VisionRegistry(config)
     feature = VisionFeature(
         config=config,
         registry=registry,

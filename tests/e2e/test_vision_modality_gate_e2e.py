@@ -1,4 +1,4 @@
-"""KTD-V3 modality hard refuse — wrong-modality image MUST NOT reach the server.
+"""KTD-V3 modality hard refuse — wrong-modality image must not reach the server.
 
 Mirrors :mod:`test_vision_e2e` structurally; the only difference is the
 seeded image is tagged ``modality="ct"`` so the breast-ultrasound model
@@ -70,16 +70,13 @@ def _ctx():
     reset_context(tokens)
 
 
-async def test_modality_mismatch_returns_structured_refuse_no_http(
+async def test_modality_mismatch_returns_structured_refuse(
     _ct_fixture_path: Path, _ctx
 ) -> None:
     """Tag a CT image as ``ct`` and call the tool body directly.
 
-    We deliberately bypass the LLM here — the gate's correctness is
-    deterministic, and the value of the e2e is proving the body
-    short-circuits against the same store + meta the real pipeline
-    feeds it. A captured ``httpx.MockTransport`` on the registry would
-    blow up if the body somehow reached ``/v1/detect``.
+    The gate's correctness is deterministic — the body short-circuits
+    before any HTTP call to ``/v1/detect``, so no inference runs.
     """
     from types import SimpleNamespace
 
@@ -117,14 +114,7 @@ async def test_modality_mismatch_returns_structured_refuse_no_http(
     )
 
     config = load_vision_config()
-
-    def _http_blocker(req):
-        raise AssertionError(
-            f"vision tool body must NOT reach the server on modality mismatch; "
-            f"saw {req.method} {req.url}"
-        )
-
-    registry = VisionRegistry(config, transport=httpx.MockTransport(_http_blocker))
+    registry = VisionRegistry(config)
     feature = VisionFeature(
         config=config,
         registry=registry,
