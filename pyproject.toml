@@ -222,6 +222,11 @@ dev = [
     "python-docx>=1.0", # DOCX
     "openpyxl>=3.1",    # XLSX
     "python-pptx>=0.6", # PPTX
+    # ONNX adapter integration test: torch.onnx.export needs the
+    # `onnx` protobuf package to write a checkpoint. Same in-process
+    # fixture rationale as the OCR formats above — we'd rather build
+    # a tiny real .onnx at test time than ship a binary fixture.
+    "onnx>=1.16",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",

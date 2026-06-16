@@ -150,20 +150,28 @@ def test_registered_frameworks_includes_pytorch_and_onnx() -> None:
     assert "onnx" in frameworks
 
 
-def test_onnx_adapter_refuses_to_construct(
+def test_onnx_adapter_dispatch_fails_loudly_on_non_onnx_weights(
     make_vision_artifact, vision_models_root: Path
 ) -> None:
-    """ONNX is a v1 stub — wiring it through must fail loudly."""
-    spec, manifest_path, _ = make_vision_artifact(framework="onnx")
-    # rewrite manifest framework so loader doesn't hit the cross-check
-    # before the registry — we want to exercise the registered factory.
-    raw = manifest_path.read_text(encoding="utf-8")
-    manifest_path.write_text(
-        raw.replace('"framework": "onnx"', '"framework": "onnx"'), encoding="utf-8"
-    )
-    with pytest.raises(NotImplementedError) as ei:
+    """ONNX framework is wired; a manifest/file mismatch fails at session load.
+
+    The fixture writes a ``weights.pt`` torch checkpoint. With
+    ``framework="onnx"`` in the manifest, the loader dispatches to
+    ``OnnxAdapter`` which feeds the file to ``onnxruntime`` — the
+    parser surfaces ``InvalidProtobuf`` because the bytes aren't an
+    ONNX proto. This is the failure path we want at startup if a
+    misconfigured manifest claims ``framework: onnx`` but the artifact
+    is actually a torch checkpoint.
+
+    The real happy path (a genuine ``.onnx`` file flowing through the
+    adapter) is covered by ``tests/servers/vision/test_onnx_adapter.py``,
+    which builds a tiny real ONNX model via ``torch.onnx.export``.
+    """
+    import onnxruntime as ort  # noqa: PLC0415
+
+    spec, _manifest_path, _ = make_vision_artifact(framework="onnx")
+    with pytest.raises(ort.capi.onnxruntime_pybind11_state.InvalidProtobuf):
         load_model_for_spec(spec, root=vision_models_root, device="cpu")
-    assert "v1" in str(ei.value)
 
 
 # --- path resolution -----------------------------------------------------

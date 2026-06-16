@@ -329,6 +329,61 @@ async def test_modality_mismatch_short_circuits(home):
 
 
 @pytest.mark.asyncio
+async def test_same_modality_wrong_anatomy_is_not_caught(home):
+    """KNOWN GAP canary — same-modality wrong-anatomy passes through.
+
+    The four gates only screen ``not_medical`` → ``ocr_override`` →
+    ``modality_mismatch``. They do not check whether the image's
+    anatomy actually matches the claimed ``disease_id``. So an
+    arbitrary ultrasound image (thyroid, abdominal, cardiac, …)
+    submitted under ``breast_cancer_ultrasound`` clears all gates and
+    the breast model runs on it. The model returns its canned
+    verdict; nothing downstream notices the mismatch.
+
+    This test fails (correctly) the day anatomy gating ships. When
+    that happens, change the expected ``kind`` here to match the new
+    short-circuit (e.g. ``anatomy_mismatch``).
+    """
+    # Bytes are arbitrary — in practice this would be a non-breast
+    # ultrasound (thyroid, abdominal, etc). The system can't tell.
+    sha = _seed_attachment(home, b"non-breast-ultrasound-bytes")
+    _write_ocr_metadata(
+        sha,
+        modality="ultrasound",  # matches breast model's accepted_modality
+        is_medical=True,
+        ocr_has_report=False,
+    )
+
+    cfg = _vision_config()
+    detect_calls: list[str] = []
+
+    def _handler(req):
+        if req.url.path == "/v1/detect":
+            detect_calls.append(req.url.path)
+            return httpx.Response(200, json=_canned_detect_response(sha))
+        if req.url.path == "/v1/catalog":
+            return httpx.Response(200, json=_canned_catalog())
+        return httpx.Response(404)
+
+    registry = VisionRegistry(cfg, transport=httpx.MockTransport(_handler))
+    feature = VisionFeature(
+        config=cfg, registry=registry, get_session_id=lambda: _SESSION_ID
+    )
+    deps = SimpleNamespace(user_id=_USER_ID, language="en", prompt_channel=None)
+    ctx = SimpleNamespace(deps=deps)
+    with _ctx(request_id=_REQUEST_ID, user_id=_USER_ID, language="en"):
+        result = await feature._detect(
+            ctx, disease_id="breast_cancer_ultrasound", image_sha=sha
+        )
+
+    assert len(detect_calls) == 1, (
+        "vision server was NOT called — that would mean a new anatomy gate "
+        "fired. Update this canary's expected kind to match."
+    )
+    assert result["kind"] == "detection"
+
+
+@pytest.mark.asyncio
 async def test_happy_path_returns_detection_payload(home):
     """Modality + is_medical + ocr clean → tool reaches server + transforms result."""
     image_bytes = b"\x89PNG\r\n\x1a\n" + b"ultrasound-image-bytes"
