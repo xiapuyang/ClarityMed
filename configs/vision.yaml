@@ -22,6 +22,17 @@ diseases:
     flow: [breast_busi_unet_v1]                 # extend with fallback models later; same accepted_modality required
     cancer_class: true                          # enables cancer_status + clinical_action post-processing
     intent_hints_i18n_key: vision.intent.breast_cancer_ultrasound
+  # Chest CT (lung cancer) — scaffolding landed in
+  # src/claritymed/ingest/vision/chest_ct/. Disabled until a trained
+  # model + manifest are promoted; flip enabled to true after the train
+  # pipeline (mirrored on BUSI's) produces a versioned artifact under
+  # ~/.claritymed/models/vision/lung_cancer_chest_ct/.
+  - id: lung_cancer_chest_ct
+    enabled: false
+    primary_model_id: lung_chest_ct_resnet50_v1
+    flow: [lung_chest_ct_resnet50_v1]
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.lung_cancer_chest_ct
   # Future diseases land here, no Python changes:
   # - id: skin_cancer_dermoscopy
   #   enabled: false
@@ -52,6 +63,19 @@ models:
     # what catches a real mismatch.
     manifest_sha256: "bd12c1ed0f7cdb8679802a34fbc942bea5824b9e2c7550dbeb11526564157032"
     expected_ms: 800
+  # Chest CT model entry — paired with the lung_cancer_chest_ct disease
+  # above. Both stay disabled until the chest_ct training pipeline produces
+  # a real manifest; the placeholder sha is the all-zeros 64-hex string so
+  # an accidental enabled=true on the disease side fails the integrity check
+  # loudly instead of silently mounting unverified weights.
+  - id: lung_chest_ct_resnet50_v1
+    disease_id: lung_cancer_chest_ct
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: ct                       # KTD-V3 hard gate
+    weights_subpath: vision/lung_cancer_chest_ct/lung_chest_ct_resnet50_v1_placeholder
+    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    expected_ms: 600
 
 tool:
   total_budget_ms: 20000                        # per LLM tool call, all fallbacks summed
