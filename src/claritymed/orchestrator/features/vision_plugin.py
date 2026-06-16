@@ -956,9 +956,9 @@ def make_vision_factory(
         # contract is "build the plugin if possible"; a running loop is
         # the caller's job to handle.
         if "asyncio.run" in str(exc):
-            logger.warning(
-                "vision: bootstrap deferred (caller has a running loop); "
-                "the orchestrator must bootstrap before first tool call"
+            logger.info(
+                "vision: bootstrap deferred to AskService first turn "
+                "(caller has a running loop)"
             )
         else:
             logger.warning("vision: registry bootstrap failed; feature disabled")

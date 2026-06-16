@@ -194,6 +194,62 @@ async def test_bootstrap_fails_when_server_missing_a_configured_model() -> None:
     await registry.aclose()
 
 
+async def test_bootstrap_ignores_disabled_disease_and_flow_omitted_models() -> None:
+    """Models present in config but outside any enabled flow are
+    intentionally not loaded by the server (disabled-disease scaffolds,
+    future fallback placeholders). The registry tolerates the gap so
+    ``configs/vision.yaml`` can carry "ready to flip on" entries.
+    """
+    cfg = _make_config(manifest_sha=_HEX_A)
+    # Append a disabled-disease scaffold + a flow-omitted fallback model;
+    # neither should appear in the served set the catalog is checked
+    # against.
+    cfg = cfg.model_copy(
+        update={
+            "diseases": [
+                *cfg.diseases,
+                DiseaseSpec(
+                    id="skin_cancer_dermoscopy",
+                    enabled=False,
+                    primary_model_id="skin_isic_resnet50_v1",
+                    flow=["skin_isic_resnet50_v1"],
+                    cancer_class=True,
+                    intent_hints_i18n_key="vision.intent.skin_cancer_dermoscopy",
+                ),
+            ],
+            "models": [
+                *cfg.models,
+                ModelSpec(
+                    id="skin_isic_resnet50_v1",
+                    disease_id="skin_cancer_dermoscopy",
+                    server_id="local_default",
+                    framework="pytorch",
+                    accepted_modality="dermoscopy",
+                    weights_subpath="vision/skin_cancer_dermoscopy/placeholder",
+                    manifest_sha256="0" * 64,
+                    expected_ms=600,
+                ),
+                ModelSpec(
+                    id="breast_us_kaggle_resnet50_v1",
+                    disease_id="breast_cancer_ultrasound",
+                    server_id="local_default",
+                    framework="pytorch",
+                    accepted_modality="ultrasound",
+                    weights_subpath="vision/breast_cancer_ultrasound/placeholder",
+                    manifest_sha256="0" * 64,
+                    expected_ms=700,
+                ),
+            ],
+        }
+    )
+    client = _client_with_catalog(
+        _catalog_payload(model_id="breast_busi_unet_v1", manifest_sha=_HEX_A)
+    )
+    registry = VisionRegistry(cfg, clients={"local_default": client})
+    await registry.bootstrap()
+    await registry.aclose()
+
+
 async def test_bootstrap_propagates_unreachable() -> None:
     cfg = _make_config()
 

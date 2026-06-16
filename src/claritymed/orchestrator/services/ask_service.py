@@ -306,6 +306,12 @@ class AskService:
         # tool list is computed per-turn from ``as_tool``.
         self._feature_modes = {f.name: f.mode for f in self._features}
         self._last_chunks: list = []
+        # Vision registry's catalog cross-check is deferred to first turn:
+        # ``make_vision_factory`` tries it in a sync ``asyncio.run`` which
+        # raises inside an already-running loop (TUI path). Bench/e2e
+        # bootstrap explicitly before constructing AskService, so the
+        # call here is idempotent in those paths.
+        self._vision_bootstrap_attempted = False
 
     @property
     def last_chunks(self) -> list:
@@ -687,10 +693,42 @@ class AskService:
         rid = request_id_ctx.get() or new_request_id()
         tokens = apply_context(rid, user_id, self._language)
         try:
+            await self._bootstrap_vision_once()
             async for ev in self._run_inner(user_input, user_id):
                 yield ev
         finally:
             reset_context(tokens)
+
+    async def _bootstrap_vision_once(self) -> None:
+        """Run the vision registry's catalog cross-check on the first turn.
+
+        ``make_vision_factory`` cannot bootstrap synchronously when it
+        is constructed from inside a running asyncio loop (the TUI
+        path), so it logs ``vision: bootstrap deferred`` and hands back
+        an unverified registry. This method honors that deferral: it
+        finds the live ``VisionFeature``, awaits ``registry.bootstrap()``
+        (idempotent — bench/e2e paths already bootstrapped), and on
+        failure logs ``ERROR`` then drops the feature so the rest of
+        the session keeps working without the vision tool.
+        """
+        if self._vision_bootstrap_attempted:
+            return
+        self._vision_bootstrap_attempted = True
+        from claritymed.orchestrator.features.vision_plugin import VisionFeature
+
+        vision = next((f for f in self._features if isinstance(f, VisionFeature)), None)
+        if vision is None:
+            return
+        try:
+            await vision._registry.bootstrap()
+        except Exception:  # noqa: BLE001
+            logger.error(
+                "vision: registry bootstrap failed on first turn; "
+                "disabling vision tool for this session",
+                exc_info=True,
+            )
+            self._features = [f for f in self._features if f is not vision]
+            self._feature_modes.pop(vision.name, None)
 
     async def _run_inner(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from opentelemetry import trace as otel_trace

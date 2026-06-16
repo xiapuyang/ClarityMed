@@ -155,37 +155,51 @@ class VisionRegistry:
     def _cross_check_server(self, server: ServerSpec, catalog_models) -> None:
         """For each catalog entry, find the matching ``ModelSpec`` and compare.
 
+        Compares against the **served set** — models the server is
+        expected to load right now: those listed in an enabled disease's
+        ``flow``. Models present in ``configs/vision.yaml::models`` but
+        outside any enabled flow (disabled-disease scaffolds, future
+        fallback placeholders like ``breast_us_kaggle_resnet50_v1``) are
+        intentionally ignored so the config can carry "ready to flip on"
+        entries without breaking boot.
+
         Three failure modes:
 
-        * Server advertises a model the config doesn't know.
-        * ``ModelSpec.server_id`` says this server, but server isn't
-          serving the model.
-        * Both sides know the model but ``manifest_sha`` differs.
+        * Server advertises a model the served set doesn't include.
+        * Served set has a model the server isn't loading.
+        * Both sides agree on the model but ``manifest_sha`` differs.
         """
         catalog_index = {m.model_id: m for m in catalog_models}
-        config_for_server = {
-            m.id for m in self._models.values() if m.server_id == server.id
+        served_set = {
+            model_id
+            for disease in self._diseases.values()
+            if disease.enabled
+            for model_id in disease.flow
+            if self._models.get(model_id)
+            and self._models[model_id].server_id == server.id
         }
-        # Server-side surprise (config doesn't know).
-        for model_id in catalog_index.keys() - config_for_server:
+        # Server-side surprise (served set doesn't include).
+        for model_id in catalog_index.keys() - served_set:
             raise VisionCatalogMismatchError(
                 f"server {server.id!r} advertises model {model_id!r} but "
-                f"configs/vision.yaml does not list it for this server"
+                f"no enabled disease's flow lists it for this server"
             )
         # Config-side surprise (server doesn't load).
-        for model_id in config_for_server - catalog_index.keys():
+        for model_id in served_set - catalog_index.keys():
             raise VisionCatalogMismatchError(
-                f"configs/vision.yaml lists model {model_id!r} on server "
-                f"{server.id!r} but server's /v1/catalog does not include it"
+                f"configs/vision.yaml expects model {model_id!r} on server "
+                f"{server.id!r} (enabled disease's flow) but server's "
+                f"/v1/catalog does not include it"
             )
-        # Sha drift.
-        for model_id, catalog_entry in catalog_index.items():
+        # Sha drift — only for models in the served set; orphan catalog
+        # entries already failed above.
+        for model_id in catalog_index.keys() & served_set:
             spec = self._models[model_id]
-            if catalog_entry.manifest_sha != spec.manifest_sha256:
+            if catalog_index[model_id].manifest_sha != spec.manifest_sha256:
                 raise VisionCatalogMismatchError(
                     f"manifest sha drift for model {model_id!r} on server "
                     f"{server.id!r}: config pins {spec.manifest_sha256}, "
-                    f"server serves {catalog_entry.manifest_sha}"
+                    f"server serves {catalog_index[model_id].manifest_sha}"
                 )
 
     # --- routing --------------------------------------------------------
