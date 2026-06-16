@@ -23,11 +23,20 @@ vision:
       call this tool when the image is not an ultrasound, when the
       image already carries a radiologist's report (ocr_has_report),
       or when the image is not medical.
+    lung_cancer_chest_ct: |
+      Use when the user uploads a chest-CT image (axial slice) and
+      asks whether a lung nodule or mass is concerning, what type of
+      lung cancer it might be, or whether it looks normal. Do NOT
+      call this tool when the image is not a CT scan, when the image
+      already carries a radiologist's report (ocr_has_report), or
+      when the image is not medical.
 
   # Per-disease display name shown in confirm modals + LLM-side text.
   disease:
     breast_cancer_ultrasound:
       name: "breast cancer"
+    lung_cancer_chest_ct:
+      name: "lung cancer"
 
   # Per-label localized names + short descriptions. Descriptions are
   # surfaced by the LLM when the user asks "what does X mean here?".
@@ -42,6 +51,19 @@ vision:
       normal:
         name: "normal"
         description: "No lesion identified. No action required from this image alone."
+    lung_cancer_chest_ct:
+      adenocarcinoma:
+        name: "adenocarcinoma"
+        description: "Adenocarcinoma of the lung. Specialist review required."
+      large_cell_carcinoma:
+        name: "large cell carcinoma"
+        description: "Large cell carcinoma of the lung. Specialist review required."
+      squamous_cell_carcinoma:
+        name: "squamous cell carcinoma"
+        description: "Squamous cell carcinoma of the lung. Specialist review required."
+      normal:
+        name: "normal"
+        description: "No lung-cancer findings identified. No action required from this image alone."
 
   # Confirm modal copy — fired from the tool body before any HTTP call.
   # `title` shows as the modal header; `body` is the question. `yes` /
@@ -56,6 +78,18 @@ vision:
         the final word. Run the model?
       yes_label: "Yes, run it"
       yes_description: "Send the image to the local breast-ultrasound model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    lung_cancer_chest_ct:
+      title: "Analyze chest CT?"
+      body: |
+        I can run a small chest-CT model on this image to estimate
+        whether a lung nodule looks like adenocarcinoma, large cell
+        carcinoma, squamous cell carcinoma, or normal lung tissue.
+        The result is an estimate — a radiologist's reading is always
+        the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local chest-CT model."
       no_label: "No, skip"
       no_description: "Skip the model and answer from text only."
 

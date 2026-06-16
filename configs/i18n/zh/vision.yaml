@@ -16,11 +16,18 @@ vision:
       还是恶性时，使用这个工具。以下情况**不要**调用：图像不是超声；
       图像已经带有放射科医生的报告（ocr_has_report=true）；图像本身
       不是医学影像。
+    lung_cancer_chest_ct: |
+      当用户上传一张胸部 CT 图像（轴位切片），并询问肺结节或肿块是否
+      需要担心、可能是哪种类型的肺癌、是否看起来正常时，使用这个工具。
+      以下情况**不要**调用：图像不是 CT；图像已经带有放射科医生的
+      报告（ocr_has_report=true）；图像本身不是医学影像。
 
   # 各疾病的显示名 —— 出现在确认弹窗与 LLM 回复正文中。
   disease:
     breast_cancer_ultrasound:
       name: "乳腺癌"
+    lung_cancer_chest_ct:
+      name: "肺癌"
 
   # 各标签的本地化名称 + 简短描述。当用户追问「X 是什么意思」时，LLM
   # 可以引用 description。
@@ -35,6 +42,19 @@ vision:
       normal:
         name: "正常"
         description: "未发现病灶。仅从这张图像看，无需采取行动。"
+    lung_cancer_chest_ct:
+      adenocarcinoma:
+        name: "腺癌"
+        description: "肺腺癌。建议尽快请专科医生复核。"
+      large_cell_carcinoma:
+        name: "大细胞癌"
+        description: "肺大细胞癌。建议尽快请专科医生复核。"
+      squamous_cell_carcinoma:
+        name: "鳞状细胞癌"
+        description: "肺鳞状细胞癌。建议尽快请专科医生复核。"
+      normal:
+        name: "正常"
+        description: "未发现肺癌相关征象。仅从这张图像看，无需采取行动。"
 
   # 工具体在发任何 HTTP 请求之前弹出的确认框。
   confirm:
@@ -46,6 +66,16 @@ vision:
         依据。要运行模型吗？
       yes_label: "好，运行"
       yes_description: "把图像送到本地的乳腺超声模型。"
+      no_label: "不用了"
+      no_description: "跳过模型，只基于文字回答。"
+    lung_cancer_chest_ct:
+      title: "分析这张胸部 CT？"
+      body: |
+        我可以用一个小型胸部 CT 模型对这张图像做估计，看肺部结节
+        更像腺癌、大细胞癌、鳞状细胞癌还是正常组织。结果只是估计——
+        放射科医生的判读才是最终依据。要运行模型吗？
+      yes_label: "好，运行"
+      yes_description: "把图像送到本地的胸部 CT 模型。"
       no_label: "不用了"
       no_description: "跳过模型，只基于文字回答。"
 
