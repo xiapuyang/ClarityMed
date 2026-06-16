@@ -83,6 +83,30 @@ def _seed_busi(*, ocr_has_report: bool = False) -> Callable[[], dict]:
     return _f
 
 
+def _seed_chest_ct(*, ocr_has_report: bool = False) -> Callable[[], dict]:
+    def _f() -> dict:
+        return {
+            "fixture_subdir": "chest_ct",
+            "modality": "ct",
+            "is_medical": True,
+            "ocr_has_report": ocr_has_report,
+        }
+
+    return _f
+
+
+def _seed_skin(*, ocr_has_report: bool = False) -> Callable[[], dict]:
+    def _f() -> dict:
+        return {
+            "fixture_subdir": "skin",
+            "modality": "dermoscopy",
+            "is_medical": True,
+            "ocr_has_report": ocr_has_report,
+        }
+
+    return _f
+
+
 def _seed_modality_mismatch() -> Callable[[], dict]:
     def _f() -> dict:
         return {
@@ -321,6 +345,185 @@ CASES: list[Case] = [
         args_predicate=_p_no_args,
         expected_tool=None,
         seed=None,
+    ),
+    # -------------------------------------------------------------------
+    # Chest CT (``lung_cancer_chest_ct``) — TP/FN/FP coverage.
+    # Mirrors the breast-ultrasound tiers so the bench can compute
+    # FP/FN/TP rates per disease, not just aggregated across vision.
+    # -------------------------------------------------------------------
+    Case(
+        name="en_chest_ct_explicit_nodule",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Here's a chest CT axial slice. Could the nodule be "
+                "concerning? Please call the detect_disease_from_image "
+                "tool with disease_id=lung_cancer_chest_ct. "
+                "[Image sha:{sha8}]"
+            ),
+            "zh": (
+                "这是一张胸部 CT 轴位切片。这个结节会不会有问题？请调用 "
+                "detect_disease_from_image 工具，disease_id 用 "
+                "lung_cancer_chest_ct。[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_chest_ct(),
+    ),
+    Case(
+        name="en_chest_ct_subtype_question",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Can the model tell me whether this lung lesion is "
+                "adenocarcinoma, large cell carcinoma, squamous cell "
+                "carcinoma, or normal? [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "模型能告诉我这个肺部病灶是腺癌、大细胞癌、鳞状细胞癌"
+                "还是正常吗？[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_chest_ct(),
+    ),
+    Case(
+        name="hard_chest_ct_implicit_anxious",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Doc said I should follow up on this scan — what do you "
+                "see? [Image sha:{sha8}]"
+            ),
+            "zh": "医生让我复查这张片子，你看到什么？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_chest_ct(),
+    ),
+    Case(
+        name="fp_chest_ct_modality_mismatch_us",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": ("This is a chest CT, right? What does it show? [Image sha:{sha8}]"),
+            "zh": "这是一张胸部 CT 吧？显示了什么？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        # Seed an ultrasound image; LLM might still try to call chest_ct
+        # because the prompt says "CT" — must refuse on modality grounds.
+        seed=_seed_busi(),
+    ),
+    Case(
+        name="fp_chest_ct_ocr_report",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": (
+                "The radiology report on this chest CT mentions a "
+                "nodule — please summarize. [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "这张胸部 CT 的放射科报告里提到一个结节，请帮我总结一下。"
+                "[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=_seed_report_overlay(),
+    ),
+    # -------------------------------------------------------------------
+    # Skin lesion (``skin_cancer_dermoscopy``) — TP/FN/FP coverage.
+    # The disease ships ``enabled: false`` until weights are promoted;
+    # the bench still exercises tool-trigger decisions against the live
+    # plugin (which sees the disease in the catalog regardless of
+    # enabled state — enabled only gates routing).
+    # -------------------------------------------------------------------
+    Case(
+        name="en_skin_explicit_mole_concern",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Dermoscopy image of a mole on my arm. Could this be "
+                "concerning? Please call the detect_disease_from_image "
+                "tool with disease_id=skin_cancer_dermoscopy. "
+                "[Image sha:{sha8}]"
+            ),
+            "zh": (
+                "这是我胳膊上一颗痣的皮肤镜图像。会不会有问题？请调用 "
+                "detect_disease_from_image 工具，disease_id 用 "
+                "skin_cancer_dermoscopy。[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_skin(),
+    ),
+    Case(
+        name="en_skin_melanoma_question",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "Please analyze this skin lesion image and tell me "
+                "whether the model thinks it could be melanoma or "
+                "benign. [Image sha:{sha8}]"
+            ),
+            "zh": (
+                "请分析这张皮损图像，告诉我模型认为它更像黑色素瘤"
+                "还是良性。[Image sha:{sha8}]"
+            ),
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_skin(),
+    ),
+    Case(
+        name="hard_skin_implicit_change_zh",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": (
+                "This spot has changed color recently — opinion? [Image sha:{sha8}]"
+            ),
+            "zh": "这个斑最近颜色变了，怎么看？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_skin(),
+    ),
+    Case(
+        name="fp_skin_modality_mismatch_us",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": ("Is this skin patch suspicious? [Image sha:{sha8}]"),
+            "zh": "这块皮肤可疑吗？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        # Seed an ultrasound image; LLM should refuse since dermoscopy
+        # gate (KTD-V3) sees an ultrasound modality tag.
+        seed=_seed_busi(),
+    ),
+    Case(
+        name="fp_skin_non_medical_arm_photo",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": "Cool tattoo I just got. [Image sha:{sha8}]",
+            "zh": "刚做的新纹身，你看怎么样？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=_seed_non_medical(modality="photo"),
     ),
 ]
 

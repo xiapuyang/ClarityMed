@@ -16,6 +16,8 @@ table below with source URL + license.
 | Subdir | What goes here | Use case |
 |---|---|---|
 | `busi/` | Real BUSI ultrasound images (benign / malignant / normal) | Happy-path e2e; modality match; specialist-keyword check |
+| `chest_ct/` | Real chest-CT axial slices (adenocarcinoma / large cell / squamous / normal) | Happy-path e2e for `lung_cancer_chest_ct`; modality match |
+| `skin/` | Real dermoscopy lesion images (malignant / benign) | Happy-path e2e for `skin_cancer_dermoscopy`; modality match |
 | `modality_mismatch/` | CT / X-ray images | KTD-V3 hard refuse; tool never reaches `/v1/detect` |
 | `report_overlay/` | Ultrasound with embedded clinician report text (FINDINGS/IMPRESSION) | KTD-V6 OCR override; tool short-circuits |
 | `non_medical/` | Pet photos, document screenshots | R6 / `is_medical=false` filter |
@@ -32,6 +34,8 @@ table below with source URL + license.
 | `report_overlay/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
 | `report_overlay/benign_busi_003_with_report.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`benign (3).png`) — test injects ocr_has_report=True | CC0 | 2026-06-15 |
 | `non_medical/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `chest_ct/_PLACEHOLDER.txt` | — | — | 2026-06-16 |
+| `skin/_PLACEHOLDER.txt` | — | — | 2026-06-16 |
 
 Operators populating these directories should source from:
 

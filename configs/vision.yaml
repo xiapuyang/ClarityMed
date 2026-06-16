@@ -33,13 +33,23 @@ diseases:
     flow: [lung_chest_ct_resnet50_v1]
     cancer_class: true
     intent_hints_i18n_key: vision.intent.lung_cancer_chest_ct
-  # Future diseases land here, no Python changes:
-  # - id: skin_cancer_dermoscopy
-  #   enabled: false
-  #   primary_model_id: skin_resnet50_v1
-  #   flow: [skin_resnet50_v1]
-  #   cancer_class: true
-  #   intent_hints_i18n_key: vision.intent.skin_cancer_dermoscopy
+  # Skin lesion (ISIC 9-class dermoscopy) — scaffolding landed in
+  # src/claritymed/ingest/vision/skin_lesion/. Disabled until a trained
+  # model + manifest are promoted; flip enabled to true after the train
+  # pipeline (mirrored on chest_ct's) produces a versioned artifact under
+  # ~/.claritymed/models/vision/skin_cancer_dermoscopy/.
+  - id: skin_cancer_dermoscopy
+    enabled: false
+    primary_model_id: skin_isic_resnet50_v1
+    flow: [skin_isic_resnet50_v1]
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.skin_cancer_dermoscopy
+  # Lung histopathology (mohamedsameh0410 notebook → Lung+Colon Histopath)
+  # is intentionally NOT wired here: the Modality literal in
+  # core/medical_clip/schemas.py does not include `histopathology`, and the
+  # upstream BiomedCLIP tagger has no histopath head yet. Adding both
+  # together is a separate unit; see GH issue tracker for the histopath
+  # bring-up plan.
 
 servers:
   - id: local_default
@@ -75,6 +85,19 @@ models:
     accepted_modality: ct                       # KTD-V3 hard gate
     weights_subpath: vision/lung_cancer_chest_ct/lung_chest_ct_resnet50_v1__20260616T141103Z
     manifest_sha256: "848d597e383fb3d98cef8c3e12aec6bc004425c1a1ccca50ca38a61f1ba4fbff"
+    expected_ms: 600
+  # Skin lesion (ISIC 9-class) model entry — paired with the
+  # skin_cancer_dermoscopy disease above. Stays bound to the disabled
+  # disease until the skin_lesion training pipeline produces a real
+  # manifest; until then the all-zeros placeholder sha fails the
+  # integrity check loudly if the disease is flipped on.
+  - id: skin_isic_resnet50_v1
+    disease_id: skin_cancer_dermoscopy
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: dermoscopy               # KTD-V3 hard gate
+    weights_subpath: vision/skin_cancer_dermoscopy/skin_isic_resnet50_v1__placeholder
+    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
     expected_ms: 600
 
 tool:

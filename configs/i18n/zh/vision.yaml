@@ -21,6 +21,14 @@ vision:
       需要担心、可能是哪种类型的肺癌、是否看起来正常时，使用这个工具。
       以下情况**不要**调用：图像不是 CT；图像已经带有放射科医生的
       报告（ocr_has_report=true）；图像本身不是医学影像。
+    skin_cancer_dermoscopy: |
+      当用户上传一张皮肤镜（或近距离皮肤照片）图像，并询问痣、皮肤
+      斑块、皮损是否需要担心、可能是哪种类型的皮肤癌（黑色素瘤、
+      基底细胞癌、鳞状细胞癌、光化性角化）、还是良性（普通痣、
+      皮肤纤维瘤、脂溢性角化、色素性良性角化、血管病变）时，使用
+      这个工具。以下情况**不要**调用：图像不是皮肤镜或近距离皮肤
+      照片；图像已经带有皮肤科医生的报告（ocr_has_report=true）；
+      图像本身不是医学影像。
 
   # 各疾病的显示名 —— 出现在确认弹窗与 LLM 回复正文中。
   disease:
@@ -28,6 +36,8 @@ vision:
       name: "乳腺癌"
     lung_cancer_chest_ct:
       name: "肺癌"
+    skin_cancer_dermoscopy:
+      name: "皮肤癌"
 
   # 各标签的本地化名称 + 简短描述。当用户追问「X 是什么意思」时，LLM
   # 可以引用 description。
@@ -55,6 +65,34 @@ vision:
       normal:
         name: "正常"
         description: "未发现肺癌相关征象。仅从这张图像看，无需采取行动。"
+    skin_cancer_dermoscopy:
+      actinic_keratosis:
+        name: "光化性角化"
+        description: "日光损伤导致的癌前病变。建议请皮肤科医生评估进展风险。"
+      basal_cell_carcinoma:
+        name: "基底细胞癌"
+        description: "最常见的皮肤癌。建议请皮肤科医生复核。"
+      dermatofibroma:
+        name: "皮肤纤维瘤"
+        description: "良性纤维结节。通常按常规随访处理。"
+      melanoma:
+        name: "黑色素瘤"
+        description: "可疑黑色素瘤——最严重的皮肤癌。建议尽快请皮肤科医生复核。"
+      nevus:
+        name: "普通痣"
+        description: "常见痣（良性）。可自我观察，常规复诊。"
+      pigmented_benign_keratosis:
+        name: "色素性良性角化"
+        description: "良性色素性角化。通常按常规随访处理。"
+      seborrheic_keratosis:
+        name: "脂溢性角化"
+        description: "良性脂溢性角化。通常按常规随访处理。"
+      squamous_cell_carcinoma:
+        name: "鳞状细胞癌"
+        description: "皮肤鳞状细胞癌。建议请皮肤科医生复核。"
+      vascular_lesion:
+        name: "血管病变"
+        description: "良性血管病变（如樱桃状血管瘤）。通常按常规随访处理。"
 
   # 工具体在发任何 HTTP 请求之前弹出的确认框。
   confirm:
@@ -78,6 +116,18 @@ vision:
       yes_description: "把图像送到本地的胸部 CT 模型。"
       no_label: "不用了"
       no_description: "跳过模型，只基于文字回答。"
+    skin_cancer_dermoscopy:
+      title: "分析这张皮肤镜图像？"
+      body: |
+        我可以用一个小型皮肤镜模型对这张图像做估计，看皮损更像
+        恶性（黑色素瘤、基底细胞癌、鳞状细胞癌、光化性角化）还是
+        良性（普通痣、皮肤纤维瘤、脂溢性角化、色素性良性角化、
+        血管病变）。结果只是估计——皮肤科医生的判读才是最终依据。
+        要运行模型吗？
+      yes_label: "好，运行"
+      yes_description: "把图像送到本地的皮肤镜模型。"
+      no_label: "不用了"
+      no_description: "跳过模型，只基于文字回答。"
 
   # 审计 allow-list（KTD-V1，与 symptoms.safety_keywords 平行）。
   # 当 clinical_action 落在 _AUDIT_ACTIONS 中时，post_process 会扫描
@@ -89,6 +139,7 @@ vision:
       - "尽快就诊"
       - "乳腺专科"
       - "肿瘤科"
+      - "皮肤科"
       - "尽快预约"
       - "建议尽快"
     soon_specialist:

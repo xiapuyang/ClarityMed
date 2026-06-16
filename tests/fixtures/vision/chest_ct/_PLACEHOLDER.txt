@@ -1,0 +1,14 @@
+Empty by design — see ../README.md for sourcing.
+
+Operators populating this directory should source from:
+
+- Kaggle `mohamedhanyyy/chest-ctscan-images` (the upstream training set;
+  ships under CC BY-NC-SA — verify the per-image license before
+  committing fixtures to a public repo).
+- NIH ChestX-ray14 (public-domain, but it's xray not CT — for CT
+  modality-match fixtures, prefer LIDC-IDRI or RSNA Pneumonia CT
+  Challenge data with proper attribution).
+
+Each committed image MUST be sourced from a public-domain or CC0
+archive. Tests that need this fixture call `pytest.skip` when only the
+placeholder is present.

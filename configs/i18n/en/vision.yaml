@@ -30,6 +30,16 @@ vision:
       call this tool when the image is not a CT scan, when the image
       already carries a radiologist's report (ocr_has_report), or
       when the image is not medical.
+    skin_cancer_dermoscopy: |
+      Use when the user uploads a dermoscopy (close-up skin) image
+      and asks whether a mole, lesion, or skin patch is concerning,
+      what kind of skin cancer it might be (melanoma, basal cell,
+      squamous cell, actinic keratosis), or whether it looks benign
+      (nevus, dermatofibroma, vascular lesion, seborrheic keratosis,
+      pigmented benign keratosis). Do NOT call this tool when the
+      image is not a dermoscopy / close-up skin photo, when the
+      image already carries a dermatologist's report
+      (ocr_has_report), or when the image is not medical.
 
   # Per-disease display name shown in confirm modals + LLM-side text.
   disease:
@@ -37,6 +47,8 @@ vision:
       name: "breast cancer"
     lung_cancer_chest_ct:
       name: "lung cancer"
+    skin_cancer_dermoscopy:
+      name: "skin cancer"
 
   # Per-label localized names + short descriptions. Descriptions are
   # surfaced by the LLM when the user asks "what does X mean here?".
@@ -64,6 +76,34 @@ vision:
       normal:
         name: "normal"
         description: "No lung-cancer findings identified. No action required from this image alone."
+    skin_cancer_dermoscopy:
+      actinic_keratosis:
+        name: "actinic keratosis"
+        description: "Pre-malignant sun-damage lesion. Dermatology review is recommended."
+      basal_cell_carcinoma:
+        name: "basal cell carcinoma"
+        description: "Most common skin cancer. Dermatology review is recommended."
+      dermatofibroma:
+        name: "dermatofibroma"
+        description: "Benign fibrous nodule. Routine follow-up is appropriate."
+      melanoma:
+        name: "melanoma"
+        description: "Suspicious for melanoma — the most serious skin cancer. Urgent dermatology review."
+      nevus:
+        name: "nevus"
+        description: "Common mole (benign). Routine self-monitoring is appropriate."
+      pigmented_benign_keratosis:
+        name: "pigmented benign keratosis"
+        description: "Benign pigmented keratosis. Routine follow-up is appropriate."
+      seborrheic_keratosis:
+        name: "seborrheic keratosis"
+        description: "Benign seborrheic keratosis. Routine follow-up is appropriate."
+      squamous_cell_carcinoma:
+        name: "squamous cell carcinoma"
+        description: "Squamous cell carcinoma. Dermatology review is recommended."
+      vascular_lesion:
+        name: "vascular lesion"
+        description: "Benign vascular lesion (e.g. cherry angioma). Routine follow-up is appropriate."
 
   # Confirm modal copy — fired from the tool body before any HTTP call.
   # `title` shows as the modal header; `body` is the question. `yes` /
@@ -92,6 +132,19 @@ vision:
       yes_description: "Send the image to the local chest-CT model."
       no_label: "No, skip"
       no_description: "Skip the model and answer from text only."
+    skin_cancer_dermoscopy:
+      title: "Analyze skin lesion?"
+      body: |
+        I can run a small dermoscopy model on this image to estimate
+        whether a skin lesion looks malignant (melanoma, basal cell,
+        squamous cell, actinic keratosis) or benign (nevus,
+        dermatofibroma, seborrheic / pigmented keratosis, vascular
+        lesion). The result is an estimate — a dermatologist's
+        reading is always the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local skin-lesion model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
 
   # Audit-only allow-list (KTD-V1, mirrors symptoms.safety_keywords).
   # The post_process hook in vision_plugin scans the LLM's reply for any
@@ -104,6 +157,7 @@ vision:
       - "specialist within"
       - "breast specialist"
       - "oncologist"
+      - "dermatologist"
       - "schedule an appointment"
     soon_specialist:
       - "follow up"
