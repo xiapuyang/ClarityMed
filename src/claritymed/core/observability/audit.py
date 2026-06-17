@@ -79,12 +79,10 @@ AuditKind = Literal[
     "require_admin_pass",
     "require_admin_blocked",
     # mode lifecycle (orchestrator services)
-    "mode.ingest",
     "mode.ask",
     "mode.ask.scrub",
     "mode.ask.scrub_assembled",
     "mode.rag",
-    "mode.routed",
     "mode.cancelled",
     "mode.ask.history_trimmed",
     # Tool-mode compliance: LLM wrote "I will retrieve..." but never

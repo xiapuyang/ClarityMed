@@ -73,7 +73,10 @@ async def test_app_mounts_with_status_bar_and_widgets():
 
 
 @pytest.mark.asyncio
-async def test_shift_tab_cycles_mode():
+async def test_shift_tab_keeps_mode_on_ask():
+    """The mode-cycle keybinding is preserved as a stub: only ``ask`` is
+    user-reachable now, so cycling is a no-op. The keybinding stays so the
+    UX hook is ready when more modes return."""
     app = ClarityMedApp(
         user_id="test",
         language="en",
@@ -83,12 +86,6 @@ async def test_shift_tab_cycles_mode():
         await pilot.pause()
         status = app.query_one(StatusBar)
         assert status.mode == "ask"
-        app.action_cycle_mode()
-        await pilot.pause()
-        assert status.mode == "ingest"
-        app.action_cycle_mode()
-        await pilot.pause()
-        assert status.mode == "rag"
         app.action_cycle_mode()
         await pilot.pause()
         assert status.mode == "ask"
@@ -116,9 +113,10 @@ async def test_slash_help_shows_help_bubble():
 
 
 @pytest.mark.asyncio
-async def test_set_mode_switches_status_bar():
-    """``/mode`` was removed; mode is now switched via ``set_mode`` (Shift+Tab,
-    UploadModal force_mode, future mode-confirmation modal)."""
+async def test_set_mode_updates_status_bar():
+    """``set_mode`` is kept as the programmatic mode entry point even though
+    only ``ask`` exists today — the hook is what future modes will plug into.
+    """
     app = ClarityMedApp(
         user_id="test",
         language="en",
@@ -126,9 +124,9 @@ async def test_set_mode_switches_status_bar():
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.set_mode("rag")
+        app.set_mode("ask")
         await pilot.pause()
-        assert app.query_one(StatusBar).mode == "rag"
+        assert app.query_one(StatusBar).mode == "ask"
 
 
 @pytest.mark.asyncio
@@ -206,7 +204,7 @@ async def test_unmount_is_a_noop_now():
     app = ClarityMedApp(user_id="test", language="en")
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.set_mode("ingest")
+        app.set_mode("ask")
         await pilot.pause()
     # Reaching here means unmount completed cleanly.
     assert True
@@ -304,39 +302,6 @@ async def test_unknown_slash_command_shows_inline_error():
         assert "⏺" in rendered
         assert "Unknown command: /sproingify" in rendered
         assert "error" in bubbles[0].classes
-
-
-@pytest.mark.asyncio
-async def test_ingest_mode_dispatch_runs_service():
-    """Submitting plain text in ingest mode goes through IngestService.
-
-    Uses the real IngestService (it is deterministic, no LLM).
-    """
-    app = ClarityMedApp(
-        user_id="test",
-        language="en",
-        chat_session=_fresh_session(),
-    )
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        # Switch to ingest mode (Shift+Tab cycles, set_mode is the programmatic
-        # API; the /mode slash command was removed).
-        app.set_mode("ingest")
-        await pilot.pause()
-        # Submit a key=value.
-        app.query_one(InputBar).post_message(InputBar.Submitted("allergy=penicillin"))
-        for _ in range(20):
-            await pilot.pause()
-            if app._stream_worker is None or app._stream_worker.is_finished:
-                break
-        steps = app.query_one(ToolSteps)
-        # ingest_service pushes ToolStarted+ToolCompleted for save_to_profile.
-        step_text = " ".join(
-            str(child.renderable)
-            for child in steps.children
-            if hasattr(child, "renderable")
-        )
-        assert "save_to_profile" in step_text
 
 
 @pytest.mark.asyncio

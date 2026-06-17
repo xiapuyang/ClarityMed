@@ -21,18 +21,10 @@ term:
     hba1c: "Hemoglobin A1c"
 
 modes:
-  ingest:
-    label: "My Records"
-    description: "Save personal info, history, or report attachments."
-    empty_prompt: "Use /upload <path> to add a record, or type a fact like 'allergy: penicillin'."
   ask:
     label: "Ask"
     description: "Ask a medical question and get an answer with citations."
     empty_prompt: "What would you like to know?"
-  rag:
-    label: "My Library"
-    description: "Manage reference materials (uploaded docs, system collections)."
-    empty_prompt: "Use /library to manage references, or /upload to add a new one."
 
 rag:
   collection:

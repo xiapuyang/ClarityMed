@@ -9,7 +9,6 @@ from textual.widgets import Button, OptionList
 from claritymed.cli.tui.modals import (
     ApprovalModal,
     LibraryModal,
-    ModeModal,
     UploadModal,
 )
 from claritymed.cli.tui.modals.provider_modal import ProviderModal
@@ -68,28 +67,6 @@ async def test_upload_modal_confirms_with_valid_file(tmp_path):
     assert text == "hello world"
     # Default radio is "record" → public=False.
     assert public is False
-
-
-@pytest.mark.asyncio
-async def test_mode_modal_buttons_return_choice():
-    app = _ModalHostApp(ModeModal(detected_mode="ingest", confidence=0.4))
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        modal = app.screen
-        modal.query_one("#rag", Button).press()
-        await pilot.pause()
-    assert app.result == "rag"
-
-
-@pytest.mark.asyncio
-async def test_mode_modal_cancel_returns_none():
-    app = _ModalHostApp(ModeModal())
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        modal = app.screen
-        modal.query_one("#cancel", Button).press()
-        await pilot.pause()
-    assert app.result is None
 
 
 @pytest.mark.asyncio

@@ -30,7 +30,6 @@ from claritymed.cli.commands.admin import init_user_cmd
 from claritymed.cli.commands.ask import ask
 from claritymed.cli.commands.audit import audit_app
 from claritymed.cli.commands.finetune import finetune_app
-from claritymed.cli.commands.ingest import ingest_app
 from claritymed.cli.commands.prompts import prompts_app
 from claritymed.cli.commands.rag import rag_app
 from claritymed.cli.commands.terminology import terminology_app
@@ -42,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="claritymed",
-    help="ClarityMed CLI — ingest / ask / rag (headless mirror of the TUI).",
+    help="ClarityMed CLI — ask / rag (headless mirror of the TUI).",
     no_args_is_help=True,
 )
 
@@ -59,7 +58,6 @@ app.command()(tui)
 app.command("init-user")(init_user_cmd)
 
 # Sub-apps.
-app.add_typer(ingest_app, name="ingest")
 app.add_typer(rag_app, name="rag")
 app.add_typer(terminology_app, name="terminology")
 app.add_typer(finetune_app, name="finetune")

@@ -15,12 +15,11 @@ from claritymed.core.rag.chunking.base import (
     RawDocument,
 )
 from claritymed.core.rag.embedding.base import Embedder, SparseVector
-from claritymed.core.schemas.receipts import IngestionReceipt, IngestReceipt
+from claritymed.core.schemas.receipts import IngestionReceipt
 from claritymed.core.phi.guard import PhiGuard
 from claritymed.orchestrator.services import (
     AskService,
     Done,
-    IngestService,
     RagService,
     TokenChunk,
 )
@@ -81,29 +80,6 @@ def rag_store(_phi_guard: PhiGuard):
     )
 
 
-async def test_ingest_service_writes_profile_field():
-    events = []
-    async for ev in IngestService().run("allergy=penicillin", user_id="alice"):
-        events.append(ev)
-
-    types = [type(e).__name__ for e in events]
-    assert "ToolStarted" in types
-    assert "ToolCompleted" in types
-    assert "Done" in types
-
-    done = next(e for e in events if isinstance(e, Done))
-    assert isinstance(done.final, IngestReceipt)
-    assert done.final.records[0].kind == "profile"
-
-
-async def test_ingest_service_no_kv_returns_empty_receipt():
-    events = []
-    async for ev in IngestService().run("just a sentence", user_id="alice"):
-        events.append(ev)
-    done = next(e for e in events if isinstance(e, Done))
-    assert done.final.records == []
-
-
 async def test_rag_service_persists_via_user_rag(rag_store):
     events = []
     async for ev in RagService(store=rag_store).run(
@@ -119,6 +95,36 @@ async def test_rag_service_persists_via_user_rag(rag_store):
 
     hits = await rag_store.search("alice", "paragraph", top_k=5)
     assert hits != []
+
+
+async def test_rag_service_public_flag_passes_through(rag_store):
+    events = []
+    async for ev in RagService(store=rag_store).run(
+        "public paper content",
+        user_id="alice",
+        public=True,
+    ):
+        events.append(ev)
+
+    done = next(e for e in events if isinstance(e, Done))
+    assert done.final.public is True
+    hits = await rag_store.search("alice", "public", top_k=5)
+    assert all(h.can_cloud for h in hits)
+
+
+async def test_rag_service_empty_text_yields_stub_status(rag_store):
+    """Empty input → chunker returns no children → embedding_status == 'stub'.
+
+    Guards the conditional in RagService that distinguishes a real write
+    (``"ok"``) from a no-op (``"stub"``).
+    """
+    events = []
+    async for ev in RagService(store=rag_store).run("", user_id="alice"):
+        events.append(ev)
+
+    done = next(e for e in events if isinstance(e, Done))
+    assert done.final.chunk_count == 0
+    assert done.final.embedding_status == "stub"
 
 
 async def test_ask_service_streams_tokens_and_scrubs_input():

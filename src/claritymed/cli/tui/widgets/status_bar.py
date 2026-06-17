@@ -10,7 +10,7 @@ from __future__ import annotations
 from textual.reactive import reactive
 from textual.widgets import Static
 
-ModeName = str  # Literal['ingest','ask','rag'] — kept loose for reactive cleanup
+ModeName = str  # Literal['ask'] — kept loose for reactive cleanup
 
 
 def _fmt_ctx(chars: int) -> str:
@@ -32,9 +32,6 @@ class StatusBar(Static):
         color: $text;
         padding: 0 1;
     }
-    StatusBar.flash {
-        background: $warning;
-    }
     """
 
     user_id: reactive[str] = reactive("default")
@@ -43,7 +40,6 @@ class StatusBar(Static):
     provider_id: reactive[str] = reactive("?")
     provider_kind: reactive[str] = reactive("?")
     request_id: reactive[str] = reactive("-")
-    routing_flash: reactive[str] = reactive("")
     context_chars: reactive[int] = reactive(0)
 
     def render(self) -> str:
@@ -54,10 +50,3 @@ class StatusBar(Static):
             f"ctx={_fmt_ctx(self.context_chars)}  "
             f"req={self.request_id[-8:]}"
         )
-
-    def watch_routing_flash(self, value: str) -> None:
-        """Toggle the flash class when ``routing_flash`` is non-empty."""
-        if value:
-            self.add_class("flash")
-        else:
-            self.remove_class("flash")

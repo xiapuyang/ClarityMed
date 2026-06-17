@@ -15,12 +15,11 @@ uv run pre-commit run --all-files
 # 安装 pre-push hook（一次性；安装后 git push 前自动跑全量单测 + e2e）
 uv run pre-commit install --hook-type pre-push
 
-# 启动 TUI（headless 镜像走 ask/ingest/rag 子命令）
+# 启动 TUI（headless 镜像走 ask/rag 子命令）
 uv run claritymed tui [--user <id>] [--lang en|zh] [--provider <id>]
 
 # 单次问答 / 数据落盘
 uv run claritymed ask "..." [--user <id>] [--provider <id>]
-uv run claritymed ingest profile allergy=penicillin --user <id>
 uv run claritymed rag add ./path/to/note.md --user <id>
 
 # Phoenix prompts 双向同步

@@ -22,7 +22,7 @@ ErrorType = Literal[
     "scrub_unavailable",
 ]
 
-ModeName = Literal["ingest", "ask", "rag"]
+ModeName = Literal["ask"]
 
 
 class _EventBase(BaseModel):
@@ -121,16 +121,6 @@ class RetrievalCompleted(_EventBase):
     parent_expand_ms: int = 0
 
 
-class ModeRouted(_EventBase):
-    """Router decided the mode for this turn. Drives the status-bar flash."""
-
-    type: Literal["mode_routed"] = "mode_routed"
-    detected_mode: ModeName
-    confidence: float
-    source: Literal["rule", "llm", "explicit"]
-    reason: str = ""
-
-
 class Cancelled(_EventBase):
     type: Literal["cancelled"] = "cancelled"
     reason: str = ""
@@ -160,7 +150,6 @@ Event = Union[
     RetrievalFiltered,
     LlmCallStarted,
     LlmFirstToken,
-    ModeRouted,
     Cancelled,
     Done,
     Error,

@@ -52,11 +52,8 @@ from claritymed.orchestrator.services import (
     ChatTurn,
     Done,
     Error,
-    IngestService,
     LlmCallStarted,
     LlmFirstToken,
-    ModeRouted,
-    RagService,
     RetrievalCompleted,
     RetrievalFiltered,
     RetrievalPending,
@@ -71,9 +68,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ModeName = Literal["ingest", "ask", "rag"]
-_MODE_CYCLE: tuple[ModeName, ...] = ("ask", "ingest", "rag")
-ROUTING_FLASH_SECONDS = 1.5
+ModeName = Literal["ask"]
+_MODE_CYCLE: tuple[ModeName, ...] = ("ask",)
 
 # Substrings (lowercased) that mark an upstream context-window overflow.
 # Pulled from real Anthropic / OpenAI / Ollama error strings; matches are
@@ -279,8 +275,6 @@ class ClarityMedApp(App):
         language: str | None = None,
         provider_id: str | None = None,
         ask_service_factory=None,
-        ingest_service_factory=None,
-        rag_service_factory=None,
         chat_session: ChatSession | None = None,
     ) -> None:
         super().__init__()
@@ -290,8 +284,6 @@ class ClarityMedApp(App):
         # Mutable — updated by /provider <id> at runtime.
         self._current_provider_id: str | None = provider_id
         self._ask_service_factory = ask_service_factory
-        self._ingest_service_factory = ingest_service_factory
-        self._rag_service_factory = rag_service_factory
         self._chat_session: ChatSession | None = chat_session
         # Cached per-session RagStrategy when rag.enabled=true. Owns the
         # two AsyncQdrantClient handles inside HybridRetriever; rebuilding
@@ -682,7 +674,7 @@ class ClarityMedApp(App):
             if result is None:
                 return
             payload, public = result
-            self._dispatch_to_service(payload, force_mode="rag", public=public)
+            self._dispatch_upload_to_rag(payload, public=public)
 
         self.push_screen(UploadModal(initial_path=path), _handle)
 
@@ -704,15 +696,15 @@ class ClarityMedApp(App):
 
     # ----- service dispatch ----------------------------------------------
 
-    def _dispatch_to_service(
-        self,
-        text: str,
-        force_mode: ModeName | None = None,
-        public: bool = False,
-    ) -> None:
-        status = self.query_one(StatusBar)
-        conv = self.query_one(Conversation)
+    def _begin_turn(self, text: str) -> None:
+        """Per-turn UI bookkeeping shared by ask submit and rag upload.
+
+        Wipes stale steps (but preserves any in-flight OCR row), adds the
+        user bubble to the conversation, and flips the input bar into
+        streaming mode. Callers then launch the appropriate worker.
+        """
         steps = self.query_one(ToolSteps)
+        conv = self.query_one(Conversation)
         # Preserve any in-flight rows (e.g. a pending OCR job enqueued by
         # an earlier paste). Wiping them here makes the right panel
         # collapse mid-turn and re-appear when OCR finishes — bad UX and
@@ -721,13 +713,25 @@ class ClarityMedApp(App):
         conv.add_user_turn(text)
         self._session_turns.append(ChatTurn(role="user", text=text))
         self._refresh_context_chars()
-
-        mode: ModeName = force_mode or status.mode  # type: ignore[assignment]
         self.query_one(InputBar).set_streaming(True)
-        self._stream_worker = self._run_stream(text, mode, public)
+
+    def _dispatch_to_service(self, text: str) -> None:
+        self._begin_turn(text)
+        self._stream_worker = self._run_stream(text)
+
+    def _dispatch_upload_to_rag(self, text: str, public: bool) -> None:
+        """Run the upload payload through ``RagService`` in its own worker.
+
+        Skips the mode dispatcher: rag ingestion is not a user-facing mode,
+        only an internal flow triggered by ``/upload`` and the paste→OCR
+        pipeline.
+        """
+        self._begin_turn(text)
+        self._stream_worker = self._run_rag_upload(text, public)
 
     @work(exclusive=True)
-    async def _run_stream(self, text: str, mode: ModeName, public: bool) -> None:
+    async def _run_stream(self, text: str) -> None:
+        mode: ModeName = "ask"
         status = self.query_one(StatusBar)
         conv = self.query_one(Conversation)
         steps = self.query_one(ToolSteps)
@@ -747,9 +751,8 @@ class ClarityMedApp(App):
             )
             access.info("tui_turn_start mode=%s", mode)
             try:
-                events = await self._make_service_stream(
-                    mode, text, status.user_id, public
-                )
+                service = await self._build_ask_service()
+                events = service.run(text, user_id=status.user_id)
             except Exception as exc:  # noqa: BLE001
                 request_status = "init_error"
                 conv.add_error_turn(f"service init failed: {exc}")
@@ -761,9 +764,7 @@ class ClarityMedApp(App):
             _ask_pre_tool_len: int = 0
             try:
                 async for event in events:
-                    if isinstance(event, ModeRouted):
-                        self._flash_routing(event.detected_mode, event.confidence)
-                    elif isinstance(event, ToolStarted):
+                    if isinstance(event, ToolStarted):
                         if event.tool_name == "ask_user_question":
                             # Track pre-tool text length so we can discard it
                             # if the user declines. The bubble itself is removed
@@ -878,62 +879,95 @@ class ClarityMedApp(App):
 
     def _on_done(self, mode: ModeName, final, streamed_text: str) -> None:
         conv = self.query_one(Conversation)
-        if mode == "ask":
-            text = streamed_text or (final if isinstance(final, str) else str(final))
-            bubble = conv.finalize_active(markdown_text=text)
-            if bubble is None and text:
-                conv.add_system_turn(text)
-            self._session_turns.append(ChatTurn(role="assistant", text=text))
-        else:
-            summary = getattr(final, "summary", None) or repr(final)
-            conv.add_system_turn(f"{mode} ✓ {summary}")
-            self._session_turns.append(
-                ChatTurn(role="system", text=f"{mode}: {summary}")
-            )
+        text = streamed_text or (final if isinstance(final, str) else str(final))
+        bubble = conv.finalize_active(markdown_text=text)
+        if bubble is None and text:
+            conv.add_system_turn(text)
+        self._session_turns.append(ChatTurn(role="assistant", text=text))
         self._refresh_context_chars()
 
     def _refresh_context_chars(self) -> None:
         total = sum(len(turn.text) for turn in self._session_turns)
         self.query_one(StatusBar).context_chars = total
 
-    def _flash_routing(self, mode: ModeName, confidence: float) -> None:
+    @work(exclusive=True)
+    async def _run_rag_upload(self, text: str, public: bool) -> None:
+        """Stream a ``/upload``-style ingest through ``RagService``.
+
+        Mirrors ``_run_stream``'s ContextVar + audit + event-pump shape but
+        only handles the small event set ``RagService`` actually emits
+        (``ToolStarted`` / ``ToolCompleted`` / ``Done`` / ``Error``). Audit
+        rows carry ``mode="rag"`` for continuity with prior history.
+        """
+        from claritymed.orchestrator.services import RagService
+        from claritymed.stores.user_rag import make_user_rag_store
+
         status = self.query_one(StatusBar)
-        status.routing_flash = mode
-        self.query_one(Conversation).add_system_turn(
-            f"Routed to {mode} (confidence {confidence:.2f})"
-        )
+        conv = self.query_one(Conversation)
+        steps = self.query_one(ToolSteps)
+        rid = new_request_id()
+        status.request_id = rid
 
-        def _clear() -> None:
-            status.routing_flash = ""
-            status.mode = mode
-            self._refresh_input_placeholder()
-
-        self.set_timer(ROUTING_FLASH_SECONDS, _clear)
-
-    async def _make_service_stream(
-        self,
-        mode: ModeName,
-        text: str,
-        user_id: str,
-        public: bool,
-    ):
-        if mode == "ask":
-            service = await self._build_ask_service()
-            return service.run(text, user_id=user_id)
-        if mode == "ingest":
-            service = (
-                self._ingest_service_factory()
-                if self._ingest_service_factory
-                else IngestService()
+        per_turn = apply_context(rid, status.user_id, status.language)
+        access = get_access_logger()
+        request_status = "ok"
+        try:
+            audit_event(
+                "request_start",
+                payload={"entry": "tui", "mode": "rag"},
             )
-            return service.run(text, user_id=user_id)
-        # rag
-        service = (
-            self._rag_service_factory()
-            if self._rag_service_factory
-            else self._default_rag_service(user_id)
-        )
-        return service.run(text, user_id=user_id, public=public)
+            access.info("tui_turn_start mode=rag")
+            try:
+                service = RagService(store=make_user_rag_store(status.user_id))
+                events = service.run(text, user_id=status.user_id, public=public)
+            except Exception as exc:  # noqa: BLE001
+                request_status = "init_error"
+                conv.add_error_turn(f"service init failed: {exc}")
+                return
+
+            try:
+                async for event in events:
+                    if isinstance(event, ToolStarted):
+                        steps.push_start(event.tool_name, event.args_preview)
+                    elif isinstance(event, ToolCompleted):
+                        steps.push_complete(
+                            event.tool_name, event.duration_ms, event.summary
+                        )
+                    elif isinstance(event, Error):
+                        conv.add_error_turn(f"{event.error_type}: {event.message}")
+                        request_status = "error"
+                        return
+                    elif isinstance(event, Done):
+                        final = event.final
+                        summary = getattr(final, "summary", None) or (
+                            f"doc_id={final.doc_id} chunks={final.chunk_count}"
+                            if hasattr(final, "doc_id")
+                            else repr(final)
+                        )
+                        conv.add_system_turn(f"rag ✓ {summary}")
+                        self._session_turns.append(
+                            ChatTurn(role="system", text=f"rag: {summary}")
+                        )
+                        self._refresh_context_chars()
+                        return
+            except Exception as exc:  # noqa: BLE001
+                request_status = "exception"
+                conv.add_error_turn(f"stream failed: {exc}")
+        finally:
+            try:
+                audit_event(
+                    "request_end",
+                    payload={"status": request_status, "mode": "rag"},
+                )
+                access.info("tui_turn_end mode=rag status=%s", request_status)
+            except Exception:  # noqa: BLE001 — never let observability bring down a turn
+                logger.exception("failed to emit request_end audit/access")
+            reset_context(per_turn)
+            try:
+                self.query_one(InputBar).set_streaming(False)
+                self._refresh_input_placeholder()
+            except NoMatches:
+                pass  # App is tearing down; widgets already unmounted.
 
     async def _build_ask_service(self) -> "AskService":
         if self._ask_service_factory is not None:
@@ -1065,12 +1099,6 @@ class ClarityMedApp(App):
         finally:
             self._strategy_lock.release()
             logger.debug("_strategy_for_session: lock released")
-
-    @staticmethod
-    def _default_rag_service(user_id: str) -> RagService:
-        from claritymed.stores.user_rag import make_user_rag_store
-
-        return RagService(store=make_user_rag_store(user_id))
 
     def _resolve_provider_id(self) -> str:
         """Resolve the active provider id from catalog + account default.

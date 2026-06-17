@@ -19,7 +19,6 @@ from claritymed.core.events import (
     Done,
     Error,
     Event,
-    ModeRouted,
     LlmCallStarted,
     LlmFirstToken,
     RetrievalCompleted,
@@ -30,7 +29,6 @@ from claritymed.core.events import (
     ToolCompleted,
     ToolStarted,
 )
-from claritymed.orchestrator.services.ingest_service import IngestService
 from claritymed.orchestrator.services.rag_service import RagService
 
 __all__ = [
@@ -41,9 +39,7 @@ __all__ = [
     "Done",
     "Error",
     "Event",
-    "IngestService",
     "LatencyTrace",
-    "ModeRouted",
     "RagService",
     "LlmCallStarted",
     "LlmFirstToken",

@@ -9,25 +9,11 @@ from claritymed.cli.main import app
 runner = CliRunner()
 
 
-def test_help_lists_three_modes():
+def test_help_lists_modes():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "ingest" in result.stdout
     assert "ask" in result.stdout
     assert "rag" in result.stdout
-
-
-def test_ingest_profile_writes_field(tmp_path, monkeypatch):
-    from claritymed.stores.account import init_user
-
-    monkeypatch.setenv("CLARITYMED_HOME", str(tmp_path))
-    init_user("alice")
-    result = runner.invoke(
-        app,
-        ["ingest", "profile", "allergy=penicillin", "--user", "alice"],
-    )
-    assert result.exit_code == 0, result.stdout
-    assert "saved" in result.stdout.lower()
 
 
 def test_rag_add_with_file(tmp_path, monkeypatch):

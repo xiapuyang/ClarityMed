@@ -95,27 +95,6 @@ def supported_langs() -> tuple[str, ...]:
     return tuple(str(x).lower() for x in raw)
 
 
-def load_router_config() -> "RouterConfig":
-    """Load and validate ``configs/router.yaml``.
-
-    Single source of truth for confidence thresholds and classification rules
-    used by the hybrid mode router. Wraps :func:`load_yaml` (cached) and
-    validates with Pydantic so misspelled keys fail fast at load time.
-
-    Raises:
-        FileNotFoundError: If ``configs/router.yaml`` does not exist.
-        pydantic.ValidationError: If the YAML is structurally wrong.
-    """
-    from claritymed.core.schemas.router import RouterConfig
-
-    raw = load_yaml("router.yaml")
-    if not raw:
-        raise FileNotFoundError(
-            "configs/router.yaml missing or empty — required for mode dispatch."
-        )
-    return RouterConfig.model_validate(raw)
-
-
 def load_evals_config() -> "EvalsConfig":
     """Load and validate ``configs/evals.yaml``.
 
@@ -297,6 +276,5 @@ def reload_configs() -> None:
 
 if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
     from claritymed.core.schemas.evals import EvalsConfig  # noqa: F401
-    from claritymed.core.schemas.router import RouterConfig  # noqa: F401
     from claritymed.core.symptoms.schemas import SymptomsConfig  # noqa: F401
     from claritymed.core.vision.schemas import VisionConfig  # noqa: F401

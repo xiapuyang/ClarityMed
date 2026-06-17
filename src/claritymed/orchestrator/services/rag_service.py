@@ -10,15 +10,15 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 
-from claritymed.core.observability.audit import audit_event
-from claritymed.orchestrator.agents.rag_agent import embed_and_store
 from claritymed.core.events import (
     Done,
     Event,
     ToolCompleted,
     ToolStarted,
 )
-from claritymed.stores.user_rag import UserRagStore
+from claritymed.core.observability.audit import audit_event
+from claritymed.core.schemas.receipts import IngestionReceipt
+from claritymed.stores.user_rag import UserRagStore, generate_doc_id
 
 
 class RagService:
@@ -60,12 +60,19 @@ class RagService:
         yield ToolStarted(tool_name="embed_and_store", args_preview=user_id)
         t0 = time.monotonic()
         metadata = {"source_uri": source_uri} if source_uri else None
-        receipt = await embed_and_store(
-            store=self._store,
+        doc_id = generate_doc_id()
+        written = await self._store.add_document(
             user_id=user_id,
+            doc_id=doc_id,
             text=user_input,
-            public=public,
             metadata=metadata,
+            public=public,
+        )
+        receipt = IngestionReceipt(
+            doc_id=doc_id,
+            chunk_count=written,
+            embedding_status="ok" if written else "stub",
+            public=public,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
         yield ToolCompleted(
