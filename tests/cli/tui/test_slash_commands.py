@@ -56,3 +56,9 @@ def test_slash_alone_is_unknown():
 def test_help_text_documents_each_command(cmd):
     name = cmd[1:].split()[0]
     assert name in HELP_TEXT
+
+
+def test_help_text_marks_user_command_as_admin_only():
+    """``/user`` must be clearly labelled admin-only so non-admins
+    understand why it's blocked when they try it."""
+    assert "admin only" in HELP_TEXT

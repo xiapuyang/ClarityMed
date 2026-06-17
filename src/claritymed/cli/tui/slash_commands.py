@@ -74,7 +74,7 @@ HELP_TEXT: str = (
     "  /upload <path>    Add a record (ingest mode)\n"
     "  /library          Manage reference materials (rag mode)\n"
     "  /mode <name>      Switch mode: ingest / ask / rag\n"
-    "  /user <id>        Switch active user\n"
+    "  /user [id]        Switch active user (admin only; no arg opens picker)\n"
     "  /provider [id]    Switch LLM provider; no arg opens picker (F3)\n"
     "  /clear            Start a new chat session (keeps history on disk)\n"
     "  /help             Show this help\n"

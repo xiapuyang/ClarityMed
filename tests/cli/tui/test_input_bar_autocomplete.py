@@ -161,6 +161,27 @@ async def test_escape_closes_popup_without_changing_input():
 
 
 @pytest.mark.asyncio
+async def test_set_command_filter_hides_user_for_non_admin():
+    """When the app narrows the visible set, /user must drop out of
+    autocomplete entirely — typing /u then only matches /upload."""
+    async with _Host().run_test() as pilot:
+        app: _Host = pilot.app  # type: ignore[assignment]
+        bar = app.query_one(InputBar)
+        # Mimic what ClarityMedApp._apply_command_filter does for a non-admin.
+        from claritymed.cli.tui.slash_commands import KNOWN_COMMANDS
+
+        bar.set_command_filter(frozenset(c for c in KNOWN_COMMANDS if c != "user"))
+        bar.focus_input()
+        await pilot.press("/")
+        await pilot.pause()
+        assert "user" not in bar._popup_matches
+        await pilot.press("u")
+        await pilot.pause()
+        # /u prefix → only /upload remains for a non-admin.
+        assert bar._popup_matches == ["upload"]
+
+
+@pytest.mark.asyncio
 async def test_popup_hides_once_user_starts_typing_args():
     """After completing a /<cmd> with a space, the popup should step out of
     the way — further chars are arguments, not command prefixes."""

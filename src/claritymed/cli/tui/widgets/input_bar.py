@@ -88,6 +88,10 @@ class InputBar(Container):
         self._popup_visible: bool = False
         self._popup_matches: list[str] = []
         self._popup_selected: int = 0
+        # When None, all KNOWN_COMMANDS are eligible for autocomplete. The
+        # app narrows this to a subset based on the current user's role
+        # (e.g. ``/user`` is admin-only).
+        self._visible_commands: frozenset[str] | None = None
         # When we programmatically set ``Input.value`` (e.g. during a Tab
         # completion or a ``clear()``), Textual queues an ``Input.Changed``
         # message. If we left the popup logic to re-run on that message,
@@ -151,6 +155,16 @@ class InputBar(Container):
     def value(self) -> str:
         return self.query_one("#input", Input).value
 
+    def set_command_filter(self, visible: frozenset[str] | None) -> None:
+        """Restrict autocomplete to ``visible`` (None = all known commands).
+
+        Hides any currently-open popup so a stale match cannot survive a
+        role change (e.g. demoted admin shouldn't see ``/user`` highlighted).
+        """
+        self._visible_commands = visible
+        if self._popup_visible:
+            self._hide_popup()
+
     # ----- Textual event handlers ----------------------------------------
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -204,7 +218,12 @@ class InputBar(Container):
         # shouldn't re-filter the menu.
         body = value[1:]
         head = body.split(" ", 1)[0].lower()
-        matches = [c for c in KNOWN_COMMANDS if c.startswith(head)]
+        eligible = (
+            KNOWN_COMMANDS
+            if self._visible_commands is None
+            else tuple(c for c in KNOWN_COMMANDS if c in self._visible_commands)
+        )
+        matches = [c for c in eligible if c.startswith(head)]
         if not matches:
             self._hide_popup()
             return

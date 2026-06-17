@@ -389,6 +389,7 @@ class ClarityMedApp(App):
 
         self.query_one(InputBar).focus_input()
         self._refresh_input_placeholder()
+        self._apply_command_filter()
 
         # Warm the paste-time supported-extension set off the UI thread.
         # Cold path is ~120ms (import 6 OCR provider modules + parse
@@ -493,6 +494,45 @@ class ClarityMedApp(App):
 
         self.push_screen(ProviderModal(current_provider_id=current), _handle)
 
+    def _open_user_modal(self) -> None:
+        from claritymed.cli.tui.modals.user_modal import UserModal
+
+        def _handle(result: str | None) -> None:
+            if result and result != self._current_user_id:
+                self._switch_user(result)
+
+        self.push_screen(UserModal(current_user_id=self._current_user_id), _handle)
+
+    def _current_role(self) -> str:
+        """Return the current user's role, or ``"user"`` when unknown.
+
+        Reads ``settings.yaml`` directly rather than going through
+        ``require_admin`` because ``user_id_ctx`` is only bound during a
+        streaming worker turn, not in command-handler context.
+        """
+        from claritymed.stores.account import AccountStore
+
+        try:
+            store = AccountStore(self._current_user_id)
+            if not store.exists():
+                return "user"
+            return store.load().role
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "could not resolve role for %s: %s", self._current_user_id, exc
+            )
+            return "user"
+
+    def _apply_command_filter(self) -> None:
+        """Hide admin-only slash commands from autocomplete for non-admins."""
+        from claritymed.cli.tui.slash_commands import KNOWN_COMMANDS
+
+        if self._current_role() == "admin":
+            self.query_one(InputBar).set_command_filter(None)
+        else:
+            visible = frozenset(c for c in KNOWN_COMMANDS if c != "user")
+            self.query_one(InputBar).set_command_filter(visible)
+
     def set_mode(self, mode: ModeName) -> None:
         status = self.query_one(StatusBar)
         status.mode = mode
@@ -545,9 +585,15 @@ class ClarityMedApp(App):
                 self._toast("Usage: /mode <ingest|ask|rag>", kind="error")
             return
         if parsed.name == "user":
+            if self._current_role() != "admin":
+                self._toast(
+                    "Permission denied: /user is admin-only",
+                    kind="error",
+                )
+                return
             new_uid = parsed.arg.strip()
             if not new_uid:
-                self._toast("Usage: /user <id>", kind="error")
+                self._open_user_modal()
                 return
             self._switch_user(new_uid)
             return
@@ -586,6 +632,9 @@ class ClarityMedApp(App):
             child.remove()
         conv.show_empty_state(self._empty_hint(status.mode, status.language))
         self.query_one(ToolSteps).reset()
+        # Re-evaluate autocomplete eligibility — the new user may have a
+        # different role, so /user must appear/disappear accordingly.
+        self._apply_command_filter()
 
     def _switch_provider(self, provider_id: str) -> None:
         if not provider_id:

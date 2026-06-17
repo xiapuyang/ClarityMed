@@ -204,3 +204,60 @@ async def test_provider_modal_no_providers_shows_label(monkeypatch):
         await pilot.pause()
         labels = [lbl.renderable for lbl in app.screen.query(Label)]
         assert any("No providers" in str(lbl) for lbl in labels)
+
+
+# ---------------------------------------------------------------------------
+# UserModal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_user_modal_cancel_dismisses_with_none(alice, bob):
+    from claritymed.cli.tui.modals.user_modal import UserModal
+
+    app = _ModalHostApp(UserModal(current_user_id="alice"))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.result is None
+
+
+@pytest.mark.asyncio
+async def test_user_modal_selects_user(alice, bob):
+    from claritymed.cli.tui.modals.user_modal import UserModal
+
+    app = _ModalHostApp(UserModal(current_user_id="alice"))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # alice is highlighted (index 0 in sorted ids); down → bob.
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+    assert app.result == "bob"
+
+
+@pytest.mark.asyncio
+async def test_user_modal_marks_current_user_highlighted(alice, bob):
+    from claritymed.cli.tui.modals.user_modal import UserModal
+
+    app = _ModalHostApp(UserModal(current_user_id="bob"))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        picker = app.screen.query_one("#picker", OptionList)
+        # Sorted ids: ["alice", "bob"] → bob is at index 1.
+        assert picker.highlighted == 1
+
+
+@pytest.mark.asyncio
+async def test_user_modal_no_users_shows_label():
+    from textual.widgets import Label
+
+    from claritymed.cli.tui.modals.user_modal import UserModal
+
+    # No fixture invoked → list_user_ids() returns [].
+    app = _ModalHostApp(UserModal(current_user_id=None))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        labels = [lbl.renderable for lbl in app.screen.query(Label)]
+        assert any("No users" in str(lbl) for lbl in labels)

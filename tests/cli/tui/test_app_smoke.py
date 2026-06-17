@@ -212,6 +212,9 @@ async def test_unmount_is_a_noop_now():
 
 @pytest.mark.asyncio
 async def test_slash_user_switches_user_and_clears_history():
+    from claritymed.stores.account import init_user
+
+    init_user("test")  # first init → admin role
     app = ClarityMedApp(
         user_id="test",
         language="en",
@@ -227,7 +230,11 @@ async def test_slash_user_switches_user_and_clears_history():
 
 
 @pytest.mark.asyncio
-async def test_slash_user_without_arg_toasts_error():
+async def test_slash_user_no_arg_opens_picker_for_admin():
+    from claritymed.cli.tui.modals.user_modal import UserModal
+    from claritymed.stores.account import init_user
+
+    init_user("test")  # first init → admin
     app = ClarityMedApp(
         user_id="test",
         language="en",
@@ -237,8 +244,26 @@ async def test_slash_user_without_arg_toasts_error():
         await pilot.pause()
         app.query_one(InputBar).post_message(InputBar.Submitted("/user"))
         await pilot.pause()
-        # User did not switch.
-        assert app.query_one(StatusBar).user_id == "test"
+        assert isinstance(app.screen, UserModal)
+
+
+@pytest.mark.asyncio
+async def test_slash_user_blocked_for_non_admin():
+    from claritymed.stores.account import init_user
+
+    init_user("admin_first")  # first → admin
+    init_user("regular")  # second → user
+    app = ClarityMedApp(
+        user_id="regular",
+        language="en",
+        chat_session=_fresh_session("regular"),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).post_message(InputBar.Submitted("/user admin_first"))
+        await pilot.pause()
+        # Non-admin can't /user — no switch.
+        assert app.query_one(StatusBar).user_id == "regular"
 
 
 @pytest.mark.asyncio
