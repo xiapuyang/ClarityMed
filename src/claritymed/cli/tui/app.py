@@ -30,7 +30,7 @@ from textual.worker import Worker
 
 from claritymed import config as _cfg
 from claritymed.cli.entry import DEFAULT_USER_ID
-from claritymed.cli.tui.slash_commands import HELP_TEXT, parse
+from claritymed.cli.tui.slash_commands import parse
 from claritymed.cli.tui.widgets import (
     Conversation,
     InputBar,
@@ -506,6 +506,16 @@ class ClarityMedApp(App):
 
         self.push_screen(LanguageModal(current_lang=current), _handle)
 
+    def _open_help_modal(self) -> None:
+        from claritymed.cli.tui.modals.help_modal import HelpModal
+
+        # Re-entrancy guard: ``?`` is bound on the modal itself to close it,
+        # but the question_mark binding here would otherwise stack another
+        # HelpModal underneath if the dispatch order ever flipped.
+        if isinstance(self.screen, HelpModal):
+            return
+        self.push_screen(HelpModal())
+
     def _current_role(self) -> str:
         """Return the current user's role, or ``"user"`` when unknown.
 
@@ -552,6 +562,9 @@ class ClarityMedApp(App):
 
     # ----- input dispatch -------------------------------------------------
 
+    def on_input_bar_help_requested(self, message: InputBar.HelpRequested) -> None:
+        self._open_help_modal()
+
     def on_input_bar_submitted(self, message: InputBar.Submitted) -> None:
         value = message.value
         input_bar = self.query_one(InputBar)
@@ -574,7 +587,7 @@ class ClarityMedApp(App):
 
     def _handle_command(self, parsed: "ParsedCommand") -> None:
         if parsed.name == "help":
-            self.query_one(Conversation).add_system_turn(HELP_TEXT)
+            self._open_help_modal()
             return
         if parsed.name == "quit":
             self.exit()

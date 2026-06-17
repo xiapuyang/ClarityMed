@@ -67,19 +67,3 @@ def parse(line: str) -> ParsedCommand:
     if head not in KNOWN_COMMANDS:
         return ParsedCommand(name="unknown", arg=head, raw=line)
     return ParsedCommand(name=head, arg=rest.strip(), raw=line)  # type: ignore[arg-type]
-
-
-HELP_TEXT: str = (
-    "Slash commands:\n"
-    "  /upload <path>    Upload a file into your personal RAG library\n"
-    "  /library [query]  Inspect collections (empty = list every collection,\n"
-    "                    query = run full RAG retrieval incl. translation)\n"
-    "  /user [id]        Switch active user (admin only; no arg opens picker)\n"
-    "  /provider [id]    Switch LLM provider; no arg opens picker (F3)\n"
-    "  /lang [code]      Switch reply language (en/zh); no arg opens picker\n"
-    "  /clear            Start a new chat session (keeps history on disk)\n"
-    "  /help             Show this help\n"
-    "  /quit             Exit the TUI\n"
-    "Mode is cycled with Shift+Tab (ingest / ask / rag). "
-    "Anything not starting with / is routed automatically (default: ask)."
-)

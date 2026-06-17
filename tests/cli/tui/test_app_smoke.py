@@ -92,7 +92,9 @@ async def test_shift_tab_keeps_mode_on_ask():
 
 
 @pytest.mark.asyncio
-async def test_slash_help_shows_help_bubble():
+async def test_slash_help_pushes_help_modal():
+    from claritymed.cli.tui.modals.help_modal import HelpModal
+
     app = ClarityMedApp(
         user_id="test",
         language="en",
@@ -103,13 +105,44 @@ async def test_slash_help_shows_help_bubble():
         input_bar = app.query_one(InputBar)
         input_bar.post_message(InputBar.Submitted("/help"))
         await pilot.pause()
-        conv = app.query_one(Conversation)
-        texts = [
-            str(child.renderable)
-            for child in conv.children
-            if hasattr(child, "renderable")
-        ]
-        assert any("Slash commands" in t for t in texts)
+        assert isinstance(app.screen, HelpModal)
+
+
+@pytest.mark.asyncio
+async def test_question_mark_on_empty_input_opens_help_modal():
+    from claritymed.cli.tui.modals.help_modal import HelpModal
+
+    app = ClarityMedApp(
+        user_id="test",
+        language="en",
+        chat_session=_fresh_session(),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).focus_input()
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpModal)
+
+
+@pytest.mark.asyncio
+async def test_question_mark_after_text_inserts_literally():
+    """Once the user has typed anything, ``?`` is a normal character — they
+    might be asking a question. Only an empty bar triggers help."""
+    app = ClarityMedApp(
+        user_id="test",
+        language="en",
+        chat_session=_fresh_session(),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        await pilot.press("h", "i")
+        await pilot.press("question_mark")
+        await pilot.pause()
+        # Help modal not pushed; the bar contains the literal ``?``.
+        assert bar.value().endswith("?")
 
 
 @pytest.mark.asyncio

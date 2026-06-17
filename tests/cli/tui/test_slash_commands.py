@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from claritymed.cli.tui.slash_commands import HELP_TEXT, parse
+from claritymed.cli.tui.modals.help_modal import COMMAND_ROWS
+from claritymed.cli.tui.slash_commands import parse
+
+_HELP_BLOB: str = "\n".join(f"{key} {desc}" for key, desc in COMMAND_ROWS)
 
 
 def test_help_command():
@@ -54,15 +57,15 @@ def test_slash_alone_is_unknown():
 @pytest.mark.parametrize(
     "cmd", ["/upload", "/library", "/user alice", "/lang zh", "/help", "/quit"]
 )
-def test_help_text_documents_each_command(cmd):
+def test_help_documents_each_command(cmd):
     name = cmd[1:].split()[0]
-    assert name in HELP_TEXT
+    assert f"/{name}" in _HELP_BLOB
 
 
-def test_help_text_marks_user_command_as_admin_only():
+def test_help_marks_user_command_as_admin_only():
     """``/user`` must be clearly labelled admin-only so non-admins
     understand why it's blocked when they try it."""
-    assert "admin only" in HELP_TEXT
+    assert "admin only" in _HELP_BLOB
 
 
 def test_lang_command_with_arg():

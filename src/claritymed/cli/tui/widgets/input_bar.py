@@ -39,6 +39,9 @@ _UNSELECTED_PREFIX: str = "  "
 class InputBar(Container):
     """Container around a single Input plus a slash-command popup."""
 
+    class HelpRequested(Message):
+        """Emitted when the user presses ``?`` on an empty input bar."""
+
     DEFAULT_CSS = """
     InputBar {
         height: auto;
@@ -327,6 +330,14 @@ class _SlashInput(Input):
     def on_key(self, event: events.Key) -> None:
         bar = self.parent
         if not isinstance(bar, InputBar):
+            return
+        # ``?`` on an empty input opens the help modal instead of inserting
+        # a literal question mark. Once the user is mid-input, ``?`` falls
+        # through and inserts as expected (e.g. typing a question).
+        if event.key == "question_mark" and not self.value:
+            bar.post_message(InputBar.HelpRequested())
+            event.stop()
+            event.prevent_default()
             return
         if not bar._popup_visible:
             return
