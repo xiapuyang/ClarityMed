@@ -124,17 +124,33 @@ class VisionRegistry:
     async def bootstrap(self) -> None:
         """Fetch ``/v1/catalog`` from every server and cross-check vs the config.
 
-        Called once at orchestrator boot. Failures here are fatal — the
-        orchestrator refuses to start so an operator notices the drift
-        before any user request hits the vision tool.
+        Called once at orchestrator boot. Three outcomes per cross-check:
+
+        * **Soft (warn-only):** server advertises a model the served set
+          doesn't include, OR the served set has a model the server isn't
+          loading. The all-or-nothing strict mode used to abort the whole
+          feature on either; in practice a partially-deployed catalog
+          is the common case during incremental rollout, so we degrade
+          instead. When the missing model is a disease's **primary**, the
+          disease is dropped from the in-memory catalog for this session
+          (its tool-description entry vanishes, ``route`` raises
+          ``UnknownDiseaseError`` if the LLM picks it from a stale
+          prompt). When only a fallback is missing, runtime
+          ``_run_fallback_flow`` already handles the unreachable hop.
+        * **Hard (raises):** manifest_sha drift on a model both sides
+          agree on — that is a data-integrity problem, not a deployment
+          gap, and quietly serving mismatched weights is worse than
+          taking the feature offline.
 
         Raises:
             VisionServerUnreachableError: A server didn't respond.
-            VisionCatalogMismatchError: A server's catalog disagrees
-                with ``configs/vision.yaml``.
+            VisionCatalogMismatchError: Manifest sha drift on a served
+                model. (Missing-from-catalog / extra-on-server cases used
+                to raise this too; they are now warnings.)
         """
         if self._bootstrapped:
             return
+        missing_models: set[str] = set()
         for server in self._config.servers:
             client = self.client_for(server)
             try:
@@ -144,7 +160,17 @@ class VisionRegistry:
                     "vision boot cross-check: server %s unreachable", server.id
                 )
                 raise
-            self._cross_check_server(server, catalog.models)
+            missing_models |= self._cross_check_server(server, catalog.models)
+        if missing_models:
+            affected = self._auto_disable_diseases_missing_primary(missing_models)
+            if affected:
+                logger.warning(
+                    "vision: auto-disabled %d disease(s) for this session "
+                    "because their primary model is not loaded on any "
+                    "configured server: %s",
+                    len(affected),
+                    affected,
+                )
         self._bootstrapped = True
         logger.info(
             "vision registry bootstrapped: diseases=%s servers=%s",
@@ -152,8 +178,8 @@ class VisionRegistry:
             sorted(self._servers),
         )
 
-    def _cross_check_server(self, server: ServerSpec, catalog_models) -> None:
-        """For each catalog entry, find the matching ``ModelSpec`` and compare.
+    def _cross_check_server(self, server: ServerSpec, catalog_models) -> set[str]:
+        """Compare one server's catalog against the served set.
 
         Compares against the **served set** — models the server is
         expected to load right now: those listed in an enabled disease's
@@ -163,11 +189,13 @@ class VisionRegistry:
         intentionally ignored so the config can carry "ready to flip on"
         entries without breaking boot.
 
-        Three failure modes:
+        Returns the set of served-set model_ids this server doesn't load.
+        The caller aggregates these across servers and uses them to
+        auto-disable affected diseases.
 
-        * Server advertises a model the served set doesn't include.
-        * Served set has a model the server isn't loading.
-        * Both sides agree on the model but ``manifest_sha`` differs.
+        Raises ``VisionCatalogMismatchError`` only on sha drift — the
+        two-set-diff cases (extra on server / missing from server) are
+        warnings now, see :meth:`bootstrap` for the rationale.
         """
         catalog_index = {m.model_id: m for m in catalog_models}
         served_set = {
@@ -178,21 +206,28 @@ class VisionRegistry:
             if self._models.get(model_id)
             and self._models[model_id].server_id == server.id
         }
-        # Server-side surprise (served set doesn't include).
-        for model_id in catalog_index.keys() - served_set:
-            raise VisionCatalogMismatchError(
-                f"server {server.id!r} advertises model {model_id!r} but "
-                f"no enabled disease's flow lists it for this server"
+        extras = catalog_index.keys() - served_set
+        if extras:
+            # Server-side orphan — doesn't affect routing, just wastes
+            # memory on the server. Log so a yaml ↔ deployment drift
+            # surfaces, don't fail (the operator may be staging a new
+            # disease whose yaml flip hasn't landed yet).
+            logger.warning(
+                "vision: server %r advertises %d model(s) outside the served set: %s",
+                server.id,
+                len(extras),
+                sorted(extras),
             )
-        # Config-side surprise (server doesn't load).
-        for model_id in served_set - catalog_index.keys():
-            raise VisionCatalogMismatchError(
-                f"configs/vision.yaml expects model {model_id!r} on server "
-                f"{server.id!r} (enabled disease's flow) but server's "
-                f"/v1/catalog does not include it"
+        missing = served_set - catalog_index.keys()
+        if missing:
+            # Caller decides per-disease whether to keep or drop based on
+            # whether the missing model is a primary or just a fallback.
+            logger.warning(
+                "vision: server %r is missing %d served-set model(s): %s",
+                server.id,
+                len(missing),
+                sorted(missing),
             )
-        # Sha drift — only for models in the served set; orphan catalog
-        # entries already failed above.
         for model_id in catalog_index.keys() & served_set:
             spec = self._models[model_id]
             if catalog_index[model_id].manifest_sha != spec.manifest_sha256:
@@ -201,6 +236,35 @@ class VisionRegistry:
                     f"{server.id!r}: config pins {spec.manifest_sha256}, "
                     f"server serves {catalog_index[model_id].manifest_sha}"
                 )
+        return missing
+
+    def _auto_disable_diseases_missing_primary(
+        self, missing_models: set[str]
+    ) -> list[str]:
+        """Drop enabled diseases whose primary model is missing from catalog.
+
+        Only ``primary_model_id`` triggers auto-disable. A missing
+        **fallback** is handled at request time inside
+        :meth:`~claritymed.orchestrator.features.vision_plugin.VisionFeature._run_fallback_flow`
+        — the HTTP call 404s, the flow steps to the next entry, the
+        disease stays serviceable. Dropping the disease for a missing
+        fallback would over-rotate: the primary works, the user gets
+        no benefit from disabling the whole condition.
+
+        Removing from ``self._diseases`` propagates everywhere downstream
+        because both the tool description
+        (``VisionFeature._build_tool_description``) and routing
+        (``self.route``) read from this dict.
+        """
+        affected: list[str] = []
+        for disease in list(self._diseases.values()):
+            if not disease.enabled:
+                continue
+            if disease.primary_model_id in missing_models:
+                self._diseases.pop(disease.id, None)
+                affected.append(disease.id)
+        affected.sort()
+        return affected
 
     # --- routing --------------------------------------------------------
 

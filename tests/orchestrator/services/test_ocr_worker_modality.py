@@ -20,7 +20,7 @@ import pytest
 
 from claritymed.context import apply_context, reset_context
 from claritymed.core.medical_clip.schemas import ModalityResponse
-from claritymed.core.ocr.base import ExtractResult, OcrProvider
+from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrProvider
 from claritymed.errors import MedicalClipUnreachableError
 from claritymed.orchestrator.services.ocr_worker import OcrJob, OcrWorker
 from claritymed.stores.blob_store import BlobStore
@@ -294,6 +294,107 @@ async def test_non_image_blob_skips_modality_classification(_ctx) -> None:
     assert medical_clip.calls == []
     for key in ("modality", "modality_confidence", "is_medical", "ocr_has_report"):
         assert key not in sentinel
+
+
+class _EmptyOcrProvider(OcrProvider):
+    """Raises OcrEmpty, optionally with an LLM-leaf hint attached.
+
+    Mirrors what ``RoutingOcrProvider`` hands the worker when every leaf
+    returned empty — chain_tried is populated and any leaf's modality /
+    is_medical signal rides along on ``OcrEmpty.extraction``.
+    """
+
+    is_local = True
+    label = "stub-empty"
+
+    def __init__(self, *, extraction: ExtractResult | None = None) -> None:
+        self._extraction = extraction
+
+    async def extract_text(self, path: Path) -> ExtractResult:
+        raise OcrEmpty("all providers returned no text", extraction=self._extraction)
+
+
+async def test_empty_branch_still_classifies_modality(_ctx) -> None:
+    """OcrEmpty image: medical-clip must still run + tag the sentinel.
+
+    Regression for the breast-US dead-image case: an image with no
+    extractable text used to skip ``_compute_vision_tags`` entirely, so
+    the rendered ``<image>`` tag was bare and the LLM-side routing rules
+    had nothing to fire on. After the fix, modality / is_medical land in
+    ``ocr.json`` regardless of OCR text presence.
+    """
+    bs, sha = _seed_image_blob()
+    medical_clip = _StubMedicalClip(response=_ultrasound_response())
+    routing_hint = ExtractResult(
+        text="", provider_used="rapidocr", chain_tried=["llm", "rapidocr"]
+    )
+    worker = OcrWorker(
+        _EmptyOcrProvider(extraction=routing_hint),
+        medical_clip_client=medical_clip,
+        ocr_report_config=_REPORT_CFG,
+    )
+    await _enqueue_and_drain(
+        worker,
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "png"),
+        ),
+    )
+
+    sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "empty"
+    # Classifier ran exactly once on the empty branch — the whole point.
+    assert len(medical_clip.calls) == 1
+    assert sentinel["modality"] == "ultrasound"
+    assert sentinel["is_medical"] is True
+    # chain_tried comes from the routing hint, not a hardcoded "[]".
+    assert sentinel["chain_tried"] == ["llm", "rapidocr"]
+
+
+async def test_empty_branch_carries_llm_hint_when_clip_unreachable(_ctx) -> None:
+    """When medical-clip is down, the LLM-leaf hint still flows into ocr.json.
+
+    Defense in depth: the LLM OCR provider had read the pixels and tagged
+    modality="ultrasound" / is_medical=True before reporting "no text".
+    Even with medical-clip 503, that signal must survive so the downstream
+    ``<image>`` tag carries real attrs instead of degrading to bare.
+    """
+    bs, sha = _seed_image_blob()
+    medical_clip = _StubMedicalClip(
+        raise_with=MedicalClipUnreachableError("connection refused"),
+    )
+    llm_hint = ExtractResult(
+        text="",
+        provider_used="llm",
+        chain_tried=["llm"],
+        modality="ultrasound",
+        is_medical=True,
+    )
+    worker = OcrWorker(
+        _EmptyOcrProvider(extraction=llm_hint),
+        medical_clip_client=medical_clip,
+        ocr_report_config=_REPORT_CFG,
+    )
+    await _enqueue_and_drain(
+        worker,
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "png"),
+        ),
+    )
+
+    sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "empty"
+    # The unreachable branch sets modality="unknown", then the LLM override
+    # promotes it to "ultrasound" because the LLM tagged a concrete medical
+    # modality and is_medical=True.
+    assert sentinel["modality"] == "ultrasound"
+    assert sentinel["is_medical"] is True
+    assert sentinel["chain_tried"] == ["llm"]
 
 
 async def test_no_medical_clip_client_leaves_legacy_sentinel(_ctx) -> None:

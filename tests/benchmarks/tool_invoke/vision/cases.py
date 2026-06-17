@@ -48,17 +48,45 @@ MODAL_THRESHOLD = 1
 
 @dataclass
 class Case:
-    """One benchmark cell definition."""
+    """One benchmark cell definition.
+
+    ``expected_behavior`` is one of:
+
+    * ``"call_tool"``   — LLM must invoke ``detect_disease_from_image``;
+                          predicate sees ``modal_count`` and asserts the
+                          plugin's confirm modal fired.
+    * ``"decline"``     — LLM must NOT invoke the tool AND must NOT emit
+                          an ``ask_user_question`` modal; any modal fire
+                          counts as a false positive.
+    * ``"ask_clarification"`` — LLM must emit a disambig
+                          ``ask_user_question`` (Rules 4 / 5 / 6) instead
+                          of either calling the tool or staying silent.
+                          Predicate is :func:`_p_disambig_asked` which
+                          inspects the first modal's option count.
+    """
 
     name: str
     tier: str  # "base" | "hard" | "fp"
-    expected_behavior: str  # "call_tool" | "decline"
+    expected_behavior: str  # "call_tool" | "decline" | "ask_clarification"
     prompts: dict[str, str]
-    # Predicate over (modal_count: int) → (passed: bool, reason: str).
-    args_predicate: Callable[[int], tuple[bool, str]]
+    # Predicate signature varies by behavior:
+    #   call_tool / decline → (modal_count) → (passed, reason)
+    #   ask_clarification   → (modal_count, first_modal_options) → (passed, reason)
+    # The runner inspects ``expected_behavior`` and dispatches accordingly.
+    args_predicate: Callable[..., tuple[bool, str]]
     expected_tool: str | None = None
     # Returns a dict describing how to seed the attachment.
     seed: Callable[[], dict] | None = None
+
+
+# Min options on the first ask_user_question payload that we treat as a
+# "disambig modal" (LLM-issued, one option per enabled disease) versus the
+# plugin's confirm modal (always exactly 2 options: yes / no). With 4+
+# enabled diseases the gap is wide enough that option count is a robust
+# discriminator; if the catalog ever shrinks below this threshold the
+# bench must switch to a stricter signal (e.g. comparing option labels to
+# vision.confirm.<id>.yes_label).
+DISAMBIG_MIN_OPTIONS = 3
 
 
 def _p_tool_invoked(modal_count: int) -> tuple[bool, str]:
@@ -69,6 +97,31 @@ def _p_tool_invoked(modal_count: int) -> tuple[bool, str]:
 
 def _p_no_args(modal_count: int) -> tuple[bool, str]:
     return True, "no args predicate for decline cases"
+
+
+def _p_disambig_asked(modal_count: int, first_modal_options: int) -> tuple[bool, str]:
+    """Pass when the LLM emitted a disambig modal — not the confirm modal.
+
+    Rule 4 / 5 / 6 cases expect the model to call ``ask_user_question``
+    with a disease (or modality) picker — option count grows with the
+    catalog. The plugin's own confirm modal has exactly 2 options
+    (yes / no), so ``>= DISAMBIG_MIN_OPTIONS`` cleanly separates "LLM
+    asked the user" from "LLM jumped to the tool" (which would have
+    surfaced the confirm modal instead).
+    """
+    if modal_count == 0:
+        return False, "no modal fired: LLM neither called the tool nor asked"
+    if first_modal_options >= DISAMBIG_MIN_OPTIONS:
+        return (
+            True,
+            f"disambig modal (options={first_modal_options} >= {DISAMBIG_MIN_OPTIONS})",
+        )
+    return (
+        False,
+        f"first modal has {first_modal_options} options "
+        f"(< {DISAMBIG_MIN_OPTIONS}): looks like the confirm modal, not "
+        "the disambig — the LLM called the tool instead of asking",
+    )
 
 
 def _seed_busi(*, ocr_has_report: bool = False) -> Callable[[], dict]:
@@ -154,6 +207,53 @@ def _seed_non_medical(*, modality: str = "photo") -> Callable[[], dict]:
             "modality": modality,
             "is_medical": False,
             "ocr_has_report": False,
+        }
+
+    return _f
+
+
+def _seed_unknown_modality(fixture_subdir: str = "busi") -> Callable[[], dict]:
+    """Seed an image with ``modality="unknown"`` (medical-clip low conf).
+
+    Mirrors the worker's ``medical_clip_unreachable`` posture: when the
+    classifier can't decide, the sentinel still carries ``modality`` as
+    the literal ``"unknown"`` so the LLM can branch on Rule 5 instead of
+    seeing a bare tag. ``is_medical=True`` so Rule 1 doesn't pre-empt.
+    """
+
+    def _f() -> dict:
+        return {
+            "fixture_subdir": fixture_subdir,
+            "modality": "unknown",
+            "is_medical": True,
+            "ocr_has_report": False,
+        }
+
+    return _f
+
+
+def _seed_bare_tag(fixture_subdir: str = "busi") -> Callable[[], dict]:
+    """Seed an image with ocr_status="empty" and NO classifier attrs.
+
+    Reproduces the worst-case path Rule 6 exists to handle: every OCR
+    leaf came back empty AND no vision-LLM hint was attached AND
+    medical-clip was unreachable (or unconfigured). The rendered tag is
+    bare — no modality, no is_medical, no ocr_has_report. The LLM must
+    emit ``ask_user_question`` with the full disease list rather than
+    guess from the user's text alone (since the catalog is two-
+    dimensional and guessing the wrong modality wastes a turn on a
+    ``modality_mismatch`` envelope).
+    """
+
+    def _f() -> dict:
+        return {
+            "fixture_subdir": fixture_subdir,
+            "status": "empty",
+            # None = sentinel writer omits the field → bare attribute on
+            # the rendered <image> tag, which is the whole point.
+            "modality": None,
+            "is_medical": None,
+            "ocr_has_report": None,
         }
 
     return _f
@@ -851,7 +951,124 @@ CASES: list[Case] = [
         expected_tool=None,
         seed=None,
     ),
+    # -------------------------------------------------------------------
+    # ask_clarification — Rule 5 / Rule 6 disambig paths.
+    #
+    # Rule 5 (``modality="unknown"``): classifier was low-confidence.
+    # Rule 6 (bare tag): no ``modality`` AND no ``is_medical`` attrs at
+    #   all — every signal source failed at ingest time.
+    # In both cases the LLM should emit a disambig ``ask_user_question``
+    # rather than gamble on a tool call that's likely to bounce on the
+    # KTD-V3 modality gate. The :func:`_p_disambig_asked` predicate
+    # accepts only modal payloads whose option count looks like a
+    # disease list (one per enabled disease) — exactly what the prompt
+    # tells the LLM to construct from ``vision.disambig.disease``.
+    # -------------------------------------------------------------------
+    Case(
+        name="rule5_modality_unknown_clear_disease_cue",
+        tier="hard",
+        expected_behavior="ask_clarification",
+        prompts={
+            "en": (
+                "Could you analyze this breast ultrasound for me? [Image sha:{sha8}]"
+            ),
+            "zh": "麻烦帮我分析一下这张乳房彩超。[Image sha:{sha8}]",
+        },
+        args_predicate=_p_disambig_asked,
+        expected_tool=None,
+        seed=_seed_unknown_modality(),
+    ),
+    Case(
+        name="rule5_modality_unknown_vague_prompt",
+        tier="hard",
+        expected_behavior="ask_clarification",
+        prompts={
+            "en": "What does this scan show? [Image sha:{sha8}]",
+            "zh": "这张片子显示了什么？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_disambig_asked,
+        expected_tool=None,
+        seed=_seed_unknown_modality(),
+    ),
+    # Rule 6 — bare tag with a STRONG textual cue. The temptation for the
+    # LLM is to call breast_cancer_ultrasound directly because the user
+    # named the modality + organ. Rule 6 forbids that — without a tag
+    # attribute confirming modality the LLM must disambig, since a wrong
+    # guess wastes a turn on modality_mismatch. This is the exact
+    # scenario that ran the user's original "dead image" turn (empty OCR
+    # + medical-clip unreachable + clear prompt).
+    Case(
+        name="rule6_bare_tag_breast_cue",
+        tier="hard",
+        expected_behavior="ask_clarification",
+        prompts={
+            "en": "Please analyze this breast ultrasound. [Image sha:{sha8}]",
+            "zh": "请分析这张乳房彩超。[Image sha:{sha8}]",
+        },
+        args_predicate=_p_disambig_asked,
+        expected_tool=None,
+        seed=_seed_bare_tag(fixture_subdir="busi"),
+    ),
+    # Rule 6 — bare tag with a STRONG CT cue. Same logic with a
+    # different organ + modality so the bench can detect Rule-6
+    # regressions that happen to leave the breast path correct.
+    Case(
+        name="rule6_bare_tag_chest_ct_cue",
+        tier="hard",
+        expected_behavior="ask_clarification",
+        prompts={
+            "en": (
+                "What does this chest CT show — any lung nodules? [Image sha:{sha8}]"
+            ),
+            "zh": "这张胸部 CT 看到肺结节了吗？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_disambig_asked,
+        expected_tool=None,
+        seed=_seed_bare_tag(fixture_subdir="chest_ct"),
+    ),
+    # Rule 6 — bare tag with a VAGUE prompt. No textual modality cue
+    # either, so this is the cleanest disambig case: nothing — sentinel
+    # or text — narrows the disease.
+    Case(
+        name="rule6_bare_tag_vague_prompt",
+        tier="hard",
+        expected_behavior="ask_clarification",
+        prompts={
+            "en": "Could you take a look at this image? [Image sha:{sha8}]",
+            "zh": "帮我看一下这张图。[Image sha:{sha8}]",
+        },
+        args_predicate=_p_disambig_asked,
+        expected_tool=None,
+        seed=_seed_bare_tag(fixture_subdir="busi"),
+    ),
+    # Rule 6 FP guard — bare tag with a NON-MEDICAL prompt. Even
+    # without modality / is_medical attrs, an obviously non-clinical
+    # question must not trigger the disambig modal (or the tool). The
+    # LLM should treat the bare tag as "no useful classifier signal" AND
+    # the prompt as "not asking about a medical scan", and answer in
+    # plain text instead. This is the negative complement of
+    # rule6_bare_tag_vague_prompt — both have bare tags, only one
+    # warrants a disambig.
+    Case(
+        name="rule6_bare_tag_non_medical_prompt",
+        tier="fp",
+        expected_behavior="decline",
+        prompts={
+            "en": "Is my cat OK in this picture? [Image sha:{sha8}]",
+            "zh": "照片里我家猫还好吗？[Image sha:{sha8}]",
+        },
+        args_predicate=_p_no_args,
+        expected_tool=None,
+        seed=_seed_bare_tag(fixture_subdir="non_medical"),
+    ),
 ]
 
 
-__all__ = ["CASES", "Case", "MODAL_THRESHOLD", "USER_ID", "VISION_TOOL"]
+__all__ = [
+    "CASES",
+    "Case",
+    "DISAMBIG_MIN_OPTIONS",
+    "MODAL_THRESHOLD",
+    "USER_ID",
+    "VISION_TOOL",
+]

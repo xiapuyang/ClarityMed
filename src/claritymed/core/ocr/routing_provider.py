@@ -175,6 +175,13 @@ class RoutingOcrProvider(OcrProvider):
         tried_labels: list[str] = []
         last_exc: OcrError | None = None
         had_real_error = False
+        # First leaf-level OcrEmpty whose ``extraction`` carries any
+        # modality / is_medical signal wins. The vision LLM is the only
+        # leaf that sets these, so in practice this captures its opinion
+        # even if a downstream non-vision leaf (rapidocr) re-raises
+        # OcrEmpty without a hint — without this, the worker's empty
+        # branch would lose the LLM's modality classification.
+        best_empty_hint: ExtractResult | None = None
         for provider in chain:
             # Capability filter: a provider that declares it can't handle
             # this extension is silently skipped and does NOT enter
@@ -191,6 +198,13 @@ class RoutingOcrProvider(OcrProvider):
                 result = await provider.extract_text(path)
             except OcrEmpty as exc:
                 last_exc = exc
+                hint = getattr(exc, "extraction", None)
+                if (
+                    best_empty_hint is None
+                    and hint is not None
+                    and (hint.modality is not None or hint.is_medical is not None)
+                ):
+                    best_empty_hint = hint
                 continue
             except OcrError as exc:
                 last_exc = exc
@@ -270,5 +284,15 @@ class RoutingOcrProvider(OcrProvider):
             )
         )
         if all_empty:
-            raise OcrEmpty(error_msg)
+            # Carry the chain-level chain_tried plus any leaf-level vision
+            # signal so the worker's empty branch can still classify and
+            # write modality / is_medical into the sentinel.
+            empty_extraction = ExtractResult(
+                text="",
+                provider_used=tried_labels[-1] if tried_labels else "",
+                chain_tried=list(tried_labels),
+                modality=best_empty_hint.modality if best_empty_hint else None,
+                is_medical=best_empty_hint.is_medical if best_empty_hint else None,
+            )
+            raise OcrEmpty(error_msg, extraction=empty_extraction)
         raise OcrError(error_msg)

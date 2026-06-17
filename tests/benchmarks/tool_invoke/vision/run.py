@@ -63,6 +63,7 @@ from claritymed.stores.session_attachments import SessionAttachments
 from tests.benchmarks.tool_invoke import base
 from tests.benchmarks.tool_invoke.vision.cases import (
     CASES,
+    DISAMBIG_MIN_OPTIONS,
     MODAL_THRESHOLD,
     Case,
 )
@@ -176,7 +177,19 @@ def _pick_fixture_bytes(subdir: str) -> bytes | None:
 
 
 def _seed_attachment(*, user_id: str, session_id: str, seed_dict: dict) -> str | None:
-    """Drop fixture bytes into the blob store + write sentinel; return sha."""
+    """Drop fixture bytes into the blob store + write sentinel; return sha.
+
+    Seeds support two shapes:
+
+    * Tagged (the common case) — ``modality`` / ``is_medical`` /
+      ``ocr_has_report`` are set, status defaults to ``"done"`` with
+      synthetic text whose presence is gated on ``ocr_has_report``.
+    * Bare (Rule 6 path) — ``status="empty"`` and the vision-tag fields
+      are ``None``. ``BlobStore.write_ocr_result`` drops ``None`` kwargs
+      from the payload, so the rendered ``<image>`` tag carries no
+      modality / is_medical / ocr_has_report attribute and the LLM sees
+      the genuinely-bare tag the Rule 6 prompt covers.
+    """
     image_bytes = _pick_fixture_bytes(seed_dict["fixture_subdir"])
     if image_bytes is None:
         return None
@@ -188,24 +201,40 @@ def _seed_attachment(*, user_id: str, session_id: str, seed_dict: dict) -> str |
         mime="image/png",
         size=len(image_bytes),
     )
+    status = seed_dict.get("status", "done")
+    # ``status="empty"`` cases have no OCR text by definition. For the
+    # ``done`` path we still gate the synthetic text on
+    # ``ocr_has_report`` so Rule 2 cases see a clinician-report-shaped
+    # body and Rule 3 cases see an empty extraction (the modality tag
+    # alone is enough to fire Rule 3).
+    if status == "empty":
+        text = ""
+    else:
+        text = (
+            "FINDINGS: synthetic report text. IMPRESSION: bench seed."
+            if seed_dict.get("ocr_has_report")
+            else ""
+        )
+    # When modality / is_medical / ocr_has_report are present in the
+    # seed we pass them through; absence (.get returns None) is handled
+    # by write_ocr_result's None-drops-kwarg semantics. The bench-seed
+    # confidence is a stand-in for the live classifier and is meaningless
+    # for the bare-tag path (omitted alongside modality).
+    modality = seed_dict.get("modality")
     blob_store.write_ocr_result(
         sha,
-        status="done",
+        status=status,
         kind="ocr",
         ext="png",
         provider="bench-seed",
         chain_tried=["bench-seed"],
         reason=None,
-        text=(
-            "FINDINGS: synthetic report text. IMPRESSION: bench seed."
-            if seed_dict.get("ocr_has_report")
-            else ""
-        ),
+        text=text,
         original_filename=f"{seed_dict['fixture_subdir']}.png",
-        modality=seed_dict["modality"],
-        modality_confidence=0.9,
-        is_medical=seed_dict["is_medical"],
-        ocr_has_report=seed_dict["ocr_has_report"],
+        modality=modality,
+        modality_confidence=0.9 if modality is not None else None,
+        is_medical=seed_dict.get("is_medical"),
+        ocr_has_report=seed_dict.get("ocr_has_report"),
     )
     return sha
 
@@ -226,6 +255,12 @@ class TrialRecord:
     user_prompt: str
     # Detection: vision confirm-modal calls (≥1 = tool invoked).
     modal_call_count: int
+    # Option count on the first modal's first question. Used to
+    # distinguish the plugin's confirm modal (always exactly 2 options:
+    # yes / no) from an LLM-issued disambig modal (one option per enabled
+    # disease — ≥``DISAMBIG_MIN_OPTIONS`` in practice). 0 when no modal
+    # fired or when the first question was numeric / unoptioned.
+    first_modal_options: int
     # Ingest-tool approval calls — should be empty unless an FP case
     # legitimately reroutes to ingest. Captured for inspection.
     ingest_calls: list[dict]
@@ -330,9 +365,17 @@ async def _run_one_trial(
 
     latency_ms = (time.perf_counter() - t0) * 1000
     modal_count = len(channel.calls)
+    # Inspect the FIRST modal call: confirm has exactly 2 yes/no options,
+    # disambig has one option per disease. Subsequent modals (if any) are
+    # follow-ups and don't change the decision boundary the bench measures.
+    first_modal_options = 0
+    if channel.calls:
+        first = channel.calls[0]
+        if first.questions:
+            first_modal_options = len(first.questions[0].options)
     final_text = "".join(final_chunks).strip()
 
-    outcome_info = _classify(case, modal_count, error_msg)
+    outcome_info = _classify(case, modal_count, first_modal_options, error_msg)
 
     return TrialRecord(
         request_id=request_id,
@@ -345,6 +388,7 @@ async def _run_one_trial(
         expected_tool=case.expected_tool,
         user_prompt=prompt,
         modal_call_count=modal_count,
+        first_modal_options=first_modal_options,
         ingest_calls=list(approval.calls),
         final_response_text=final_text,
         outcome=outcome_info["outcome"],
@@ -363,9 +407,17 @@ async def _run_one_trial(
 def _classify(
     case: Case,
     modal_count: int,
+    first_modal_options: int,
     error_msg: str | None,
 ) -> dict[str, Any]:
-    tool_invoked = modal_count >= MODAL_THRESHOLD
+    # "tool_invoked" reads the confirm-modal signal: the plugin builds its
+    # confirm modal in vision_plugin._confirm_question with exactly 2
+    # options (the localized yes / no labels). An LLM-issued disambig
+    # modal has one option per disease (≥ DISAMBIG_MIN_OPTIONS), so the
+    # exact-2 check cleanly separates "the tool was called" from "the LLM
+    # asked the user to disambig".
+    confirm_fired = modal_count >= MODAL_THRESHOLD and first_modal_options == 2
+    tool_invoked = confirm_fired
 
     if error_msg is not None:
         return dict(
@@ -385,18 +437,45 @@ def _classify(
             tool_invoked=tool_invoked,
         )
 
+    if case.expected_behavior == "ask_clarification":
+        pred_ok, pred_reason = case.args_predicate(modal_count, first_modal_options)
+        if pred_ok:
+            outcome = "correct"
+        elif modal_count == 0:
+            outcome = "no_clarification"
+        else:
+            # A modal fired but it looks like the confirm modal — the LLM
+            # jumped to the tool instead of asking. Distinct outcome so
+            # the bench report can separate "didn't ask" from "asked but
+            # via the wrong modal shape".
+            outcome = "called_tool_instead"
+        return dict(
+            outcome=outcome,
+            predicate_pass=pred_ok,
+            predicate_reason=pred_reason,
+            tool_invoked=tool_invoked,
+        )
+
     if case.expected_behavior == "decline":
-        if tool_invoked:
+        # ANY modal — confirm or disambig — is a false positive for a
+        # decline case. The user-visible UX of decline is "answer in plain
+        # text without prompting the user", so even an over-eager disambig
+        # counts against it.
+        if modal_count >= MODAL_THRESHOLD:
             return dict(
                 outcome="false_positive",
                 predicate_pass=False,
-                predicate_reason=f"vision tool invoked (modal_calls={modal_count})",
-                tool_invoked=True,
+                predicate_reason=(
+                    f"modal fired (modal_calls={modal_count}, "
+                    f"first_options={first_modal_options}); "
+                    f"{'tool' if confirm_fired else 'disambig'} path"
+                ),
+                tool_invoked=tool_invoked,
             )
         return dict(
             outcome="correct",
             predicate_pass=True,
-            predicate_reason=f"tool not invoked (modal_calls={modal_count})",
+            predicate_reason=f"no modal fired (modal_calls={modal_count})",
             tool_invoked=False,
         )
 
@@ -419,6 +498,16 @@ def _summary_rows(trials: list[TrialRecord]) -> list[dict]:
         n_correct = sum(1 for t in cell if t.outcome in CORRECT_OUTCOMES)
         n_err = sum(1 for t in cell if t.had_error)
         n_invoked = sum(1 for t in cell if t.tool_invoked)
+        # An LLM-issued disambig fires a modal but does NOT mark
+        # tool_invoked (option count > 2). Reported as a separate rate
+        # so the bench can show ``ask_clarification`` cells passing via
+        # the disambig path vs ``call_tool`` cells regressing into one.
+        n_disambig = sum(
+            1
+            for t in cell
+            if t.modal_call_count >= MODAL_THRESHOLD
+            and t.first_modal_options >= DISAMBIG_MIN_OPTIONS
+        )
         rows.append(
             {
                 "model": model,
@@ -428,6 +517,7 @@ def _summary_rows(trials: list[TrialRecord]) -> list[dict]:
                 "expected_behavior": cell[0].expected_behavior,
                 "n_trials": n,
                 "correct_rate": round(n_correct / n, 3) if n else 0.0,
+                "disambig_rate": round(n_disambig / n, 3) if n else 0.0,
                 "tool_invoked_rate": round(n_invoked / n, 3) if n else 0.0,
                 "error_count": n_err,
                 "mean_latency_ms": round(statistics.mean(latencies), 1)

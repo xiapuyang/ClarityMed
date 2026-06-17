@@ -72,9 +72,13 @@ _TRIAL_FIELDS_INGEST = [
     "ask_user_q_count",
 ]
 
-# Symptoms-specific fields (absent from ingest runs).
+# Modal-based fields surfaced for the symptoms + vision runners (absent
+# from ingest runs). ``first_modal_options`` is vision-only today —
+# symptoms ignores it but it's harmless when missing (``_light_trial``
+# uses ``.get`` so the JSONL value just lands as ``null``).
 _TRIAL_FIELDS_SYMPTOMS = [
     "modal_call_count",
+    "first_modal_options",
     "tool_invoked",
 ]
 

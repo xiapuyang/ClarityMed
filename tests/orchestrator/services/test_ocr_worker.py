@@ -188,12 +188,24 @@ async def test_cache_propagates_empty_status(_ctx):
     The old worker synthesized status=done on any cache hit, which lied
     about both empty and failed results. The empty case must keep its
     real status so the UI can show "no text extracted" instead of "ok".
+
+    Empties from post-fix code always carry a non-empty ``chain_tried``
+    (the routing provider populates it from the leaves it walked). The
+    sentinel below uses that real shape; an empty ``chain_tried`` would
+    trip the legacy-empty retry probe and re-extract — see
+    ``test_cached_legacy_empty_triggers_retry`` for that path.
     """
     bs = BlobStore("test")
     sha = bs.store(b"x", "txt")
     bs.ocr_path(sha).write_text("", encoding="utf-8")
     bs.ocr_meta_path(sha).write_text(
-        json.dumps({"status": "empty", "provider": "pre-existing"}),
+        json.dumps(
+            {
+                "status": "empty",
+                "provider": "pre-existing",
+                "chain_tried": ["pre-existing"],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -263,6 +275,115 @@ async def test_cached_failure_triggers_retry(_ctx):
     sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
     assert sentinel["status"] == "done"
     assert sentinel["chars"] == len("recovered text")
+
+
+async def test_cached_legacy_empty_triggers_retry(_ctx):
+    """A pre-fix ``empty`` sentinel (chain_tried=[]) must NOT short-circuit.
+
+    Pre-fix OcrWorker code hardcoded ``chain_tried=[]`` on the empty path
+    and skipped modality classification entirely. Those sentinels render
+    as bare ``<image>`` tags and permanently break the LLM-side routing
+    rules — the user's image goes "dead" across every future session.
+
+    The post-fix writer always records the real chain it walked, so an
+    empty ``chain_tried`` on an ``empty`` sentinel is the unambiguous
+    "legacy buggy shape" probe. Re-extracting once promotes the sentinel
+    into the new shape with proper modality / is_medical tags.
+    """
+    bs = BlobStore("test")
+    sha = bs.store(b"\x89PNG", "png")
+    sa = SessionAttachments("test", "sess-1")
+    sa.add(sha256=sha, filename="scan.png", mime="image/png", size=4)
+    # Hand-craft the legacy sentinel shape — what the buggy worker wrote
+    # before the fix. Note chain_tried=[] but reason text mentions the
+    # leaves that ran; this exact shape was reported in the original bug.
+    bs.ocr_meta_path(sha).write_text(
+        json.dumps(
+            {
+                "status": "empty",
+                "kind": "ocr",
+                "ext": "png",
+                "provider": None,
+                "chain_tried": [],
+                "reason": "all providers returned no text (['llm', 'rapidocr'])",
+                "chars": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completions: list[OcrCompleted] = []
+    worker = OcrWorker(
+        _StubProvider(text="recovered text"),
+        listener=lambda c: completions.append(c),
+    )
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "png"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    # Worker treated the legacy sentinel as a miss and re-ran the provider.
+    assert completions[0].provider != "cache"
+    assert completions[0].status == "done"
+    sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "done"
+    assert sentinel["chain_tried"] == ["stub"]
+
+
+async def test_cached_new_empty_short_circuits(_ctx):
+    """A post-fix ``empty`` sentinel (chain_tried populated) IS a cache hit.
+
+    Once the worker has written a real chain into ``ocr.json`` the empty
+    result is authoritative — re-pasting the same image must not pay the
+    OCR cost again. This is the complement of the legacy-empty retry: the
+    retry probe must be narrow enough to leave good empties alone.
+    """
+    bs = BlobStore("test")
+    sha = bs.store(b"\x89PNG", "png")
+    bs.ocr_meta_path(sha).write_text(
+        json.dumps(
+            {
+                "status": "empty",
+                "kind": "ocr",
+                "ext": "png",
+                "provider": None,
+                "chain_tried": ["llm", "rapidocr"],
+                "reason": "all providers returned no text (['llm', 'rapidocr'])",
+                "modality": "ultrasound",
+                "is_medical": True,
+                "chars": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completions: list[OcrCompleted] = []
+    # Provider would raise if called — proving the cache short-circuit fired.
+    worker = OcrWorker(
+        _StubProvider(raise_with="should not call"),
+        listener=lambda c: completions.append(c),
+    )
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "png"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    assert completions[0].status == "empty"
+    assert completions[0].provider == "cache"
 
 
 async def test_ocr_empty_marks_empty_not_failed(_ctx):

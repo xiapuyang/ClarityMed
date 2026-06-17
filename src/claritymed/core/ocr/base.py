@@ -100,4 +100,19 @@ class OcrEmpty(OcrError):
     agreed the input was empty and no real error occurred. Callers can
     catch ``OcrEmpty`` before ``OcrError`` to handle the two cases
     differently (e.g. persist ``status="empty"`` without a WARNING log).
+
+    The optional ``extraction`` carries non-text provenance the worker
+    still needs on the empty path: ``chain_tried`` (so ``ocr.json`` records
+    which leaves were walked) and any ``modality`` / ``is_medical`` signal
+    a vision LLM produced before reporting "no text". Without it, an image
+    that a vision LLM correctly classified as e.g. an ultrasound but found
+    unreadable would lose every routing hint downstream — see
+    :class:`~claritymed.orchestrator.services.ocr_worker.OcrWorker` for the
+    consumer.
     """
+
+    def __init__(
+        self, message: str, *, extraction: ExtractResult | None = None
+    ) -> None:
+        super().__init__(message)
+        self.extraction = extraction

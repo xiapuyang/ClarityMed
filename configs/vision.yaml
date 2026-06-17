@@ -67,7 +67,7 @@ diseases:
   # train pipeline produces a real artifact + manifest under
   # ~/.claritymed/models/vision/lung_cancer_histopathology/.
   - id: lung_cancer_histopathology
-    enabled: false
+    enabled: true
     primary_model_id: lung_histopath_resnet50_v1
     flow: []                                    # no fallbacks declared yet
     cancer_class: true
@@ -79,7 +79,7 @@ diseases:
   # `histopathology` modality but get separate models because lung and
   # colon biopsies are clinically independent.
   - id: colon_cancer_histopathology
-    enabled: false
+    enabled: true
     primary_model_id: colon_histopath_resnet50_v1
     flow: []                                    # no fallbacks declared yet
     cancer_class: true
@@ -159,8 +159,8 @@ models:
     server_id: local_default
     framework: pytorch
     accepted_modality: histopathology           # KTD-V3 hard gate
-    weights_subpath: vision/lung_cancer_histopathology/lung_histopath_resnet50_v1__placeholder
-    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    weights_subpath: vision/lung_cancer_histopathology/lung_histopath_resnet50_v1__20260617T033755Z
+    manifest_sha256: "b7893aa07652d0aa07d10b0ebf693f5e20002cd2c217f6e5cd6339efb335a5b7"
     expected_ms: 600
   # Colon histopathology model entry — paired with the
   # colon_cancer_histopathology disease above. Same scaffolding-only
@@ -170,8 +170,8 @@ models:
     server_id: local_default
     framework: pytorch
     accepted_modality: histopathology           # KTD-V3 hard gate
-    weights_subpath: vision/colon_cancer_histopathology/colon_histopath_resnet50_v1__placeholder
-    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    weights_subpath: vision/colon_cancer_histopathology/colon_histopath_resnet50_v1__20260617T040909Z
+    manifest_sha256: "90555189f6c08bb8fc9c0982e62f52e5264880576fb2801f3fdee65e835060d9"
     expected_ms: 600
 
 tool:

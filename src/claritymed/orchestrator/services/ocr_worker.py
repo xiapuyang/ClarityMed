@@ -73,6 +73,30 @@ def _is_image(blob_path: Path) -> bool:
     return blob_path.suffix.lower() in _IMAGE_EXTS
 
 
+def _is_stale_sentinel(cached: dict) -> bool:
+    """Return True when *cached* should be treated as a cache miss.
+
+    Two flavours qualify:
+
+    * ``status="failed"`` — already in scope (operator could have fixed
+      the upstream cause; retry instead of locking the blob in failure).
+    * ``status="empty"`` with ``chain_tried`` empty — a legacy pre-fix
+      empty sentinel. Old worker code hardcoded ``chain_tried=[]`` AND
+      skipped modality classification on the empty path, so the rendered
+      ``<image>`` tag came out bare and the LLM-side routing rules in
+      ``detect_disease_from_image_tool`` had nothing to fire on. The
+      post-fix writer always records the chain it walked, so an empty
+      ``chain_tried`` is the unambiguous "wrote this before the fix"
+      probe. Re-extracting once promotes the sentinel into the new shape
+      and unsticks the blob for every future turn.
+    """
+    if cached.get("status") == "failed":
+        return True
+    if cached.get("status") == "empty" and not cached.get("chain_tried"):
+        return True
+    return False
+
+
 @dataclass
 class OcrJob:
     """One queued extraction request."""
@@ -241,9 +265,18 @@ class OcrWorker:
         #     single bad run (e.g. CLARITYMED_ALLOW_MINERU not set when
         #     the worker started) sticks forever even after the cause is
         #     fixed, blocking every retry with the same sha.
+        #   * status="empty" AND chain_tried is empty (legacy pre-fix
+        #     sentinel) → also treat as miss. Pre-fix code hardcoded
+        #     chain_tried=[] on the empty path and skipped modality
+        #     classification entirely, so those sentinels render as bare
+        #     <image> tags and the LLM-side routing rules can't fire. The
+        #     new code always writes the chain it walked, so an empty
+        #     chain_tried is the unambiguous "this sentinel pre-dates the
+        #     fix" probe. Re-extracting is cheap relative to "every empty
+        #     image is permanently dead across user sessions".
         blob_store = BlobStore(job.user_id)
         cached = self._read_cached_sentinel(blob_store, job.sha256)
-        if cached is not None and cached.get("status") != "failed":
+        if cached is not None and not _is_stale_sentinel(cached):
             return OcrCompleted(
                 user_id=job.user_id,
                 session_id=job.session_id,
@@ -271,16 +304,29 @@ class OcrWorker:
                 job.sha256[:8],
                 job.blob_path.name,
             )
+            # Even on the empty path we still want modality / is_medical
+            # in the sentinel — a breast US that reads as visually blank
+            # to every text-OCR provider should still render downstream
+            # as <image modality="ultrasound" is_medical="true" ...> so
+            # the LLM-side routing rules in
+            # ``detect_disease_from_image_tool`` can fire instead of
+            # bailing on the bare tag. The routing provider attaches the
+            # full chain_tried + any vision-LLM hint to ``exc.extraction``.
+            empty_result = exc.extraction or ExtractResult(
+                text="", provider_used="", chain_tried=[]
+            )
+            vision_tags = await self._compute_vision_tags(job, empty_result)
             blob_store.write_ocr_result(
                 job.sha256,
                 status="empty",
                 kind="ocr",
                 ext=job.blob_path.suffix.lstrip("."),
                 provider=None,
-                chain_tried=[],
+                chain_tried=list(empty_result.chain_tried),
                 reason=str(exc),
                 text="",
                 original_filename=job.original_filename,
+                **vision_tags,
             )
             return OcrCompleted(
                 user_id=job.user_id,

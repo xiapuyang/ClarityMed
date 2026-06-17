@@ -323,6 +323,57 @@ async def test_all_empty_raises_ocr_empty(tmp_path: Path):
         await router.extract_text(pdf)
 
 
+class _EmptyWithHintProvider(OcrProvider):
+    """Empty provider that carries a modality/is_medical hint on OcrEmpty.
+
+    Mirrors the LLMOcrProvider's empty-path behavior: even with no text,
+    a vision LLM may have read the pixels and tagged modality/is_medical.
+    The routing layer must forward that hint on the final OcrEmpty so the
+    worker's empty branch can still write modality into ``ocr.json``.
+    """
+
+    is_local = True
+    label = "llm-stub"
+    supported_extensions = frozenset({".pdf", ".png"})
+
+    async def extract_text(self, path: Path) -> ExtractResult:
+        raise OcrEmpty(
+            "no text found",
+            extraction=ExtractResult(
+                text="",
+                provider_used=self.label,
+                chain_tried=[self.label],
+                modality="ultrasound",
+                is_medical=True,
+            ),
+        )
+
+
+async def test_all_empty_carries_leaf_hint_in_final_exc(tmp_path: Path):
+    """Final OcrEmpty must surface the LLM leaf's modality/is_medical signal.
+
+    Otherwise the worker writes a bare ``empty`` sentinel and the LLM-side
+    routing rules in ``detect_disease_from_image_tool.yaml`` have nothing
+    to branch on, so the vision tool never fires for an OCR-blank medical
+    image.
+    """
+    blob = tmp_path / "scan.pdf"
+    blob.write_bytes(b"%PDF")
+    router = RoutingOcrProvider(
+        document_chain=[_EmptyWithHintProvider(), _EmptyProvider()],
+        image_chain=[],
+    )
+    with pytest.raises(OcrEmpty) as excinfo:
+        await router.extract_text(blob)
+    hint = excinfo.value.extraction
+    assert hint is not None
+    assert hint.modality == "ultrasound"
+    assert hint.is_medical is True
+    # chain_tried reflects every leaf actually walked, in order — the
+    # worker reads this to populate ocr.json.chain_tried instead of "[]".
+    assert hint.chain_tried == ["llm-stub", "empty"]
+
+
 async def test_empty_then_real_error_raises_ocr_error(tmp_path: Path):
     """OcrEmpty followed by a real OcrError → OcrError wins (had_real_error=True)."""
     pdf = tmp_path / "doc.pdf"

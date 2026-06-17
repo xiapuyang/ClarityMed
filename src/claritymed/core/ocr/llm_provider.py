@@ -111,16 +111,32 @@ class LLMOcrProvider(OcrProvider):
                 f"LLM could not extract text from {path.name}: "
                 f"{extraction.failure_reason or 'no reason given'}"
             )
+        # The "empty" branch still surfaces the vision-LLM's modality /
+        # is_medical via OcrEmpty.extraction — a model that read the
+        # pixels can correctly classify a blank-text image (e.g. an
+        # ultrasound with no overlay text). Dropping that signal is what
+        # caused empty-OCR medical images to render as bare <image> tags
+        # downstream and the LLM-side routing rules to no-op.
+        empty_hint = ExtractResult(
+            text="",
+            provider_used=self.label,
+            chain_tried=[self.label],
+            modality=extraction.modality,
+            is_medical=extraction.is_medical,
+        )
         if status == "empty":
             from claritymed.core.ocr.base import OcrEmpty
 
-            raise OcrEmpty(f"LLM: no text found in {path.name}")
+            raise OcrEmpty(f"LLM: no text found in {path.name}", extraction=empty_hint)
 
         text = extraction.text.strip()
         if not text:
             from claritymed.core.ocr.base import OcrEmpty
 
-            raise OcrEmpty(f"LLM: extracted empty text from {path.name}")
+            raise OcrEmpty(
+                f"LLM: extracted empty text from {path.name}",
+                extraction=empty_hint,
+            )
 
         logger.debug("ocr: extracted %d chars from %s", len(text), path.name)
         return ExtractResult(

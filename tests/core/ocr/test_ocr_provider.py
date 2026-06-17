@@ -239,6 +239,36 @@ async def test_llm_ocr_provider_status_empty_raises_ocr_empty(tmp_path: Path):
         await LLMOcrProvider(model).extract_text(fake)
 
 
+async def test_llm_ocr_provider_empty_carries_modality_hint(tmp_path: Path):
+    """status='empty' with a modality classification → hint travels via OcrEmpty.
+
+    A vision LLM that read the pixels but found no readable text can still
+    classify modality and is_medical. That signal must survive the empty
+    path so the worker's empty branch can populate ocr.json — otherwise
+    OCR-blank medical images render as bare ``<image>`` tags and the
+    LLM-side routing rules in detect_disease_from_image_tool can't fire.
+    """
+    fake = tmp_path / "us.png"
+    fake.write_bytes(b"\x89PNG\r\n")
+
+    model = TestModel(
+        custom_output_args={
+            "status": "empty",
+            "text": "",
+            "modality": "ultrasound",
+            "is_medical": True,
+        }
+    )
+    with pytest.raises(OcrEmpty) as excinfo:
+        await LLMOcrProvider(model).extract_text(fake)
+    hint = excinfo.value.extraction
+    assert hint is not None
+    assert hint.modality == "ultrasound"
+    assert hint.is_medical is True
+    assert hint.chain_tried == ["llm"]
+    assert hint.text == ""
+
+
 async def test_llm_ocr_provider_status_failed_raises_ocr_error(tmp_path: Path):
     """v2 path: status='failed' → OcrError."""
     fake = tmp_path / "bad.pdf"
