@@ -15,6 +15,7 @@ CommandName = Literal[
     "library",
     "user",
     "provider",
+    "lang",
     "clear",
     "help",
     "quit",
@@ -27,6 +28,7 @@ KNOWN_COMMANDS: tuple[str, ...] = (
     "library",
     "user",
     "provider",
+    "lang",
     "clear",
     "help",
     "quit",
@@ -74,6 +76,7 @@ HELP_TEXT: str = (
     "                    query = run full RAG retrieval incl. translation)\n"
     "  /user [id]        Switch active user (admin only; no arg opens picker)\n"
     "  /provider [id]    Switch LLM provider; no arg opens picker (F3)\n"
+    "  /lang [code]      Switch reply language (en/zh); no arg opens picker\n"
     "  /clear            Start a new chat session (keeps history on disk)\n"
     "  /help             Show this help\n"
     "  /quit             Exit the TUI\n"

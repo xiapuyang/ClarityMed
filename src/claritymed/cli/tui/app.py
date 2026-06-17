@@ -495,6 +495,17 @@ class ClarityMedApp(App):
 
         self.push_screen(UserModal(current_user_id=self._current_user_id), _handle)
 
+    def _open_language_modal(self) -> None:
+        from claritymed.cli.tui.modals.language_modal import LanguageModal
+
+        current = self.query_one(StatusBar).language
+
+        def _handle(result: str | None) -> None:
+            if result and result != current:
+                self._switch_language(result)
+
+        self.push_screen(LanguageModal(current_lang=current), _handle)
+
     def _current_role(self) -> str:
         """Return the current user's role, or ``"user"`` when unknown.
 
@@ -588,6 +599,13 @@ class ClarityMedApp(App):
             else:
                 self._open_provider_modal()
             return
+        if parsed.name == "lang":
+            arg = parsed.arg.strip().lower()
+            if arg:
+                self._switch_language(arg)
+            else:
+                self._open_language_modal()
+            return
         if parsed.name == "clear":
             self._clear_session()
             return
@@ -650,6 +668,42 @@ class ClarityMedApp(App):
         self.query_one(Conversation).add_system_turn(
             f"Provider → {provider.id}  ({provider.model})"
         )
+
+    def _switch_language(self, lang: str) -> None:
+        lang = lang.strip().lower()
+        supported = _cfg.supported_langs()
+        if lang not in supported:
+            self._toast(
+                f"Unknown language: {lang}  (supported: {', '.join(supported)})",
+                kind="error",
+            )
+            return
+        status = self.query_one(StatusBar)
+        if status.language == lang:
+            return
+        status.language = lang
+        self._refresh_input_placeholder()
+        # Re-render the empty-state hint in the new language if the
+        # conversation is still empty (post-/clear or a fresh session).
+        conv = self.query_one(Conversation)
+        if not list(conv.children):
+            conv.show_empty_state(self._empty_hint(status.mode, lang))
+        # Persist to settings.yaml so the choice survives restarts. Use
+        # model_validate so the Account.language Literal gets re-checked
+        # against the new value (model_copy(update=...) would skip the
+        # validator and let a bad value reach pydantic-as-data later).
+        try:
+            from claritymed.stores.account import AccountStore
+
+            store = AccountStore(self._current_user_id)
+            if store.exists():
+                account = store.load()
+                data = account.model_dump(mode="python")
+                data["language"] = lang
+                store.save(type(account).model_validate(data))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to persist language switch: %s", exc)
+        conv.add_system_turn(f"Language → {lang}")
 
     def _clear_session(self) -> None:
         # /clear starts a new session_id and a new on-disk file. The old

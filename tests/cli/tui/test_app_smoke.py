@@ -267,6 +267,61 @@ async def test_slash_user_blocked_for_non_admin():
 
 
 @pytest.mark.asyncio
+async def test_slash_lang_switches_language_and_persists():
+    from claritymed.stores.account import AccountStore, init_user
+
+    init_user("test")
+    app = ClarityMedApp(
+        user_id="test",
+        language="en",
+        chat_session=_fresh_session(),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).post_message(InputBar.Submitted("/lang zh"))
+        await pilot.pause()
+        assert app.query_one(StatusBar).language == "zh"
+        # settings.yaml mirrors the new choice so a restart picks it up.
+        assert AccountStore("test").load().language == "zh"
+
+
+@pytest.mark.asyncio
+async def test_slash_lang_no_arg_opens_picker():
+    from claritymed.cli.tui.modals.language_modal import LanguageModal
+    from claritymed.stores.account import init_user
+
+    init_user("test")
+    app = ClarityMedApp(
+        user_id="test",
+        language="en",
+        chat_session=_fresh_session(),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).post_message(InputBar.Submitted("/lang"))
+        await pilot.pause()
+        assert isinstance(app.screen, LanguageModal)
+
+
+@pytest.mark.asyncio
+async def test_slash_lang_rejects_unsupported_code():
+    from claritymed.stores.account import init_user
+
+    init_user("test")
+    app = ClarityMedApp(
+        user_id="test",
+        language="en",
+        chat_session=_fresh_session(),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(InputBar).post_message(InputBar.Submitted("/lang fr"))
+        await pilot.pause()
+        # Unknown code is rejected — the StatusBar still shows the original lang.
+        assert app.query_one(StatusBar).language == "en"
+
+
+@pytest.mark.asyncio
 async def test_slash_mode_is_no_longer_recognised():
     """``/mode`` was removed; submitting it now lands as an unknown command,
     not a mode switch, and the active mode is unchanged."""

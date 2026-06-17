@@ -52,7 +52,7 @@ def test_slash_alone_is_unknown():
 
 
 @pytest.mark.parametrize(
-    "cmd", ["/upload", "/library", "/user alice", "/help", "/quit"]
+    "cmd", ["/upload", "/library", "/user alice", "/lang zh", "/help", "/quit"]
 )
 def test_help_text_documents_each_command(cmd):
     name = cmd[1:].split()[0]
@@ -63,3 +63,17 @@ def test_help_text_marks_user_command_as_admin_only():
     """``/user`` must be clearly labelled admin-only so non-admins
     understand why it's blocked when they try it."""
     assert "admin only" in HELP_TEXT
+
+
+def test_lang_command_with_arg():
+    p = parse("/lang zh")
+    assert p.name == "lang"
+    assert p.arg == "zh"
+    assert p.is_command
+
+
+def test_lang_command_no_arg():
+    p = parse("/lang")
+    assert p.name == "lang"
+    assert p.arg == ""
+    assert p.is_command

@@ -41,7 +41,16 @@ async def test_typing_slash_opens_popup_with_all_commands():
         assert bar._popup_visible
         rendered = str(_popup(app).renderable)
         # All known commands should be listed under "/".
-        for cmd in ("clear", "help", "library", "provider", "quit", "upload", "user"):
+        for cmd in (
+            "clear",
+            "help",
+            "lang",
+            "library",
+            "provider",
+            "quit",
+            "upload",
+            "user",
+        ):
             assert f"/{cmd}" in rendered
 
 
