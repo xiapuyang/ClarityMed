@@ -136,6 +136,35 @@ def _seed_busi(*, ocr_has_report: bool = False) -> Callable[[], dict]:
     return _f
 
 
+def _seed_busi_empty_ocr() -> Callable[[], dict]:
+    """Seed BUSI fixture with ``status="empty"`` + full classifier tagging.
+
+    Reproduces the v3 prompt's worked-example tag shape::
+
+        <image modality="ultrasound" is_medical="true"
+               ocr_has_report="false" ocr_status="empty"/>
+
+    Diagnostic ultrasounds rarely contain printed text, so OCR
+    legitimately returns empty by design. v2 of the prompt produced
+    prose explanations on this exact tag shape (the field-reported
+    failure); v3 names empty OCR as NORMAL for diagnostic scans and
+    branches on user intent (Rule 3 vs Rule 4). Differs from
+    ``_seed_busi()`` only in ``status="empty"`` — the load-bearing
+    axis the v3 prompt addresses.
+    """
+
+    def _f() -> dict:
+        return {
+            "fixture_subdir": "busi",
+            "status": "empty",
+            "modality": "ultrasound",
+            "is_medical": True,
+            "ocr_has_report": False,
+        }
+
+    return _f
+
+
 def _seed_chest_ct(*, ocr_has_report: bool = False) -> Callable[[], dict]:
     def _f() -> dict:
         return {
@@ -950,6 +979,49 @@ CASES: list[Case] = [
         args_predicate=_p_no_args,
         expected_tool=None,
         seed=None,
+    ),
+    # -------------------------------------------------------------------
+    # v3 prompt worked examples — same tag (tagged ultrasound +
+    # ``ocr_status="empty"``), two intents. This is the field-reported
+    # failure shape where v2 of the tool prompt produced Markdown
+    # checkboxes / prose explanations instead of calling either tool.
+    # v3 splits the routing explicitly:
+    #
+    #   * STRONG diagnostic intent → Rule 3 → call detect_disease_from_image
+    #   * VAGUE intent → Rule 4 → call ask_user_question
+    #
+    # Both cases use ``expected_behavior="call_tool"`` with
+    # ``_p_tool_invoked`` so the bench counts "any modal fired" as
+    # success — the regression v3 prevents is prose-instead-of-modal,
+    # and the ultrasound modality only covers one disease in today's
+    # catalog (``breast_cancer_ultrasound``), so Rule 4's disambig
+    # would have just one option and collapses cleanly into Rule 3.
+    # ``tool_invoked_rate`` vs ``disambig_rate`` in the summary show
+    # which path the model picked.
+    # -------------------------------------------------------------------
+    Case(
+        name="base_breast_us_strong_empty_ocr",
+        tier="base",
+        expected_behavior="call_tool",
+        prompts={
+            "en": "Is this breast lesion concerning? [Image sha:{sha8}]",
+            "zh": "分析这张乳房超声。[Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_busi_empty_ocr(),
+    ),
+    Case(
+        name="hard_breast_us_vague_empty_ocr",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": "thoughts? [Image sha:{sha8}]",
+            "zh": "分析这个。[Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_busi_empty_ocr(),
     ),
     # -------------------------------------------------------------------
     # ask_clarification — Rule 5 / Rule 6 disambig paths.
