@@ -62,7 +62,8 @@ def _vision_config(*, enabled: bool = True) -> VisionConfig:
                 id="breast_cancer_ultrasound",
                 enabled=enabled,
                 primary_model_id="breast_busi_unet_v1",
-                flow=["breast_busi_unet_v1"],
+                # flow is fallbacks-only; primary auto-prepended via effective_flow
+                flow=[],
                 cancer_class=True,
                 intent_hints_i18n_key="vision.intent.breast_cancer_ultrasound",
             )

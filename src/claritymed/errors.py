@@ -261,8 +261,8 @@ class VisionServerUnreachableError(RuntimeError):
 
     Mirrors ``SymptomsServerUnreachableError``: the tool body catches
     this in the fallback flow (Unit 7) and either advances to the next
-    model in ``disease.flow`` or returns ``NoUsableResultError`` when
-    the budget is exhausted.
+    model in ``disease.effective_flow`` or returns
+    ``NoUsableResultError`` when the budget is exhausted.
     """
 
 

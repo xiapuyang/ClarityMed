@@ -59,7 +59,10 @@ def _make_config(
             expected_ms=800,
         )
     ]
-    flow = [model_id]
+    # `flow` is fallbacks-only — the primary model is auto-prepended via
+    # DiseaseSpec.effective_flow. The first ModelSpec stays the primary;
+    # the optional second one joins as the lone fallback.
+    flow: list[str] = []
     if second_model_id:
         models.append(
             ModelSpec(
@@ -212,7 +215,8 @@ async def test_bootstrap_ignores_disabled_disease_and_flow_omitted_models() -> N
                     id="skin_cancer_dermoscopy",
                     enabled=False,
                     primary_model_id="skin_isic_resnet50_v1",
-                    flow=["skin_isic_resnet50_v1"],
+                    # Fallbacks-only; primary auto-prepended via effective_flow.
+                    flow=[],
                     cancer_class=True,
                     intent_hints_i18n_key="vision.intent.skin_cancer_dermoscopy",
                 ),

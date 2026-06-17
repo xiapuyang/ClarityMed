@@ -140,8 +140,9 @@ class VisionHttpClient:
         Raises:
             VisionServerUnreachableError: Connection failure, timeout,
                 or 5xx response. The tool body's fallback flow catches
-                this and tries the next model in ``disease.flow`` (or
-                returns ``NoUsableResultError`` when the budget runs out).
+                this and tries the next model in
+                ``disease.effective_flow`` (or returns
+                ``NoUsableResultError`` when the budget runs out).
             httpx.HTTPStatusError: 4xx — ``modality_mismatch`` /
                 ``unknown_disease`` / ``unknown_model`` /
                 ``image_decode_failed`` / ``image_hash_mismatch``. The

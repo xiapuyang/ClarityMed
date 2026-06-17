@@ -12,7 +12,10 @@
 # the same (condition × modality) coordinate must NOT exist — when
 # multiple checkpoints target the same coordinate (e.g. BUSI and the
 # breast_us_kaggle alternate), they share one disease_id and the
-# disease's `flow:` array enumerates the fallback order.
+# disease's `flow:` array enumerates the **fallback-only** order. The
+# primary model lives in `primary_model_id` and is auto-prepended at
+# runtime (DiseaseSpec.effective_flow); listing it again in `flow`
+# fails validation.
 #
 # Kill switch: set `diseases[0].enabled: false` to ship the file with
 # the plugin disabled. Removing this file entirely takes the plugin
@@ -29,7 +32,7 @@ diseases:
   - id: breast_cancer_ultrasound
     enabled: true                               # promoted artifact present; deploy pipeline verified
     primary_model_id: breast_busi_unet_v1
-    flow: [breast_busi_unet_v1]                 # extend with fallback models later; same accepted_modality required
+    flow: [breast_us_kaggle_resnet50_v1]         # fallbacks only; primary auto-prepended. Same accepted_modality required.
     cancer_class: true                          # enables cancer_status + clinical_action post-processing
     intent_hints_i18n_key: vision.intent.breast_cancer_ultrasound
   # Chest CT (lung cancer) — scaffolding landed in
@@ -40,7 +43,7 @@ diseases:
   - id: lung_cancer_chest_ct
     enabled: true
     primary_model_id: lung_chest_ct_resnet50_v1
-    flow: [lung_chest_ct_resnet50_v1]
+    flow: []                                    # no fallbacks declared yet
     cancer_class: true
     intent_hints_i18n_key: vision.intent.lung_cancer_chest_ct
   # Skin lesion (ISIC 9-class dermoscopy) — scaffolding landed in
@@ -49,9 +52,9 @@ diseases:
   # pipeline (mirrored on chest_ct's) produces a versioned artifact under
   # ~/.claritymed/models/vision/skin_cancer_dermoscopy/.
   - id: skin_cancer_dermoscopy
-    enabled: false
+    enabled: true
     primary_model_id: skin_isic_resnet50_v1
-    flow: [skin_isic_resnet50_v1]
+    flow: []                                    # no fallbacks declared yet
     cancer_class: true
     intent_hints_i18n_key: vision.intent.skin_cancer_dermoscopy
   # Lung histopathology (LC25000 subset) — scaffolding landed in
@@ -66,7 +69,7 @@ diseases:
   - id: lung_cancer_histopathology
     enabled: false
     primary_model_id: lung_histopath_resnet50_v1
-    flow: [lung_histopath_resnet50_v1]
+    flow: []                                    # no fallbacks declared yet
     cancer_class: true
     intent_hints_i18n_key: vision.intent.lung_cancer_histopathology
   # Colon histopathology (LC25000 subset) — scaffolding landed in
@@ -78,7 +81,7 @@ diseases:
   - id: colon_cancer_histopathology
     enabled: false
     primary_model_id: colon_histopath_resnet50_v1
-    flow: [colon_histopath_resnet50_v1]
+    flow: []                                    # no fallbacks declared yet
     cancer_class: true
     intent_hints_i18n_key: vision.intent.colon_cancer_histopathology
 
@@ -109,20 +112,16 @@ models:
   # src/claritymed/ingest/vision/breast_us_kaggle/ as a fallback for
   # the breast_cancer_ultrasound disease — same disease_id, same
   # accepted_modality, alternate training data and model checkpoint.
-  # Deliberately NOT in breast_cancer_ultrasound.flow yet: the vision
-  # server only loads flow models at startup (servers/vision/app.py:128),
-  # so a placeholder-sha entry here is safe for the enabled disease.
-  # Promotion procedure: train via forge → write real manifest sha
-  # here → add this model_id to the disease's flow array so the
-  # orchestrator can fall through to it when the BUSI checkpoint
-  # returns low confidence.
+  # Wired as flow[1] for breast_cancer_ultrasound: the orchestrator
+  # falls through to it when the BUSI primary returns low confidence
+  # or is unreachable within the per-call budget.
   - id: breast_us_kaggle_resnet50_v1
     disease_id: breast_cancer_ultrasound
     server_id: local_default
     framework: pytorch
     accepted_modality: ultrasound               # KTD-V3 hard gate
-    weights_subpath: vision/breast_cancer_ultrasound/breast_us_kaggle_resnet50_v1__placeholder
-    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    weights_subpath: vision/breast_cancer_ultrasound/breast_us_kaggle_resnet50_v1__20260617T021107Z
+    manifest_sha256: "4cdec76a82b45d2da0f92bffb252dee49b35aed937f6d2b20a9046b6cbbe4fca"
     expected_ms: 700
   # Chest CT model entry — paired with the lung_cancer_chest_ct disease
   # above. Both stay disabled until the chest_ct training pipeline produces
@@ -147,8 +146,8 @@ models:
     server_id: local_default
     framework: pytorch
     accepted_modality: dermoscopy               # KTD-V3 hard gate
-    weights_subpath: vision/skin_cancer_dermoscopy/skin_isic_resnet50_v1__placeholder
-    manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    weights_subpath: vision/skin_cancer_dermoscopy/skin_isic_resnet50_v1__20260617T024228Z
+    manifest_sha256: "dad50c186d791c8e8b00356db15d43d79b39c0c07b35c1d200e6e9c01e3ae49c"
     expected_ms: 600
   # Lung histopathology model entry — paired with the
   # lung_cancer_histopathology disease above. Stays bound to the

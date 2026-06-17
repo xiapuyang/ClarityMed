@@ -16,7 +16,7 @@ Routing algorithm (matches plan §"Approach"):
 1. Look up ``disease_id`` in ``configs/vision.yaml::diseases``. Miss →
    :class:`UnknownDiseaseError`.
 2. If the caller passed a ``model_id_hint`` and it appears in
-   ``disease.flow``, prefer it.
+   ``disease.effective_flow`` (primary + fallbacks), prefer it.
 3. Otherwise use ``disease.primary_model_id``.
 4. Look up the model's ``server_id`` → :class:`ServerSpec`. The
    ``ModelSpec`` validator in Unit 1 already cross-checks that every
@@ -174,7 +174,7 @@ class VisionRegistry:
             model_id
             for disease in self._diseases.values()
             if disease.enabled
-            for model_id in disease.flow
+            for model_id in disease.effective_flow
             if self._models.get(model_id)
             and self._models[model_id].server_id == server.id
         }
@@ -221,10 +221,11 @@ class VisionRegistry:
                 disease_id=disease_id,
                 available=self.enabled_disease_ids(),
             )
-        # Hint precedence: only honor when it appears in disease.flow.
-        # An out-of-flow hint is a soft drop-through to primary so the
-        # LLM can pass speculative model ids without breaking routing.
-        if model_id_hint and model_id_hint in disease.flow:
+        # Hint precedence: only honor when it appears in the effective
+        # flow (primary + fallbacks). An out-of-flow hint is a soft
+        # drop-through to primary so the LLM can pass speculative model
+        # ids without breaking routing.
+        if model_id_hint and model_id_hint in disease.effective_flow:
             target_model_id = model_id_hint
         else:
             target_model_id = disease.primary_model_id

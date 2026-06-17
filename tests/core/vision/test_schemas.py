@@ -38,7 +38,7 @@ def _minimal_payload(**overrides) -> dict:
                 "id": "breast_cancer_ultrasound",
                 "enabled": True,
                 "primary_model_id": "breast_busi_unet_v1",
-                "flow": ["breast_busi_unet_v1"],
+                "flow": [],
                 "cancer_class": True,
                 "intent_hints_i18n_key": "vision.intent.breast_cancer_ultrasound",
             }
@@ -161,10 +161,11 @@ def test_clinical_action_literal_accepts_all_five_values() -> None:
 def test_primary_model_id_not_in_models_fails() -> None:
     payload = _minimal_payload()
     payload["diseases"][0]["primary_model_id"] = "missing_model"
-    payload["diseases"][0]["flow"] = ["missing_model"]
+    payload["diseases"][0]["flow"] = []
     with pytest.raises(ValidationError) as exc:
         VisionConfig.model_validate(payload)
-    assert "primary_model_id" in str(exc.value) or "flow" in str(exc.value)
+    err = str(exc.value)
+    assert "missing_model" in err and "unknown" in err
 
 
 def test_model_server_id_unknown_fails() -> None:
@@ -207,7 +208,23 @@ def test_duplicate_server_ids_fail() -> None:
     assert "unique" in str(exc.value)
 
 
-def test_disease_flow_must_contain_primary_model_id() -> None:
+def test_disease_flow_must_not_contain_primary_model_id() -> None:
+    """``primary_model_id`` is auto-prepended via :attr:`effective_flow`.
+
+    Listing it again in ``flow`` is a config bug — flagged loudly so
+    operators don't accidentally double-run the primary or split its
+    audit trail across two attempts.
+    """
+    payload = _minimal_payload()
+    payload["diseases"][0]["primary_model_id"] = "breast_busi_unet_v1"
+    payload["diseases"][0]["flow"] = ["breast_busi_unet_v1"]
+    with pytest.raises(ValidationError) as exc:
+        VisionConfig.model_validate(payload)
+    assert "must NOT appear in" in str(exc.value)
+
+
+def test_effective_flow_prepends_primary() -> None:
+    """``effective_flow`` is the runtime order: primary first, then fallbacks."""
     payload = _minimal_payload()
     payload["models"].append(
         {
@@ -215,19 +232,27 @@ def test_disease_flow_must_contain_primary_model_id() -> None:
             "id": "fallback_model",
         }
     )
-    payload["diseases"][0]["primary_model_id"] = "breast_busi_unet_v1"
-    payload["diseases"][0]["flow"] = ["fallback_model"]  # primary not in flow
-    with pytest.raises(ValidationError) as exc:
-        VisionConfig.model_validate(payload)
-    assert "primary_model_id" in str(exc.value)
+    payload["diseases"][0]["flow"] = ["fallback_model"]
+    cfg = VisionConfig.model_validate(payload)
+    disease = cfg.diseases[0]
+    assert disease.effective_flow == ["breast_busi_unet_v1", "fallback_model"]
+
+
+def test_effective_flow_when_no_fallbacks() -> None:
+    """Empty ``flow`` is the common case; ``effective_flow`` is just primary."""
+    cfg = VisionConfig.model_validate(_minimal_payload())
+    assert cfg.diseases[0].effective_flow == ["breast_busi_unet_v1"]
 
 
 def test_disease_flow_must_be_unique() -> None:
     payload = _minimal_payload()
-    payload["diseases"][0]["flow"] = [
-        "breast_busi_unet_v1",
-        "breast_busi_unet_v1",
-    ]
+    payload["models"].append(
+        {
+            **payload["models"][0],
+            "id": "fallback_a",
+        }
+    )
+    payload["diseases"][0]["flow"] = ["fallback_a", "fallback_a"]
     with pytest.raises(ValidationError) as exc:
         VisionConfig.model_validate(payload)
     assert "unique" in str(exc.value)
@@ -252,7 +277,8 @@ def test_cancer_class_disease_mixed_modality_flow_fails() -> None:
             "expected_ms": 600,
         }
     )
-    payload["diseases"][0]["flow"] = ["breast_busi_unet_v1", "ct_fallback"]
+    # Primary stays BUSI (ultrasound); the CT fallback is what trips the gate.
+    payload["diseases"][0]["flow"] = ["ct_fallback"]
     with pytest.raises(ValidationError) as exc:
         VisionConfig.model_validate(payload)
     assert "accepted_modality" in str(exc.value)
@@ -347,12 +373,15 @@ def test_disease_spec_round_trip() -> None:
         {
             "id": "breast_cancer_ultrasound",
             "primary_model_id": "m1",
-            "flow": ["m1"],
+            # ``flow`` is fallbacks-only and defaults to []; the primary
+            # is auto-prepended via effective_flow.
             "intent_hints_i18n_key": "vision.intent.breast_cancer_ultrasound",
         }
     )
     assert d.enabled is True
     assert d.cancer_class is False  # default
+    assert d.flow == []
+    assert d.effective_flow == ["m1"]
 
 
 # --- OcrReportConfig -------------------------------------------------------
@@ -602,7 +631,7 @@ def test_extra_field_is_forbidden() -> None:
             {
                 "id": "x",
                 "primary_model_id": "m1",
-                "flow": ["m1"],
+                "flow": [],
                 "intent_hints_i18n_key": "vision.intent.x",
                 "hallucinated_field": True,
             }

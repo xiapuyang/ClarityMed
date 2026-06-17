@@ -68,7 +68,8 @@ def stage_resources(make_vision_artifact, vision_models_root: Path, monkeypatch)
             id=spec.disease_id,
             enabled=True,
             primary_model_id=spec.id,
-            flow=[spec.id],
+            # flow is fallbacks-only; primary auto-prepended via effective_flow
+            flow=[],
             cancer_class=manifest.cancer_class,
             intent_hints_i18n_key=f"vision.intent.{spec.disease_id}",
         )

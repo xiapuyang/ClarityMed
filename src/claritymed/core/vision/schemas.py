@@ -174,11 +174,13 @@ class ModelSpec(BaseModel):
 class DiseaseSpec(BaseModel):
     """One disease registered with the vision tool.
 
-    ``flow`` is the ordered fallback list — the tool body tries
-    ``flow[0]`` first, falls through to ``flow[1]`` on low confidence or
-    quality-gate failure within ``tool.total_budget_ms``. ``flow[0]``
-    and ``primary_model_id`` may differ when the catalog ships a
-    cheaper screening model first.
+    ``primary_model_id`` is the canonical model for the disease —
+    always tried first and used by every catalog / audit / intent
+    surface. ``flow`` is the **fallback-only** list: the orchestrator
+    runs ``primary_model_id`` first, then walks ``flow`` in order if
+    the primary returned low confidence or was unreachable within
+    ``tool.total_budget_ms``. ``flow`` must not list the primary again
+    — it is implicitly prepended via :attr:`effective_flow`.
 
     ``cancer_class=True`` requires that every model serving this
     disease ships a manifest declaring ``cancer_status_mapping`` and
@@ -192,16 +194,20 @@ class DiseaseSpec(BaseModel):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
     enabled: bool = True
     primary_model_id: str = Field(min_length=1, max_length=64)
-    flow: list[str] = Field(min_length=1, max_length=8)
+    # Default empty list; combined with the implicit primary this still
+    # gives a max effective chain length of 8 (1 primary + 7 fallbacks).
+    flow: list[str] = Field(default_factory=list, max_length=7)
     cancer_class: bool = False
     intent_hints_i18n_key: str = Field(min_length=1, max_length=128)
 
     @model_validator(mode="after")
-    def _primary_in_flow(self) -> DiseaseSpec:
-        if self.primary_model_id not in self.flow:
+    def _primary_not_in_flow(self) -> DiseaseSpec:
+        if self.primary_model_id in self.flow:
             raise ValueError(
                 f"diseases[id={self.id!r}].primary_model_id="
-                f"{self.primary_model_id!r} must appear in flow={self.flow!r}"
+                f"{self.primary_model_id!r} must NOT appear in "
+                f"flow={self.flow!r}; flow lists fallbacks only, the "
+                f"primary is prepended implicitly via effective_flow"
             )
         return self
 
@@ -212,6 +218,19 @@ class DiseaseSpec(BaseModel):
                 f"diseases[id={self.id!r}].flow must be unique, got {self.flow!r}"
             )
         return self
+
+    @property
+    def effective_flow(self) -> list[str]:
+        """Primary + declared fallbacks. The order callers should iterate.
+
+        ``primary_model_id`` is always ``effective_flow[0]``; the
+        ``_primary_not_in_flow`` validator guarantees no duplicate work
+        is needed here. Every runtime consumer (registry cross-check,
+        orchestrator fallback loop, vision-server lifespan loader,
+        ``/v1/detect`` model_id allow list) walks this property so the
+        YAML stays uncluttered while the execution chain stays explicit.
+        """
+        return [self.primary_model_id, *self.flow]
 
 
 class OcrReportConfig(BaseModel):
@@ -268,11 +287,12 @@ class ToolConfig(BaseModel):
 class VisionConfig(BaseModel):
     """Root of ``configs/vision.yaml``.
 
-    Cross-references are validated up-front: every ``DiseaseSpec.flow``
-    entry resolves to a ``ModelSpec.id``; every ``ModelSpec.server_id``
-    resolves to a ``ServerSpec.id``; every ``ModelSpec.disease_id``
-    resolves to a ``DiseaseSpec.id``. Typos fail at load time, not
-    mid-request.
+    Cross-references are validated up-front: every entry in each
+    ``DiseaseSpec.effective_flow`` (i.e. ``primary_model_id`` and every
+    fallback in ``flow``) resolves to a ``ModelSpec.id``; every
+    ``ModelSpec.server_id`` resolves to a ``ServerSpec.id``; every
+    ``ModelSpec.disease_id`` resolves to a ``DiseaseSpec.id``. Typos
+    fail at load time, not mid-request.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -330,17 +350,12 @@ class VisionConfig(BaseModel):
     def _disease_flow_refs_resolve(self) -> VisionConfig:
         known = {m.id for m in self.models}
         for d in self.diseases:
-            unknown = [mid for mid in d.flow if mid not in known]
+            unknown = [mid for mid in d.effective_flow if mid not in known]
             if unknown:
                 raise ValueError(
-                    f"diseases[id={d.id!r}].flow references unknown "
-                    f"models {unknown!r}; known: {sorted(known)!r}"
-                )
-            if d.primary_model_id not in known:
-                raise ValueError(
-                    f"diseases[id={d.id!r}].primary_model_id="
-                    f"{d.primary_model_id!r} not in models[]: "
-                    f"known={sorted(known)!r}"
+                    f"diseases[id={d.id!r}] references unknown models "
+                    f"{unknown!r} (primary_model_id + flow); "
+                    f"known: {sorted(known)!r}"
                 )
         return self
 
@@ -350,10 +365,12 @@ class VisionConfig(BaseModel):
         for d in self.diseases:
             if not d.cancer_class:
                 continue
-            modalities = {models_by_id[mid].accepted_modality for mid in d.flow}
+            modalities = {
+                models_by_id[mid].accepted_modality for mid in d.effective_flow
+            }
             if len(modalities) > 1:
                 raise ValueError(
-                    f"diseases[id={d.id!r}].flow models declare mixed "
+                    f"diseases[id={d.id!r}] models declare mixed "
                     f"accepted_modality values {sorted(modalities)!r}; a "
                     f"cancer-class disease's fallback chain must stay on "
                     f"a single modality so the upstream hard gate is "

@@ -671,20 +671,23 @@ class VisionFeature:
         language: str,
         request_id: str,
     ) -> tuple[RawDetection, int]:
-        """Walk ``disease.flow`` until a usable result, ``RawDetection`` returned.
+        """Walk ``disease.effective_flow`` until a usable result.
 
-        Accepts the result when ``confidence_tier`` is ``"medium"`` or
-        ``"high"``. ``"low"`` falls through to the next model in flow;
-        the server has already overridden ``clinical_action`` to
+        ``effective_flow`` is ``[primary_model_id, *flow]`` — the
+        primary always runs first, then any declared fallbacks. Accepts
+        the result when ``confidence_tier`` is ``"medium"`` or
+        ``"high"``. ``"low"`` falls through to the next model; the
+        server has already overridden ``clinical_action`` to
         ``inconclusive_review`` per KTD-V10, so even when we exhaust
-        the flow the last attempt carries safe LLM-facing copy.
+        the chain the last attempt carries safe LLM-facing copy.
 
         Raises:
-            _NoUsableResult: every model in flow returned low-conf or
-                couldn't be reached within ``total_budget_ms``.
+            _NoUsableResult: every model in the chain returned low-conf
+                or couldn't be reached within ``total_budget_ms``.
             VisionServerUnreachableError: the *very first* model is
-                unreachable (no fallback to attempt). Bubble up so the
-                tool body's outer ``except`` can branch cleanly.
+                unreachable and there are no fallbacks to attempt.
+                Bubble up so the tool body's outer ``except`` can branch
+                cleanly.
         """
         try:
             image_bytes = _read_blob_bytes(attachment_user_id, attachment_sha)
@@ -704,7 +707,8 @@ class VisionFeature:
         last_low: RawDetection | None = None
 
         models_by_id = {m.id: m for m in self._config.models}
-        for model_id in disease.flow:
+        chain = disease.effective_flow
+        for model_id in chain:
             spec = models_by_id.get(model_id)
             if spec is None:
                 continue
@@ -733,12 +737,12 @@ class VisionFeature:
                 )
             except VisionServerUnreachableError as exc:
                 warnings.append(f"{spec.id}: server_unreachable: {exc!s}")
-                if attempted == 1 and spec is primary_model:
-                    # First-and-only fallthrough; tool body branches on
-                    # the dedicated exception so the LLM gets a different
-                    # message than "every model came back low".
-                    if disease.flow == [spec.id]:
-                        raise
+                # Primary-and-only fallthrough — no fallbacks declared.
+                # Re-raise so the tool body emits a dedicated message
+                # ("server unreachable") instead of "every model came
+                # back low".
+                if attempted == 1 and spec is primary_model and len(chain) == 1:
+                    raise
                 continue
             except httpx.HTTPStatusError as exc:
                 code = "http_error"

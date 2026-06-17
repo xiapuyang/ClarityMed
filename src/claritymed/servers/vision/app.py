@@ -125,7 +125,7 @@ def _load_config_sync() -> None:
         if not disease.enabled:
             logger.info("vision disease %s disabled; skipping", disease.id)
             continue
-        for model_id in disease.flow:
+        for model_id in disease.effective_flow:
             spec = _find_model_spec(cfg.models, model_id)
             try:
                 manifest, model = load_model_for_spec(spec, device=device)
@@ -159,7 +159,7 @@ def _find_model_spec(models: list[ModelSpec], model_id: str) -> ModelSpec:
     # land here, the config validator drifted from runtime expectations.
     raise RuntimeError(
         f"model_id {model_id!r} not in configs/vision.yaml::models — "
-        f"config cross-reference is out of sync with disease.flow"
+        f"config cross-reference is out of sync with disease.effective_flow"
     )
 
 
@@ -358,16 +358,17 @@ def _resolve_model(req: DetectRequest, disease: DiseaseSpec) -> InferenceResourc
     """Look up the loaded resources for the requested (or primary) model."""
     if req.model_id is None:
         target_id = disease.primary_model_id
-    elif req.model_id not in disease.flow:
+    elif req.model_id not in disease.effective_flow:
         raise HTTPException(
             status_code=404,
             detail=_error_payload(
                 code="unknown_model",
                 message=(
-                    f"model_id {req.model_id!r} not in disease.flow for {disease.id!r}"
+                    f"model_id {req.model_id!r} not in effective_flow for "
+                    f"{disease.id!r} (primary + fallbacks)"
                 ),
                 request_id=req.request_id,
-                available=list(disease.flow),
+                available=list(disease.effective_flow),
             ),
         )
     else:
