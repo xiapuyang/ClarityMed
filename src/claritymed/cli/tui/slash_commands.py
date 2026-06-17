@@ -13,7 +13,6 @@ from typing import Literal
 CommandName = Literal[
     "upload",
     "library",
-    "mode",
     "user",
     "provider",
     "clear",
@@ -26,7 +25,6 @@ CommandName = Literal[
 KNOWN_COMMANDS: tuple[str, ...] = (
     "upload",
     "library",
-    "mode",
     "user",
     "provider",
     "clear",
@@ -71,13 +69,14 @@ def parse(line: str) -> ParsedCommand:
 
 HELP_TEXT: str = (
     "Slash commands:\n"
-    "  /upload <path>    Add a record (ingest mode)\n"
-    "  /library          Manage reference materials (rag mode)\n"
-    "  /mode <name>      Switch mode: ingest / ask / rag\n"
+    "  /upload <path>    Upload a file into your personal RAG library\n"
+    "  /library [query]  Inspect collections (empty = list every collection,\n"
+    "                    query = run full RAG retrieval incl. translation)\n"
     "  /user [id]        Switch active user (admin only; no arg opens picker)\n"
     "  /provider [id]    Switch LLM provider; no arg opens picker (F3)\n"
     "  /clear            Start a new chat session (keeps history on disk)\n"
     "  /help             Show this help\n"
     "  /quit             Exit the TUI\n"
+    "Mode is cycled with Shift+Tab (ingest / ask / rag). "
     "Anything not starting with / is routed automatically (default: ask)."
 )

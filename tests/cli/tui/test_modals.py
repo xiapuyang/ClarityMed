@@ -119,21 +119,68 @@ async def test_approval_modal_deny():
 
 
 @pytest.mark.asyncio
-async def test_library_modal_save_returns_active_collections():
+async def test_library_modal_lists_system_collections_with_strategy_none():
+    """List view (empty query) renders without needing a live RAG strategy —
+    every configured system collection plus a [USER] row should appear."""
     app = _ModalHostApp(
         LibraryModal(
-            documents=["doc-a", "doc-b"],
-            active_collections=["medcorp_en"],
+            user_id="test",
+            language="en",
+            strategy=None,
+            initial_query="",
         )
     )
     async with app.run_test() as pilot:
         await pilot.pause()
         modal = app.screen
-        modal.query_one("#save", Button).press()
+        # Sweep through the rendered ListView labels.
+        from textual.widgets import ListView
+
+        listview = modal.query_one("#results", ListView)
+        rendered = " ".join(
+            str(child.renderable)
+            for item in listview.children
+            for child in item.children
+            if hasattr(child, "renderable")
+        )
+        assert "[USER]" in rendered
+        # statpearls_en + textbooks_en are seeded in configs/retrieval.yaml.
+        assert "statpearls_en" in rendered or "textbooks_en" in rendered
+        modal.query_one("#close", Button).press()
         await pilot.pause()
-    # The default checkbox state matches active_collections so it should
-    # contain at least 'medcorp_en' (assuming the config still has it).
-    assert isinstance(app.result, list)
+    assert app.result is None
+
+
+@pytest.mark.asyncio
+async def test_library_modal_blocks_search_when_strategy_missing():
+    """Submitting a query with strategy=None surfaces a 'RAG disabled' banner
+    instead of crashing."""
+    from textual.widgets import Input, Static
+
+    app = _ModalHostApp(
+        LibraryModal(
+            user_id="test",
+            language="en",
+            strategy=None,
+            initial_query="",
+        )
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        modal.query_one("#query", Input).value = "hypertension"
+        modal.query_one("#query", Input).post_message(
+            Input.Submitted(modal.query_one("#query", Input), "hypertension", None)
+        )
+        # The Input.Submitted handler runs a worker; pause until it settles.
+        for _ in range(10):
+            await pilot.pause()
+            if "disabled" in str(modal.query_one("#status", Static).renderable):
+                break
+        assert "disabled" in str(modal.query_one("#status", Static).renderable)
+        modal.query_one("#close", Button).press()
+        await pilot.pause()
+    assert app.result is None
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ store directly; the service layer is the single boundary.
 
 ESC during a streaming response cancels the active worker and marks the
 turn as cancelled in place (text stays, gets a ``⊘ cancelled`` tag). The
-status bar reflects user / mode / lang / provider / request id / confidence
+status bar reflects user / mode / lang / provider / request id
 in real time.
 """
 
@@ -576,14 +576,6 @@ class ClarityMedApp(App):
         if parsed.name == "quit":
             self.exit()
             return
-        if parsed.name == "mode":
-            target = parsed.arg.strip().lower()
-            if target in ("ingest", "ask", "rag"):
-                self.set_mode(target)  # type: ignore[arg-type]
-                self.query_one(Conversation).add_system_turn(f"Mode → {target}")
-            else:
-                self._toast("Usage: /mode <ingest|ask|rag>", kind="error")
-            return
         if parsed.name == "user":
             if self._current_role() != "admin":
                 self._toast(
@@ -611,7 +603,7 @@ class ClarityMedApp(App):
             self._open_upload_modal(parsed.arg.strip())
             return
         if parsed.name == "library":
-            self._open_library_modal()
+            self._open_library_modal(parsed.arg.strip())
             return
         # Unreachable while is_command guards above
         logger.warning("unhandled command: %s", parsed.name)
@@ -694,10 +686,21 @@ class ClarityMedApp(App):
 
         self.push_screen(UploadModal(initial_path=path), _handle)
 
-    def _open_library_modal(self) -> None:
+    def _open_library_modal(self, query: str = "") -> None:
         from claritymed.cli.tui.modals.library_modal import LibraryModal
 
-        self.push_screen(LibraryModal())
+        # ``_cached_strategy`` may be None when RAG is disabled in
+        # ``retrieval.yaml`` or when the warm worker hasn't finished yet
+        # (rare — only the first second or two after mount). The modal
+        # tolerates None: the list view still works, search shows a banner.
+        self.push_screen(
+            LibraryModal(
+                user_id=self._current_user_id,
+                language=self.query_one(StatusBar).language,
+                strategy=self._cached_strategy,
+                initial_query=query,
+            )
+        )
 
     # ----- service dispatch ----------------------------------------------
 
@@ -896,7 +899,6 @@ class ClarityMedApp(App):
     def _flash_routing(self, mode: ModeName, confidence: float) -> None:
         status = self.query_one(StatusBar)
         status.routing_flash = mode
-        status.confidence = confidence
         self.query_one(Conversation).add_system_turn(
             f"Routed to {mode} (confidence {confidence:.2f})"
         )

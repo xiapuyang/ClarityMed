@@ -41,7 +41,7 @@ async def test_typing_slash_opens_popup_with_all_commands():
         assert bar._popup_visible
         rendered = str(_popup(app).renderable)
         # All known commands should be listed under "/".
-        for cmd in ("clear", "help", "library", "mode", "quit", "upload", "user"):
+        for cmd in ("clear", "help", "library", "provider", "quit", "upload", "user"):
             assert f"/{cmd}" in rendered
 
 
@@ -108,18 +108,18 @@ async def test_tab_completes_to_selected_command():
 
 @pytest.mark.asyncio
 async def test_tab_completes_arg_command_with_trailing_space():
-    """Arg-taking commands (/upload, /mode, /user) complete with a trailing
+    """Arg-taking commands (/upload, /user, /provider) complete with a trailing
     space so the user can keep typing without backspacing."""
     async with _Host().run_test() as pilot:
         app: _Host = pilot.app  # type: ignore[assignment]
         bar = app.query_one(InputBar)
         bar.focus_input()
-        await pilot.press("/", "m")
+        await pilot.press("/", "u", "p")
         await pilot.pause()
-        assert bar._popup_matches == ["mode"]
+        assert bar._popup_matches == ["upload"]
         await pilot.press("tab")
         await pilot.pause()
-        assert _input(app).value == "/mode "
+        assert _input(app).value == "/upload "
         assert not bar._popup_visible
 
 
@@ -189,15 +189,15 @@ async def test_popup_hides_once_user_starts_typing_args():
         app: _Host = pilot.app  # type: ignore[assignment]
         bar = app.query_one(InputBar)
         bar.focus_input()
-        await pilot.press("/", "m")
+        await pilot.press("/", "u", "p")
         await pilot.pause()
         await pilot.press("tab")
         await pilot.pause()
-        assert _input(app).value == "/mode "
-        await pilot.press("a", "s", "k")
+        assert _input(app).value == "/upload "
+        await pilot.press("f", "o", "o")
         await pilot.pause()
         assert not bar._popup_visible
-        assert _input(app).value == "/mode ask"
+        assert _input(app).value == "/upload foo"
 
 
 @pytest.mark.asyncio

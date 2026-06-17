@@ -20,11 +20,12 @@ def test_upload_command_with_arg():
     assert p.arg == "/tmp/report.pdf"
 
 
-def test_mode_command_arg_lowercased_in_app():
-    # Parser preserves arg case; the app lowercases it before validation.
-    p = parse("/mode INGEST")
-    assert p.name == "mode"
-    assert p.arg == "INGEST"
+def test_mode_is_no_longer_a_slash_command():
+    # /mode was removed in favour of Shift+Tab cycling. It now parses as unknown.
+    p = parse("/mode ingest")
+    assert p.name == "unknown"
+    assert p.arg == "mode"
+    assert not p.is_command
 
 
 def test_unknown_command_keeps_head_in_arg():
@@ -51,7 +52,7 @@ def test_slash_alone_is_unknown():
 
 
 @pytest.mark.parametrize(
-    "cmd", ["/upload", "/library", "/mode ask", "/user alice", "/help", "/quit"]
+    "cmd", ["/upload", "/library", "/user alice", "/help", "/quit"]
 )
 def test_help_text_documents_each_command(cmd):
     name = cmd[1:].split()[0]

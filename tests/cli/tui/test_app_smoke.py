@@ -116,7 +116,9 @@ async def test_slash_help_shows_help_bubble():
 
 
 @pytest.mark.asyncio
-async def test_slash_mode_switches_mode():
+async def test_set_mode_switches_status_bar():
+    """``/mode`` was removed; mode is now switched via ``set_mode`` (Shift+Tab,
+    UploadModal force_mode, future mode-confirmation modal)."""
     app = ClarityMedApp(
         user_id="test",
         language="en",
@@ -124,7 +126,7 @@ async def test_slash_mode_switches_mode():
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one(InputBar).post_message(InputBar.Submitted("/mode rag"))
+        app.set_mode("rag")
         await pilot.pause()
         assert app.query_one(StatusBar).mode == "rag"
 
@@ -204,7 +206,7 @@ async def test_unmount_is_a_noop_now():
     app = ClarityMedApp(user_id="test", language="en")
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one(InputBar).post_message(InputBar.Submitted("/mode ingest"))
+        app.set_mode("ingest")
         await pilot.pause()
     # Reaching here means unmount completed cleanly.
     assert True
@@ -267,7 +269,9 @@ async def test_slash_user_blocked_for_non_admin():
 
 
 @pytest.mark.asyncio
-async def test_slash_mode_invalid_arg_toasts():
+async def test_slash_mode_is_no_longer_recognised():
+    """``/mode`` was removed; submitting it now lands as an unknown command,
+    not a mode switch, and the active mode is unchanged."""
     app = ClarityMedApp(
         user_id="test",
         language="en",
@@ -275,7 +279,7 @@ async def test_slash_mode_invalid_arg_toasts():
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.query_one(InputBar).post_message(InputBar.Submitted("/mode bogus"))
+        app.query_one(InputBar).post_message(InputBar.Submitted("/mode rag"))
         await pilot.pause()
         assert app.query_one(StatusBar).mode == "ask"
 
@@ -315,8 +319,9 @@ async def test_ingest_mode_dispatch_runs_service():
     )
     async with app.run_test() as pilot:
         await pilot.pause()
-        # Switch to ingest mode.
-        app.query_one(InputBar).post_message(InputBar.Submitted("/mode ingest"))
+        # Switch to ingest mode (Shift+Tab cycles, set_mode is the programmatic
+        # API; the /mode slash command was removed).
+        app.set_mode("ingest")
         await pilot.pause()
         # Submit a key=value.
         app.query_one(InputBar).post_message(InputBar.Submitted("allergy=penicillin"))
