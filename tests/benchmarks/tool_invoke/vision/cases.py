@@ -177,6 +177,35 @@ def _seed_chest_ct(*, ocr_has_report: bool = False) -> Callable[[], dict]:
     return _f
 
 
+def _seed_chest_ct_inline_ocr(*, text: str) -> Callable[[], dict]:
+    """Seed chest CT with non-report inline OCR text.
+
+    Tags chest CT + ``ocr_has_report=false`` (Rule 3 territory) and
+    renders ``text`` between open/close tags. Distinct from
+    ``_seed_chest_ct()`` which collapses to ``ocr_status="empty"``
+    because its OCR text is empty — here OCR succeeded but the text
+    is non-report (watermark, image caption, footer, etc.) so the
+    rendered tag carries inline body content. The LLM has to read past
+    the body and route on the attributes.
+
+    Reproduces two field traces where vague Chinese prompts
+    (``"分析这个影像"``) correctly triggered the tool despite junk
+    inline OCR — one with stock-photo watermarks, one with a brief
+    descriptive caption.
+    """
+
+    def _f() -> dict:
+        return {
+            "fixture_subdir": "chest_ct",
+            "modality": "ct",
+            "is_medical": True,
+            "ocr_has_report": False,
+            "text": text,
+        }
+
+    return _f
+
+
 def _seed_skin(*, ocr_has_report: bool = False) -> Callable[[], dict]:
     def _f() -> dict:
         return {
@@ -1022,6 +1051,60 @@ CASES: list[Case] = [
         args_predicate=_p_tool_invoked,
         expected_tool=VISION_TOOL,
         seed=_seed_busi_empty_ocr(),
+    ),
+    # Field-traced shapes: vague Chinese prompt + chest CT + non-empty,
+    # non-report OCR (``ocr_has_report=false``). The LLM must read past
+    # the inline text and fire Rule 3 on the ``modality`` /
+    # ``is_medical`` attributes. Two variants of non-report OCR:
+    #   1. Stock-photo watermark — repeated brand junk.
+    #   2. Descriptive caption — brief modality-naming text that could
+    #      tempt the model to over-explain in prose instead of firing.
+    # A model that anchors on inline text over attributes will
+    # under-fire on both. Distinct from the ``status="empty"`` v3
+    # worked examples — here OCR succeeded.
+    Case(
+        name="hard_chest_ct_watermark_ocr",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": "Analyze this scan. [Image sha:{sha8}]",
+            "zh": "分析这个影像 [Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_chest_ct_inline_ocr(text="SCIENCEPHOTOLIBRARY\n" * 6),
+    ),
+    Case(
+        name="hard_chest_ct_caption_ocr",
+        tier="hard",
+        expected_behavior="call_tool",
+        prompts={
+            "en": "Analyze this scan. [Image sha:{sha8}]",
+            "zh": "分析这个影像 [Image sha:{sha8}]",
+        },
+        args_predicate=_p_tool_invoked,
+        expected_tool=VISION_TOOL,
+        seed=_seed_chest_ct_inline_ocr(text="CT Chest Axial Image"),
+    ),
+    # Vague Chinese prompt on a dermoscopy image with empty OCR. Per
+    # Rule 4 the LLM must call ``ask_user_question`` rather than fire
+    # the tool — even though dermoscopy maps to a single covered
+    # disease (where a strict Rule 4 collapse would re-route to Rule
+    # 3). The field-traced behavior asks the user via subtype options;
+    # ``_p_disambig_asked`` is option-count based and accepts either
+    # disease- or subtype-shaped option lists. The win this case locks
+    # in is "didn't barge into the tool on a vague prompt".
+    Case(
+        name="hard_skin_vague_clarification_zh",
+        tier="hard",
+        expected_behavior="ask_clarification",
+        prompts={
+            "en": "Analyze this photo. [Image sha:{sha8}]",
+            "zh": "分析这个照片 [Image sha:{sha8}]",
+        },
+        args_predicate=_p_disambig_asked,
+        expected_tool=None,
+        seed=_seed_skin(),
     ),
     # -------------------------------------------------------------------
     # ask_clarification — Rule 5 / Rule 6 disambig paths.

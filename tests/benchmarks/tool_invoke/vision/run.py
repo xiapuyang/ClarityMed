@@ -203,12 +203,16 @@ def _seed_attachment(*, user_id: str, session_id: str, seed_dict: dict) -> str |
     )
     status = seed_dict.get("status", "done")
     # ``status="empty"`` cases have no OCR text by definition. For the
-    # ``done`` path we still gate the synthetic text on
-    # ``ocr_has_report`` so Rule 2 cases see a clinician-report-shaped
-    # body and Rule 3 cases see an empty extraction (the modality tag
-    # alone is enough to fire Rule 3).
+    # ``done`` path: an explicit ``text`` override in the seed wins
+    # (used by the watermark-OCR case where OCR succeeded but the text
+    # is junk — distinct from ``ocr_has_report=true`` which means
+    # report-shaped text). Otherwise gate synthetic text on
+    # ``ocr_has_report`` so Rule 2 cases see a clinician-report body
+    # and Rule 3 cases see an empty extraction.
     if status == "empty":
         text = ""
+    elif "text" in seed_dict:
+        text = seed_dict["text"]
     else:
         text = (
             "FINDINGS: synthetic report text. IMPRESSION: bench seed."
