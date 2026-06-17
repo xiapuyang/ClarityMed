@@ -3,13 +3,16 @@
 Verifies the popup shows when ``/`` is typed, filters by prefix, navigates
 with Up/Down, completes on Tab, and submits-on-exact-match on Enter so
 the existing routing flow still works.
+
+The input bar is built on a multi-line ``TextArea``; tests read ``.text``
+where the old ``Input``-based suite read ``.value``.
 """
 
 from __future__ import annotations
 
 import pytest
 from textual.app import App
-from textual.widgets import Input, Static
+from textual.widgets import Static, TextArea
 
 from claritymed.cli.tui.widgets import InputBar
 
@@ -22,8 +25,8 @@ class _Host(App):
         yield InputBar()
 
 
-def _input(app: _Host) -> Input:
-    return app.query_one("#input", Input)
+def _input(app: _Host) -> TextArea:
+    return app.query_one("#input", TextArea)
 
 
 def _popup(app: _Host) -> Static:
@@ -111,7 +114,7 @@ async def test_tab_completes_to_selected_command():
         assert bar._popup_matches == ["help"]
         await pilot.press("tab")
         await pilot.pause()
-        assert _input(app).value == "/help"
+        assert _input(app).text == "/help"
         assert not bar._popup_visible
 
 
@@ -128,7 +131,7 @@ async def test_tab_completes_arg_command_with_trailing_space():
         assert bar._popup_matches == ["upload"]
         await pilot.press("tab")
         await pilot.pause()
-        assert _input(app).value == "/upload "
+        assert _input(app).text == "/upload "
         assert not bar._popup_visible
 
 
@@ -162,11 +165,11 @@ async def test_escape_closes_popup_without_changing_input():
         bar.focus_input()
         await pilot.press("/", "h")
         await pilot.pause()
-        before = _input(app).value
+        before = _input(app).text
         await pilot.press("escape")
         await pilot.pause()
         assert not bar._popup_visible
-        assert _input(app).value == before
+        assert _input(app).text == before
 
 
 @pytest.mark.asyncio
@@ -202,11 +205,11 @@ async def test_popup_hides_once_user_starts_typing_args():
         await pilot.pause()
         await pilot.press("tab")
         await pilot.pause()
-        assert _input(app).value == "/upload "
+        assert _input(app).text == "/upload "
         await pilot.press("f", "o", "o")
         await pilot.pause()
         assert not bar._popup_visible
-        assert _input(app).value == "/upload foo"
+        assert _input(app).text == "/upload foo"
 
 
 @pytest.mark.asyncio
@@ -239,7 +242,7 @@ async def test_paste_inserts_text_exactly_once():
         inp = _input(app)
         inp.post_message(events.Paste("hello"))
         await pilot.pause()
-        assert inp.value == "hello"
+        assert inp.text == "hello"
 
 
 @pytest.mark.asyncio
@@ -270,5 +273,5 @@ async def test_drag_drop_path_forwards_to_app_when_input_focused():
         path_text = "/Users/sharp/Downloads/malignant\\ \\(3\\).png"
         inp.post_message(events.Paste(path_text))
         await pilot.pause()
-        assert inp.value == ""
+        assert inp.text == ""
         assert forwarded == [path_text]

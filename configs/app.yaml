@@ -20,6 +20,15 @@ access_log:
 # ~50MB so go cautiously.
 paste:
   max_file_size_mb: 20
+  # Hard cap on raw text paste length (chars). Pastes above this are
+  # rejected with a toast so the user re-pastes a shorter snippet.
+  max_text_chars: 100000
+  # Threshold for collapsing a paste into a `[Pasted text #N +M lines]`
+  # placeholder. Either limit triggers: long-by-lines OR long-by-chars.
+  # Short multi-line snippets (a few lines) inline as-is so the user
+  # can see what landed.
+  placeholder_min_lines: 6
+  placeholder_min_chars: 800
 
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 # Opt-in: set enabled: true to install the global TracerProvider and

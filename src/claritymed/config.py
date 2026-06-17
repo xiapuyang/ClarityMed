@@ -36,6 +36,9 @@ LOG_DIR = Path(os.environ.get("CLARITYMED_LOG_DIR", CLARITYMED_HOME / "logs"))
 
 DEFAULT_LANG_FALLBACK = "en"
 DEFAULT_PASTE_MAX_FILE_SIZE_MB = 20
+DEFAULT_PASTE_MAX_TEXT_CHARS = 100_000
+DEFAULT_PASTE_PLACEHOLDER_MIN_LINES = 6
+DEFAULT_PASTE_PLACEHOLDER_MIN_CHARS = 800
 
 
 def ensure_runtime_dirs() -> None:
@@ -85,6 +88,43 @@ def paste_max_file_size_bytes() -> int:
     if mb is None:
         mb = DEFAULT_PASTE_MAX_FILE_SIZE_MB
     return int(float(mb) * 1024 * 1024)
+
+
+def paste_max_text_chars() -> int:
+    """Max chars accepted in a single raw-text paste into the input bar.
+
+    Pastes above this are rejected with a toast (no truncation). Read
+    from ``app.yaml`` ``paste.max_text_chars``; falls back to
+    ``DEFAULT_PASTE_MAX_TEXT_CHARS`` when missing.
+    """
+    n = load_yaml("app.yaml").get("paste", {}).get("max_text_chars")
+    if n is None:
+        n = DEFAULT_PASTE_MAX_TEXT_CHARS
+    return int(n)
+
+
+def paste_placeholder_min_lines() -> int:
+    """Pastes with >= this many lines collapse to a placeholder.
+
+    Lets short multi-line snippets inline as-is so the user sees what
+    landed; long pastes fold into ``[Pasted text #N +M lines]``.
+    """
+    n = load_yaml("app.yaml").get("paste", {}).get("placeholder_min_lines")
+    if n is None:
+        n = DEFAULT_PASTE_PLACEHOLDER_MIN_LINES
+    return int(n)
+
+
+def paste_placeholder_min_chars() -> int:
+    """Pastes with >= this many chars collapse to a placeholder.
+
+    Catches single long lines that would horizontally scroll forever in
+    the input bar, even when the line count is small.
+    """
+    n = load_yaml("app.yaml").get("paste", {}).get("placeholder_min_chars")
+    if n is None:
+        n = DEFAULT_PASTE_PLACEHOLDER_MIN_CHARS
+    return int(n)
 
 
 def supported_langs() -> tuple[str, ...]:

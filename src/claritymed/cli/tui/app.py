@@ -1510,20 +1510,23 @@ class ClarityMedApp(App):
         self._toast(f"Pasted {filename}; OCR queued", kind="info")
 
     def _insert_into_input(self, text: str) -> None:
-        """Splice ``text`` at the Input cursor; non-destructive."""
+        """Splice ``text`` at the TextArea cursor; non-destructive.
+
+        Used by the paste pipeline to drop ``[Image sha:…]`` / ``[File
+        sha:…]`` references at the cursor after blob ingest. TextArea
+        owns the cursor and the on-screen render; calling ``insert(text)``
+        without a location lands at the cursor and advances it past the
+        inserted span. We don't suppress the resulting ``Changed`` event
+        because attachment placeholders never start with ``/``, so the
+        slash popup stays hidden either way.
+        """
         try:
             bar = self.query_one(InputBar)
         except NoMatches:
             return
-        from textual.widgets import Input
+        from textual.widgets import TextArea
 
-        inp = bar.query_one("#input", Input)
-        current = inp.value
-        pos = inp.cursor_position
-        new_value = current[:pos] + text + current[pos:]
-        bar._suppress_next_value = new_value
-        inp.value = new_value
-        inp.cursor_position = pos + len(text)
+        bar.query_one("#input", TextArea).insert(text)
 
     def _supported_extensions(self) -> frozenset[str] | None:
         """Cached union of supported extensions across active OCR chains.

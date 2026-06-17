@@ -1018,6 +1018,121 @@ async def test_on_paste_plain_text_falls_through(tmp_path):
         assert not ev._stop_propagation
 
 
+@pytest.mark.asyncio
+async def test_paste_short_multiline_inlines_with_newlines():
+    """A short multi-line paste (under both placeholder thresholds)
+    inserts as-is — newlines preserved, no fold to placeholder. The user
+    sees what they pasted and can edit it in place."""
+    from textual import events
+    from textual.widgets import TextArea
+
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        ta = bar.query_one("#input", TextArea)
+        text = "line one\nline two\nline three"  # 3 lines, 28 chars
+        ta.post_message(events.Paste(text))
+        await pilot.pause()
+        assert ta.text == text
+
+
+@pytest.mark.asyncio
+async def test_paste_long_multiline_folds_to_placeholder():
+    """Paste with >= ``placeholder_min_lines`` (default 6) collapses to a
+    ``[Pasted text #N +M lines]`` visual placeholder. The body is stashed
+    on the InputBar and ``expand_pastes`` reconstitutes the full text at
+    submit time."""
+    from textual import events
+    from textual.widgets import TextArea
+
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        ta = bar.query_one("#input", TextArea)
+        body = "\n".join(f"line {i}" for i in range(20))
+        ta.post_message(events.Paste(body))
+        await pilot.pause()
+        assert ta.text == "[Pasted text #1 +20 lines]"
+        assert bar.expand_pastes(ta.text) == body
+
+
+@pytest.mark.asyncio
+async def test_paste_long_single_line_folds_to_placeholder():
+    """A single long line (>= ``placeholder_min_chars``, default 800)
+    also folds — without this, a 5000-char URL or token blob would
+    horizontally scroll the input forever."""
+    from textual import events
+    from textual.widgets import TextArea
+
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        ta = bar.query_one("#input", TextArea)
+        body = "x" * 1000  # 1 line, 1000 chars
+        ta.post_message(events.Paste(body))
+        await pilot.pause()
+        # Single line → no "+M lines" suffix
+        assert ta.text == "[Pasted text #1]"
+        assert bar.expand_pastes(ta.text) == body
+
+
+@pytest.mark.asyncio
+async def test_paste_text_over_limit_rejected():
+    """A paste larger than ``paste.max_text_chars`` must not land in the
+    TextArea. The handler zeroes ``event.text`` and toasts so the user
+    knows the paste was dropped on purpose, not silently lost."""
+    from textual import events
+    from textual.widgets import TextArea
+
+    from claritymed import config as _cfg
+
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        limit = _cfg.paste_max_text_chars()
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        ta = bar.query_one("#input", TextArea)
+        ta.post_message(events.Paste("x" * (limit + 1)))
+        await pilot.pause()
+        assert ta.text == ""
+
+
+@pytest.mark.asyncio
+async def test_clear_resets_paste_stash():
+    """``InputBar.clear()`` wipes both the visible text and the paste
+    stash so the next turn starts from id #1 — protects against id reuse
+    across turns and frees the stashed bodies."""
+    from textual import events
+    from textual.widgets import TextArea
+
+    app = ClarityMedApp(user_id="test", language="en", chat_session=_fresh_session())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(InputBar)
+        bar.focus_input()
+        ta = bar.query_one("#input", TextArea)
+        body = "\n".join(f"line {i}" for i in range(10))
+        ta.post_message(events.Paste(body))
+        await pilot.pause()
+        assert ta.text == "[Pasted text #1 +10 lines]"
+        bar.clear()
+        await pilot.pause()
+        assert ta.text == ""
+        assert bar._pastes == {}
+        assert bar._next_paste_id == 0
+        # Next paste starts the counter at #1 again.
+        ta.post_message(events.Paste(body))
+        await pilot.pause()
+        assert ta.text == "[Pasted text #1 +10 lines]"
+
+
 def test_looks_like_drop_attempt_recognises_unix_and_windows():
     """Path-prefix tokens (``/``, ``~``, ``C:\\``) signal a real drag-drop
     attempt; bare text does not."""
