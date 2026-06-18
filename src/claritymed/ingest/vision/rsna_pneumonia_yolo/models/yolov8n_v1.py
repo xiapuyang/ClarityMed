@@ -49,6 +49,13 @@ RSNA_YOLOV8N_V1 = YoloModelSpec(
         # bbox truth ambiguous on near-uniform x-ray backgrounds.
         mosaic=1.0,
         mixup=0.0,
+        # ``"disk"`` — pre-decode the train set into .npy files
+        # next to the JPEGs so every epoch skips JPEG decode and
+        # the macOS ``workers=0`` dataloader stall vanishes.
+        # Bonus: deterministic, unlike ``"ram"``. Requires ~82GB
+        # free disk (1.5× the decoded ~55GB at original RSNA
+        # resolution); ensure headroom before launching.
+        cache="disk",
     ),
     # Search-phase HPO ranges. Five continuous knobs covering the SGD
     # optimizer triple (``lr0``/``lrf``/``momentum``), regularisation

@@ -74,6 +74,13 @@ class YoloTrainHparams:
     # than necessary; we override that default. Spec authors can pin a
     # specific device (e.g. ``"cpu"`` for a CI smoke trial).
     device: str | None = None
+    # I/O knob, not a model-output hparam: ``False`` (default — read
+    # from disk each epoch), ``"ram"`` (pre-decode the whole train set
+    # into RAM), or ``"disk"`` (pre-decode to a local cache file).
+    # ``"ram"`` removes the dataloader bottleneck that surfaces on
+    # macOS + MPS where Ultralytics forces ``workers=0``; opt in per
+    # spec when the dataset fits in RAM (RSNA train ≈ 7.5 GB).
+    cache: bool | str = False
     # Augmentation knobs that matter for medical-image bbox: keep
     # geometric augmentations conservative (flip yes, mosaic yes, but
     # no perspective warp — would distort anatomy). Ultralytics
