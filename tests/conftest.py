@@ -24,6 +24,15 @@ def pytest_configure(config: pytest.Config) -> None:
     # Route unit-test traces to a separate Phoenix project so they don't
     # pollute the production project. e2e/conftest.py overrides to "claritymed-e2e".
     os.environ.setdefault("CLARITYMED_TRACE_PROJECT", "claritymed-pytest")
+    # MLflow's default tracking URI is ``./mlruns`` (file backend) relative
+    # to cwd — any test path that touches mlflow without going through
+    # :func:`claritymed.ingest.mlflow_utils.mlflow_run` would create
+    # ``mlflow.db`` / ``mlruns/`` in the repo root. Force a session-scoped
+    # tmp tracking URI so the safety net catches such bypasses. Tests that
+    # exercise ``mlflow_run`` still get per-test isolation via the
+    # ``CLARITYMED_HOME=tmp_path`` monkeypatch in ``_isolate_runtime``.
+    mlflow_db = root / "mlflow.db"
+    os.environ["MLFLOW_TRACKING_URI"] = f"sqlite:///{mlflow_db}"
 
 
 @pytest.fixture(autouse=True)

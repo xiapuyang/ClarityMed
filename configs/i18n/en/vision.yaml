@@ -58,6 +58,12 @@ vision:
       colonoscopy photo, or a non-medical image), when the image
       already carries a pathologist's report (ocr_has_report), or
       when the image is not medical.
+    chest_xray_pneumonia: |
+      Use when the user uploads a chest X-ray (radiograph) and asks
+      whether it looks like pneumonia or normal lung fields. Do NOT
+      call this tool when the image is not a chest X-ray, when the
+      image already carries a radiologist's report (ocr_has_report),
+      or when the image is not medical.
 
   # Per-disease display name shown in confirm modals + LLM-side text.
   # Disease identity is two-dimensional: (condition × modality). Same
@@ -79,6 +85,8 @@ vision:
       name: "lung cancer (histopathology)"
     colon_cancer_histopathology:
       name: "colon cancer (histopathology)"
+    chest_xray_pneumonia:
+      name: "pneumonia (chest X-ray)"
 
   # Per-label localized names + short descriptions. Descriptions are
   # surfaced by the LLM when the user asks "what does X mean here?".
@@ -151,6 +159,13 @@ vision:
       normal:
         name: "normal"
         description: "Healthy colon tissue on histology. No malignant features identified."
+    chest_xray_pneumonia:
+      normal:
+        name: "normal"
+        description: "No pneumonia signs detected on this chest X-ray."
+      pneumonia:
+        name: "pneumonia"
+        description: "Findings suggestive of pneumonia on this chest X-ray. Clinical correlation and physician review are recommended."
 
   # Confirm modal copy — fired from the tool body before any HTTP call.
   # `title` shows as the modal header; `body` is the question. `yes` /
@@ -214,6 +229,17 @@ vision:
         model?
       yes_label: "Yes, run it"
       yes_description: "Send the image to the local colon histopathology model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    chest_xray_pneumonia:
+      title: "Analyze this chest X-ray?"
+      body: |
+        I can run a small chest X-ray model on this image to estimate
+        whether the lungs look more like pneumonia or normal. The
+        result is an estimate — a physician's reading is always the
+        final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local chest X-ray model."
       no_label: "No, skip"
       no_description: "Skip the model and answer from text only."
 

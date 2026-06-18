@@ -38,6 +38,7 @@ from typing import Any
 
 import yaml
 
+from claritymed import config as _cfg
 from claritymed.ingest.vision.yolo_forge.common import (
     append_entry,
     disease_root,
@@ -91,6 +92,76 @@ FITNESS_MAP_WEIGHT = 0.9
 def _fitness(map50: float, map50_95: float) -> float:
     """Apply the fitness formula. Same shape used by search + tune."""
     return FITNESS_MAP50_WEIGHT * map50 + FITNESS_MAP_WEIGHT * map50_95
+
+
+def _configure_ultralytics() -> None:
+    """Tame Ultralytics' process-global side effects.
+
+    Three things, all of which would otherwise leak files into the
+    pipeline's cwd or duplicate our own MLflow accounting:
+
+    * ``mlflow=False`` — Ultralytics' MLflow callback ignores any
+      active context and sets its own experiment to
+      ``trainer.args.project`` (a long ``~/.claritymed/...`` path),
+      creating a stray entry alongside the ``claritymed-vision-*``
+      one we open ourselves. We already replay ``results.csv`` into
+      MLflow in :func:`_log_results_csv_to_mlflow`, so silencing
+      Ultralytics' callback is pure cleanup, no metric loss.
+    * ``weights_dir`` / ``runs_dir`` — Ultralytics defaults these
+      under cwd, which sprays ``yolov8n.pt`` and ``runs/`` wherever
+      the pipeline happens to be invoked from. Anchor them under
+      ``CLARITYMED_HOME/cache/ultralytics`` so there's one canonical
+      pretrained-weights cache per machine.
+    """
+    from ultralytics import settings as _ul_settings
+
+    cache = _cfg.CLARITYMED_HOME / "cache" / "ultralytics"
+    (cache / "weights").mkdir(parents=True, exist_ok=True)
+    (cache / "runs").mkdir(parents=True, exist_ok=True)
+    _ul_settings.update(
+        {
+            "mlflow": False,
+            "weights_dir": str(cache / "weights"),
+            "runs_dir": str(cache / "runs"),
+        }
+    )
+
+
+def _resolve_base_weights(name: str) -> str:
+    """Anchor relative Ultralytics weight names to the canonical cache.
+
+    ``YOLO("yolov8n.pt")`` downloads relative paths to cwd — which is
+    why ``yolov8n.pt`` was appearing in the repo root. Pre-resolving
+    bare filenames to an absolute path under
+    ``CLARITYMED_HOME/cache/ultralytics/weights`` forces the download
+    to land there instead. Absolute paths or anything containing a
+    directory separator pass through untouched (used for
+    ``staging/train/weights/best.pt`` in eval/tune).
+    """
+    p = Path(name)
+    if p.is_absolute() or len(p.parts) > 1:
+        return name
+    cache = _cfg.CLARITYMED_HOME / "cache" / "ultralytics" / "weights"
+    return str(cache / name)
+
+
+def _resolve_device(requested: str | None) -> str:
+    """Return ``requested`` verbatim, or auto-pick the best accelerator.
+
+    Ultralytics' built-in auto-detect picks CPU on Apple silicon even
+    when MPS is available — many ops still fall back to CPU and it errs
+    toward the stable path. For research training we'd rather take the
+    5-10× speedup and eat the per-op fallbacks. Order: MPS > CUDA > CPU.
+    """
+    if requested:
+        return requested
+    import torch
+
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
 
 # --- prepare -------------------------------------------------------------
@@ -147,6 +218,8 @@ def run_search(
     import optuna
     from ultralytics import YOLO
 
+    _configure_ultralytics()
+
     out_dir = staging or staging_dir(
         dataset_id=spec.dataset.dataset_id, model_id=spec.model_id
     )
@@ -154,6 +227,15 @@ def run_search(
     search_dir = out_dir / "search"
     search_dir.mkdir(exist_ok=True)
     task_id = task_id or generate_task_id()
+    logger.info(
+        "yolo_forge.search: trials=%d epochs_per_trial=%d "
+        "eval_thresholds=%s fitness=%.1f·mAP50+%.1f·mAP50-95",
+        trials,
+        epochs_per_trial,
+        spec.eval_thresholds,
+        FITNESS_MAP50_WEIGHT,
+        FITNESS_MAP_WEIGHT,
+    )
 
     with mlflow_phase_run(
         spec=spec,
@@ -168,8 +250,9 @@ def run_search(
             hparams.update(suggested)
             hparams["epochs"] = epochs_per_trial
             hparams["patience"] = max(1, epochs_per_trial // 2)
+            hparams["device"] = _resolve_device(hparams.get("device"))
 
-            model = YOLO(spec.base_weights)
+            model = YOLO(_resolve_base_weights(spec.base_weights))
             results = model.train(
                 data=str(splits.data_yaml_path),
                 project=str(search_dir),
@@ -181,6 +264,13 @@ def run_search(
             map50 = float(getattr(results.box, "map50", 0.0))
             map50_95 = float(getattr(results.box, "map", 0.0))
             fitness = _fitness(map50=map50, map50_95=map50_95)
+            logger.info(
+                "yolo_forge.search trial=%d mAP50=%.4f mAP50-95=%.4f fitness=%.4f",
+                trial.number,
+                map50,
+                map50_95,
+                fitness,
+            )
             # Step = trial number so the MLflow run shows a fitness
             # curve over trials, just like a per-epoch loss curve.
             log_metrics(
@@ -244,6 +334,8 @@ def run_train(
     """
     from ultralytics import YOLO
 
+    _configure_ultralytics()
+
     out_dir = staging or staging_dir(
         dataset_id=spec.dataset.dataset_id, model_id=spec.model_id
     )
@@ -255,6 +347,7 @@ def run_train(
     if quick:
         hparams["epochs"] = 1
         hparams["patience"] = 1
+    hparams["device"] = _resolve_device(hparams.get("device"))
     task_id = task_id or generate_task_id()
 
     logger.info(
@@ -270,7 +363,7 @@ def run_train(
     log_params["base_weights"] = spec.base_weights
 
     with mlflow_phase_run(spec=spec, phase="train", task_id=task_id, params=log_params):
-        model = YOLO(spec.base_weights)
+        model = YOLO(_resolve_base_weights(spec.base_weights))
         model.train(
             data=str(splits.data_yaml_path),
             project=str(out_dir),
@@ -410,6 +503,8 @@ def run_eval(
     """
     from ultralytics import YOLO
 
+    _configure_ultralytics()
+
     staging = staging or latest_staging_dir(
         dataset_id=spec.dataset.dataset_id, model_id=spec.model_id
     )
@@ -546,6 +641,8 @@ def run_tune(
     and runs only the final test eval.
     """
     from ultralytics import YOLO
+
+    _configure_ultralytics()
 
     staging = staging or latest_staging_dir(
         dataset_id=spec.dataset.dataset_id, model_id=spec.model_id

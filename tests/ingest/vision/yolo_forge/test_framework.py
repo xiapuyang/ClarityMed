@@ -92,6 +92,42 @@ def test_run_search_no_hparam_space_returns_spec_defaults() -> None:
     assert out == asdict(YoloTrainHparams())
 
 
+# --- device resolution -------------------------------------------------
+
+
+def test_resolve_device_passes_explicit_value_through() -> None:
+    """A pinned device wins over auto-detect, even if MPS is available."""
+    assert framework._resolve_device("cpu") == "cpu"
+    assert framework._resolve_device("cuda:0") == "cuda:0"
+
+
+def test_resolve_device_prefers_mps_over_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Apple silicon we want MPS, not Ultralytics' CPU default."""
+    import torch
+
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert framework._resolve_device(None) == "mps"
+
+
+def test_resolve_device_prefers_cuda_when_no_mps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torch
+
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert framework._resolve_device(None) == "cuda"
+
+
+def test_resolve_device_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    import torch
+
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert framework._resolve_device(None) == "cpu"
+
+
 # --- threshold + regression gate helpers -------------------------------
 
 

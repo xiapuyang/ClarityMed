@@ -65,6 +65,7 @@ from claritymed.ingest.vision.forge.common import (
     FEATURE,
     append_latest_entry,
     check_floors,
+    assert_vision_yaml_has_model,
     disease_root,
     latest_jsonl_path,
     latest_staging_dir,
@@ -120,6 +121,14 @@ def run_hparam(
         storage=optuna_storage_uri(),
         direction="maximize",
         load_if_exists=True,
+    )
+    search_floors = spec.task.phase_floors("search")
+    logger.info(
+        "forge.search: trials=%d epochs=%d floors=%s composite_weights=%s",
+        trials,
+        epochs,
+        search_floors.floors,
+        spec.task.composite_weights,
     )
     study.optimize(
         _build_search_objective(spec, epochs=epochs, smoke=smoke, task_id=task_id),
@@ -199,6 +208,14 @@ def _run_search_trial(
         if best_breakdown is not None:
             trial.set_user_attr("breakdown", best_breakdown)
     del train_loader, val_loader
+    feasible = best_score >= FEASIBLE_OFFSET
+    logger.info(
+        "forge.search trial=%d score=%.4f feasible=%s breakdown=%s",
+        trial.number,
+        best_score,
+        feasible,
+        best_breakdown or {},
+    )
     return best_score
 
 
@@ -928,6 +945,12 @@ def run_deploy(
     )
     if previous is not None:
         _check_regression(previous, tuned_test)
+
+    # Validate registry-side wiring up-front, so a missing
+    # configs/vision.yaml entry fails BEFORE copytree / symlink — not
+    # after, like the original ordering did, which would leave a
+    # dangling stable-symlink pointing at a half-promoted artifact.
+    assert_vision_yaml_has_model(spec.model_id)
 
     tag = version_tag()
     stable_dirname = f"{spec.model_id}__{tag}"

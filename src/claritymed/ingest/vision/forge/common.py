@@ -294,6 +294,33 @@ def replace_model_fields(
     return "".join(out)
 
 
+def assert_vision_yaml_has_model(model_id: str) -> None:
+    """Fail loud if ``configs/vision.yaml`` has no ``models[].id == model_id``.
+
+    Called by ``_run_deploy_phase`` BEFORE any filesystem side effect
+    (copytree, symlink swap, LATEST.jsonl append). Without this early
+    gate a registry-side miss only surfaces after the half-promoted
+    artifact is already on disk and the stable ``<model_id>`` symlink
+    already points at it — leaving the vision-server pointed at a model
+    the config doesn't know about. The remediation hint here doubles as
+    the operator-facing instruction for the chest_xray_pneumonia-style
+    "trained the model but never wired the registry" case.
+    """
+    yaml_path = vision_yaml_path()
+    parsed = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    models = parsed.get("models", [])
+    if not any(m.get("id") == model_id for m in models):
+        raise SystemExit(
+            f"configs/vision.yaml has no model entry with id={model_id!r}. "
+            f"Add a `- id: {model_id}` block under `models:` (mirror an "
+            f"existing entry's shape — disease_id, server_id, framework, "
+            f"accepted_modality, weights_subpath, manifest_sha256, "
+            f"expected_ms) and re-run deploy. Placeholder values for "
+            f"weights_subpath / manifest_sha256 are fine; deploy overwrites "
+            f"them with the real version_tag and hash."
+        )
+
+
 def patch_vision_yaml(
     *,
     model_id: str,
@@ -305,16 +332,10 @@ def patch_vision_yaml(
     Re-parses the result via ``VisionConfig`` so a malformed edit aborts
     before the file is committed.
     """
+    assert_vision_yaml_has_model(model_id)
+
     yaml_path = vision_yaml_path()
     original = yaml_path.read_text(encoding="utf-8")
-
-    parsed = yaml.safe_load(original) or {}
-    models = parsed.get("models", [])
-    if not any(m.get("id") == model_id for m in models):
-        raise SystemExit(
-            f"configs/vision.yaml has no model entry with id={model_id!r}; "
-            f"deploy aborted."
-        )
 
     edited = replace_model_fields(
         original,
@@ -397,6 +418,7 @@ __all__ = [
     "FEATURE",
     "append_latest_entry",
     "argmax_with_threshold",
+    "assert_vision_yaml_has_model",
     "check_floors",
     "disease_root",
     "latest_jsonl_path",

@@ -26,7 +26,6 @@ from claritymed.ingest.vision.rsna_pneumonia_yolo.dataset_spec import (
     RSNA_PNEUMONIA_YOLO_DATASET,
 )
 from claritymed.ingest.vision.yolo_forge.spec import (
-    Categorical,
     LogUniform,
     Uniform,
     YoloModelSpec,
@@ -51,21 +50,30 @@ RSNA_YOLOV8N_V1 = YoloModelSpec(
         mosaic=1.0,
         mixup=0.0,
     ),
-    # Search-phase HPO ranges. Kept narrow — single-class detection on a
-    # ~5k val split is sensitive to LR more than to anything else, so
-    # spend Optuna budget there before stepping into augmentation knobs.
+    # Search-phase HPO ranges. Five continuous knobs covering the SGD
+    # optimizer triple (``lr0``/``lrf``/``momentum``), regularisation
+    # (``weight_decay``), and the detection-side loss balance (``box``).
+    # ``box`` matters because the fitness formula is 0.1·mAP50 +
+    # 0.9·mAP50-95 — mAP50-95 rewards tight localisation, which the box
+    # weight directly controls. ``cls`` is excluded (single-class makes
+    # cls-vs-objectness balance low-signal); ``mosaic`` is excluded as a
+    # binary toggle — better run as a 2-row ablation than as one Optuna
+    # dimension.
     hparam_space={
         "lr0": LogUniform(1e-4, 5e-2),
         "lrf": Uniform(0.001, 0.1),
         "momentum": Uniform(0.85, 0.99),
         "weight_decay": LogUniform(1e-6, 1e-2),
-        "mosaic": Categorical((0.5, 1.0)),
+        "box": Uniform(5.0, 10.0),
     },
     # Tune-phase inference knobs. ``conf`` dominates the recall/precision
     # tradeoff at the binary level; ``iou`` only matters when multiple
     # bboxes per image overlap, which is rare on RSNA single-region cases.
+    # ``conf`` lower bound raised to 0.25 — below that the per-image
+    # positive-region count balloons and image-level precision tanks
+    # without a matching recall gain on this dataset.
     inference_space={
-        "conf": Uniform(0.05, 0.5),
+        "conf": Uniform(0.25, 0.5),
         "iou": Uniform(0.3, 0.7),
     },
     eval_thresholds={

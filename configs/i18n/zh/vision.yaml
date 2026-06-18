@@ -43,6 +43,11 @@ vision:
       不是结肠组织病理切片（例如是肺活检、肠镜下照片或非医学
       图像）；图像已经带有病理科医生的报告（ocr_has_report=true）；
       图像本身不是医学影像。
+    chest_xray_pneumonia: |
+      当用户上传一张胸部 X 光（胸片）图像，并询问看起来更像
+      肺炎还是正常肺野时，使用这个工具。以下情况**不要**调用：
+      图像不是胸部 X 光；图像已经带有放射科医生的报告
+      （ocr_has_report=true）；图像本身不是医学影像。
 
   # 各疾病的显示名 —— 出现在确认弹窗与 LLM 回复正文中。
   # 疾病身份是二维的（病种 × 成像方式）。同一病种在不同成像方式下
@@ -62,6 +67,8 @@ vision:
       name: "肺癌（病理切片）"
     colon_cancer_histopathology:
       name: "结肠癌（病理切片）"
+    chest_xray_pneumonia:
+      name: "肺炎（胸部 X 光）"
 
   # 各标签的本地化名称 + 简短描述。当用户追问「X 是什么意思」时，LLM
   # 可以引用 description。
@@ -134,6 +141,13 @@ vision:
       normal:
         name: "正常"
         description: "组织病理下的正常结肠组织。未发现恶性特征。"
+    chest_xray_pneumonia:
+      normal:
+        name: "正常"
+        description: "这张胸部 X 光未见肺炎征象。"
+      pneumonia:
+        name: "肺炎"
+        description: "这张胸部 X 光显示疑似肺炎征象。建议结合临床并请医生复核。"
 
   # 工具体在发任何 HTTP 请求之前弹出的确认框。
   confirm:
@@ -187,6 +201,16 @@ vision:
         医生的判读才是最终依据。要运行模型吗？
       yes_label: "好，运行"
       yes_description: "把图像送到本地的结肠组织病理模型。"
+      no_label: "不用了"
+      no_description: "跳过模型，只基于文字回答。"
+    chest_xray_pneumonia:
+      title: "分析这张胸部 X 光？"
+      body: |
+        我可以用一个小型胸片模型对这张图像做估计，看双肺更像
+        肺炎还是正常。结果只是估计——医生的判读才是最终依据。
+        要运行模型吗？
+      yes_label: "好，运行"
+      yes_description: "把图像送到本地的胸部 X 光模型。"
       no_label: "不用了"
       no_description: "跳过模型，只基于文字回答。"
 

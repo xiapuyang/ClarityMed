@@ -63,6 +63,17 @@ class YoloTrainHparams:
     weight_decay: float = 0.0005
     optimizer: str = "SGD"
     patience: int = 20
+    # Loss-component weights (Ultralytics defaults). Surfaced as fields
+    # so detection-recall-sensitive specs can pin or HPO-search them
+    # alongside lr0/lrf without having to bypass the dataclass.
+    box: float = 7.5
+    cls: float = 0.5
+    # ``None`` ⇒ framework picks the best available accelerator
+    # (``mps`` > ``cuda`` > ``cpu``). Ultralytics' own auto-detect
+    # prefers CPU on Apple silicon, which makes training 10-30× slower
+    # than necessary; we override that default. Spec authors can pin a
+    # specific device (e.g. ``"cpu"`` for a CI smoke trial).
+    device: str | None = None
     # Augmentation knobs that matter for medical-image bbox: keep
     # geometric augmentations conservative (flip yes, mosaic yes, but
     # no perspective warp — would distort anatomy). Ultralytics
