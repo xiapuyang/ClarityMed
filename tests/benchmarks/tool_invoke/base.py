@@ -94,6 +94,15 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
         help="output directory (tool runners supply a sensible default)",
     )
     p.add_argument("--verbose", action="store_true")
+    p.add_argument(
+        "--no-phoenix-upload",
+        action="store_true",
+        help=(
+            "Skip the post-run Phoenix Experiments upload even when a "
+            "tracing endpoint is configured. Local data/bench/ files are "
+            "always written regardless of this flag."
+        ),
+    )
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:

@@ -57,7 +57,19 @@ from claritymed.orchestrator.features.symptoms_plugin import SymptomsFeature
 from claritymed.orchestrator.services import AskService
 from claritymed.orchestrator.services.chat_session import ChatSession
 
-from tests.benchmarks.tool_invoke import base
+from tests.benchmarks.tool_invoke import base, phoenix_upload
+from tests.benchmarks.tool_invoke.report import build_report
+from tests.benchmarks.tool_invoke.cases_snapshot import build_snapshot, write_snapshot
+from tests.benchmarks.tool_invoke.manifest import (
+    CasesSection,
+    ConfigSection,
+    RunManifest,
+    cases_content_sha256,
+    collect_prompt_versions,
+    current_commit_sha,
+    now_iso,
+    write_manifest,
+)
 from tests.benchmarks.tool_invoke.symptoms.cases import (
     CASES,
     MODAL_THRESHOLD,
@@ -70,6 +82,17 @@ PER_TURN_TIMEOUT_S = 240.0
 _DEFAULT_SYMPTOMS_URL = "http://127.0.0.1:8084"
 
 CORRECT_OUTCOMES: frozenset[str] = frozenset({"correct"})
+
+# Prompts whose YAML versions drive symptoms-tool behavior. Recorded
+# into manifest.json at run start so a Phoenix experiment ties results
+# to the exact prompt revisions in play. Unknown names are skipped.
+_SYMPTOMS_PROMPT_NAMES = (
+    "ask",
+    "tool_proposal",
+    "predict_disease_from_symptoms_tool",
+    "ask_user_question_tool",
+    "symptoms_final_reply",
+)
 
 
 # --- always-eligible stub -------------------------------------------------
@@ -193,6 +216,7 @@ class TrialRecord:
     model: str
     lang: str
     case_name: str
+    case_revision: int
     tier: str
     expected_behavior: str
     expected_tool: str | None
@@ -287,6 +311,7 @@ async def _run_one_trial(
         model=provider_id,
         lang=user_lang,
         case_name=case.name,
+        case_revision=case.revision,
         tier=case.tier,
         expected_behavior=case.expected_behavior,
         expected_tool=case.expected_tool,
@@ -371,6 +396,7 @@ def _summary_rows(trials: list[TrialRecord]) -> list[dict]:
                 "model": model,
                 "user_lang": lang,
                 "case": case_name,
+                "case_revision": cell[0].case_revision,
                 "tier": cell[0].tier,
                 "expected_behavior": cell[0].expected_behavior,
                 "n_trials": n,
@@ -465,6 +491,11 @@ async def _main_async(args: argparse.Namespace) -> int:
         f"trials={args.trials} → total={total} trials; out={out_dir}"
     )
 
+    write_snapshot(
+        out_dir, build_snapshot(runner="symptoms", bench_ts=ts, cases=selected)
+    )
+
+    started_at = now_iso()
     trials: list[TrialRecord] = []
     counter = 0
     with jsonl_path.open("w", encoding="utf-8") as fh:
@@ -490,12 +521,67 @@ async def _main_async(args: argparse.Namespace) -> int:
     base.write_csv(csv_path, _summary_rows(trials))
     base.write_csv(outcomes_csv_path, _outcomes_rows(trials))
 
-    print(f"\nwrote {len(trials)} trials → {jsonl_path}")
-    print(
-        f"render HTML: uv run python -m tests.benchmarks.tool_invoke.report "
-        f"--run {out_dir}"
+    manifest = RunManifest(
+        runner="symptoms",
+        bench_ts=ts,
+        started_at=started_at,
+        finished_at=now_iso(),
+        commit_sha=current_commit_sha(),
+        cases=CasesSection(
+            count=len(selected),
+            tiers=tiers,
+            content_sha256=cases_content_sha256(selected),
+        ),
+        prompt_versions=collect_prompt_versions(_SYMPTOMS_PROMPT_NAMES),
+        config=ConfigSection(
+            models=models,
+            user_langs=user_langs,
+            tool_prompt_langs=None,
+            trials=args.trials,
+        ),
     )
+    write_manifest(out_dir, manifest)
+
+    print(f"\nwrote {len(trials)} trials → {jsonl_path}")
+    try:
+        report_path = build_report(out_dir)
+        print(f"wrote report → {report_path}")
+    except Exception as exc:  # noqa: BLE001
+        # Report failure shouldn't abort a completed bench — trials.jsonl
+        # is the canonical artifact, html is convenience.
+        print(f"⚠️  report render failed: {exc}", file=sys.stderr)
+
+    if not args.no_phoenix_upload and phoenix_upload.is_enabled():
+        try:
+            upload_result = phoenix_upload.upload_run(out_dir)
+        except phoenix_upload.PhoenixUnreachable as exc:
+            print(f"\n❌ phoenix: {exc}", file=sys.stderr)
+            print(
+                f"   Local results saved to {out_dir}\n"
+                f"   After starting Phoenix, upload with:\n"
+                f"   uv run claritymed bench upload {out_dir}",
+                file=sys.stderr,
+            )
+            return 2
+        _print_upload_result(upload_result)
+
     return 0
+
+
+def _print_upload_result(result: "phoenix_upload.UploadResult") -> None:
+    if result.skipped:
+        print(f"phoenix: skipped ({result.skip_reason})")
+        return
+    n_runs = sum(e.n_runs for e in result.experiments)
+    n_evals = sum(e.n_evals for e in result.experiments)
+    print(
+        f"phoenix: dataset={result.dataset_name} "
+        f"experiments={len(result.experiments)} runs={n_runs} evals={n_evals} "
+        f"({result.endpoint})"
+    )
+    if result.errors:
+        for err in result.errors:
+            print(f"  ! [{err.stage}] {err.detail}")
 
 
 def main() -> None:

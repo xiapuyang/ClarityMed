@@ -69,7 +69,15 @@ ASK_USER_TOOL = "ask_user_question"
 
 @dataclass
 class Case:
-    """One benchmark cell definition."""
+    """One benchmark cell definition.
+
+    ``revision`` is bumped (in-place) any time ``prompts`` or
+    ``args_predicate`` change meaning for an existing ``name``. Cross-run
+    comparisons (local ``bench compare`` and Phoenix Experiments) join on
+    ``(name, revision)``, so re-using a name with a changed predicate
+    would silently invalidate older trial data. New cases stay at
+    ``revision=1``; pure additions don't need a bump.
+    """
 
     name: str
     tier: str  # "base" | "hard" | "fp"
@@ -81,6 +89,7 @@ class Case:
     expected_tool: Optional[str] = None
     expected_tools: list[str] = field(default_factory=list)
     seed: Optional[Callable[[], dict]] = None
+    revision: int = 1
 
 
 # --- predicates ------------------------------------------------------

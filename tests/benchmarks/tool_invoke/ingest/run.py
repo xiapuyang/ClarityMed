@@ -51,11 +51,42 @@ from claritymed.core.rag import load_retrieval_config
 from claritymed.orchestrator.services import AskService
 from claritymed.orchestrator.services.chat_session import ChatSession
 
-from tests.benchmarks.tool_invoke import base
+from tests.benchmarks.tool_invoke import base, phoenix_upload
+from tests.benchmarks.tool_invoke.report import build_report
+from tests.benchmarks.tool_invoke.cases_snapshot import build_snapshot, write_snapshot
 from tests.benchmarks.tool_invoke.ingest.cases import (
     CASES,
     INGEST_TOOLS,
     Case,
+)
+from tests.benchmarks.tool_invoke.manifest import (
+    CasesSection,
+    ConfigSection,
+    RunManifest,
+    cases_content_sha256,
+    collect_prompt_versions,
+    current_commit_sha,
+    now_iso,
+    write_manifest,
+)
+
+# Prompts whose YAML versions drive ingest-tool behavior. The Phoenix
+# upload records the resolved ``latest`` version of each so a later
+# regression compare can pin "is this v4 → v3 prompt drift?". Names that
+# don't exist in the registry are silently skipped, so it's safe to
+# over-declare.
+_INGEST_PROMPT_NAMES = (
+    "ask",
+    "ingest",
+    "tool_proposal",
+    "save_record_tool",
+    "save_allergy_tool",
+    "save_medication_tool",
+    "save_condition_tool",
+    "save_to_library_tool",
+    "update_profile_field_tool",
+    "delete_record_tool",
+    "ask_user_question_tool",
 )
 
 logger = logging.getLogger(__name__)
@@ -160,6 +191,7 @@ class TrialRecord:
     model: str
     lang: str
     case_name: str
+    case_revision: int
     tier: str
     expected_behavior: str
     expected_tool: str | None
@@ -308,6 +340,7 @@ async def _run_one_trial(
         model=provider_id,
         lang=user_lang,
         case_name=case.name,
+        case_revision=case.revision,
         tier=case.tier,
         expected_behavior=case.expected_behavior,
         expected_tool=case.expected_tool,
@@ -639,6 +672,7 @@ def _summary_rows(trials: list[TrialRecord]) -> list[dict]:
                 "user_lang": lang,
                 "tool_prompt_lang": tool_prompt_lang,
                 "case": case_name,
+                "case_revision": cell[0].case_revision,
                 "tier": cell[0].tier,
                 "expected_behavior": cell[0].expected_behavior,
                 "n_trials": n,
@@ -755,6 +789,14 @@ async def _main_async(args: argparse.Namespace) -> int:
         f"trials={args.trials} → total={total} trials; out={out_dir}"
     )
 
+    # Snapshot every selected case BEFORE the trial loop so the
+    # captured content reflects cases.py at this run's start — even if
+    # a long bench is somehow interrupted by an edit in another shell.
+    write_snapshot(
+        out_dir, build_snapshot(runner="ingest", bench_ts=ts, cases=selected)
+    )
+
+    started_at = now_iso()
     trials: list[TrialRecord] = []
     counter = 0
     with jsonl_path.open("w", encoding="utf-8") as fh:
@@ -784,12 +826,71 @@ async def _main_async(args: argparse.Namespace) -> int:
     base.write_csv(csv_path, _summary_rows(trials))
     base.write_csv(outcomes_csv_path, _outcomes_rows(trials))
 
-    print(f"\nwrote {len(trials)} trials → {jsonl_path}")
-    print(
-        f"render HTML: uv run python -m tests.benchmarks.tool_invoke.report "
-        f"--run {out_dir}"
+    manifest = RunManifest(
+        runner="ingest",
+        bench_ts=ts,
+        started_at=started_at,
+        finished_at=now_iso(),
+        commit_sha=current_commit_sha(),
+        cases=CasesSection(
+            count=len(selected),
+            tiers=tiers,
+            content_sha256=cases_content_sha256(selected),
+        ),
+        prompt_versions=collect_prompt_versions(_INGEST_PROMPT_NAMES),
+        config=ConfigSection(
+            models=models,
+            user_langs=user_langs,
+            tool_prompt_langs=tool_langs_raw,
+            trials=args.trials,
+        ),
     )
+    write_manifest(out_dir, manifest)
+
+    print(f"\nwrote {len(trials)} trials → {jsonl_path}")
+    try:
+        report_path = build_report(out_dir)
+        print(f"wrote report → {report_path}")
+    except Exception as exc:  # noqa: BLE001
+        # Report failure shouldn't abort a completed bench — trials.jsonl
+        # is the canonical artifact, html is convenience.
+        print(f"⚠️  report render failed: {exc}", file=sys.stderr)
+
+    if not args.no_phoenix_upload and phoenix_upload.is_enabled():
+        try:
+            upload_result = phoenix_upload.upload_run(out_dir)
+        except phoenix_upload.PhoenixUnreachable as exc:
+            # Configuration says Phoenix is expected but it isn't
+            # answering. Local bench files are intact; surface the
+            # misconfiguration loudly so the user doesn't quietly lose
+            # the Phoenix mirror for this run.
+            print(f"\n❌ phoenix: {exc}", file=sys.stderr)
+            print(
+                f"   Local results saved to {out_dir}\n"
+                f"   After starting Phoenix, upload with:\n"
+                f"   uv run claritymed bench upload {out_dir}",
+                file=sys.stderr,
+            )
+            return 2
+        _print_upload_result(upload_result)
+
     return 0
+
+
+def _print_upload_result(result: "phoenix_upload.UploadResult") -> None:
+    if result.skipped:
+        print(f"phoenix: skipped ({result.skip_reason})")
+        return
+    n_runs = sum(e.n_runs for e in result.experiments)
+    n_evals = sum(e.n_evals for e in result.experiments)
+    print(
+        f"phoenix: dataset={result.dataset_name} "
+        f"experiments={len(result.experiments)} runs={n_runs} evals={n_evals} "
+        f"({result.endpoint})"
+    )
+    if result.errors:
+        for err in result.errors:
+            print(f"  ! [{err.stage}] {err.detail}")
 
 
 def main() -> None:

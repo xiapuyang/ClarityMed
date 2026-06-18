@@ -29,6 +29,7 @@ import typer
 from claritymed.cli.commands.admin import init_user_cmd
 from claritymed.cli.commands.ask import ask
 from claritymed.cli.commands.audit import audit_app
+from claritymed.cli.commands.bench import bench_app
 from claritymed.cli.commands.finetune import finetune_app
 from claritymed.cli.commands.prompts import prompts_app
 from claritymed.cli.commands.rag import rag_app
@@ -65,6 +66,7 @@ app.add_typer(prompts_app, name="prompts")
 app.add_typer(audit_app, name="audit")
 # v1 PHI ingest tools — headless mirror of the LLM tool surface.
 app.add_typer(tool_app, name="tool")
+app.add_typer(bench_app, name="bench")
 
 # ``eval`` sub-app — installed only when the ``evals`` optional extra is
 # present. Importing it pulls in lm-eval transitively (torch, datasets),

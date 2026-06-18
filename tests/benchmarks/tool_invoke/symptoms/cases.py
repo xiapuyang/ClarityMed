@@ -44,7 +44,12 @@ MODAL_THRESHOLD = 3
 
 @dataclass
 class Case:
-    """One benchmark cell definition."""
+    """One benchmark cell definition.
+
+    Bump ``revision`` in place whenever ``prompts`` or ``args_predicate``
+    semantics change for an existing ``name`` — cross-run comparisons
+    join on ``(name, revision)``.
+    """
 
     name: str
     tier: str  # "base" | "hard" | "fp"
@@ -55,6 +60,7 @@ class Case:
     args_predicate: Callable[[int], tuple[bool, str]]
     expected_tool: Optional[str] = None
     seed: Optional[Callable[[], dict]] = None
+    revision: int = 1
 
 
 def _p_tool_invoked(modal_count: int) -> tuple[bool, str]:

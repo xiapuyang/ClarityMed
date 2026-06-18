@@ -77,6 +77,9 @@ class Case:
     expected_tool: str | None = None
     # Returns a dict describing how to seed the attachment.
     seed: Callable[[], dict] | None = None
+    # Bump when ``prompts`` or ``args_predicate`` change meaning for an
+    # existing ``name``; cross-run comparisons join on ``(name, revision)``.
+    revision: int = 1
 
 
 # Min options on the first ask_user_question payload that we treat as a

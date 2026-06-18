@@ -71,6 +71,19 @@ repos:
         files: '^src/claritymed/(orchestrator|core|stores|cli)/'
         stages: [pre-commit]
 
+      # Block silent edits to bench cases. Fires when any runner's
+      # cases.py or its baseline JSON is staged. If an existing case
+      # changed without bumping ``Case.revision`` the snapshot mismatch
+      # fails the commit with the exact remediation command. ~0.4s on
+      # a typical Mac so the gate is invisible when nothing's wrong.
+      - id: bench-cases-revision-gate
+        name: Bench cases (revision bump enforcement)
+        language: system
+        entry: uv run pytest tests/benchmarks/tool_invoke/test_cases_baseline.py -q --no-cov --tb=short
+        pass_filenames: false
+        files: '^tests/benchmarks/tool_invoke/((ingest|symptoms|vision)/cases\.py|cases_baseline_.*\.json)$'
+        stages: [pre-commit]
+
       # Full unit tests on every push — last line of defence before the
       # branch is shared. Install with:
       #   uv run pre-commit install --hook-type pre-push

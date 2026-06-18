@@ -382,13 +382,16 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> int:
-    args = _parse_args()
-    run_dir = Path(args.run)
+def build_report(run_dir: Path, out_path: Path | None = None) -> Path:
+    """Render the HTML report for one run dir; return the output path.
+
+    Raises FileNotFoundError if ``trials.jsonl`` is missing — callers
+    inside the bench runners catch this so a report failure doesn't
+    abort the (already-complete) bench run.
+    """
     trials_path = run_dir / "trials.jsonl"
     if not trials_path.exists():
-        print(f"trials.jsonl not found: {trials_path}", file=sys.stderr)
-        return 2
+        raise FileNotFoundError(f"trials.jsonl not found: {trials_path}")
 
     trials = _load_jsonl(trials_path)
     judge_index = _load_judge_index(run_dir)
@@ -415,9 +418,22 @@ def main() -> int:
         trials_json=json.dumps(light, ensure_ascii=False),
     )
 
-    out_path = Path(args.out) if args.out else run_dir / "report.html"
-    out_path.write_text(html, encoding="utf-8")
-    print(f"wrote {out_path} ({len(light)} trials embedded)")
+    target = out_path if out_path is not None else run_dir / "report.html"
+    target.write_text(html, encoding="utf-8")
+    return target
+
+
+def main() -> int:
+    args = _parse_args()
+    run_dir = Path(args.run)
+    out_arg = Path(args.out) if args.out else None
+    try:
+        out_path = build_report(run_dir, out_arg)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    trials = _load_jsonl(run_dir / "trials.jsonl")
+    print(f"wrote {out_path} ({len(trials)} trials embedded)")
     return 0
 
 

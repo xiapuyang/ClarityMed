@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "runner": "symptoms",
+  "cases": {
+    "en_breath_chest_dizziness": {
+      "revision": 1,
+      "content_sha256": "f17224422818832a54a6f1c41d7f55311d44b219ec2e92331c7dc716e1d292c3"
+    },
+    "en_doctor_appointment": {
+      "revision": 1,
+      "content_sha256": "7a00fab7d94285f7e0824ebfe73e66faeda1ff427dd2827ddaa40b4c6994f720"
+    },
+    "en_implicit_feeling_terrible": {
+      "revision": 1,
+      "content_sha256": "6454395a9c22bdb4ce078355e3059d9162113113a3b629ed51cbd76d1f8f4996"
+    },
+    "en_metformin_side_effects": {
+      "revision": 1,
+      "content_sha256": "c87106e9dd7593dd6b8f127809627335c1bd55472d2398f40d147597d5d59722"
+    },
+    "en_multiple_vague_symptoms": {
+      "revision": 1,
+      "content_sha256": "5028075f8c770c8256afeaea03b42305e970ed870cdb45ce3ca82dcd184dccfc"
+    },
+    "en_what_is_hypertension": {
+      "revision": 1,
+      "content_sha256": "55e778f6c78b1632042d9220d14778ec4f789f3a7c80d5b6555e36853b295fe5"
+    },
+    "fp_drug_side_effect_query": {
+      "revision": 1,
+      "content_sha256": "54e39822f715999b76189cf075fe052a8ad132166aff4bcf369440ac2a45428a"
+    },
+    "fp_hypothetical_disease_query": {
+      "revision": 1,
+      "content_sha256": "02fc3ee77f9f67db1b47ce19c87ab304be8fdd16ce2ef49c7b219691b4c42861"
+    },
+    "fp_lab_result_question": {
+      "revision": 1,
+      "content_sha256": "687dddf2be1130e09e8663645c438ba6623ec34959237ae7f91738e8de80ed27"
+    },
+    "fp_lifestyle_fatigue": {
+      "revision": 1,
+      "content_sha256": "edd5c05e1c66f561495375c3c7e878c1cdf0f83eaad6a2271dcc5efb2857ef0f"
+    },
+    "fp_minor_trivial_symptom": {
+      "revision": 1,
+      "content_sha256": "8d77d563649e4f5105ea4886c1505098a3d5b29edda8cef4d7fe75c8907a5196"
+    },
+    "fp_past_resolved_symptoms": {
+      "revision": 1,
+      "content_sha256": "2a620e20f7d331fb36c2d26dba92e67ecd6779199568dab9c27ae3965fa7bad1"
+    },
+    "fp_recovery_update": {
+      "revision": 1,
+      "content_sha256": "984469700b6745311d80192c0750ea6b341a495e29e0a59c7a349b68939ff500"
+    },
+    "fp_third_party_symptoms": {
+      "revision": 1,
+      "content_sha256": "78153a08d15d5e1fe799f354bcd90428e2965f2e46ea2b9a38f3ec5eb368678c"
+    },
+    "zh_allergy_save": {
+      "revision": 1,
+      "content_sha256": "4e4ca3bfa487b015635303f91a31358d251244d763103ffd7ef6f752273b304e"
+    },
+    "zh_aspirin_knowledge": {
+      "revision": 1,
+      "content_sha256": "17d80415950f1ded8200719814b2976e7e712ac4bb481e51deb6450f087c3447"
+    },
+    "zh_chest_fever_aches": {
+      "revision": 1,
+      "content_sha256": "c4d5396e162de354d22c28f70bcddbe6878f299b91c558bbb62f8b2023c67cbf"
+    },
+    "zh_cough_dyspnea": {
+      "revision": 1,
+      "content_sha256": "4eb867e133ab64cc7ccbba4da93cfed16bcca436225644415d49169203a0fd0a"
+    },
+    "zh_headache_nausea_fever": {
+      "revision": 1,
+      "content_sha256": "54b21f1338ff78a7decb860360f8b000fc0596dbea5589207100c57b154a4a9a"
+    },
+    "zh_implicit_unwell": {
+      "revision": 1,
+      "content_sha256": "26faf510c62785db8b96582ab90b4c24c6a81ad20494b0853672af11bb8b39cc"
+    },
+    "zh_vague_discomfort": {
+      "revision": 1,
+      "content_sha256": "e8a1a2ca0f9b5d96593c0fea5e5afa2ae3a3b323f2e12a6063bfd3beced19b45"
+    },
+    "zh_weight_update": {
+      "revision": 1,
+      "content_sha256": "91dbbd05e08e114a3073ef8f6ab33efa2665a03ac3664053e9c64ea37a169b77"
+    }
+  }
+}
