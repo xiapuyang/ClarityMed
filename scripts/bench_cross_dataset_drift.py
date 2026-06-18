@@ -309,10 +309,12 @@ def _forward_over_test_split(
     gt: list[int] = []
     with torch.no_grad():
         for batch in loader:
-            # cls dataset yields ``(imgs, labels)``; cls+seg's test split
-            # may yield ``(imgs, labels, mask)`` — we only use the first two.
+            # Cls-only datasets yield ``(imgs, labels)``; cls+seg datasets
+            # (BUSI) yield ``(imgs, masks, labels)``. The label tensor is
+            # always the last element — both Task subclasses' unpack_batch
+            # impls agree on this. ``len(batch)`` switches between them.
             imgs = batch[0].to(device)
-            labels = batch[1]
+            labels = batch[-1]
             raw = model(imgs)
             cls_logits = raw[0] if isinstance(raw, tuple) else raw
             logits_chunks.append(cls_logits.cpu().numpy())
