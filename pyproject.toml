@@ -249,6 +249,11 @@ dev = [
     # fixture rationale as the OCR formats above — we'd rather build
     # a tiny real .onnx at test time than ship a binary fixture.
     "onnx>=1.16",
+    # RSNA Pneumonia Detection Challenge ingest: upstream ships DICOMs
+    # which we convert to PNG once + cache. Only consumed by the local
+    # cross-dataset drift bench (out of CI scope), so dev-group rather
+    # than runtime dep.
+    "pydicom>=2.4",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",
