@@ -18,7 +18,7 @@
 bench-drift:
 	@if [ -z "$(PAIR)" ]; then \
 		echo "usage: make bench-drift PAIR=<pair_id>"; \
-		echo "  known pair ids: breast_us"; \
+		echo "  known pair ids: breast_us, chest_xray"; \
 		exit 1; \
 	fi
 	uv run python scripts/bench_cross_dataset_drift.py --pair $(PAIR)

@@ -108,9 +108,50 @@ _BREAST_US_ENTRIES: list[BenchEntry] = [
 ]
 
 
-# --- chest X-ray pair (Phase 2 — fills in after Unit 5 / 6 land) ---------
+# --- chest X-ray pair (Phase 2) ------------------------------------------
+#
+# Asymmetric — only Kermany has a trained model in this iteration. The
+# matrix has two cells: Kermany self-eval (the in-distribution baseline)
+# and Kermany on RSNA (the drift cell). No RSNA-trained model exists so
+# the reverse direction is absent; training one would be a separate
+# ingest module + forge pipeline run.
+#
+# Prereqs for ``make bench-drift PAIR=chest_xray``:
+#   1. ``uv run python -m claritymed.ingest.vision.chest_xray_pneumonia.download``
+#   2. ``uv run python -m claritymed.ingest.vision.rsna_pneumonia.download``
+#      (Kaggle competition rules must be accepted first).
+#   3. ``uv run claritymed-vision-forge pipeline --model
+#      claritymed.ingest.vision.chest_xray_pneumonia.models.resnet50_v1:RESNET50_V1``
+#      to train the Kermany classifier (~20-30 min on M1).
 
-_CHEST_XRAY_ENTRIES: list[BenchEntry] = []
+_PNEUMONIA: frozenset[str] = frozenset({"pneumonia"})
+
+_CHEST_XRAY_ENTRIES: list[BenchEntry] = [
+    # --- Kermany ResNet (cls only) — in-distribution baseline ------------
+    BenchEntry(
+        pair_id="chest_xray",
+        model_artifact_dir="chest_xray_pneumonia/chest_xray_pneumonia_resnet50_v1",
+        train_dataset_id="kermany",
+        eval_dataset_dotted_path=(
+            "claritymed.ingest.vision.chest_xray_pneumonia.dataset_spec:"
+            "CHEST_XRAY_PNEUMONIA_DATASET"
+        ),
+        eval_dataset_id="kermany",
+        positive_labels=_PNEUMONIA,
+    ),
+    # --- Kermany ResNet on RSNA — the drift cell --------------------------
+    BenchEntry(
+        pair_id="chest_xray",
+        model_artifact_dir="chest_xray_pneumonia/chest_xray_pneumonia_resnet50_v1",
+        train_dataset_id="kermany",
+        eval_dataset_dotted_path=(
+            "claritymed.ingest.vision.rsna_pneumonia.dataset_spec:"
+            "RSNA_PNEUMONIA_DATASET"
+        ),
+        eval_dataset_id="rsna",
+        positive_labels=_PNEUMONIA,
+    ),
+]
 
 
 # --- consolidated registry ------------------------------------------------
