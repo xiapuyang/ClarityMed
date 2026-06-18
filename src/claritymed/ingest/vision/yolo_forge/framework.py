@@ -404,11 +404,16 @@ def _attach_mlflow_epoch_callback(model: Any) -> None:
     """Stream Ultralytics' per-epoch metrics to MLflow as they happen.
 
     Registers on ``on_fit_epoch_end`` (fires after the train epoch +
-    val pass, so ``trainer.metrics`` has both train losses and val
-    mAP/precision/recall on the same step). Logs with the ``train/``
-    prefix. Step is ``trainer.epoch + 1`` because Ultralytics writes
-    1-indexed epoch numbers in ``results.csv``; we mirror that so
-    rows in the CSV and points in MLflow line up.
+    val pass). ``trainer.metrics`` at this point only carries validator
+    output (``val/*``, ``metrics/*``, ``fitness``) — the train losses
+    live on ``trainer.tloss`` (running-mean tensor) and must be
+    rebuilt via ``trainer.label_loss_items(tloss, prefix="train")``,
+    mirroring how Ultralytics itself assembles ``results.csv``. ``lr``
+    is read from ``trainer.lr``. Keys are forwarded with their original
+    Ultralytics namespace so MLflow groups them as ``train / val /
+    metrics / lr`` instead of one flat bucket. Step is
+    ``trainer.epoch + 1`` to line up with the 1-indexed rows in
+    ``results.csv``.
 
     Per-epoch INFO log is intentional: a multi-hour silent training
     run that turns out to have logged nothing is the worst possible
@@ -420,12 +425,26 @@ def _attach_mlflow_epoch_callback(model: Any) -> None:
 
     def _callback(trainer: Any) -> None:
         try:
-            raw_metrics = getattr(trainer, "metrics", None) or {}
+            raw: dict[str, Any] = {}
+            tloss = getattr(trainer, "tloss", None)
+            label_loss_items = getattr(trainer, "label_loss_items", None)
+            if tloss is not None and callable(label_loss_items):
+                try:
+                    raw.update(label_loss_items(tloss, prefix="train"))
+                except Exception:
+                    logger.warning(
+                        "yolo_forge.train: label_loss_items(tloss) failed — "
+                        "train losses will be missing from this MLflow epoch",
+                        exc_info=True,
+                    )
+            raw.update(getattr(trainer, "metrics", None) or {})
+            raw.update(getattr(trainer, "lr", None) or {})
+
             epoch = int(getattr(trainer, "epoch", 0)) + 1
             metrics: dict[str, float] = {}
-            for key, value in raw_metrics.items():
+            for key, value in raw.items():
                 try:
-                    metrics[_sanitize_mlflow_key(f"train/{key.strip()}")] = float(value)
+                    metrics[_sanitize_mlflow_key(key.strip())] = float(value)
                 except (TypeError, ValueError):
                     continue
             if metrics:
@@ -438,10 +457,10 @@ def _attach_mlflow_epoch_callback(model: Any) -> None:
             else:
                 logger.warning(
                     "yolo_forge.train: epoch=%d callback fired but "
-                    "trainer.metrics was empty/unparseable — nothing "
+                    "no train/val/lr keys could be parsed — nothing "
                     "sent to MLflow. raw_keys=%s",
                     epoch,
-                    list(raw_metrics.keys()),
+                    list(raw.keys()),
                 )
         except Exception:
             logger.warning(

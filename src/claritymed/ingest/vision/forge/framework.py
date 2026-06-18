@@ -172,11 +172,18 @@ def _run_search_trial(
     ).to(device)
     optimizer = _torch().optim.AdamW(model.parameters(), lr=params["lr"])
 
+    # ``num_workers=4`` — matches the train/eval phases' parallel
+    # dataloader pattern; the original ``0`` here was an oversight
+    # that didn't bite until RSNA (~20k train images) made the
+    # per-epoch PIL decode + resize a serial bottleneck that
+    # blocked GPU for >90% of wall time. Kermany / BUSI / chest CT
+    # at <6k images don't notice the difference; RSNA's first-cut
+    # search trial dropped from ~6.5h to ~1.5h after this change.
     train_loader = _torch().utils.data.DataLoader(
-        splits.train, batch_size=16, shuffle=True, num_workers=0
+        splits.train, batch_size=16, shuffle=True, num_workers=4
     )
     val_loader = _torch().utils.data.DataLoader(
-        splits.val, batch_size=16, shuffle=False, num_workers=0
+        splits.val, batch_size=16, shuffle=False, num_workers=4
     )
 
     best_score = -float("inf")

@@ -3,17 +3,25 @@
 The adult-population counterpart to Kermany. Same modality (frontal
 chest X-ray), same binary task (normal vs pneumonia), wildly different
 acquisition context (adult vs pediatric, multi-center vs single
-hospital, portable AP vs standing PA). Exists purely as an eval target
-for the cross-dataset drift bench — no model is trained on RSNA in
-this iteration.
+hospital, portable AP vs standing PA).
 
-``disease_id`` deliberately matches ``CHEST_XRAY_PNEUMONIA_DATASET``
-so the bench's binary clinical task collapse stays meaningful when a
-Kermany-trained model evaluates against RSNA's test split.
+Serves two roles, both pivoting on ``disease_id="chest_xray_pneumonia"``:
 
-There is no segmentation head (RSNA's bounding boxes are ignored in
-the bench), so the classification-only ``ClassificationTask`` is the
-fit if RSNA ever becomes a training target.
+* **Training source** — paired with ``models/resnet50_v1.py``
+  (``RESNET50_V1``) so the forge pipeline can train an RSNA-native
+  classifier alongside Kermany's. Both ModelSpecs share the artifact
+  root and ``LATEST.jsonl``; the ``model_id`` discriminates rows.
+* **Drift-bench target** — a Kermany-trained model evaluates against
+  RSNA's test split (and now symmetrically the other way too) to
+  quantify pediatric ↔ adult distribution shift. The shared
+  ``disease_id`` is what makes the binary clinical task collapse
+  apples-to-apples across the pair.
+
+Bounding boxes from ``stage_2_train_labels.csv`` are collapsed to
+image-level positives (any bbox → ``pneumonia``); the bbox-preserving
+parse lives in the sibling ``rsna_pneumonia_yolo/`` detection adapter.
+No segmentation head — RSNA ships no masks — so
+``ClassificationTask`` is the right fit.
 
 See ``docs/plans/2026-06-17-001-feat-cross-dataset-drift-bench-plan.md``.
 """

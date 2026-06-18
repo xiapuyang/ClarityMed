@@ -38,7 +38,7 @@ RSNA_YOLOV8N_V1 = YoloModelSpec(
     model_version="v1",
     base_weights="yolov8n.pt",
     train_hparams=YoloTrainHparams(
-        epochs=50,
+        epochs=30,
         # ``imgsz=512`` (down from yolov8 default 640) — chest
         # pneumonia regions are large relative to image, the mAP
         # cost is <1 point, and the ~35% augmentation/forward
@@ -46,19 +46,27 @@ RSNA_YOLOV8N_V1 = YoloModelSpec(
         # is forced and dataloader can't overlap GPU.
         imgsz=512,
         batch=16,
-        # ``lr0=0.005`` (half of yolov8 default ``0.01``) — paired
-        # with ``warmup_epochs=1`` below to keep the
-        # COCO→chest-x-ray domain transfer stable. The previous
-        # ``0.01`` + 3-epoch warmup blew up the val head in epoch 2.
-        lr0=0.005,
+        # ``lr0=0.01`` (yolov8 default) — paired with
+        # ``warmup_epochs=3`` below. Earlier revision used
+        # ``0.005 + warmup_epochs=1`` after a prior run with
+        # ``0.01 + warmup=3`` blew up the val head in epoch 2; the
+        # conservative schedule capped the curve at mAP50 ~0.33
+        # with overfit by epoch 7, so we're walking back to the
+        # default schedule to see if the current spec state (disk
+        # cache, mosaic=1, mixup=0, single-class) tolerates it.
+        # **Fail-fast signal**: if val/box_loss exceeds 5 in epoch
+        # 2-3, revert to ``lr0=0.005`` + ``warmup_epochs=1``.
+        lr0=0.01,
         # Slightly more patience than the default — single-class
         # medical detection benefits from longer training plateaus.
-        patience=20,
-        # Shrink the warmup window — see ``warmup_epochs`` field
-        # docstring. Three epochs at default ``warmup_bias_lr=0.1``
-        # destabilises the pretrained head on this dataset; one
-        # epoch is enough to settle BN stats without blowing up.
-        warmup_epochs=1.0,
+        patience=10,
+        # Three-epoch warmup at default ``warmup_bias_lr=0.1``.
+        # Previous revision shrank this to 1 epoch to compensate
+        # for the conservative ``lr0=0.005``; now that ``lr0`` is
+        # back at the YOLOv8 default we restore the default warmup
+        # to give the pretrained head enough steps to align BN
+        # stats and bias before full LR kicks in.
+        warmup_epochs=3.0,
         # Keep mosaic on but disable mixup; mixup makes per-pixel
         # bbox truth ambiguous on near-uniform x-ray backgrounds.
         mosaic=1.0,
@@ -82,7 +90,12 @@ RSNA_YOLOV8N_V1 = YoloModelSpec(
     # dimension.
     hparam_space={
         "lr0": LogUniform(1e-4, 5e-2),
-        "lrf": Uniform(0.001, 0.1),
+        # Lower bound raised from 0.001 → 0.01. At ``lrf=0.001`` the
+        # end-of-training LR is ``lr0 × 0.001 = 1e-5`` (or 5e-6 at the
+        # previous ``lr0=0.005``) — too small to escape a noisy plateau
+        # in the back half of training. 0.01–0.1 keeps the cosine
+        # schedule's tail with real teeth.
+        "lrf": Uniform(0.01, 0.1),
         "momentum": Uniform(0.85, 0.99),
         "weight_decay": LogUniform(1e-6, 1e-2),
         "box": Uniform(5.0, 10.0),

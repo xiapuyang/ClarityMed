@@ -139,7 +139,7 @@ def test_sanitize_mlflow_key_preserves_allowed_chars() -> None:
 
 
 def test_mlflow_epoch_callback_logs_trainer_metrics_live(monkeypatch) -> None:
-    """Callback must forward ``trainer.metrics`` to ``log_metrics`` each epoch."""
+    """Callback must forward validator metrics + lr to ``log_metrics`` each epoch."""
 
     class _StubModel:
         def __init__(self):
@@ -149,9 +149,11 @@ def test_mlflow_epoch_callback_logs_trainer_metrics_live(monkeypatch) -> None:
             self.registered[event] = fn
 
     class _StubTrainer:
-        def __init__(self, epoch, metrics):
+        def __init__(self, epoch, metrics, lr=None):
             self.epoch = epoch
             self.metrics = metrics
+            self.lr = lr or {}
+            self.tloss = None  # exercised separately in the train-loss test
 
     calls: list[tuple[dict, int | None]] = []
     monkeypatch.setattr(
@@ -164,10 +166,18 @@ def test_mlflow_epoch_callback_logs_trainer_metrics_live(monkeypatch) -> None:
 
     callback = model.registered["on_fit_epoch_end"]
     callback(
-        _StubTrainer(epoch=0, metrics={"metrics/mAP50(B)": 0.42, "train/box_loss": 1.3})
+        _StubTrainer(
+            epoch=0,
+            metrics={"metrics/mAP50(B)": 0.42, "val/box_loss": 2.8},
+            lr={"lr/pg0": 0.005},
+        )
     )
     callback(
-        _StubTrainer(epoch=1, metrics={"metrics/mAP50(B)": 0.51, "train/box_loss": 1.0})
+        _StubTrainer(
+            epoch=1,
+            metrics={"metrics/mAP50(B)": 0.51, "val/box_loss": 2.3},
+            lr={"lr/pg0": 0.0049},
+        )
     )
 
     # Epoch 0 → step 1 (Ultralytics 1-indexes results.csv).
@@ -176,10 +186,62 @@ def test_mlflow_epoch_callback_logs_trainer_metrics_live(monkeypatch) -> None:
     # MLflow rejects ``()`` and rejects the whole batch on one bad key,
     # so the sanitiser is the difference between "everything logged"
     # and "epoch silently dropped".
-    assert calls[0][0]["train/metrics/mAP50B"] == 0.42
-    assert "train/metrics/mAP50(B)" not in calls[0][0]
+    assert calls[0][0]["metrics/mAP50B"] == 0.42
+    assert "metrics/mAP50(B)" not in calls[0][0]
+    # Original Ultralytics namespaces are preserved (no redundant ``train/``
+    # prefix): val losses stay under ``val/`` so MLflow groups them apart
+    # from train losses in the sidebar.
+    assert calls[0][0]["val/box_loss"] == 2.8
+    assert "train/val/box_loss" not in calls[0][0]
+    assert calls[0][0]["lr/pg0"] == 0.005
     assert calls[1][1] == 2
-    assert calls[1][0]["train/train/box_loss"] == 1.0
+    assert calls[1][0]["val/box_loss"] == 2.3
+
+
+def test_mlflow_epoch_callback_logs_train_losses_from_tloss(monkeypatch) -> None:
+    """``trainer.metrics`` lacks train losses — they must be rebuilt from ``tloss``.
+
+    Regression guard: previously the callback only read ``trainer.metrics``,
+    which on ``on_fit_epoch_end`` carries validator output only. Train losses
+    were silently absent from MLflow even though ``results.csv`` had them.
+    """
+
+    class _StubModel:
+        def __init__(self):
+            self.registered: dict[str, object] = {}
+
+        def add_callback(self, event, fn):
+            self.registered[event] = fn
+
+    class _StubTrainer:
+        epoch = 2
+        metrics = {"metrics/mAP50(B)": 0.27, "val/box_loss": 2.15}
+        lr = {"lr/pg0": 0.0048}
+        tloss = (2.09, 2.76, 1.88)  # box, cls, dfl running means
+
+        @staticmethod
+        def label_loss_items(loss_items, prefix="train"):
+            keys = [f"{prefix}/{k}" for k in ("box_loss", "cls_loss", "dfl_loss")]
+            return dict(zip(keys, [float(x) for x in loss_items]))
+
+    calls: list[tuple[dict, int | None]] = []
+    monkeypatch.setattr(
+        framework, "log_metrics", lambda m, step=None: calls.append((dict(m), step))
+    )
+
+    model = _StubModel()
+    framework._attach_mlflow_epoch_callback(model)
+    model.registered["on_fit_epoch_end"](_StubTrainer())
+
+    logged = calls[0][0]
+    # Train losses must come through under their canonical Ultralytics keys.
+    assert logged["train/box_loss"] == 2.09
+    assert logged["train/cls_loss"] == 2.76
+    assert logged["train/dfl_loss"] == 1.88
+    # Validator + lr keys still present on the same step.
+    assert logged["val/box_loss"] == 2.15
+    assert logged["metrics/mAP50B"] == 0.27
+    assert logged["lr/pg0"] == 0.0048
 
 
 def test_mlflow_epoch_callback_swallows_exceptions(monkeypatch) -> None:

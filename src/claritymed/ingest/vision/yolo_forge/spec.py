@@ -62,7 +62,7 @@ class YoloTrainHparams:
     momentum: float = 0.937
     weight_decay: float = 0.0005
     optimizer: str = "SGD"
-    patience: int = 20
+    patience: int = 10
     # Ultralytics ramps the LR from ~0 to ``lr0`` across this many
     # epochs (default ``3.0``). On a small pretrained backbone with a
     # large COCO→medical-imaging domain shift, 3 epochs at the
