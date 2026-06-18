@@ -170,6 +170,28 @@ ocr-office = [
 ocr-image = [
     "rapidocr-onnxruntime>=1.4",
 ]
+# yolo_forge — Ultralytics-backed detection pipeline (RSNA Pneumonia
+# bbox is the first dataset). Heavy: ultralytics drags torch + opencv
+# + matplotlib, ~2GB on top of vision-server. Optional so the cloud
+# tier doesn't pull it; install on a GPU host with
+# ``uv sync --extra yolo-forge``. pydicom is reused for the shared
+# DICOM→PNG cache populated via the classification adapter's discover().
+yolo-forge = [
+    "ultralytics>=8.3",
+    "pydicom>=2.4",
+    "torch>=2.0",
+    "pillow>=10.0",
+    # Same tracking DB the classification ``forge`` writes to —
+    # ``claritymed-vision-<disease_id>`` experiments are shared so
+    # detection + classification runs land in one UI view, separated
+    # by the ``pipeline`` tag. yolo_forge no-ops silently when mlflow
+    # is missing, so this is "recommended" rather than load-bearing.
+    "mlflow>=2.0",
+    # RSNA Pneumonia download shells out to the ``kaggle`` CLI; declare
+    # it here so ``uv sync --extra yolo-forge`` survives venv rebuilds.
+    # Credentials live in ~/.kaggle/kaggle.json or KAGGLE_USERNAME/KEY.
+    "kaggle>=1.6",
+]
 
 [project.scripts]
 claritymed = "claritymed.cli.main:main"
@@ -205,6 +227,9 @@ claritymed-symptoms-translate-i18n = "claritymed.ingest.symptoms.translate_i18n:
 claritymed-vision-download-busi = "claritymed.ingest.vision.busi.download:_main"
 claritymed-vision-download-chest-ct = "claritymed.ingest.vision.chest_ct.download:_main"
 claritymed-vision-forge = "claritymed.ingest.vision.forge.cli:cli"
+# yolo_forge — Ultralytics-backed detection pipeline. Sibling to
+# vision-forge; usable after ``uv sync --extra yolo-forge``.
+claritymed-vision-yolo-forge = "claritymed.ingest.vision.yolo_forge.cli:cli"
 
 [build-system]
 requires = ["hatchling"]
