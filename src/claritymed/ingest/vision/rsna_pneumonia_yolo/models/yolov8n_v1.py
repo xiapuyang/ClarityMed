@@ -39,12 +39,26 @@ RSNA_YOLOV8N_V1 = YoloModelSpec(
     base_weights="yolov8n.pt",
     train_hparams=YoloTrainHparams(
         epochs=50,
-        imgsz=640,
+        # ``imgsz=512`` (down from yolov8 default 640) — chest
+        # pneumonia regions are large relative to image, the mAP
+        # cost is <1 point, and the ~35% augmentation/forward
+        # speedup matters on a macOS dev box where ``workers=0``
+        # is forced and dataloader can't overlap GPU.
+        imgsz=512,
         batch=16,
-        lr0=0.01,
+        # ``lr0=0.005`` (half of yolov8 default ``0.01``) — paired
+        # with ``warmup_epochs=1`` below to keep the
+        # COCO→chest-x-ray domain transfer stable. The previous
+        # ``0.01`` + 3-epoch warmup blew up the val head in epoch 2.
+        lr0=0.005,
         # Slightly more patience than the default — single-class
         # medical detection benefits from longer training plateaus.
         patience=20,
+        # Shrink the warmup window — see ``warmup_epochs`` field
+        # docstring. Three epochs at default ``warmup_bias_lr=0.1``
+        # destabilises the pretrained head on this dataset; one
+        # epoch is enough to settle BN stats without blowing up.
+        warmup_epochs=1.0,
         # Keep mosaic on but disable mixup; mixup makes per-pixel
         # bbox truth ambiguous on near-uniform x-ray backgrounds.
         mosaic=1.0,

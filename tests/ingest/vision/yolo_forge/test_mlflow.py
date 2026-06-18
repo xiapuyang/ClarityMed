@@ -16,7 +16,6 @@ avoid hitting the real SQLite tracking DB during CI.
 
 from __future__ import annotations
 
-import csv
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -116,44 +115,98 @@ def test_mlflow_phase_run_invokes_mlflow_run_with_expected_tags(monkeypatch) -> 
     assert tags["task"] == "detection"
 
 
-# --- results.csv replay -------------------------------------------------
+# --- mlflow key sanitiser ----------------------------------------------
 
 
-def test_log_results_csv_replays_each_row_as_step(tmp_path: Path, monkeypatch) -> None:
-    """`_log_results_csv_to_mlflow` must turn each CSV row into one log_metrics call."""
-    csv_path = tmp_path / "results.csv"
-    with csv_path.open("w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["epoch", "train/box_loss", "val/box_loss", "metrics/mAP50"])
-        writer.writerow([0, 0.50, 0.45, 0.10])
-        writer.writerow([1, 0.30, 0.25, 0.35])
+def test_sanitize_mlflow_key_strips_ultralytics_paren_suffix() -> None:
+    """``metrics/precision(B)`` → ``metrics/precisionB`` (parens dropped)."""
+    assert framework._sanitize_mlflow_key("metrics/precision(B)") == (
+        "metrics/precisionB"
+    )
+    assert framework._sanitize_mlflow_key("metrics/mAP50-95(B)") == (
+        "metrics/mAP50-95B"
+    )
+
+
+def test_sanitize_mlflow_key_preserves_allowed_chars() -> None:
+    """Allowed MLflow chars (alnum + ``_-./: ``) pass through untouched."""
+    assert framework._sanitize_mlflow_key("train/box_loss") == "train/box_loss"
+    assert framework._sanitize_mlflow_key("lr/pg0") == "lr/pg0"
+    assert framework._sanitize_mlflow_key("a.b-c_d:e f/g") == "a.b-c_d:e f/g"
+
+
+# --- live per-epoch callback --------------------------------------------
+
+
+def test_mlflow_epoch_callback_logs_trainer_metrics_live(monkeypatch) -> None:
+    """Callback must forward ``trainer.metrics`` to ``log_metrics`` each epoch."""
+
+    class _StubModel:
+        def __init__(self):
+            self.registered: dict[str, object] = {}
+
+        def add_callback(self, event, fn):
+            self.registered[event] = fn
+
+    class _StubTrainer:
+        def __init__(self, epoch, metrics):
+            self.epoch = epoch
+            self.metrics = metrics
 
     calls: list[tuple[dict, int | None]] = []
-
-    def fake_log(metrics, step=None):
-        calls.append((dict(metrics), step))
-
-    monkeypatch.setattr(framework, "log_metrics", fake_log)
-    framework._log_results_csv_to_mlflow(csv_path)
-
-    assert len(calls) == 2
-    metrics_0, step_0 = calls[0]
-    assert step_0 == 0
-    assert metrics_0["train/train/box_loss"] == 0.50
-    assert metrics_0["train/metrics/mAP50"] == 0.10
-    metrics_1, step_1 = calls[1]
-    assert step_1 == 1
-    assert metrics_1["train/val/box_loss"] == 0.25
-
-
-def test_log_results_csv_missing_file_is_noop(tmp_path: Path, monkeypatch) -> None:
-    """Silent skip — Ultralytics output layout shouldn't crash the framework."""
-    calls: list = []
     monkeypatch.setattr(
-        framework, "log_metrics", lambda *a, **kw: calls.append((a, kw))
+        framework, "log_metrics", lambda m, step=None: calls.append((dict(m), step))
     )
-    framework._log_results_csv_to_mlflow(tmp_path / "does_not_exist.csv")
-    assert calls == []
+
+    model = _StubModel()
+    framework._attach_mlflow_epoch_callback(model)
+    assert "on_fit_epoch_end" in model.registered
+
+    callback = model.registered["on_fit_epoch_end"]
+    callback(
+        _StubTrainer(epoch=0, metrics={"metrics/mAP50(B)": 0.42, "train/box_loss": 1.3})
+    )
+    callback(
+        _StubTrainer(epoch=1, metrics={"metrics/mAP50(B)": 0.51, "train/box_loss": 1.0})
+    )
+
+    # Epoch 0 → step 1 (Ultralytics 1-indexes results.csv).
+    assert calls[0][1] == 1
+    # Parentheses stripped: ``metrics/mAP50(B)`` → ``metrics/mAP50B``.
+    # MLflow rejects ``()`` and rejects the whole batch on one bad key,
+    # so the sanitiser is the difference between "everything logged"
+    # and "epoch silently dropped".
+    assert calls[0][0]["train/metrics/mAP50B"] == 0.42
+    assert "train/metrics/mAP50(B)" not in calls[0][0]
+    assert calls[1][1] == 2
+    assert calls[1][0]["train/train/box_loss"] == 1.0
+
+
+def test_mlflow_epoch_callback_swallows_exceptions(monkeypatch) -> None:
+    """A callback bug must never crash the multi-hour training run."""
+
+    class _StubModel:
+        def __init__(self):
+            self.fn = None
+
+        def add_callback(self, event, fn):
+            self.fn = fn
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("mlflow exploded")
+
+    monkeypatch.setattr(framework, "log_metrics", _boom)
+
+    model = _StubModel()
+    framework._attach_mlflow_epoch_callback(model)
+
+    class _StubTrainer:
+        epoch = 0
+        metrics = {"metrics/mAP50(B)": 0.5}
+
+    # Must not raise — Ultralytics' on-disk results.csv stays as the
+    # authoritative metric log when MLflow logging glitches.
+    model.fn(_StubTrainer())
 
 
 # --- phase functions thread task_id ------------------------------------

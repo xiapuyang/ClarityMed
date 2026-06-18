@@ -63,6 +63,23 @@ class YoloTrainHparams:
     weight_decay: float = 0.0005
     optimizer: str = "SGD"
     patience: int = 20
+    # Ultralytics ramps the LR from ~0 to ``lr0`` across this many
+    # epochs (default ``3.0``). On a small pretrained backbone with a
+    # large COCO→medical-imaging domain shift, 3 epochs at the
+    # accompanying ``warmup_bias_lr=0.1`` empirically nukes the head
+    # in epoch 2 (val_cls_loss jumps 70%+, predictions collapse to
+    # noise, NMS times out). Medical-detection specs should pin this
+    # lower (e.g. ``1.0``) so the unstable phase ends quickly.
+    warmup_epochs: float = 3.0
+    # During warmup, Ultralytics scales the *bias* parameter group's
+    # LR from this value down to ``lr0`` (default ``0.1`` — ten times
+    # higher than the standard ``lr0=0.01``). That asymmetric ramp is
+    # what tunes COCO heads quickly on COCO; on a fresh detection
+    # head + new domain it can spike the head's predictions out of
+    # the manifold before ``warmup_epochs`` is done. If you also pin
+    # ``lr0`` low, drop this to match (e.g. ``0.01``) so the bias
+    # group doesn't independently destabilise the head.
+    warmup_bias_lr: float = 0.1
     # Loss-component weights (Ultralytics defaults). Surfaced as fields
     # so detection-recall-sensitive specs can pin or HPO-search them
     # alongside lr0/lrf without having to bypass the dataclass.

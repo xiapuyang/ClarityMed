@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 from dataclasses import asdict
 from pathlib import Path
@@ -104,9 +105,10 @@ def _configure_ultralytics() -> None:
       active context and sets its own experiment to
       ``trainer.args.project`` (a long ``~/.claritymed/...`` path),
       creating a stray entry alongside the ``claritymed-vision-*``
-      one we open ourselves. We already replay ``results.csv`` into
-      MLflow in :func:`_log_results_csv_to_mlflow`, so silencing
-      Ultralytics' callback is pure cleanup, no metric loss.
+      one we open ourselves. We log per-epoch metrics into the
+      active run ourselves via :func:`_attach_mlflow_epoch_callback`,
+      so silencing Ultralytics' callback is pure cleanup, no metric
+      loss.
     * ``weights_dir`` / ``runs_dir`` — Ultralytics defaults these
       under cwd, which sprays ``yolov8n.pt`` and ``runs/`` wherever
       the pipeline happens to be invoked from. Anchor them under
@@ -364,6 +366,11 @@ def run_train(
 
     with mlflow_phase_run(spec=spec, phase="train", task_id=task_id, params=log_params):
         model = YOLO(_resolve_base_weights(spec.base_weights))
+        # Live per-epoch metrics → MLflow via Ultralytics' callback
+        # hook. Without this the user has to wait until train ends
+        # to see any curve, which on Apple-silicon means 4-7 hours
+        # blind.
+        _attach_mlflow_epoch_callback(model)
         model.train(
             data=str(splits.data_yaml_path),
             project=str(out_dir),
@@ -372,44 +379,78 @@ def run_train(
             verbose=False,
             **hparams,
         )
-        # Replay Ultralytics' per-epoch CSV into MLflow as proper
-        # timeseries. We do this once after train rather than via a
-        # callback so we don't have to wire into Ultralytics' lifecycle.
-        _log_results_csv_to_mlflow(out_dir / "train" / "results.csv")
 
     _write_train_metadata(out_dir, spec, splits, hparams, task_id=task_id)
     return out_dir
 
 
-def _log_results_csv_to_mlflow(csv_path: Path) -> None:
-    """Read Ultralytics' ``results.csv`` and log each row as a step.
+# MLflow's metric-name validator only allows alphanumerics plus the
+# punctuation `_-./: ` and space. Ultralytics emits keys like
+# ``metrics/precision(B)`` (``B``=detection box, ``M``=segmentation
+# mask in multi-task heads), which trips the validator — and because
+# ``log_metrics`` is a batched call, **one** bad key drops every
+# metric in that epoch. Drop the offending chars rather than
+# substitute: ``mAP50(B)`` → ``mAP50B`` is unambiguous on a
+# detection-only pipeline (no ``M`` keys collide) and stays readable.
+_MLFLOW_KEY_STRIP = re.compile(r"[^A-Za-z0-9_./:\- ]")
 
-    Silent no-op when the file is missing — keeps the train phase from
-    crashing if Ultralytics' output layout changes upstream. ``epoch``
-    column drives ``step``; everything else logs as ``train/<col>``.
+
+def _sanitize_mlflow_key(key: str) -> str:
+    """Strip chars MLflow rejects in metric names."""
+    return _MLFLOW_KEY_STRIP.sub("", key)
+
+
+def _attach_mlflow_epoch_callback(model: Any) -> None:
+    """Stream Ultralytics' per-epoch metrics to MLflow as they happen.
+
+    Registers on ``on_fit_epoch_end`` (fires after the train epoch +
+    val pass, so ``trainer.metrics`` has both train losses and val
+    mAP/precision/recall on the same step). Logs with the ``train/``
+    prefix. Step is ``trainer.epoch + 1`` because Ultralytics writes
+    1-indexed epoch numbers in ``results.csv``; we mirror that so
+    rows in the CSV and points in MLflow line up.
+
+    Per-epoch INFO log is intentional: a multi-hour silent training
+    run that turns out to have logged nothing is the worst possible
+    failure mode. One line/epoch is cheap and confirms each end of
+    the loop reached MLflow. Exception path logs WARNING with full
+    stack so a quiet failure can't hide for the whole run.
     """
-    if not csv_path.is_file():
-        logger.debug("yolo_forge.train: %s missing — skipping mlflow replay", csv_path)
-        return
-    import csv as _csv
+    logger.info("yolo_forge.train: attaching on_fit_epoch_end → MLflow callback")
 
-    with csv_path.open() as fh:
-        reader = _csv.DictReader(fh)
-        for row in reader:
-            try:
-                step = int(float(row.get("epoch", 0)))
-            except (TypeError, ValueError):
-                continue
+    def _callback(trainer: Any) -> None:
+        try:
+            raw_metrics = getattr(trainer, "metrics", None) or {}
+            epoch = int(getattr(trainer, "epoch", 0)) + 1
             metrics: dict[str, float] = {}
-            for key, raw in row.items():
-                if key == "epoch" or raw is None or raw == "":
-                    continue
+            for key, value in raw_metrics.items():
                 try:
-                    metrics[f"train/{key.strip()}"] = float(raw)
+                    metrics[_sanitize_mlflow_key(f"train/{key.strip()}")] = float(value)
                 except (TypeError, ValueError):
                     continue
             if metrics:
-                log_metrics(metrics, step=step)
+                log_metrics(metrics, step=epoch)
+                logger.info(
+                    "yolo_forge.train: logged %d metrics to MLflow for epoch=%d",
+                    len(metrics),
+                    epoch,
+                )
+            else:
+                logger.warning(
+                    "yolo_forge.train: epoch=%d callback fired but "
+                    "trainer.metrics was empty/unparseable — nothing "
+                    "sent to MLflow. raw_keys=%s",
+                    epoch,
+                    list(raw_metrics.keys()),
+                )
+        except Exception:
+            logger.warning(
+                "yolo_forge.train: live MLflow callback raised — "
+                "results.csv on disk remains the authoritative log",
+                exc_info=True,
+            )
+
+    model.add_callback("on_fit_epoch_end", _callback)
 
 
 def _write_train_metadata(
