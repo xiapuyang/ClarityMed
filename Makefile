@@ -21,4 +21,4 @@ bench-drift:
 		echo "  known pair ids: breast_us, chest_xray"; \
 		exit 1; \
 	fi
-	uv run python scripts/bench_cross_dataset_drift.py --pair $(PAIR)
+	uv run python -m tests.benchmarks.cross_dataset_drift.run --pair $(PAIR)

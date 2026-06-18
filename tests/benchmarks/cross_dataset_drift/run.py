@@ -10,8 +10,8 @@ to ``docs/benchmarks/cross_dataset_drift/``.
 
 Usage::
 
-    uv run python scripts/bench_cross_dataset_drift.py --pair breast_us
-    uv run python scripts/bench_cross_dataset_drift.py --pair breast_us --dry-run
+    uv run python -m tests.benchmarks.cross_dataset_drift.run --pair breast_us
+    uv run python -m tests.benchmarks.cross_dataset_drift.run --pair breast_us --dry-run
 
 The ``--dry-run`` mode parses the registry + the dataset specs but does
 no model loading and no forward pass — it's a wiring smoke check.
@@ -30,9 +30,10 @@ Design notes:
   Eval-only labels (e.g. BUSI's ``normal`` when evaluating a 2-class
   model) get folded into any non-positive model label — the binary
   collapse means the choice doesn't change the metric.
-* Bench output lives in ``docs/benchmarks/cross_dataset_drift/`` as
-  committed artifacts. Each run produces a new dated file; we do not
-  overwrite prior results. This preserves a longitudinal record.
+* Bench output lives in ``docs/benchmarks/cross_dataset_drift/`` (a
+  local-only path — the whole ``docs/`` tree is gitignored as a
+  tripwire). Each run writes a fresh dated file rather than overwriting
+  prior results so an operator can compare runs over time locally.
 
 See ``docs/plans/2026-06-17-001-feat-cross-dataset-drift-bench-plan.md``.
 """
@@ -49,18 +50,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Make ``scripts/`` importable so the registry can be loaded as a sibling.
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-from cross_dataset_drift_registry import BenchEntry, entries_for_pair  # noqa: E402
-
-from claritymed.core.vision.eval_metrics import (  # noqa: E402
+from claritymed.core.vision.eval_metrics import (
     BinaryMetrics,
     binary_clinical_metrics,
 )
-from claritymed.core.vision.schemas import Manifest  # noqa: E402
+from claritymed.core.vision.schemas import Manifest
+from tests.benchmarks.cross_dataset_drift.registry import (
+    BenchEntry,
+    entries_for_pair,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +66,10 @@ logger = logging.getLogger(__name__)
 # --- constants -----------------------------------------------------------
 
 DEFAULT_VISION_ROOT = Path.home() / ".claritymed" / "models" / "vision"
+# ``__file__`` lives at ``<repo>/tests/benchmarks/cross_dataset_drift/run.py``,
+# so ``parents[3]`` is the repo root.
 DEFAULT_OUTPUT_DIR = (
-    Path(__file__).resolve().parents[1] / "docs" / "benchmarks" / "cross_dataset_drift"
+    Path(__file__).resolve().parents[3] / "docs" / "benchmarks" / "cross_dataset_drift"
 )
 DEFAULT_BATCH_SIZE = 16
 

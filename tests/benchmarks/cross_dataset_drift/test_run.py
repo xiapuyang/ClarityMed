@@ -19,40 +19,12 @@ breast US artifacts before commit.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-# Import the driver module by path — ``scripts/`` is not on the package
-# path. This mirrors how the script imports its sibling registry.
-_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-
-def _import_module_from_path(name: str, path: Path):
-    """Helper: import a module by file path so tests work without
-    ``scripts/`` being a package on the Python path.
-    """
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-bench = _import_module_from_path(
-    "bench_cross_dataset_drift_test_target",
-    _SCRIPTS_DIR / "bench_cross_dataset_drift.py",
-)
-registry = _import_module_from_path(
-    "cross_dataset_drift_registry_test_target",
-    _SCRIPTS_DIR / "cross_dataset_drift_registry.py",
-)
+from tests.benchmarks.cross_dataset_drift import registry, run as bench
 
 
 # --- registry ------------------------------------------------------------
