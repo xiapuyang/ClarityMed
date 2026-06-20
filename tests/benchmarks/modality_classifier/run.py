@@ -22,8 +22,12 @@ Outputs
 -------
 
 ``trials.jsonl``
-    One row per ``(classifier, image)`` — classifier, dataset, sha256,
-    expected_modality, predicted_modality, latency_ms, error, path.
+    One row per ``(classifier, image)`` — classifier, dataset,
+    expected_modality, predicted_modality, confidence (post-softmax
+    top-1 when the backend exposes one; ``null`` for LLM classifiers
+    that emit a bare label), latency_ms, error, path. Consumed by
+    ``analyze_thresholds.py`` to recommend per-modality confidence
+    cutoffs for the vision_plugin soft gate.
 
 ``summary.csv``
     One row per ``(classifier, modality)`` — n, tp, fp, fn, tn,
@@ -88,21 +92,26 @@ DEFAULT_OUT_ROOT = Path("data") / "bench" / "modality_classifier"
 async def _classify_one(
     classifier,
     sample: SamplePath,
-) -> tuple[str | None, float, str | None]:
-    """Run one classification and return ``(predicted, latency_ms, error)``."""
+) -> tuple[str | None, float | None, float, str | None]:
+    """Run one classification.
+
+    Returns ``(predicted, confidence, latency_ms, error)``. ``confidence``
+    is ``None`` when the backend has no natural score (LLM) or when the
+    trial errored.
+    """
     try:
         image_bytes = load_image(sample.path)
     except Exception as exc:  # noqa: BLE001
-        return None, 0.0, f"read_error: {type(exc).__name__}: {exc}"
+        return None, None, 0.0, f"read_error: {type(exc).__name__}: {exc}"
     digest = sha256_bytes(image_bytes)
     started = time.perf_counter()
     try:
-        predicted = await classifier.classify(image_bytes, sha256=digest)
+        predicted, confidence = await classifier.classify(image_bytes, sha256=digest)
     except Exception as exc:  # noqa: BLE001
         elapsed = (time.perf_counter() - started) * 1000.0
-        return None, elapsed, f"{type(exc).__name__}: {exc}"
+        return None, None, elapsed, f"{type(exc).__name__}: {exc}"
     elapsed = (time.perf_counter() - started) * 1000.0
-    return predicted, elapsed, None
+    return predicted, confidence, elapsed, None
 
 
 def _trial_row(
@@ -110,6 +119,7 @@ def _trial_row(
     classifier_id: str,
     sample: SamplePath,
     predicted: str | None,
+    confidence: float | None,
     latency_ms: float,
     error: str | None,
 ) -> dict[str, Any]:
@@ -118,6 +128,7 @@ def _trial_row(
         "dataset": sample.dataset,
         "expected_modality": sample.modality,
         "predicted_modality": predicted,
+        "confidence": (round(confidence, 4) if confidence is not None else None),
         "latency_ms": round(latency_ms, 2),
         "error": error,
         "path": str(sample.path),
@@ -378,12 +389,15 @@ async def _run(args: argparse.Namespace) -> int:
                 "running classifier=%s over %d images", classifier_id, len(pool)
             )
             for sample in pool:
-                predicted, latency_ms, error = await _classify_one(classifier, sample)
+                predicted, confidence, latency_ms, error = await _classify_one(
+                    classifier, sample
+                )
                 rows.append(
                     _trial_row(
                         classifier_id=classifier_id,
                         sample=sample,
                         predicted=predicted,
+                        confidence=confidence,
                         latency_ms=latency_ms,
                         error=error,
                     )

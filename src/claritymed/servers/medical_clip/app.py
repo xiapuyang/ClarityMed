@@ -11,7 +11,9 @@ the loopback constraint (KTD-V8) is enforced at two layers:
 
 The endpoints handler stays thin: decode the image, hand off to the
 engine, apply the config-driven gating (``min_confidence`` /
-``min_medical_confidence``), build the wire response. All real work
+``min_medical_confidence`` — the latter is a per-modality dict with a
+``default`` fallback so calibration drift on one label doesn't
+require touching the others), build the wire response. All real work
 lives on the engine so unit tests can stub it via the skip-load env.
 """
 
@@ -69,11 +71,25 @@ MEDICAL_CLIP_PORT_ENV = "CLARITYMED_MEDICAL_CLIP_PORT"
 SKIP_LOAD_ENV = "CLARITYMED_MEDICAL_CLIP_SKIP_LOAD"
 
 # Labels classified as `is_medical=true` only when the gate's
-# `min_medical_confidence` is also exceeded. Photo / document / unknown
-# never count as medical regardless of score. Kept here (not in YAML)
-# because the rule is structural — flipping a label here means
-# rewriting the downstream attachment-ingest semantics.
+# per-modality `min_medical_confidence[label]` is also exceeded. Photo
+# / document / unknown never count as medical regardless of score.
+# Kept here (not in YAML) because the rule is structural — flipping a
+# label here means rewriting the downstream attachment-ingest semantics.
 _NON_MEDICAL_LABELS: frozenset[Modality] = frozenset({"photo", "document", "unknown"})
+
+# Hard cap on per-modality `min_medical_confidence` entries. Bench
+# numbers on clean public datasets (data/bench/modality_classifier/)
+# routinely exceed 0.90 for ct/xray/histopath, but locking real-world
+# noisier uploads out at >0.70 is the wrong failure mode for a
+# fail-safe gate. Per-modality calibration can *loosen* the floor
+# below 0.70 (ultrasound is the standing example) but never tighten
+# it above. Raising the cap requires a documented argument, not a
+# YAML edit.
+_MIN_MEDICAL_CONFIDENCE_CAP: float = 0.70
+# Required key inside the `min_medical_confidence` dict that covers
+# any modality not explicitly listed (including hypothetical future
+# additions to the Modality vocabulary).
+_DEFAULT_KEY: str = "default"
 
 
 # --- module state ---------------------------------------------------------
@@ -86,7 +102,13 @@ _state: dict[str, Any] = {
     "engine": None,
     "started_at": 0.0,
     "tasks_loaded": [],
-    "gating": {"min_confidence": 0.55, "min_medical_confidence": 0.70},
+    "gating": {
+        "min_confidence": 0.55,
+        # Per-modality dict — `default` is required, other keys are
+        # optional per-Modality overrides. Same shape after lifespan
+        # config load.
+        "min_medical_confidence": {_DEFAULT_KEY: 0.70},
+    },
 }
 
 
@@ -127,7 +149,9 @@ def _load_engine_sync() -> None:
     _validate_gating(gating)
     _state["gating"] = {
         "min_confidence": float(gating["min_confidence"]),
-        "min_medical_confidence": float(gating["min_medical_confidence"]),
+        "min_medical_confidence": {
+            key: float(value) for key, value in gating["min_medical_confidence"].items()
+        },
     }
     _state["tasks_loaded"] = list(cfg["tasks"])
 
@@ -140,13 +164,15 @@ def _load_engine_sync() -> None:
     _state["engine"] = engine
     logger.info(
         "medical-clip engine ready: model=%s revision=%s device=%s "
-        "candidates=%d min_conf=%.2f min_medical=%.2f",
+        "candidates=%d min_conf=%.2f min_medical=%s",
         engine.model_id,
         engine.model_revision or "unpinned",
         engine.device,
         len(candidates),
         _state["gating"]["min_confidence"],
-        _state["gating"]["min_medical_confidence"],
+        # Sorted for deterministic logs across reloads — operators
+        # grep the startup line to confirm calibration changes shipped.
+        sorted(_state["gating"]["min_medical_confidence"].items()),
     )
 
 
@@ -163,16 +189,47 @@ def _read_config() -> dict[str, Any]:
 def _validate_gating(gating: dict[str, Any]) -> None:
     """Range-check the modality gate thresholds.
 
-    Mirrors the contract documented in
-    ``tests/core/medical_clip/test_schemas.py``: out-of-(0,1) thresholds
-    are a config error, not a runtime surprise.
+    ``min_confidence`` is a scalar in (0, 1). ``min_medical_confidence``
+    is a dict with a required ``default`` key plus optional
+    per-Modality overrides; every entry must be in (0, 1) and at or
+    below :data:`_MIN_MEDICAL_CONFIDENCE_CAP`. The cap is the
+    project-level guard against shipping bench-clean numbers to
+    real-world data — see the constant's comment for rationale.
     """
-    for key in ("min_confidence", "min_medical_confidence"):
-        value = float(gating[key])
+    min_conf = float(gating["min_confidence"])
+    if not (0.0 < min_conf < 1.0):
+        raise RuntimeError(
+            f"configs/medical_clip.yaml::tasks.modality.gating.min_confidence "
+            f"= {min_conf!r} is out of (0, 1)"
+        )
+
+    medical = gating["min_medical_confidence"]
+    if not isinstance(medical, dict):
+        raise RuntimeError(
+            f"configs/medical_clip.yaml::tasks.modality.gating.min_medical_confidence "
+            f"must be a dict (got {type(medical).__name__}); the scalar shape was "
+            f"replaced by a per-modality mapping when per-modality calibration shipped"
+        )
+    if _DEFAULT_KEY not in medical:
+        raise RuntimeError(
+            f"configs/medical_clip.yaml::tasks.modality.gating.min_medical_confidence "
+            f"is missing the required {_DEFAULT_KEY!r} key — every modality not "
+            f"listed explicitly falls through to this entry"
+        )
+    for key, raw in medical.items():
+        value = float(raw)
         if not (0.0 < value < 1.0):
             raise RuntimeError(
-                f"configs/medical_clip.yaml::tasks.modality.gating.{key} "
-                f"= {value!r} is out of (0, 1)"
+                f"configs/medical_clip.yaml::tasks.modality.gating.min_medical_confidence"
+                f"[{key!r}] = {value!r} is out of (0, 1)"
+            )
+        if value > _MIN_MEDICAL_CONFIDENCE_CAP:
+            raise RuntimeError(
+                f"configs/medical_clip.yaml::tasks.modality.gating.min_medical_confidence"
+                f"[{key!r}] = {value!r} exceeds the project cap of "
+                f"{_MIN_MEDICAL_CONFIDENCE_CAP}; tightening above the cap would "
+                f"reject too many real-world uploads — calibration should loosen, "
+                f"not tighten, the floor"
             )
 
 
@@ -274,7 +331,9 @@ def classify_modality(req: ModalityRequest, http_req: Request) -> ModalityRespon
       downstream LLM routes to askuserquestion instead of guessing.
     * ``top1`` in ``photo`` / ``document`` / ``unknown`` → ``is_medical=false``
       regardless of score.
-    * Otherwise ``is_medical = top1_score >= min_medical_confidence``.
+    * Otherwise ``is_medical = top1_score >= min_medical_confidence[top1.label]``,
+      with the per-modality dict falling back to its ``default`` entry
+      when the label is not listed explicitly.
     """
     engine = _state.get("engine")
     if engine is None:
@@ -365,15 +424,23 @@ def _verify_sha256(image_bytes: bytes, claimed_sha: str, request_id: str) -> Non
         )
 
 
-def _apply_gating(
-    top1: ModalityScore, gating: dict[str, float]
-) -> tuple[Modality, bool]:
-    """Return (effective_label, is_medical) given the top1 score + gating thresholds."""
+def _apply_gating(top1: ModalityScore, gating: dict[str, Any]) -> tuple[Modality, bool]:
+    """Return (effective_label, is_medical) given the top1 score + gating thresholds.
+
+    ``min_medical_confidence`` is a per-modality dict — look up the
+    specific label, fall back to the ``default`` entry (validator
+    ensures it exists). The lookup is only reached for medical labels
+    since :data:`_NON_MEDICAL_LABELS` short-circuits above; the
+    ``default`` entry therefore only ever applies to medical labels
+    omitted from the YAML (typically a future-added Modality).
+    """
     if top1.score < gating["min_confidence"]:
         return "unknown", False
     if top1.label in _NON_MEDICAL_LABELS:
         return top1.label, False
-    is_medical = top1.score >= gating["min_medical_confidence"]
+    per_modality: dict[str, float] = gating["min_medical_confidence"]
+    threshold = per_modality.get(top1.label, per_modality[_DEFAULT_KEY])
+    is_medical = top1.score >= threshold
     return top1.label, is_medical
 
 

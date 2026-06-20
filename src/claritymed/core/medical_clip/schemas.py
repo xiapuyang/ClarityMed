@@ -12,8 +12,12 @@ Server-side processing (origin brainstorm §5.5):
   below ``configs/medical_clip.yaml::tasks.modality.gating.min_confidence``.
 * ``is_medical`` is ``true`` only when ``top1`` is one of the medical
   labels (everything except ``photo`` / ``document`` / ``unknown``) AND
-  ``top1_score >= min_medical_confidence``. The conjunction keeps a
-  borderline-confident "photo" from leaking through as a medical scan.
+  ``top1_score >= min_medical_confidence[top1.label]``. The threshold
+  is a per-modality dict in YAML, falling back to the required
+  ``default`` entry for labels not listed explicitly. Calibrated from
+  ``data/bench/modality_classifier/`` against a per-modality cap
+  (project-level guard against shipping bench-clean numbers to noisier
+  real-world uploads).
 """
 
 from __future__ import annotations

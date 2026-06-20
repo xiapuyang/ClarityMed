@@ -22,8 +22,10 @@ import pytest
 from claritymed.core.medical_clip.schemas import Modality, ModalityScore
 from claritymed.servers.medical_clip.app import (
     HOST,
+    _MIN_MEDICAL_CONFIDENCE_CAP,
     _NON_MEDICAL_LABELS,
     _apply_gating,
+    _validate_gating,
     app,
 )
 from claritymed.servers.medical_clip.biomed_clip import ImageDecodeError
@@ -91,7 +93,14 @@ def _skip_load(monkeypatch: pytest.MonkeyPatch):
     app_mod._state["tasks_loaded"] = []
     app_mod._state["gating"] = {
         "min_confidence": 0.55,
-        "min_medical_confidence": 0.70,
+        # Mirror the YAML's per-modality shape. `ultrasound` is the
+        # one calibrated below default; tests that need the legacy
+        # 0.70 band exercise other medical labels (e.g. ct) so the
+        # band is non-empty.
+        "min_medical_confidence": {
+            "ultrasound": 0.55,
+            "default": 0.70,
+        },
     }
     yield
     app_mod._state["engine"] = None
@@ -213,11 +222,18 @@ def test_classify_modality_is_medical_false_for_photo_top1(client) -> None:
 
 
 def test_classify_modality_is_medical_false_below_min_medical(client) -> None:
-    """Plan edge case: medical top1 above min_confidence but below min_medical."""
+    """Plan edge case: medical top1 above min_confidence but below min_medical.
+
+    Uses ``ct`` because ultrasound's per-modality floor is calibrated
+    down to ~min_correct from the bench (~0.57 in the shipped config),
+    leaving no [floor, default) band to exercise for ultrasound. CT
+    keeps the default 0.70 threshold, so a 0.60 top1 lands in the
+    middle band and is correctly tagged is_medical=False.
+    """
     app_mod._state["engine"] = _StubEngine(
         scores={
-            "ultrasound": 0.60,  # above min_confidence (0.55), below min_medical (0.70)
-            "ct": 0.20,
+            "ct": 0.60,  # above min_confidence (0.55), below ct's min_medical (0.70)
+            "ultrasound": 0.20,
             "xray": 0.10,
             "dermoscopy": 0.05,
             "photo": 0.03,
@@ -227,8 +243,33 @@ def test_classify_modality_is_medical_false_below_min_medical(client) -> None:
     resp = client.post("/v1/classify_modality", json=_payload())
     assert resp.status_code == 200
     body = resp.json()
-    assert body["modality"] == "ultrasound"
+    assert body["modality"] == "ct"
     assert body["is_medical"] is False
+
+
+def test_classify_modality_per_modality_floor_loosens_ultrasound(client) -> None:
+    """Per-modality calibration: ultrasound at 0.60 is is_medical=True.
+
+    The same 0.60 top1 lands is_medical=False for ct (default floor
+    0.70) and is_medical=True for ultrasound (per-modality floor
+    0.55). This is the whole point of the per-modality dict — the
+    test pins that contract.
+    """
+    app_mod._state["engine"] = _StubEngine(
+        scores={
+            "ultrasound": 0.60,
+            "ct": 0.15,
+            "xray": 0.10,
+            "dermoscopy": 0.05,
+            "photo": 0.05,
+            "document": 0.05,
+        }
+    )
+    resp = client.post("/v1/classify_modality", json=_payload())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["modality"] == "ultrasound"
+    assert body["is_medical"] is True
 
 
 # --- error envelopes -----------------------------------------------------
@@ -289,28 +330,64 @@ def test_classify_modality_validation_error_becomes_400(client) -> None:
 # --- internal helpers ----------------------------------------------------
 
 
+# Shared per-modality dict for the internal-helper tests — mirrors
+# the YAML's shape so the tests exercise the same lookup path the
+# server uses at runtime.
+_GATING_FIXTURE = {
+    "min_confidence": 0.55,
+    "min_medical_confidence": {"ultrasound": 0.55, "default": 0.70},
+}
+
+
 def test_apply_gating_collapses_low_confidence_to_unknown() -> None:
     top1 = ModalityScore(label="ultrasound", score=0.40)
-    gating = {"min_confidence": 0.55, "min_medical_confidence": 0.70}
-    label, is_medical = _apply_gating(top1, gating)
+    label, is_medical = _apply_gating(top1, _GATING_FIXTURE)
     assert label == "unknown"
     assert is_medical is False
 
 
 def test_apply_gating_photo_never_medical() -> None:
     top1 = ModalityScore(label="photo", score=0.99)
-    gating = {"min_confidence": 0.55, "min_medical_confidence": 0.70}
-    label, is_medical = _apply_gating(top1, gating)
+    label, is_medical = _apply_gating(top1, _GATING_FIXTURE)
     assert label == "photo"
     assert is_medical is False
 
 
 def test_apply_gating_medical_above_threshold() -> None:
     top1 = ModalityScore(label="ct", score=0.80)
-    gating = {"min_confidence": 0.55, "min_medical_confidence": 0.70}
-    label, is_medical = _apply_gating(top1, gating)
+    label, is_medical = _apply_gating(top1, _GATING_FIXTURE)
     assert label == "ct"
     assert is_medical is True
+
+
+def test_apply_gating_per_modality_overrides_default() -> None:
+    """Ultrasound at 0.60 → is_medical=True; ct at 0.60 → is_medical=False."""
+    top1_us = ModalityScore(label="ultrasound", score=0.60)
+    label_us, is_medical_us = _apply_gating(top1_us, _GATING_FIXTURE)
+    assert label_us == "ultrasound"
+    assert is_medical_us is True
+
+    top1_ct = ModalityScore(label="ct", score=0.60)
+    label_ct, is_medical_ct = _apply_gating(top1_ct, _GATING_FIXTURE)
+    assert label_ct == "ct"
+    assert is_medical_ct is False
+
+
+def test_apply_gating_unlisted_modality_uses_default() -> None:
+    """A medical label not in the per-modality dict falls back to ``default``.
+
+    Histopathology isn't listed in ``_GATING_FIXTURE``; the default
+    entry (0.70) applies. At 0.65 → is_medical=False; at 0.80 → True.
+    """
+    below = ModalityScore(label="histopathology", score=0.65)
+    label_below, is_medical_below = _apply_gating(below, _GATING_FIXTURE)
+    assert label_below == "histopathology"
+    assert is_medical_below is False
+
+    above = ModalityScore(label="histopathology", score=0.80)
+    label_above, is_medical_above = _apply_gating(above, _GATING_FIXTURE)
+    assert label_above == "histopathology"
+    assert is_medical_above is True
 
 
 def test_non_medical_labels_set_is_frozen() -> None:
@@ -319,6 +396,55 @@ def test_non_medical_labels_set_is_frozen() -> None:
     assert "document" in _NON_MEDICAL_LABELS
     assert "unknown" in _NON_MEDICAL_LABELS
     assert "ultrasound" not in _NON_MEDICAL_LABELS
+
+
+# --- gating validator ----------------------------------------------------
+
+
+def test_validate_gating_rejects_scalar_min_medical_confidence() -> None:
+    """A scalar value was the old shape; YAML must now ship a dict."""
+    bad = {"min_confidence": 0.55, "min_medical_confidence": 0.70}
+    with pytest.raises(RuntimeError, match="must be a dict"):
+        _validate_gating(bad)
+
+
+def test_validate_gating_rejects_missing_default_key() -> None:
+    """Per-modality dict requires `default` for unlisted Modality fallback."""
+    bad = {
+        "min_confidence": 0.55,
+        "min_medical_confidence": {"ultrasound": 0.55},
+    }
+    with pytest.raises(RuntimeError, match="missing the required"):
+        _validate_gating(bad)
+
+
+def test_validate_gating_rejects_value_above_cap() -> None:
+    """Per-modality entries above 0.70 are a config error, not a runtime surprise."""
+    bad = {
+        "min_confidence": 0.55,
+        "min_medical_confidence": {
+            "default": 0.70,
+            "ct": _MIN_MEDICAL_CONFIDENCE_CAP + 0.05,
+        },
+    }
+    with pytest.raises(RuntimeError, match="exceeds the project cap"):
+        _validate_gating(bad)
+
+
+def test_validate_gating_accepts_well_formed_dict() -> None:
+    """The shipped YAML shape passes validation cleanly."""
+    ok = {
+        "min_confidence": 0.55,
+        "min_medical_confidence": {
+            "ultrasound": 0.55,
+            "ct": 0.70,
+            "xray": 0.70,
+            "dermoscopy": 0.70,
+            "histopathology": 0.70,
+            "default": 0.70,
+        },
+    }
+    _validate_gating(ok)  # no raise
 
 
 # --- env scrub -----------------------------------------------------------

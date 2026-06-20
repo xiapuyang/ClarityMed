@@ -71,9 +71,12 @@ class ModalityClassifier(Protocol):
 
     * Run entirely locally (no PHI over the network) unless the caller
       explicitly opts in.
-    * Return one of :data:`KNOWN_MODALITIES`. Unrecognized labels MUST
-      collapse to ``"unknown"`` rather than leaking through and
-      polluting the confusion matrix.
+    * Return ``(label, confidence)`` where ``label`` is one of
+      :data:`KNOWN_MODALITIES`. Unrecognized labels MUST collapse to
+      ``"unknown"`` rather than leaking through and polluting the
+      confusion matrix. ``confidence`` is the post-softmax top-1 score
+      when the backend exposes one, or ``None`` when there is no
+      natural notion (e.g. an LLM emitting a single-word answer).
     * Surface backing-service unreachability as an exception (the
       runner catches it and records the trial as errored). Silent
       degradation to ``"unknown"`` would let half a broken run look
@@ -82,7 +85,9 @@ class ModalityClassifier(Protocol):
 
     name: str
 
-    async def classify(self, image_bytes: bytes, *, sha256: str) -> str: ...
+    async def classify(
+        self, image_bytes: bytes, *, sha256: str
+    ) -> tuple[str, float | None]: ...
 
 
 # --- BiomedCLIP via medical-clip-server -------------------------------------
@@ -96,20 +101,23 @@ class MedicalClipClassifier:
     def __init__(self, *, base_url: str = DEFAULT_MEDICAL_CLIP_URL) -> None:
         self._client = MedicalClipClient(base_url=base_url)
 
-    async def classify(self, image_bytes: bytes, *, sha256: str) -> str:
+    async def classify(
+        self, image_bytes: bytes, *, sha256: str
+    ) -> tuple[str, float | None]:
         response = await self._client.classify_modality(
             image_bytes,
             request_id=f"bench-{sha256[:8]}",
             sha256=sha256,
         )
         label = response.modality
+        confidence = float(response.confidence)
         if label not in KNOWN_MODALITIES:
             logger.warning(
                 "medical_clip returned unknown label %r — coercing to 'unknown'",
                 label,
             )
-            return "unknown"
-        return label
+            return "unknown", confidence
+        return label, confidence
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -159,7 +167,9 @@ class OmlxLlmClassifier:
         self._provider_id = provider_id
         self._model = build_model(provider)
 
-    async def classify(self, image_bytes: bytes, *, sha256: str) -> str:
+    async def classify(
+        self, image_bytes: bytes, *, sha256: str
+    ) -> tuple[str, float | None]:
         from pydantic_ai import Agent, BinaryContent
 
         # Sniff the MIME type from the magic bytes. PNG / JPEG cover all
@@ -173,11 +183,14 @@ class OmlxLlmClassifier:
         )
         result = await agent.run([binary])
         # The model may answer "ultrasound." or "Modality: ct" — normalize.
+        # No natural confidence — the LLM emits a single word, not a
+        # softmax score. Returning None keeps the column honest; the
+        # analyzer filters these rows out of distribution stats.
         raw = (result.output or "").strip().lower()
         for token in raw.replace(",", " ").replace(".", " ").split():
             if token in KNOWN_MODALITIES:
-                return token
-        return "unknown"
+                return token, None
+        return "unknown", None
 
 
 # --- ResNet placeholder ------------------------------------------------------
@@ -201,7 +214,9 @@ class ResnetModalityClassifier:
             "ships."
         )
 
-    async def classify(self, image_bytes: bytes, *, sha256: str) -> str:
+    async def classify(
+        self, image_bytes: bytes, *, sha256: str
+    ) -> tuple[str, float | None]:
         raise NotImplementedError
 
 

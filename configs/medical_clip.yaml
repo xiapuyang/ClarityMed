@@ -36,7 +36,29 @@ tasks:
       - {label: document,   prompts: ["a document or screenshot", "a page of text"]}
     gating:
       min_confidence: 0.55                      # below → modality=unknown, LLM asks user
-      min_medical_confidence: 0.70              # is_medical=true only above this for non-photo/document labels
+      # is_medical=true only when top1.score >= the per-modality entry
+      # below. Calibrated against data/bench/modality_classifier/ —
+      # mean(min_correct, max_wrong) as the rule, then capped at 0.70 so
+      # the bench-clean numbers (ct/xray/histopath read >0.90) don't
+      # lock real-world noisier uploads out. The cap means only
+      # modalities the bench shows need a *looser* floor than 0.70
+      # actually move; ultrasound is the one such case (BiomedCLIP
+      # spread is wide enough that genuine BUSI samples appear at
+      # ~0.57). `default` covers any future modality not listed here.
+      min_medical_confidence:
+        # ultrasound = min_correct from data/bench/modality_classifier/ —
+        # BiomedCLIP's spread on BUSI/breast_us_kaggle reaches as low as
+        # 0.5724 on correct predictions, so the per-modality floor sits
+        # at the observed worst-case TP. ct / xray / dermoscopy /
+        # histopathology all have min_correct above the project cap, so
+        # they ride the default — listed explicitly here to document
+        # that bench coverage exists for each.
+        ultrasound: 0.5724
+        ct: 0.70
+        xray: 0.70
+        dermoscopy: 0.70
+        histopathology: 0.70
+        default: 0.70
   # Future tasks land as sibling keys, paired with a new endpoint, e.g.:
   # screen_skin:                                # paired with POST /v1/screen_skin
   #   candidates:

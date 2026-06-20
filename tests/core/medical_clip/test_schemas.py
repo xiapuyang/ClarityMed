@@ -163,7 +163,14 @@ def test_shipped_configs_medical_clip_yaml_loads() -> None:
 
     gating = modality["gating"]
     assert 0.0 < gating["min_confidence"] < 1.0
-    assert 0.0 < gating["min_medical_confidence"] < 1.0
+    # min_medical_confidence is a per-modality dict; default key is
+    # required (server falls back to it for any unlisted Modality).
+    medical = gating["min_medical_confidence"]
+    assert isinstance(medical, dict)
+    assert "default" in medical
+    for label, value in medical.items():
+        assert 0.0 < value < 1.0, f"{label!r} out of (0, 1)"
+        assert value <= 0.70, f"{label!r} = {value} exceeds project cap 0.70"
 
 
 def test_medical_clip_yaml_gating_outside_unit_interval_is_invalid() -> None:
