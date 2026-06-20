@@ -64,6 +64,30 @@ from claritymed.ingest.vision.forge.spec import ModelSpec
 
 logger = logging.getLogger(__name__)
 
+# ---- argparse defaults ---------------------------------------------
+DEFAULT_HPARAM_TRIALS = 20
+DEFAULT_SEARCH_EPOCHS = 15
+DEFAULT_MAX_EPOCHS = 100
+DEFAULT_PATIENCE = 15
+DEFAULT_TUNE_TRIALS = 100
+
+# ---- pipeline --quick microscopic budgets --------------------------
+QUICK_TRIALS = 3
+QUICK_SEARCH_EPOCHS = 3
+QUICK_MAX_EPOCHS = 5
+QUICK_PATIENCE = 3
+QUICK_TUNE_TRIALS = 5
+
+_QUICK_OVERRIDES = {
+    "trials": QUICK_TRIALS,
+    "search_epochs": QUICK_SEARCH_EPOCHS,
+    "max_epochs": QUICK_MAX_EPOCHS,
+    "patience": QUICK_PATIENCE,
+    "tune_trials": QUICK_TUNE_TRIALS,
+    "force": True,
+    "deploy_force": True,
+}
+
 
 def _resolve_model_spec(target: str) -> ModelSpec:
     """Resolve ``module.path:ATTR`` to a :class:`ModelSpec` instance.
@@ -115,20 +139,20 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- hparam ----------------------------------------------------
     sp = sub.add_parser("hparam", help="Optuna HP search")
     add_common(sp)
-    sp.add_argument("--trials", type=int, default=20)
-    sp.add_argument("--epochs", type=int, default=15)
+    sp.add_argument("--trials", type=int, default=DEFAULT_HPARAM_TRIALS)
+    sp.add_argument("--epochs", type=int, default=DEFAULT_SEARCH_EPOCHS)
 
     # ---- train -----------------------------------------------------
     sp = sub.add_parser("train", help="Production training (reads best HP from study)")
     add_common(sp)
-    sp.add_argument("--max-epochs", type=int, default=100)
-    sp.add_argument("--patience", type=int, default=15)
+    sp.add_argument("--max-epochs", type=int, default=DEFAULT_MAX_EPOCHS)
+    sp.add_argument("--patience", type=int, default=DEFAULT_PATIENCE)
 
     # ---- tune ------------------------------------------------------
     sp = sub.add_parser("tune", help="Inference-param Optuna sweep")
     add_common(sp)
     sp.add_argument("--staging-dir", type=Path, default=None)
-    sp.add_argument("--trials", type=int, default=30)
+    sp.add_argument("--trials", type=int, default=DEFAULT_TUNE_TRIALS)
 
     # ---- deploy ----------------------------------------------------
     sp = sub.add_parser("deploy", help="Floor + regression gate; promote staging dir")
@@ -144,11 +168,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("pipeline", help="Orchestrate search → train → tune → deploy")
     add_common(sp)
     sp.add_argument("--phases", default=",".join(ALL_PHASES))
-    sp.add_argument("--trials", type=int, default=20)
-    sp.add_argument("--search-epochs", type=int, default=15)
-    sp.add_argument("--max-epochs", type=int, default=100)
-    sp.add_argument("--patience", type=int, default=15)
-    sp.add_argument("--tune-trials", type=int, default=30)
+    sp.add_argument("--trials", type=int, default=DEFAULT_HPARAM_TRIALS)
+    sp.add_argument("--search-epochs", type=int, default=DEFAULT_SEARCH_EPOCHS)
+    sp.add_argument("--max-epochs", type=int, default=DEFAULT_MAX_EPOCHS)
+    sp.add_argument("--patience", type=int, default=DEFAULT_PATIENCE)
+    sp.add_argument("--tune-trials", type=int, default=DEFAULT_TUNE_TRIALS)
     sp.add_argument("--staging-dir", type=Path, default=None)
     sp.add_argument(
         "--force",
@@ -164,25 +188,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--quick",
         action="store_true",
         help=(
-            "Real-data shakedown with microscopic budgets: trials=3, "
-            "search-epochs=3, max-epochs=5, patience=3, tune-trials=5, "
+            f"Real-data shakedown with microscopic budgets: trials={QUICK_TRIALS}, "
+            f"search-epochs={QUICK_SEARCH_EPOCHS}, max-epochs={QUICK_MAX_EPOCHS}, "
+            f"patience={QUICK_PATIENCE}, tune-trials={QUICK_TUNE_TRIALS}, "
             "auto --force + --deploy-force. Needs real dataset + torch. "
             "Mutually exclusive with --smoke."
         ),
     )
 
     return parser
-
-
-_QUICK_OVERRIDES = {
-    "trials": 3,
-    "search_epochs": 3,
-    "max_epochs": 5,
-    "patience": 3,
-    "tune_trials": 5,
-    "force": True,
-    "deploy_force": True,
-}
 
 
 def main(argv: list[str]) -> int:

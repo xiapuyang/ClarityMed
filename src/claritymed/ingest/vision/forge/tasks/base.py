@@ -88,6 +88,48 @@ class Task(ABC):
         """Return the deploy-phase floor map (used by the deploy gate)."""
         return dict(self.floors.deploy)
 
+    # --- spec validation -----------------------------------------------
+
+    @property
+    @abstractmethod
+    def breakdown_metric_keys(self) -> frozenset[str]:
+        """Metric keys this task's ``evaluate`` surfaces in the breakdown.
+
+        Excludes the derived ``composite`` field — that's computed by
+        the task itself from these keys, so referencing it from
+        ``floors`` or ``composite_weights`` would be a self-reference.
+        ``_validate_metric_keys`` uses this set to fail-fast on a typo
+        in any ``ModelSpec``.
+        """
+
+    def _validate_metric_keys(self) -> None:
+        """Raise if ``floors`` or ``composite_weights`` reference unknown keys.
+
+        Called from concrete-task ``__init__`` so a typo (``"recal"``
+        instead of ``"recall"``, ``"accuray"`` instead of ``"accuracy"``)
+        crashes the spec module at import time. Without this check,
+        ``feasibility_aware_score`` would silently treat the missing
+        key as ``0.0`` — infeasible-forever for a bad floor, or zero
+        contribution for a bad composite weight — both invisible.
+        """
+        allowed = self.breakdown_metric_keys
+        for phase in ("search", "train", "deploy"):
+            phase_floors = getattr(self.floors, phase)
+            unknown = sorted(set(phase_floors) - allowed)
+            if unknown:
+                raise ValueError(
+                    f"{type(self).__name__}: floors.{phase} references "
+                    f"unknown metric(s) {unknown} not in breakdown shape "
+                    f"{sorted(allowed)}. Likely a typo in the ModelSpec."
+                )
+        unknown = sorted(set(self.composite_weights) - allowed)
+        if unknown:
+            raise ValueError(
+                f"{type(self).__name__}: composite_weights references "
+                f"unknown metric(s) {unknown} not in breakdown shape "
+                f"{sorted(allowed)}. Likely a typo in the ModelSpec."
+            )
+
     # --- architecture + batch interface ----------------------------------
 
     @abstractmethod

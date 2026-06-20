@@ -40,6 +40,11 @@ from typing import Any
 import yaml
 
 from claritymed import config as _cfg
+from claritymed.ingest.vision.forge.scoring import (
+    FEASIBLE_OFFSET,
+    PhaseFloors,
+    feasibility_aware_score,
+)
 from claritymed.ingest.vision.yolo_forge.common import (
     append_entry,
     disease_root,
@@ -77,22 +82,45 @@ DEFAULT_SEARCH_EPOCHS = 5
 # afford more trials. Each trial is one ``model.val`` pass.
 DEFAULT_TUNE_TRIALS = 20
 
-# Shared HPO objective for both search + tune: Ultralytics' canonical
-# detection-fitness formula (``ultralytics.utils.metrics.DetMetrics.fitness``).
-# Heavily favours the stricter mAP50-95 over mAP50 so HPO doesn't pick
+# Detection-quality composite used as the bare ranking signal: Ultralytics'
+# canonical fitness formula (``ultralytics.utils.metrics.DetMetrics.fitness``),
+# weighted to favour the stricter mAP50-95 over mAP50 so HPO doesn't pick
 # hparams (or a conf threshold) that look good at IoU=0.5 but localise
-# poorly at higher IoU bands. Clinical fail-safe (image-level recall ≥
-# floor) stays enforced by the deploy gate's ``eval_thresholds`` —
-# keeping the HPO objective purely detection-quality matches how the
-# rest of the ecosystem (Ultralytics training fitness, COCO leaderboards)
-# ranks models.
+# poorly at higher IoU bands. The tune phase wraps this in
+# :func:`feasibility_aware_score` against ``spec.eval_thresholds`` so a
+# trial that fails the clinical floor (e.g. ``image_recall``) can't beat
+# one that clears it — same floor-aware discipline the cls ``forge`` uses,
+# and the same dict the deploy gate later enforces. Search still ranks
+# on bare fitness (short training runs don't yet have stable image-level
+# metrics worth gating on).
 FITNESS_MAP50_WEIGHT = 0.1
 FITNESS_MAP_WEIGHT = 0.9
+
+# Composite weights handed to :func:`feasibility_aware_score`. Same two
+# keys ``_evaluate`` returns, same coefficients as ``_fitness`` — so in
+# the feasible region ``score = FEASIBLE_OFFSET + _fitness(...)``.
+_TUNE_COMPOSITE_WEIGHTS: dict[str, float] = {
+    "mAP50": FITNESS_MAP50_WEIGHT,
+    "mAP50-95": FITNESS_MAP_WEIGHT,
+}
 
 
 def _fitness(map50: float, map50_95: float) -> float:
     """Apply the fitness formula. Same shape used by search + tune."""
     return FITNESS_MAP50_WEIGHT * map50 + FITNESS_MAP_WEIGHT * map50_95
+
+
+def _tune_floors(spec: YoloModelSpec) -> PhaseFloors:
+    """Reuse ``spec.eval_thresholds`` as the tune-phase floor.
+
+    Yolo specs only carry a single floor dict (no per-phase split like
+    the cls forge), so tune and deploy gate on the exact same numbers —
+    there is no way for the two to drift. Empty ``eval_thresholds``
+    degrades cleanly: ``feasibility_aware_score`` then never finds a
+    deficit and returns ``FEASIBLE_OFFSET + composite`` for every trial,
+    preserving the bare-fitness ranking.
+    """
+    return PhaseFloors(floors=dict(spec.eval_thresholds), label="tune")
 
 
 def _configure_ultralytics() -> None:
@@ -371,6 +399,18 @@ def run_train(
     hparams["device"] = _resolve_device(hparams.get("device"))
     task_id = task_id or generate_task_id()
 
+    # Handoff from search — if ``hparams_override`` is non-empty, the
+    # most likely source is ``run_search`` (or a manual operator
+    # override). Log which keys came in so a downstream reader knows
+    # where each value originated without diffing ``best_hparams.json``.
+    if hparams_override:
+        logger.info(
+            "yolo_forge.train handoff: hparams_override applied "
+            "(keys=%s) — typically from run_search",
+            sorted(hparams_override.keys()),
+        )
+    else:
+        logger.info("yolo_forge.train handoff: no override — using spec defaults")
     logger.info(
         "yolo_forge.train: base_weights=%s staging=%s hparams=%s",
         spec.base_weights,
@@ -390,13 +430,35 @@ def run_train(
         # to see any curve, which on Apple-silicon means 4-7 hours
         # blind.
         _attach_mlflow_epoch_callback(model)
-        model.train(
+        results = model.train(
             data=str(splits.data_yaml_path),
             project=str(out_dir),
             name="train",
             exist_ok=True,
             verbose=False,
             **hparams,
+        )
+        # Final-checkpoint summary so the tune phase's handoff log
+        # can be reconciled against what train actually produced.
+        # ``fitness`` is Ultralytics' detection score
+        # (``0.1·mAP50 + 0.9·mAP50-95``) — same formula search and
+        # tune optimise, so a single number is comparable end-to-end.
+        train_map50 = float(getattr(getattr(results, "box", None), "map50", 0.0))
+        train_map50_95 = float(getattr(getattr(results, "box", None), "map", 0.0))
+        train_fitness = _fitness(map50=train_map50, map50_95=train_map50_95)
+        log_metrics(
+            {
+                "train/best_mAP50": train_map50,
+                "train/best_mAP50-95": train_map50_95,
+                "train/best_fitness": train_fitness,
+            }
+        )
+        logger.info(
+            "yolo_forge.train: best val mAP50=%.4f mAP50-95=%.4f "
+            "fitness=%.4f (=optimisation score)",
+            train_map50,
+            train_map50_95,
+            train_fitness,
         )
 
     _write_train_metadata(out_dir, spec, splits, hparams, task_id=task_id)
@@ -728,6 +790,19 @@ def run_tune(
     model = YOLO(str(weights))
     task_id = task_id or generate_task_id()
 
+    # Handoff from train — what we're tuning against. Includes the
+    # search space size so an empty ``inference_space`` (no-op tune)
+    # is obvious from the log alone.
+    logger.info(
+        "yolo_forge.tune handoff: weights=%s staging=%s task_id=%s "
+        "inference_space_keys=%s trials=%d",
+        weights,
+        staging,
+        task_id,
+        sorted(spec.inference_space.keys()) if spec.inference_space else [],
+        trials,
+    )
+
     with mlflow_phase_run(
         spec=spec,
         phase="tune",
@@ -748,6 +823,27 @@ def run_tune(
             name="test_at_best",
         )
 
+        # Score parity with the cls ``forge``: ``score`` is the actual
+        # optimisation target (``feasibility_aware_score`` against
+        # ``spec.eval_thresholds``); ``fitness`` is the raw composite
+        # underneath it (``0.1·mAP50 + 0.9·mAP50-95``). Logging both for
+        # val and test makes a tune↔search↔train chart directly
+        # comparable in MLflow and surfaces whether val/test landed in
+        # the feasible region (``score >= FEASIBLE_OFFSET``).
+        floors = _tune_floors(spec)
+        val_fitness = _fitness(
+            map50=val_metrics["mAP50"], map50_95=val_metrics["mAP50-95"]
+        )
+        test_fitness = _fitness(
+            map50=test_metrics["mAP50"], map50_95=test_metrics["mAP50-95"]
+        )
+        val_score = feasibility_aware_score(
+            val_metrics, floors, _TUNE_COMPOSITE_WEIGHTS
+        )
+        test_score = feasibility_aware_score(
+            test_metrics, floors, _TUNE_COMPOSITE_WEIGHTS
+        )
+
         log_metrics({f"tune/best_{k}": float(v) for k, v in best_params.items()})
         log_metrics(
             {
@@ -763,18 +859,40 @@ def run_tune(
                 if isinstance(v, (int, float))
             }
         )
+        log_metrics(
+            {
+                "tune/val_fitness": val_fitness,
+                "tune/test_fitness": test_fitness,
+                "tune/val_score": val_score,
+                "tune/test_score": test_score,
+            }
+        )
 
     out = {
         "split": "test",
         "metrics": test_metrics,
         "val_metrics_at_best": val_metrics,
         "tuned_inference_params": best_params,
+        "val_fitness": val_fitness,
+        "test_fitness": test_fitness,
+        "val_score": val_score,
+        "test_score": test_score,
         "dataset_info": _dataset_info(splits),
         "task_id": task_id,
         "source": "run_tune",
     }
     (staging / "eval_metrics.json").write_text(json.dumps(out, indent=2))
-    logger.info("yolo_forge.tune: test metrics=%s", test_metrics)
+    logger.info(
+        "yolo_forge.tune winner: params=%s val_score=%.4f test_score=%.4f "
+        "val_fitness=%.4f test_fitness=%.4f val_mAP50-95=%.4f test_mAP50-95=%.4f",
+        best_params,
+        val_score,
+        test_score,
+        val_fitness,
+        test_fitness,
+        val_metrics["mAP50-95"],
+        test_metrics["mAP50-95"],
+    )
     return out
 
 
@@ -797,6 +915,7 @@ def _run_tune_inner(
 
         tune_dir = staging / "tune"
         tune_dir.mkdir(exist_ok=True)
+        floors = _tune_floors(spec)
 
         def objective(trial: optuna.Trial) -> float:
             suggested = spec.suggest_inference_params(trial)
@@ -812,25 +931,31 @@ def _run_tune_inner(
                 name=f"trial_{trial.number:03d}",
             )
             fitness = _fitness(map50=metrics["mAP50"], map50_95=metrics["mAP50-95"])
+            score = feasibility_aware_score(metrics, floors, _TUNE_COMPOSITE_WEIGHTS)
+            # Stash for study_feasibility_summary parity with the cls forge —
+            # downstream "no feasible trial" diagnostics walk user_attrs.
+            trial.set_user_attr("breakdown", dict(metrics))
             log_metrics(
                 {
                     "tune/mAP50": metrics["mAP50"],
                     "tune/mAP50-95": metrics["mAP50-95"],
                     "tune/image_recall": metrics["image_recall"],
                     "tune/fitness": fitness,
+                    "tune/score": score,
                     "tune/conf": conf,
                     "tune/iou": iou,
                 },
                 step=trial.number,
             )
-            return fitness
+            return score
 
         study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=trials, show_progress_bar=False)
         best_params = dict(study.best_params)
         logger.info(
-            "yolo_forge.tune: best fitness=%.4f params=%s",
+            "yolo_forge.tune: best score=%.4f (feasible=%s) params=%s",
             study.best_value,
+            study.best_value >= FEASIBLE_OFFSET,
             best_params,
         )
         val_metrics = _evaluate(
@@ -879,6 +1004,29 @@ def run_deploy(
     eval_blob = json.loads(eval_path.read_text())
     metrics = eval_blob["metrics"]
 
+    # Handoff from tune — single line carrying the values about to be
+    # gated. ``test_fitness`` is the raw detection composite
+    # (``0.1·mAP50 + 0.9·mAP50-95``) — the regression gate compares this
+    # across runs; tune's actual optimisation target is
+    # ``test_score = feasibility_aware_score(metrics, eval_thresholds)``
+    # which is persisted in ``eval_metrics.json``. ``eval_thresholds``
+    # is the floor bar checked next. Reading the next two log lines
+    # tells you why the gate did/didn't pass without diffing JSON.
+    deploy_fitness = _fitness(
+        map50=float(metrics.get("mAP50", 0.0)),
+        map50_95=float(metrics.get("mAP50-95", 0.0)),
+    )
+    logger.info(
+        "yolo_forge.deploy handoff: staging=%s tuned_params=%s test_fitness=%.4f "
+        "test_mAP50=%.4f test_mAP50-95=%.4f thresholds=%s",
+        staging,
+        eval_blob.get("tuned_inference_params"),
+        deploy_fitness,
+        float(metrics.get("mAP50", 0.0)),
+        float(metrics.get("mAP50-95", 0.0)),
+        spec.eval_thresholds,
+    )
+
     failures = _check_thresholds(metrics, spec.eval_thresholds)
     if failures:
         raise SystemExit(
@@ -886,11 +1034,36 @@ def run_deploy(
             + ", ".join(f"{k}={v} < floor={f}" for k, v, f in failures)
         )
 
-    regression = _regression_check(spec, metrics)
+    # Pull the previous entry once so the regression gate can log the
+    # baseline fitness on success (the current ``_regression_check``
+    # only returns the failing diffs, not the passing comparison).
+    last = read_last_entry(
+        latest_jsonl_path(spec.dataset.dataset_id), model_id=spec.model_id
+    )
+    regression = _regression_check(spec, metrics, last=last)
     if regression:
         raise SystemExit(
             f"deploy gate: regression vs last deployed {spec.model_id}: "
             + ", ".join(f"{k}={cur} < prev={prev}" for k, cur, prev in regression)
+        )
+    if last is not None:
+        prev_m = last.get("metrics", {})
+        prev_fitness = _fitness(
+            map50=float(prev_m.get("mAP50", 0.0)),
+            map50_95=float(prev_m.get("mAP50-95", 0.0)),
+        )
+        logger.info(
+            "yolo_forge.deploy regression gate ok: test_fitness=%.4f vs prev=%.4f "
+            "(Δ=%+.4f, version_tag=%s)",
+            deploy_fitness,
+            prev_fitness,
+            deploy_fitness - prev_fitness,
+            last.get("version_tag"),
+        )
+    else:
+        logger.info(
+            "yolo_forge.deploy: no prior deploy for %s — skipping regression gate",
+            spec.model_id,
         )
 
     src = staging / "train" / "weights" / "best.pt"
@@ -932,6 +1105,10 @@ def run_deploy(
                 if isinstance(v, (int, float))
             }
         )
+        # Fitness as a separate key so the MLflow Overview tab surfaces
+        # the optimisation score without having to compute it from the
+        # raw mAP fields.
+        log_metrics({"deploy/test_fitness": deploy_fitness})
 
     logger.info("yolo_forge.deploy: promoted weights → %s", stable)
     return entry
@@ -955,12 +1132,21 @@ def _check_thresholds(
 
 
 def _regression_check(
-    spec: YoloModelSpec, metrics: dict[str, float]
+    spec: YoloModelSpec,
+    metrics: dict[str, float],
+    *,
+    last: dict[str, Any] | None = None,
 ) -> list[tuple[str, float, float]]:
-    """Compare current metrics against the last LATEST.jsonl entry."""
-    last = read_last_entry(
-        latest_jsonl_path(spec.dataset.dataset_id), model_id=spec.model_id
-    )
+    """Compare current metrics against the last LATEST.jsonl entry.
+
+    Callers that already loaded the previous entry (e.g. ``run_deploy``
+    to log the baseline on success) can pass it via ``last=`` to avoid a
+    second disk read; omitted ⇒ resolved here for backwards compat.
+    """
+    if last is None:
+        last = read_last_entry(
+            latest_jsonl_path(spec.dataset.dataset_id), model_id=spec.model_id
+        )
     if last is None:
         return []
     prev_metrics = last.get("metrics", {})

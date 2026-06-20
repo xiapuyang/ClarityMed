@@ -44,6 +44,7 @@ next smoke's regression gate with its own previous output.
 from __future__ import annotations
 
 import dataclasses
+import gc
 import json
 import logging
 import shutil
@@ -133,6 +134,20 @@ def run_hparam(
         search_floors.floors,
         spec.task.composite_weights,
     )
+    # Resume handoff — when ``--task-id`` reuses an existing study, log how
+    # many trials are already in storage so the operator can see at a
+    # glance that TPE has a prior to work from (and that ``trials=N`` is
+    # additional, not total).
+    existing = study.trials
+    if existing:
+        by_state: dict[str, int] = {}
+        for t in existing:
+            by_state[t.state.name] = by_state.get(t.state.name, 0) + 1
+        logger.info(
+            "forge.search resume: existing_trials=%d by_state=%s",
+            len(existing),
+            by_state,
+        )
     study.optimize(
         _build_search_objective(spec, epochs=epochs, smoke=smoke, task_id=task_id),
         n_trials=trials,
@@ -151,6 +166,32 @@ def _build_search_objective(spec: ModelSpec, *, epochs: int, smoke: bool, task_i
     return _objective
 
 
+def _shutdown_dataloaders(*loaders) -> None:
+    """Synchronously kill ``persistent_workers=True`` DataLoader workers.
+
+    ``del loader`` only schedules ``__del__`` — under Optuna sweeps that
+    means trial N's workers may still be alive when N+1 spawns its own,
+    leaking pipe FDs until ``os.pipe()`` returns ``Errno 24``. Pruned
+    trials make it worse: ``TrialPruned`` raises out of the epoch loop,
+    bypassing any ``del`` at the function tail. We poke the private
+    ``_iterator._shutdown_workers`` because that's exactly what torch's
+    own ``__del__`` calls — no public hook for it.
+    """
+    for loader in loaders:
+        if loader is None:
+            continue
+        it = getattr(loader, "_iterator", None)
+        if it is None:
+            continue
+        shutdown = getattr(it, "_shutdown_workers", None)
+        if shutdown is not None:
+            try:
+                shutdown()
+            except Exception:
+                pass
+        loader._iterator = None
+
+
 def _run_search_trial(
     spec: ModelSpec,
     params: dict[str, Any],
@@ -163,6 +204,26 @@ def _run_search_trial(
     if smoke:
         logger.info("smoke trial: params=%s", params)
         return FEASIBLE_OFFSET + 0.5
+
+    # Per-trial FD-count heartbeat. With ``persistent_workers=True`` below
+    # we explicitly shut workers down in the ``finally`` block; if this
+    # number still climbs trial-over-trial the residual leak is somewhere
+    # other than DataLoader workers (MLflow nested runs are the next
+    # suspect) and we'll see it here.
+    try:
+        import psutil
+
+        logger.info(
+            "forge.search trial=%d fd_count=%d",
+            trial.number,
+            psutil.Process().num_fds(),
+        )
+    except ImportError:
+        pass
+    # Per-trial Optuna picks — surfaces ``class_weight`` and friends so
+    # the operator can correlate per-epoch behaviour with the scheme TPE
+    # chose, without digging into the MLflow run.
+    logger.info("forge.search trial=%d params=%s", trial.number, params)
 
     task = spec.task
     floors = task.phase_floors("search")
@@ -181,82 +242,117 @@ def _run_search_trial(
     # prefix marks the derived key as internal.
     hp = _build_hp_with_class_weight(params, splits, spec, device)
 
-    # ``num_workers=8`` + ``persistent_workers=True`` — RSNA's ~20k
-    # train images push the dataloader hard enough that worker count
-    # matters AND the spawn cost (Mac ``spawn`` start method re-
-    # imports torch / PIL / claritymed in each worker, ~1s each) was
-    # repeated every epoch with the old default. Pinning workers
-    # across epochs eliminates that. Smaller datasets (Kermany /
-    # BUSI / chest CT) pay a tiny bit more startup once but no per-
-    # epoch tax.
+    # Worker counts come from the dataset spec — tiny datasets (BUSI:
+    # ~780 images, ~40 batches/epoch) override the (8, 4) default down
+    # to (2, 2) because macOS ``spawn`` re-imports torch/PIL/claritymed
+    # in each worker (~1s each) and that cost dwarfs the actual
+    # forward/backward pass at this scale.
+    #
+    # ``persistent_workers=True`` everywhere — per-epoch worker respawn
+    # costs ~num_workers seconds (Mac ``spawn``) and that bill compounds
+    # fast over a multi-trial sweep. The cross-trial FD-leak concern is
+    # handled in the ``finally`` block below via ``_shutdown_dataloaders``
+    # + ``gc.collect()``.
+    train_workers, val_workers = spec.dataset.search_num_workers
     train_loader = _torch().utils.data.DataLoader(
         splits.train,
         batch_size=16,
         shuffle=True,
-        num_workers=8,
+        num_workers=train_workers,
         persistent_workers=True,
     )
     val_loader = _torch().utils.data.DataLoader(
         splits.val,
         batch_size=16,
         shuffle=False,
-        num_workers=8,
+        num_workers=val_workers,
         persistent_workers=True,
     )
 
     best_score = -float("inf")
     best_breakdown: dict[str, float] | None = None
-    with mlflow_run(
-        FEATURE,
-        spec.dataset.disease_id,
-        run_name=f"trial-{trial.number}",
-        run_type="train",
-        params=params,
-        nested=True,
-        tags={TASK_ID_TAG: task_id_of(trial)},
-    ):
-        for epoch in range(epochs):
-            train_loss = _train_one_epoch(
-                task, model, train_loader, optimizer, device, hp
-            )
-            _, breakdown = task.evaluate(
-                model, val_loader, device, labels=spec.dataset.labels, hp=hp
-            )
-            score = feasibility_aware_score(breakdown, floors, task.composite_weights)
-            if score > best_score:
-                best_score = score
-                best_breakdown = breakdown
-            log_metrics(
-                {
-                    "train/loss": train_loss,
-                    **{f"val/{k}": v for k, v in scalar_only(breakdown).items()},
-                },
-                step=epoch,
-            )
-            # Per-epoch heartbeat — long search trials (15-25 min/epoch
-            # on RSNA pre-optimisations) need progress visible mid-run,
-            # not just the once-per-trial summary that fires at the end.
-            logger.info(
-                "forge.search trial=%d epoch=%d train_loss=%.4f score=%.4f breakdown=%s",
-                trial.number,
-                epoch,
-                train_loss,
-                score,
-                {k: f"{v:.3f}" for k, v in breakdown.items()},
-            )
-            trial.report(score, epoch)
-            if trial.should_prune():
-                import optuna as _optuna
+    best_epoch = -1
+    try:
+        with mlflow_run(
+            FEATURE,
+            spec.dataset.disease_id,
+            run_name=f"trial-{trial.number}",
+            run_type="train",
+            params=params,
+            nested=True,
+            tags={TASK_ID_TAG: task_id_of(trial)},
+        ):
+            for epoch in range(epochs):
+                train_loss = _train_one_epoch(
+                    task, model, train_loader, optimizer, device, hp
+                )
+                _, breakdown = task.evaluate(
+                    model, val_loader, device, labels=spec.dataset.labels, hp=hp
+                )
+                score = feasibility_aware_score(
+                    breakdown, floors, task.composite_weights
+                )
+                improved = score > best_score
+                if improved:
+                    best_score = score
+                    best_breakdown = breakdown
+                    best_epoch = epoch
+                log_metrics(
+                    {
+                        "train/loss": train_loss,
+                        "val/score": score,
+                        **{f"val/{k}": v for k, v in scalar_only(breakdown).items()},
+                    },
+                    step=epoch,
+                )
+                # Mirror the running winner into ``val/best_*`` *every*
+                # epoch — single-point metrics get rendered as bar charts
+                # in MLflow, multi-point as a proper line. Carrying the
+                # running best forward also preserves Overview tab
+                # semantics (last logged value = selected epoch).
+                best_scalar = scalar_only(best_breakdown or breakdown)
+                log_metrics(
+                    {
+                        **{f"val/best_{k}": v for k, v in best_scalar.items()},
+                        "val/best_score": best_score,
+                        "val/best_epoch": float(best_epoch),
+                    },
+                    step=epoch,
+                )
+                # Per-epoch heartbeat — long search trials (15-25 min/epoch
+                # on RSNA pre-optimisations) need progress visible mid-run,
+                # not just the once-per-trial summary that fires at the end.
+                # ``best`` carries the running winner so the operator can
+                # see at a glance whether this epoch improved on the
+                # trial's best-so-far without scrolling back.
+                logger.info(
+                    "forge.search trial=%d epoch=%d train_loss=%.4f "
+                    "score=%.4f best=%.4f best_epoch=%d breakdown=%s",
+                    trial.number,
+                    epoch,
+                    train_loss,
+                    score,
+                    best_score,
+                    best_epoch,
+                    {k: f"{v:.3f}" for k, v in breakdown.items()},
+                )
+                trial.report(score, epoch)
+                if trial.should_prune():
+                    import optuna as _optuna
 
-                raise _optuna.TrialPruned()
-        if best_breakdown is not None:
-            trial.set_user_attr("breakdown", best_breakdown)
-    del train_loader, val_loader
+                    raise _optuna.TrialPruned()
+            if best_breakdown is not None:
+                trial.set_user_attr("breakdown", best_breakdown)
+    finally:
+        _shutdown_dataloaders(train_loader, val_loader)
+        del model, optimizer, train_loader, val_loader
+        gc.collect()
     feasible = best_score >= FEASIBLE_OFFSET
     logger.info(
-        "forge.search trial=%d score=%.4f feasible=%s breakdown=%s",
+        "forge.search trial=%d score=%.4f best_epoch=%d feasible=%s breakdown=%s",
         trial.number,
         best_score,
+        best_epoch,
         feasible,
         best_breakdown or {},
     )
@@ -316,6 +412,13 @@ def _load_best_hp(spec: ModelSpec, task_id: str) -> dict[str, Any]:
             f"Run the hparam search before production training."
         )
     best = max(completed, key=lambda t: float("-inf") if t.value is None else t.value)
+    logger.info(
+        "forge.search winner: trial=%d score=%.4f params=%s breakdown=%s",
+        best.number,
+        float(best.value) if best.value is not None else float("nan"),
+        dict(best.params),
+        best.user_attrs.get("breakdown") or {},
+    )
     return dict(best.params)
 
 
@@ -326,7 +429,12 @@ def _load_best_hp(spec: ModelSpec, task_id: str) -> dict[str, Any]:
 class _TrainingHistory:
     best_state_dict: Any
     best_val_composite: float
-    best_val_feasibility: float
+    # ``best_val_score`` is the feasibility-aware selection score:
+    # ``feasibility_aware_score(val_breakdown, train_floors, weights)`` =
+    # what early-stop tracks = what Optuna would have ranked. Distinct
+    # from ``best_val_composite`` (raw weighted sum) when an epoch
+    # missed a floor.
+    best_val_score: float
     best_val_feasible: bool
     best_epoch: int
     epochs_trained: int
@@ -335,6 +443,10 @@ class _TrainingHistory:
     curves: list[dict[str, float]]
     val_breakdown: dict[str, float]
     test_breakdown: dict[str, float]
+    # ``test_composite`` is the raw weighted-sum metric; ``test_score``
+    # is the feasibility-aware optimisation target computed against
+    # ``train_floors`` (matches the value Optuna would have ranked).
+    test_composite: float
     test_score: float
     mlflow_info: dict[str, str]
     # ``dataset_stats`` captures the train/val/test class distribution
@@ -381,13 +493,18 @@ def run_train(
         "params": params,
         "best_epoch": history.best_epoch,
         "best_val_composite": history.best_val_composite,
-        "best_val_feasibility": history.best_val_feasibility,
+        # ``best_val_score`` is the canonical name for the
+        # feasibility-aware selection score. ``best_val_feasible`` is
+        # the boolean derived from the same number against the floor
+        # offset.
+        "best_val_score": history.best_val_score,
         "best_val_feasible": history.best_val_feasible,
         "epochs_trained": history.epochs_trained,
         "early_stopped": history.early_stopped,
         "feasible_epoch_count": history.feasible_epoch_count,
         "val_breakdown": history.val_breakdown,
         "test_breakdown": history.test_breakdown,
+        "test_composite": history.test_composite,
         "test_score": history.test_score,
     }
     if history.dataset_stats is not None:
@@ -451,7 +568,7 @@ def _train_with_early_stopping(
         splits.val,
         batch_size=16,
         shuffle=False,
-        num_workers=8,
+        num_workers=4,
         persistent_workers=True,
     )
     test_loader = torch.utils.data.DataLoader(
@@ -479,7 +596,7 @@ def _train_with_early_stopping(
             val_loss, val_breakdown = task.evaluate(
                 model, val_loader, device, labels=spec.dataset.labels, hp=hp
             )
-            state.record(
+            score = state.record(
                 epoch,
                 train_loss,
                 val_loss,
@@ -491,12 +608,18 @@ def _train_with_early_stopping(
             )
             # Per-epoch heartbeat — train phase runs up to ``max_epochs``
             # (default 100) and silent epochs hide whether the loss is
-            # actually moving. Mirrors the search-phase line.
+            # actually moving. Mirrors the search-phase line: score is
+            # the feasibility-aware selection score (the thing
+            # early-stop tracks), best tracks the running winner.
             logger.info(
-                "forge.train epoch=%d train_loss=%.4f val_loss=%.4f breakdown=%s",
+                "forge.train epoch=%d train_loss=%.4f val_loss=%.4f "
+                "score=%.4f best=%.4f best_epoch=%d breakdown=%s",
                 epoch,
                 train_loss,
                 val_loss,
+                score,
+                state.best_selection_score,
+                state.best_epoch,
                 {k: f"{v:.3f}" for k, v in val_breakdown.items()},
             )
             if state.early_stopped:
@@ -516,7 +639,23 @@ def _train_with_early_stopping(
         _, test_breakdown = task.evaluate(
             model, test_loader, device, labels=spec.dataset.labels, hp=hp
         )
+        # Test score on ``train_floors`` — same formula Optuna optimised
+        # in search and ``state.best_selection_score`` tracked across
+        # epochs. ``composite`` is the raw weighted sum; ``score`` is the
+        # feasibility-aware optimisation target and the right thing to
+        # eyeball against the search winner and val/score curve.
+        test_score = feasibility_aware_score(
+            test_breakdown, train_floors, task.composite_weights
+        )
+        test_composite = test_breakdown.get("composite", 0.0)
         log_metrics({f"test/{k}": v for k, v in scalar_only(test_breakdown).items()})
+        log_metrics({"test/score": test_score})
+        logger.info(
+            "forge.train test eval: score=%.4f composite=%.4f breakdown=%s",
+            test_score,
+            test_composite,
+            {k: f"{v:.3f}" for k, v in test_breakdown.items()},
+        )
         mlflow_info = {
             "experiment_name": experiment_name(FEATURE, spec.dataset.disease_id),
             "run_id": run_id,
@@ -525,7 +664,7 @@ def _train_with_early_stopping(
     return _TrainingHistory(
         best_state_dict=state.best_state_dict,
         best_val_composite=state.best_val_composite,
-        best_val_feasibility=state.best_selection_score,
+        best_val_score=state.best_selection_score,
         best_val_feasible=state.best_selection_score >= FEASIBLE_OFFSET,
         best_epoch=state.best_epoch,
         epochs_trained=len(state.curves),
@@ -534,7 +673,8 @@ def _train_with_early_stopping(
         curves=state.curves,
         val_breakdown=state.best_val_breakdown,
         test_breakdown=test_breakdown,
-        test_score=test_breakdown.get("composite", 0.0),
+        test_composite=test_composite,
+        test_score=test_score,
         mlflow_info=mlflow_info,
         dataset_stats=dataset_stats,
     )
@@ -587,8 +727,12 @@ class _LoopState:
                 "epoch": epoch,
                 "train_loss": train_loss,
                 "val_loss": val_loss,
-                "val_score": val_composite,
-                "val_selection_score": score,
+                # ``val_composite`` = raw weighted sum (the breakdown
+                # number). ``val_score`` = feasibility-aware score =
+                # what early-stop tracks = what Optuna would have
+                # ranked. They differ when an epoch misses a floor.
+                "val_composite": val_composite,
+                "val_score": score,
                 "val_feasible": float(epoch_is_feasible),
                 **{f"val_{k}": v for k, v in val_scalar.items()},
             }
@@ -597,6 +741,7 @@ class _LoopState:
             {
                 "train/loss": train_loss,
                 "val/loss": val_loss,
+                "val/score": score,
                 **{f"val/{k}": v for k, v in val_scalar.items()},
             },
             step=epoch,
@@ -612,8 +757,24 @@ class _LoopState:
             self.epochs_since_improve = 0
         else:
             self.epochs_since_improve += 1
+        # Mirror the running winner into ``val/best_*`` *every* epoch
+        # (not just on improvement) so MLflow renders a proper monotone
+        # step-up time series instead of a single-point bar — single-
+        # point metrics flip its chart kind from line to bar. The last
+        # logged value is still the selected epoch's value, so Overview
+        # tab semantics are preserved.
+        best_val_scalar = scalar_only(self.best_val_breakdown)
+        log_metrics(
+            {
+                "val/best_score": self.best_selection_score,
+                "val/best_epoch": float(self.best_epoch),
+                **{f"val/best_{k}": v for k, v in best_val_scalar.items()},
+            },
+            step=epoch,
+        )
         if self.epochs_since_improve >= patience:
             self.early_stopped = True
+        return score
 
 
 def _smoke_hp(spec: ModelSpec) -> dict[str, Any]:
@@ -642,15 +803,15 @@ def _smoke_training_history(
         "epoch": 0,
         "train_loss": 0.42,
         "val_loss": 0.40,
-        "val_score": breakdown.get("composite", 0.0),
-        "val_selection_score": selection_score,
+        "val_composite": breakdown.get("composite", 0.0),
+        "val_score": selection_score,
         "val_feasible": 1.0,
         **{f"val_{k}": v for k, v in breakdown.items()},
     }
     return _TrainingHistory(
         best_state_dict={"smoke": True, "backbone": params.get("backbone")},
         best_val_composite=breakdown.get("composite", 0.0),
-        best_val_feasibility=selection_score,
+        best_val_score=selection_score,
         best_val_feasible=selection_score >= FEASIBLE_OFFSET,
         best_epoch=0,
         epochs_trained=1,
@@ -659,7 +820,8 @@ def _smoke_training_history(
         curves=[smoke_curve],
         val_breakdown=breakdown,
         test_breakdown=breakdown,
-        test_score=breakdown.get("composite", 0.0),
+        test_composite=breakdown.get("composite", 0.0),
+        test_score=selection_score,
         mlflow_info={"experiment_name": "smoke", "run_id": "smoke"},
     )
 
@@ -761,6 +923,19 @@ def run_tune(
         json.loads(manifest_path.read_text(encoding="utf-8"))
     )
     task_id = _read_task_id(staging_dir)
+    # Handoff from train — what the previous phase produced that we're
+    # tuning against. ``val_breakdown`` is what the train floor gate saw;
+    # logging it here lets you sanity-check that tune is starting from
+    # the right checkpoint without diffing eval_metrics.json by hand.
+    train_val = _read_staging_breakdown(staging_dir, "val_breakdown") or {}
+    train_test = _read_staging_breakdown(staging_dir, "test_breakdown") or {}
+    logger.info(
+        "forge.tune handoff: staging=%s task_id=%s train_val=%s train_test=%s",
+        staging_dir,
+        task_id,
+        train_val,
+        train_test,
+    )
 
     if smoke:
         best = spec.task.smoke_tuned_params()
@@ -786,8 +961,23 @@ def run_tune(
         json.dumps(updated.model_dump(mode="json"), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    # Tune phase floors == deploy floors (see ``FloorBundle.for_phase``),
+    # so persisted ``tuned_*_score`` is computed once here and is the
+    # exact value the deploy regression gate will compare against.
+    tune_floors = spec.task.phase_floors("tune")
+    tuned_val_score = feasibility_aware_score(
+        tuned_val, tune_floors, spec.task.composite_weights
+    )
+    tuned_test_score_persist = feasibility_aware_score(
+        tuned_test, tune_floors, spec.task.composite_weights
+    )
     _update_eval_metrics(
-        staging_dir, best=best, tuned_val=tuned_val, tuned_test=tuned_test
+        staging_dir,
+        best=best,
+        tuned_val=tuned_val,
+        tuned_test=tuned_test,
+        tuned_val_score=tuned_val_score,
+        tuned_test_score=tuned_test_score_persist,
     )
     _append_provenance(
         spec, staging_dir, best=best, mlflow_info=mlflow_info, task_id=task_id
@@ -874,8 +1064,32 @@ def _run_inference_study(
                 trials,
                 summary["worst_deficits"],
             )
+        # Mirror the search/train pattern: ``score`` is the actual
+        # optimisation target (``study.best_trial.value``), ``composite``
+        # is just the weighted-sum component. Logging both makes
+        # tune↔search↔train numbers directly comparable.
+        tuned_val_score = feasibility_aware_score(
+            tuned_val, floors, task.composite_weights
+        )
+        tuned_test_score = feasibility_aware_score(
+            tuned_test, floors, task.composite_weights
+        )
         log_metrics({f"val/{k}": v for k, v in scalar_only(tuned_val).items()})
         log_metrics({f"test/{k}": v for k, v in scalar_only(tuned_test).items()})
+        log_metrics({"val/score": tuned_val_score, "test/score": tuned_test_score})
+        logger.info(
+            "forge.tune winner: trial=%d val_score=%.4f test_score=%.4f "
+            "val_composite=%.4f test_composite=%.4f params=%s "
+            "val_breakdown=%s test_breakdown=%s",
+            study.best_trial.number,
+            tuned_val_score,
+            tuned_test_score,
+            tuned_val.get("composite", 0.0),
+            tuned_test.get("composite", 0.0),
+            best,
+            {k: f"{v:.3f}" for k, v in scalar_only(tuned_val).items()},
+            {k: f"{v:.3f}" for k, v in scalar_only(tuned_test).items()},
+        )
         mlflow_info = {
             "experiment_name": experiment_name(FEATURE, spec.dataset.disease_id),
             "run_id": mlflow_handle.info.run_id,
@@ -892,8 +1106,22 @@ def _with_tuned_inference(manifest: Manifest, tuned) -> Manifest:
     return Manifest.model_validate(data)
 
 
-def _update_eval_metrics(staging_dir: Path, *, best, tuned_val, tuned_test) -> None:
-    """Splice the tuned breakdowns into ``eval_metrics.json``."""
+def _update_eval_metrics(
+    staging_dir: Path,
+    *,
+    best,
+    tuned_val,
+    tuned_test,
+    tuned_val_score: float,
+    tuned_test_score: float,
+) -> None:
+    """Splice the tuned breakdowns into ``eval_metrics.json``.
+
+    ``tuned_*_score`` is the canonical feasibility-aware score computed
+    against deploy floors; ``tuned_*_composite`` is the raw weighted
+    sum. Both persisted so the regression gate uses score while the
+    composite remains visible for analysis.
+    """
     eval_path = staging_dir / "eval_metrics.json"
     existing = (
         json.loads(eval_path.read_text(encoding="utf-8")) if eval_path.exists() else {}
@@ -903,7 +1131,10 @@ def _update_eval_metrics(staging_dir: Path, *, best, tuned_val, tuned_test) -> N
             "tuned_params": best,
             "tuned_val_breakdown": tuned_val,
             "tuned_test_breakdown": tuned_test,
-            "tuned_test_score": tuned_test.get("composite", 0.0),
+            "tuned_val_composite": tuned_val.get("composite", 0.0),
+            "tuned_test_composite": tuned_test.get("composite", 0.0),
+            "tuned_val_score": tuned_val_score,
+            "tuned_test_score": tuned_test_score,
         }
     )
     eval_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -1004,6 +1235,16 @@ def run_deploy(
         raise SystemExit(f"{eval_path} missing tuned_test_breakdown — run tune first.")
 
     floors_map = spec.task.deploy_floors_map()
+    # Handoff from tune — what's actually about to be floor-gated. Logging
+    # both the breakdown and the floor map together makes a failed deploy
+    # gate self-explanatory: the next log line is the gate decision.
+    logger.info(
+        "forge.deploy handoff: staging=%s tuned_test=%s floors=%s tuned_inference=%s",
+        staging_dir,
+        tuned_test,
+        floors_map,
+        manifest.tuned_inference.model_dump(mode="json"),
+    )
     if force:
         logger.warning(
             "deploy --force: skipping floor gate. floors=%s actual=%s. Do NOT use in production.",
@@ -1029,11 +1270,24 @@ def run_deploy(
         )
         return staging_dir
 
+    # ``tuned_test_score`` is the canonical feasibility-aware score
+    # persisted by tune. The regression gate compares this against the
+    # previously-deployed model's score (not raw composite) so the gate
+    # honours the same feasibility cliff Optuna optimised across.
+    candidate_score = float(eval_metrics["tuned_test_score"])
+    candidate_composite = float(eval_metrics.get("tuned_test_composite", 0.0))
     previous = read_latest_entry(
         latest_jsonl_path(spec.dataset.disease_id), model_id=spec.model_id
     )
+    # Resolved once so the regression gate and the audit entry both see
+    # the same baseline value — legacy rows are reconstructed from the
+    # preserved breakdown so the comparison stays on a single scale.
+    previous_score = (
+        _previous_tuned_test_score(previous, spec) if previous is not None else None
+    )
     if previous is not None:
-        _check_regression(previous, tuned_test)
+        assert previous_score is not None
+        _check_regression(previous["version_tag"], previous_score, candidate_score)
 
     # Validate registry-side wiring up-front, so a missing
     # configs/vision.yaml entry fails BEFORE copytree / symlink — not
@@ -1068,27 +1322,71 @@ def run_deploy(
         provenance=provenance,
         eval_metrics=eval_metrics,
         tuned_test=tuned_test,
-        previous_score=(
-            previous["metrics"]["tuned_test_composite"] if previous else None
-        ),
+        candidate_score=candidate_score,
+        candidate_composite=candidate_composite,
+        previous_score=previous_score,
     )
     append_latest_entry(latest_jsonl_path(spec.dataset.disease_id), entry)
     logger.info("appended LATEST.jsonl entry for version %s", tag)
     return stable_path
 
 
-def _check_regression(previous: dict[str, Any], tuned_test: dict[str, float]) -> None:
-    """Candidate must beat the previously-deployed composite for the same model_id."""
-    prev_score = float(previous["metrics"]["tuned_test_composite"])
-    candidate_score = float(tuned_test["composite"])
+def _previous_tuned_test_score(previous: dict[str, Any], spec: ModelSpec) -> float:
+    """Read the previous entry's feasibility-aware test score.
+
+    New entries persist ``tuned_test_score`` directly. Older entries
+    (deployed before the rename) only have ``tuned_test_breakdown`` plus
+    a now-defunct ``test_score`` key that stored the raw composite —
+    a different scale from today's feasibility-aware score. Comparing
+    them directly would mix ``[0, 1]`` against ``(1, 2] ∪ (-inf, 0]``
+    and silently mis-rank.
+
+    For those legacy rows we recompute the score from the preserved
+    breakdown using today's tune-phase floors and composite weights —
+    the same formula the candidate was just scored with — so candidate
+    and baseline land on the same scale. ``tuned_test_breakdown`` is
+    preserved verbatim across the schema change, so the metric inputs
+    themselves are stable.
+
+    Missing both keys means the entry pre-dates breakdown persistence;
+    fail loud rather than silently skipping the regression gate.
+    """
+    metrics = previous["metrics"]
+    if "tuned_test_score" in metrics:
+        return float(metrics["tuned_test_score"])
+    breakdown = metrics.get("tuned_test_breakdown")
+    if not breakdown:
+        raise SystemExit(
+            "regression gate: previous LATEST.jsonl entry "
+            f"{previous.get('version_tag')!r} has no ``tuned_test_score`` "
+            "and no ``tuned_test_breakdown`` to reconstruct from — entry "
+            "pre-dates the current scoring schema. Re-deploy or remove "
+            "the stale entry."
+        )
+    floors = spec.task.phase_floors("tune")
+    return feasibility_aware_score(breakdown, floors, spec.task.composite_weights)
+
+
+def _check_regression(
+    previous_version: str, prev_score: float, candidate_score: float
+) -> None:
+    """Candidate must beat the previously-deployed score for the same model_id.
+
+    Compares feasibility-aware scores (not raw composites): a candidate
+    with higher composite that misses a deploy floor loses to a
+    previously-deployed feasible model, matching what search / train /
+    tune optimised for. ``FEASIBLE_OFFSET`` puts every feasible score in
+    ``(1, 2]`` and every infeasible one in ``(-inf, 0]``, so the
+    comparison naturally honours the floor cliff.
+    """
     if candidate_score <= prev_score:
         raise SystemExit(
-            f"regression gate failed: candidate tuned_test_composite="
+            f"regression gate failed: candidate tuned_test_score="
             f"{candidate_score:.4f} ≤ active {prev_score:.4f} "
-            f"(version {previous['version_tag']}). Re-tune or retrain."
+            f"(version {previous_version}). Re-tune or retrain."
         )
     logger.info(
-        "regression gate ok: %.4f > active %.4f (Δ=%+.4f)",
+        "regression gate ok: tuned_test_score=%.4f > active %.4f (Δ=%+.4f)",
         candidate_score,
         prev_score,
         candidate_score - prev_score,
@@ -1116,12 +1414,13 @@ def _build_latest_entry(
     provenance: dict[str, Any],
     eval_metrics: dict[str, Any],
     tuned_test: dict[str, float],
+    candidate_score: float,
+    candidate_composite: float,
     previous_score: float | None,
 ) -> dict[str, Any]:
     """Compose the JSONL row carrying the full deploy audit trail."""
     from datetime import UTC, datetime
 
-    candidate_score = float(tuned_test["composite"])
     delta = (
         candidate_score - float(previous_score) if previous_score is not None else None
     )
@@ -1157,15 +1456,18 @@ def _build_latest_entry(
         "best_inference_params": provenance.get("tune", {}).get("params"),
         "metrics": {
             "best_val_score": eval_metrics.get("best_val_score"),
+            "best_val_composite": eval_metrics.get("best_val_composite"),
             "test_score": eval_metrics.get("test_score"),
+            "test_composite": eval_metrics.get("test_composite"),
             "tuned_val_breakdown": eval_metrics.get("tuned_val_breakdown"),
             "tuned_test_breakdown": tuned_test,
-            "tuned_test_composite": candidate_score,
+            "tuned_test_score": candidate_score,
+            "tuned_test_composite": candidate_composite,
             "best_epoch": eval_metrics.get("best_epoch"),
             "early_stopped": eval_metrics.get("early_stopped"),
             "epochs_trained": eval_metrics.get("epochs_trained"),
         },
-        "previous_tuned_test_composite": previous_score,
+        "previous_tuned_test_score": previous_score,
         "delta": delta,
         "floors_passed": {
             name: tuned_test.get(name, 0.0) >= floor
@@ -1329,10 +1631,24 @@ def _build_hp_with_class_weight(
 # === lazy torch handle =================================================
 
 
+_TORCH_MP_CONFIGURED = False
+
+
 def _torch():
+    global _TORCH_MP_CONFIGURED
     try:
         import torch  # noqa: F401
 
+        if not _TORCH_MP_CONFIGURED:
+            # macOS default ``file_descriptor`` strategy routes every
+            # worker→main tensor through a Unix-socket FD; under Optuna
+            # sweeps those FDs accumulate across trials and trip the
+            # per-process ceiling (``kern.maxfilesperproc``). ``file_system``
+            # uses /tmp-backed shm instead, dropping the leak vector.
+            import torch.multiprocessing as _tmp
+
+            _tmp.set_sharing_strategy("file_system")
+            _TORCH_MP_CONFIGURED = True
         return torch
     except ImportError as exc:
         raise SystemExit(

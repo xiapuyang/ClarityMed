@@ -18,7 +18,15 @@ from claritymed.ingest.vision.forge.common import (
     read_latest_entry,
     replace_model_fields,
 )
-from claritymed.ingest.vision.forge.framework import _build_latest_entry
+from claritymed.ingest.vision.forge.framework import (
+    _build_latest_entry,
+    _check_regression,
+    _previous_tuned_test_score,
+)
+from claritymed.ingest.vision.forge.scoring import (
+    FEASIBLE_OFFSET,
+    feasibility_aware_score,
+)
 
 _FLOORS = UNET_RESNET50.task.deploy_floors_map()
 FLOOR_MALIGNANT_RECALL = _FLOORS["malignant_recall"]
@@ -76,9 +84,9 @@ def test_read_latest_entry_returns_last_row_skipping_blank_lines(
 ) -> None:
     log = tmp_path / "LATEST.jsonl"
     log.write_text(
-        '{"version_tag": "v1", "metrics": {"tuned_test_composite": 0.55}}\n'
+        '{"version_tag": "v1", "metrics": {"tuned_test_score": 0.55}}\n'
         "\n"
-        '{"version_tag": "v2", "metrics": {"tuned_test_composite": 0.62}}\n',
+        '{"version_tag": "v2", "metrics": {"tuned_test_score": 0.62}}\n',
         encoding="utf-8",
     )
     entry = read_latest_entry(log)
@@ -90,9 +98,9 @@ def test_read_latest_entry_filters_by_model_id_when_provided(tmp_path: Path) -> 
     """Per-(dataset, model_id) regression gate compares apples-to-apples."""
     log = tmp_path / "LATEST.jsonl"
     log.write_text(
-        '{"version_tag": "v1", "model_id": "modelA", "metrics": {"tuned_test_composite": 0.55}}\n'
-        '{"version_tag": "v2", "model_id": "modelB", "metrics": {"tuned_test_composite": 0.62}}\n'
-        '{"version_tag": "v3", "model_id": "modelA", "metrics": {"tuned_test_composite": 0.58}}\n',
+        '{"version_tag": "v1", "model_id": "modelA", "metrics": {"tuned_test_score": 0.55}}\n'
+        '{"version_tag": "v2", "model_id": "modelB", "metrics": {"tuned_test_score": 0.62}}\n'
+        '{"version_tag": "v3", "model_id": "modelA", "metrics": {"tuned_test_score": 0.58}}\n',
         encoding="utf-8",
     )
     assert read_latest_entry(log, model_id="modelA")["version_tag"] == "v3"
@@ -143,6 +151,8 @@ def test_build_latest_entry_captures_full_provenance() -> None:
         provenance=provenance,
         eval_metrics=eval_metrics,
         tuned_test=tuned_test,
+        candidate_score=0.63,
+        candidate_composite=tuned_test["composite"],
         previous_score=0.55,
     )
     assert entry["mlflow"]["tracking_uri"] == "sqlite:///tracking/mlflow.db"
@@ -174,10 +184,85 @@ def test_build_latest_entry_delta_is_none_for_first_deploy() -> None:
             "dice": 0.8,
             "accuracy": 0.9,
         },
+        candidate_score=0.7,
+        candidate_composite=0.7,
         previous_score=None,
     )
     assert entry["delta"] is None
-    assert entry["previous_tuned_test_composite"] is None
+    assert entry["previous_tuned_test_score"] is None
+
+
+# --- regression gate legacy-row fallback --------------------------------
+
+
+def test_previous_tuned_test_score_uses_persisted_score_when_present() -> None:
+    """New entries persist ``tuned_test_score`` directly — read it verbatim."""
+    previous = {"metrics": {"tuned_test_score": 1.42, "test_score": 0.99}}
+    assert _previous_tuned_test_score(previous, UNET_RESNET50) == 1.42
+
+
+def test_previous_tuned_test_score_reconstructs_legacy_entry_from_breakdown() -> None:
+    """Legacy rows have ``tuned_test_breakdown`` but no ``tuned_test_score``.
+
+    Old scoring persisted the raw composite under ``test_score`` (range
+    ``[0, 1]``); current scoring is feasibility-aware (``(1, 2]`` if
+    feasible, ``≤ 0`` if not). Comparing the two scales directly would
+    silently mis-rank, so the fallback recomputes from the preserved
+    breakdown using today's tune-phase floors + composite weights — the
+    exact formula the candidate is scored with.
+    """
+    # A feasible legacy breakdown (clears every deploy floor) should
+    # reconstruct into the feasible region: FEASIBLE_OFFSET + composite.
+    feasible_breakdown = {
+        "malignant_recall": 0.90,
+        "accuracy": 0.88,
+        "dice": 0.75,
+    }
+    legacy = {
+        "version_tag": "old-feasible-v1",
+        "metrics": {
+            "test_score": 0.6 * 0.90 + 0.4 * 0.75,  # historical raw composite
+            "tuned_test_breakdown": feasible_breakdown,
+        },
+    }
+    reconstructed = _previous_tuned_test_score(legacy, UNET_RESNET50)
+    expected = feasibility_aware_score(
+        feasible_breakdown,
+        UNET_RESNET50.task.phase_floors("tune"),
+        UNET_RESNET50.task.composite_weights,
+    )
+    assert reconstructed == pytest.approx(expected)
+    assert reconstructed > FEASIBLE_OFFSET  # feasible region
+
+
+def test_previous_tuned_test_score_fails_loud_when_breakdown_missing() -> None:
+    """No score and no breakdown → fail loud, not silent skip.
+
+    Falling back to "skip regression gate" would let any candidate
+    deploy unchecked against a known-old-but-quality baseline. The
+    operator should know they need to re-deploy or clean ``LATEST.jsonl``.
+    """
+    pre_breakdown_entry = {
+        "version_tag": "ancient",
+        "metrics": {"some_unrelated_key": 0.5},
+    }
+    with pytest.raises(SystemExit, match="pre-dates"):
+        _previous_tuned_test_score(pre_breakdown_entry, UNET_RESNET50)
+
+
+def test_check_regression_blocks_infeasible_candidate_vs_feasible_baseline() -> None:
+    """The whole reason this gate exists — drove the recent fix.
+
+    A candidate that missed a clinical floor (score in ``(-inf, 0]``)
+    must not overwrite a previously-feasible baseline (score in
+    ``(1, 2]``). Floor-cliff comparison falls out of the score scale.
+    """
+    with pytest.raises(SystemExit, match="regression gate failed"):
+        _check_regression(
+            previous_version="old-feasible-v1",
+            prev_score=1.75,
+            candidate_score=-0.28,
+        )
 
 
 # --- YAML surgical patch -------------------------------------------------

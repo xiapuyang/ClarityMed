@@ -11,6 +11,7 @@ subcommand with ``--quick --skip-search``.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -239,12 +240,75 @@ def test_run_deploy_promotes_weights_and_appends_audit(
     assert last["metrics"]["mAP50"] == 0.50
 
 
+# --- tune floor-aware objective ----------------------------------------
+
+
+def test_tune_floors_empty_eval_thresholds_keeps_bare_fitness_ranking() -> None:
+    """No floors → score = FEASIBLE_OFFSET + fitness, ranking unchanged.
+
+    Empty ``eval_thresholds`` must degrade cleanly: every trial counts
+    as feasible, so swapping in ``feasibility_aware_score`` can only
+    add a constant ``FEASIBLE_OFFSET`` on top of the raw composite and
+    never reorder candidates relative to the legacy fitness-only ranking.
+    """
+    spec = _stub_spec(eval_thresholds={})
+    floors = framework._tune_floors(spec)
+    weak = {"mAP50": 0.20, "mAP50-95": 0.10, "image_recall": 0.30}
+    strong = {"mAP50": 0.80, "mAP50-95": 0.70, "image_recall": 0.95}
+
+    weak_score = framework.feasibility_aware_score(
+        weak, floors, framework._TUNE_COMPOSITE_WEIGHTS
+    )
+    strong_score = framework.feasibility_aware_score(
+        strong, floors, framework._TUNE_COMPOSITE_WEIGHTS
+    )
+    weak_fit = framework._fitness(map50=weak["mAP50"], map50_95=weak["mAP50-95"])
+    strong_fit = framework._fitness(map50=strong["mAP50"], map50_95=strong["mAP50-95"])
+
+    assert weak_score == pytest.approx(framework.FEASIBLE_OFFSET + weak_fit)
+    assert strong_score == pytest.approx(framework.FEASIBLE_OFFSET + strong_fit)
+    assert strong_score > weak_score
+    assert weak_score >= framework.FEASIBLE_OFFSET  # feasible region
+
+
+def test_tune_floors_penalise_infeasible_trial_below_high_fitness_one() -> None:
+    """Floor-violating trials must lose to any floor-clearing trial.
+
+    The bug this guards against: an mAP-heavy winner with
+    ``image_recall`` below the clinical floor used to win tune purely
+    on fitness; the deploy gate then rejected it. Floor-aware scoring
+    pushes the infeasible trial below ``FEASIBLE_OFFSET`` so a feasible
+    one (even with lower raw fitness) wins.
+    """
+    spec = _stub_spec(eval_thresholds={"image_recall": 0.85, "mAP50": 0.4})
+    floors = framework._tune_floors(spec)
+    # High mAP but recall under floor — current BUSI-style failure mode.
+    high_map_low_recall = {
+        "mAP50": 0.78,
+        "mAP50-95": 0.55,
+        "image_recall": 0.62,
+    }
+    # Lower mAP but clears every floor — what we actually want shipped.
+    feasible = {"mAP50": 0.60, "mAP50-95": 0.40, "image_recall": 0.88}
+
+    bad = framework.feasibility_aware_score(
+        high_map_low_recall, floors, framework._TUNE_COMPOSITE_WEIGHTS
+    )
+    good = framework.feasibility_aware_score(
+        feasible, floors, framework._TUNE_COMPOSITE_WEIGHTS
+    )
+
+    assert bad < 0  # infeasible region
+    assert good > framework.FEASIBLE_OFFSET  # feasible region
+    assert good > bad  # the whole point — feasible wins regardless of fitness
+
+
 # --- ultralytics smoke (skipped unless extra installed) ----------------
 
 
 @pytest.mark.skipif(
-    not pytest.importorskip("ultralytics", reason="yolo-forge extra not installed"),
-    reason="",
+    importlib.util.find_spec("ultralytics") is None,
+    reason="yolo-forge extra not installed",
 )
 def test_ultralytics_yolo_class_importable() -> None:
     """Lightweight check that the extra wires up — full train is operator-driven.

@@ -84,6 +84,11 @@ class ClassificationTask(Task):
         self.critical_metric_name = critical_metric_name
         self.composite_weights = dict(composite_weights)
         self.floors = floors
+        self._validate_metric_keys()
+
+    @property
+    def breakdown_metric_keys(self) -> frozenset[str]:
+        return frozenset({self.critical_metric_name, "accuracy"})
 
     # --- model factory --------------------------------------------------
 

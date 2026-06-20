@@ -75,6 +75,11 @@ class ClassificationSegmentationTask(Task):
         self.critical_metric_name = critical_metric_name
         self.composite_weights = dict(composite_weights)
         self.floors = floors
+        self._validate_metric_keys()
+
+    @property
+    def breakdown_metric_keys(self) -> frozenset[str]:
+        return frozenset({self.critical_metric_name, "accuracy", "dice"})
 
     # --- model factory --------------------------------------------------
 
@@ -102,7 +107,13 @@ class ClassificationSegmentationTask(Task):
         import torch.nn.functional as F
 
         cls_logits, seg_logits = outputs
-        cls_loss = F.cross_entropy(cls_logits, targets["labels"])
+        # ``_class_weight_tensor`` is stashed in hp by the framework when
+        # the trial picked an inverse_freq / sqrt_inv_freq scheme on
+        # ``class_weight``. Absent → plain unweighted CE (historical
+        # default). Mirrors the read in ``ClassificationTask.compute_loss``.
+        cls_loss = F.cross_entropy(
+            cls_logits, targets["labels"], weight=hp.get("_class_weight_tensor")
+        )
         seg_loss = F.binary_cross_entropy_with_logits(seg_logits, targets["masks"])
         return cls_loss + float(hp.get("seg_loss_weight", 1.0)) * seg_loss
 

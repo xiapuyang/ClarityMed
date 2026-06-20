@@ -131,6 +131,13 @@ class DatasetSpec:
     * ``build_splits`` — callable returning a :class:`Splits`. Takes no
       args (reaches into ``download``-resolved paths internally) so the
       framework can call it identically for every dataset.
+    * ``search_num_workers`` — ``(train, val)`` DataLoader worker counts
+      used during the Optuna hparam-search phase. Default ``(8, 4)``
+      matches RSNA-scale datasets (~20k images). Tiny datasets like
+      BUSI (~780 images, ~40 batches/epoch) should override to ``(2, 2)``
+      — fewer workers means less per-epoch spawn cost under macOS
+      ``spawn`` start method, which dominates wall-clock when the
+      forward/backward pass itself is short.
     """
 
     disease_id: str
@@ -141,6 +148,7 @@ class DatasetSpec:
     download_slug: str
     dataset_subdir: str
     build_splits: Callable[[], Splits]
+    search_num_workers: tuple[int, int] = (8, 4)
 
     def label_index(self, label: str) -> int:
         """Resolve a class name to its index. Raises ``ValueError`` on miss."""

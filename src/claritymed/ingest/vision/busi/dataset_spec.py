@@ -70,6 +70,10 @@ BUSI_DATASET = DatasetSpec(
     download_slug=KAGGLE_SLUG,
     dataset_subdir=DATASET_SUBDIR,
     build_splits=_build_splits,
+    # BUSI is tiny (~780 images, ~40 train batches at bs=16). The (8, 4)
+    # default is sized for RSNA-scale (~20k images) where worker spawn
+    # cost amortises across many batches per epoch. Here it dominated.
+    search_num_workers=(2, 2),
 )
 
 

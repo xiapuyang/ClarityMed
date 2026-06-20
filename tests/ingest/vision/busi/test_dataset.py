@@ -8,6 +8,7 @@ the extra is installed; the smoke tests here cover the pure-Python
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -21,9 +22,19 @@ from claritymed.ingest.vision.busi.dataset import (
 
 
 def _make_fake_busi(
-    root: Path, *, n_benign: int, n_malignant: int, n_normal: int
+    root: Path,
+    *,
+    n_benign: int,
+    n_malignant: int,
+    n_normal: int,
+    aux_masks: dict[str, int] | None = None,
 ) -> Path:
-    """Mirror BUSI's on-disk layout: per-class folders with image + mask pairs."""
+    """Mirror BUSI's on-disk layout: per-class folders with image + mask pairs.
+
+    ``aux_masks`` maps an image stem (e.g. ``"benign (1)"``) to the
+    number of auxiliary ``_mask_<n>.png`` files to create alongside the
+    primary mask, mirroring BUSI's multi-lesion samples.
+    """
     base = root / "Dataset_BUSI_with_GT"
     base.mkdir()
     counts = {
@@ -31,14 +42,18 @@ def _make_fake_busi(
         "malignant": n_malignant,
         "normal": n_normal,
     }
+    aux = aux_masks or {}
     for label, n in counts.items():
         class_dir = base / label
         class_dir.mkdir()
         for i in range(n):
-            (class_dir / f"{label} ({i + 1}).png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
-            (class_dir / f"{label} ({i + 1})_mask.png").write_bytes(
-                b"\x89PNG\r\n\x1a\nfake"
-            )
+            stem = f"{label} ({i + 1})"
+            (class_dir / f"{stem}.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            (class_dir / f"{stem}_mask.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            for k in range(aux.get(stem, 0)):
+                (class_dir / f"{stem}_mask_{k + 1}.png").write_bytes(
+                    b"\x89PNG\r\n\x1a\nfake"
+                )
     return base
 
 
@@ -58,6 +73,34 @@ def test_discover_drops_orphan_images_without_masks(tmp_path):
     assert len(samples) == 5
 
 
+def test_discover_attaches_aux_masks_to_primary_sample(tmp_path, caplog):
+    """Auxiliary ``_mask_<n>.png`` files attach to the parent sample
+    instead of being mistaken for images and dropped. Real BUSI carries
+    a few multi-lesion samples — without this they'd emit a spurious
+    "mask missing" warning and the extra lesion's pixels would never
+    reach the loss.
+    """
+    root = _make_fake_busi(
+        tmp_path,
+        n_benign=2,
+        n_malignant=1,
+        n_normal=1,
+        aux_masks={"benign (1)": 2},  # 1 primary + 2 aux → 3 masks total
+    )
+    with caplog.at_level(logging.WARNING):
+        samples = discover(root)
+    # Exactly 4 samples; aux masks did NOT spawn fake samples of their own.
+    assert len(samples) == 4
+    multi = next(s for s in samples if s.image_path.name == "benign (1).png")
+    assert len(multi.mask_paths) == 3
+    assert multi.mask_paths[0].name == "benign (1)_mask.png"
+    assert {p.name for p in multi.mask_paths[1:]} == {
+        "benign (1)_mask_1.png",
+        "benign (1)_mask_2.png",
+    }
+    assert not any("mask missing" in r.message for r in caplog.records)
+
+
 def test_discover_raises_when_class_dir_missing(tmp_path):
     base = tmp_path / "Dataset_BUSI_with_GT"
     base.mkdir()
@@ -66,22 +109,19 @@ def test_discover_raises_when_class_dir_missing(tmp_path):
         discover(base)
 
 
+def _sample(stem_prefix: str, i: int, label: int) -> BUSISample:
+    return BUSISample(
+        Path(f"{stem_prefix} ({i}).png"),
+        (Path(f"{stem_prefix} ({i})_mask.png"),),
+        label,
+    )
+
+
 def test_stratified_split_keeps_every_label_in_every_split():
     samples = (
-        [
-            BUSISample(Path(f"benign ({i}).png"), Path(f"benign ({i})_mask.png"), 0)
-            for i in range(20)
-        ]
-        + [
-            BUSISample(
-                Path(f"malignant ({i}).png"), Path(f"malignant ({i})_mask.png"), 1
-            )
-            for i in range(20)
-        ]
-        + [
-            BUSISample(Path(f"normal ({i}).png"), Path(f"normal ({i})_mask.png"), 2)
-            for i in range(20)
-        ]
+        [_sample("benign", i, 0) for i in range(20)]
+        + [_sample("malignant", i, 1) for i in range(20)]
+        + [_sample("normal", i, 2) for i in range(20)]
     )
     splits = stratified_split(samples, train_frac=0.7, val_frac=0.15)
     for split_name in ("train", "val", "test"):
@@ -90,12 +130,8 @@ def test_stratified_split_keeps_every_label_in_every_split():
 
 
 def test_stratified_split_is_deterministic():
-    samples = [
-        BUSISample(Path(f"benign ({i}).png"), Path(f"benign ({i})_mask.png"), 0)
-        for i in range(10)
-    ] + [
-        BUSISample(Path(f"malignant ({i}).png"), Path(f"malignant ({i})_mask.png"), 1)
-        for i in range(10)
+    samples = [_sample("benign", i, 0) for i in range(10)] + [
+        _sample("malignant", i, 1) for i in range(10)
     ]
     a = stratified_split(samples, seed="busi-v1")
     b = stratified_split(samples, seed="busi-v1")

@@ -3,7 +3,10 @@
 BUSI (Dataset_BUSI_with_GT) ships ~780 ultrasound images in three
 class subdirectories: ``benign/``, ``malignant/``, ``normal/``. Each
 class folder pairs ``<name>.png`` with ``<name>_mask.png`` (binary
-lesion mask; ``normal`` images carry an all-zero mask).
+lesion mask; ``normal`` images carry an all-zero mask). A handful of
+multi-lesion samples carry additional ``<name>_mask_<n>.png`` files —
+those get OR-fused into the GT mask at load time so the second/third
+lesion still contributes to dice supervision and eval.
 
 Splitting is deterministic and stratified by class so the rare
 ``normal`` class (~10% of samples) shows up in every split — a naive
@@ -38,15 +41,21 @@ DEFAULT_INPUT_SIZE = 256
 
 @dataclass(frozen=True)
 class BUSISample:
-    """One on-disk pair (image + mask) with its class label."""
+    """One on-disk image with its GT mask(s) and class label.
+
+    ``mask_paths`` holds the primary ``<name>_mask.png`` at index 0; any
+    additional ``<name>_mask_<n>.png`` files (multi-lesion samples)
+    follow in glob order. The loader OR-fuses them into a single binary
+    mask at ``__getitem__`` time.
+    """
 
     image_path: Path
-    mask_path: Path
+    mask_paths: tuple[Path, ...]
     label: int  # index into BUSI_LABELS
 
 
 def discover(root: Path) -> list[BUSISample]:
-    """Walk ``Dataset_BUSI_with_GT/`` and return every (image, mask) pair.
+    """Walk ``Dataset_BUSI_with_GT/`` and return every image with its mask(s).
 
     Raises FileNotFoundError when the root doesn't contain the three
     expected class subdirectories — surfaces a clear error before
@@ -60,15 +69,26 @@ def discover(root: Path) -> list[BUSISample]:
                 f"missing BUSI class directory: {class_dir}. Did `download` complete?"
             )
         for image_path in sorted(class_dir.glob("*.png")):
-            if image_path.name.endswith("_mask.png"):
+            stem = image_path.stem
+            # Skip the primary mask ("<stem>_mask.png") and auxiliary masks
+            # for multi-lesion samples ("<stem>_mask_1.png", etc). Without
+            # the "_mask_" clause aux masks slipped through as fake images
+            # and got dropped with a spurious "mask missing" warning.
+            if stem.endswith("_mask") or "_mask_" in stem:
                 continue
-            mask_path = class_dir / f"{image_path.stem}_mask.png"
-            if not mask_path.exists():
-                # BUSI's normal class still ships a mask (all-zero). Drop the
-                # sample on miss so a corrupt download doesn't poison training.
+            primary_mask = class_dir / f"{stem}_mask.png"
+            if not primary_mask.exists():
+                # BUSI's normal class still ships an (all-zero) mask. Drop
+                # the sample on miss so a corrupt download doesn't poison
+                # training.
                 logger.warning("dropping %s — mask missing", image_path)
                 continue
-            samples.append(BUSISample(image_path, mask_path, class_idx))
+            # Glob pattern "_mask_*.png" requires an underscore after "mask",
+            # so the primary "_mask.png" is not re-matched here.
+            aux_masks = sorted(class_dir.glob(f"{stem}_mask_*.png"))
+            samples.append(
+                BUSISample(image_path, (primary_mask, *aux_masks), class_idx)
+            )
     if not samples:
         raise RuntimeError(f"no BUSI samples found under {root}")
     return samples
@@ -133,15 +153,20 @@ try:
                 .convert("RGB")
                 .resize((self._size, self._size), _Image.BILINEAR)
             )
-            mask = (
-                _Image.open(sample.mask_path)
-                .convert("L")
-                .resize((self._size, self._size), _Image.NEAREST)
-            )
             img_arr = _np.asarray(image, dtype=_np.float32) / 255.0  # HWC
-            mask_arr = (_np.asarray(mask, dtype=_np.float32) > 127).astype(
-                _np.float32
-            )  # HW
+            # OR-fuse every mask file. Multi-lesion samples carry one
+            # mask per lesion; the model only needs a single "lesion vs
+            # background" target, so union them at load time.
+            mask_arr: _np.ndarray | None = None
+            for mp in sample.mask_paths:
+                m = (
+                    _Image.open(mp)
+                    .convert("L")
+                    .resize((self._size, self._size), _Image.NEAREST)
+                )
+                m_arr = (_np.asarray(m, dtype=_np.float32) > 127).astype(_np.float32)
+                mask_arr = m_arr if mask_arr is None else _np.maximum(mask_arr, m_arr)
+            assert mask_arr is not None  # discover() guarantees ≥1 mask
             img_t = _torch.from_numpy(img_arr).permute(2, 0, 1)  # C H W
             mask_t = _torch.from_numpy(mask_arr).unsqueeze(0)  # 1 H W
             return img_t, mask_t, sample.label
