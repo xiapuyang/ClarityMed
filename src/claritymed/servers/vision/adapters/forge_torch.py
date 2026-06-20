@@ -69,7 +69,11 @@ def build_classifier_model(
             "torch / torchvision not installed — `uv sync --extra vision-server`."
         ) from exc
 
-    if backbone == "resnet50":
+    if backbone == "resnet18":
+        weights = tvm.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        inner = tvm.resnet18(weights=weights)
+        inner.fc = nn.Linear(inner.fc.in_features, num_classes)
+    elif backbone == "resnet50":
         weights = tvm.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
         inner = tvm.resnet50(weights=weights)
         inner.fc = nn.Linear(inner.fc.in_features, num_classes)
@@ -84,7 +88,7 @@ def build_classifier_model(
     else:
         raise ValueError(
             f"unknown classifier backbone {backbone!r}; expected "
-            "'resnet50' / 'efficientnet_b0' / 'efficientnet_b3'."
+            "'resnet18' / 'resnet50' / 'efficientnet_b0' / 'efficientnet_b3'."
         )
 
     class _ClsModel(nn.Module):

@@ -79,9 +79,21 @@ RESNET50_V1 = ModelSpec(
         floors=_RSNA_PNEUMONIA_FLOORS,
     ),
     hparam_space={
-        "backbone": Categorical(("resnet50",)),
+        # Backbone is ``resnet18`` despite the file/model_id naming —
+        # picked over resnet50 for the search/train wall-clock budget
+        # (~3x faster forward+backward at 128² input). ``model_id``
+        # stays ``rsna_pneumonia_resnet50_v1`` so MLflow / artifact
+        # lineage and the configs/vision.yaml entry don't churn for
+        # what's still an exploration. Promote to resnet18 in the
+        # name (and add a sibling resnet50 spec, if needed) before
+        # the first deploy.
+        "backbone": Categorical(("resnet18",)),
         "lr": LogUniform(1e-5, 5e-3),
         "weight_decay": LogUniform(1e-6, 1e-3),
+        # 3.44:1 train imbalance with pneumonia as the *minority* (~22%)
+        # and the critical class — ``inverse_freq`` directly boosts
+        # critical_recall here, unlike Kermany where they fight.
+        "class_weight": Categorical(("none", "inverse_freq", "sqrt_inv_freq")),
     },
     inference_space={
         "temperature": LogUniform(0.5, 3.0),

@@ -44,12 +44,17 @@ else:  # pragma: no cover — import-time stubs
 # trained on either can score the other without label-tuple gymnastics.
 RSNA_PNEUMONIA_LABELS: tuple[str, ...] = ("normal", "pneumonia")
 Split = Literal["train", "val", "test"]
-DEFAULT_INPUT_SIZE = 256
+# 128 over the historical 256 — RSNA's ~20k 1024² PNGs were dominating
+# wall-clock at the dataset's PIL.BILINEAR resize layer. At 128² the
+# pre-resize cache also fits comfortably under ~500MB while the full-
+# res png_cache/ stays available for the YOLO adapter.
+DEFAULT_INPUT_SIZE = 128
 
 # On-disk filenames in the extraction root.
 _LABELS_CSV = "stage_2_train_labels.csv"
 _TRAIN_DICOMS_DIR = "stage_2_train_images"
 _PNG_CACHE_DIR = "png_cache"
+_RESIZED_CACHE_DIR_FMT = "png_cache_{size}"
 
 
 @dataclass(frozen=True)
@@ -135,6 +140,62 @@ def _convert_dicom_to_png(dicom_path: Path, png_path: Path) -> None:
 
 def _png_cache_path(root: Path, patient_id: str) -> Path:
     return root / _PNG_CACHE_DIR / f"{patient_id}.png"
+
+
+def _resized_cache_path(root: Path, patient_id: str, input_size: int) -> Path:
+    return root / _RESIZED_CACHE_DIR_FMT.format(size=input_size) / f"{patient_id}.png"
+
+
+def _ensure_resized_png(src_png: Path, dst_png: Path, input_size: int) -> None:
+    """Resize ``src_png`` once → ``dst_png``; idempotent on existing files."""
+    from PIL import Image
+
+    if dst_png.is_file():
+        return
+    dst_png.parent.mkdir(parents=True, exist_ok=True)
+    img = (
+        Image.open(src_png)
+        .convert("RGB")
+        .resize((input_size, input_size), Image.BILINEAR)
+    )
+    img.save(dst_png, format="PNG")
+
+
+def ensure_resized_cache(
+    samples: list[RsnaPneumoniaSample],
+    root: Path,
+    *,
+    input_size: int,
+) -> list[RsnaPneumoniaSample]:
+    """Pre-resize each sample's PNG once; return samples pointing at the cache.
+
+    Reads the full-res PNG already cached by :func:`discover`, writes a
+    sibling ``png_cache_<size>/`` PNG, and returns samples whose
+    ``image_path`` points at the resized version. Subsequent runs short-
+    circuit when every resized PNG already exists.
+
+    Per-epoch ``PIL.Image.resize`` on ~14k 1024² → 128² calls was the
+    dominant cost in the classification training loop; pre-resizing
+    once amortises it across every epoch and every trial. The full-res
+    cache stays untouched so the YOLO adapter (which reads
+    ``png_cache/`` directly) is unaffected.
+    """
+    out: list[RsnaPneumoniaSample] = []
+    built = 0
+    for sample in samples:
+        resized = _resized_cache_path(root, sample.image_path.stem, input_size)
+        if not resized.is_file():
+            _ensure_resized_png(sample.image_path, resized, input_size)
+            built += 1
+        out.append(RsnaPneumoniaSample(image_path=resized, label=sample.label))
+    if built > 0:
+        logger.info(
+            "rsna_pneumonia: built %d resized PNG(s) at %dx%d",
+            built,
+            input_size,
+            input_size,
+        )
+    return out
 
 
 # --- discovery ----------------------------------------------------------
@@ -252,20 +313,18 @@ try:
     from torch.utils.data import Dataset as _DatasetBase
 
     class RsnaPneumoniaDataset(_DatasetBase):  # type: ignore[misc, valid-type]
-        def __init__(self, items: list[RsnaPneumoniaSample], size: int) -> None:
+        def __init__(self, items: list[RsnaPneumoniaSample]) -> None:
             self._items = items
-            self._size = size
 
         def __len__(self) -> int:
             return len(self._items)
 
         def __getitem__(self, idx: int):
             sample = self._items[idx]
-            image = (
-                _Image.open(sample.image_path)
-                .convert("RGB")  # monochrome → 3-channel for ImageNet backbones
-                .resize((self._size, self._size), _Image.BILINEAR)
-            )
+            # PNG is pre-resized to the target size by
+            # ``ensure_resized_cache``; no per-batch resize → workers
+            # bottleneck on PIL decode + numpy convert only.
+            image = _Image.open(sample.image_path).convert("RGB")
             img_arr = _np.asarray(image, dtype=_np.float32) / 255.0
             img_t = _torch.from_numpy(img_arr).permute(2, 0, 1)
             return img_t, sample.label
@@ -274,12 +333,15 @@ except ImportError:  # pragma: no cover — torch-less envs hit discover/split o
     RsnaPneumoniaDataset = None  # type: ignore[assignment, misc]
 
 
-def build_dataset(
-    samples: list[RsnaPneumoniaSample],
-    *,
-    input_size: int = DEFAULT_INPUT_SIZE,
-):
-    """Construct an ``RsnaPneumoniaDataset`` for these samples."""
+def build_dataset(samples: list[RsnaPneumoniaSample]):
+    """Construct an ``RsnaPneumoniaDataset`` for these samples.
+
+    The target image size is baked into the resized cache by
+    :func:`ensure_resized_cache`, so this constructor takes no
+    ``input_size`` argument — call ``ensure_resized_cache(samples,
+    root, input_size=N)`` first so every PNG referenced here is
+    already the right shape.
+    """
     if RsnaPneumoniaDataset is None:
         raise SystemExit("torch not installed — run `uv sync --extra vision-server`.")
-    return RsnaPneumoniaDataset(samples, input_size)
+    return RsnaPneumoniaDataset(samples)

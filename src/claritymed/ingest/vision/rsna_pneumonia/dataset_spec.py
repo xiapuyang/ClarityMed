@@ -31,9 +31,11 @@ from __future__ import annotations
 from claritymed.core.vision.schemas import LabelMeta
 from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits
 from claritymed.ingest.vision.rsna_pneumonia.dataset import (
+    DEFAULT_INPUT_SIZE,
     RSNA_PNEUMONIA_LABELS,
     build_dataset,
     discover,
+    ensure_resized_cache,
     stratified_split,
 )
 from claritymed.ingest.vision.rsna_pneumonia.download import (
@@ -76,6 +78,7 @@ def _build_splits() -> Splits:
             "first (requires accepting competition rules on Kaggle)."
         )
     samples = discover(root)
+    samples = ensure_resized_cache(samples, root, input_size=DEFAULT_INPUT_SIZE)
     raw = stratified_split(samples)
     return Splits(
         train=build_dataset(raw["train"]),

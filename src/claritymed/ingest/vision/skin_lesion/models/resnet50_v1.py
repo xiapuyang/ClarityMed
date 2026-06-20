@@ -64,6 +64,11 @@ RESNET50_V1 = ModelSpec(
         # Weight decay range is mild — large values shrink ImageNet
         # priors and undo most of the pretrain gain on a small dataset.
         "weight_decay": LogUniform(1e-6, 1e-3),
+        # 6:1 imbalance with seborrheic_keratosis (N=56 in train) at the
+        # tail — plain CE gives 0% recall on it. ``inverse_freq`` /
+        # ``sqrt_inv_freq`` let Optuna trade per-class recall against
+        # overall accuracy.
+        "class_weight": Categorical(("none", "inverse_freq", "sqrt_inv_freq")),
     },
     inference_space={
         "temperature": LogUniform(0.5, 3.0),

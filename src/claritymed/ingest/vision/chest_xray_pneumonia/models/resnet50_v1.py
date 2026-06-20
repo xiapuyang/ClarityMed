@@ -77,6 +77,13 @@ RESNET50_V1 = ModelSpec(
         # Mild weight decay range — large values shrink ImageNet priors
         # and undo most of the pretrain gain on a smallish dataset.
         "weight_decay": LogUniform(1e-6, 1e-3),
+        # Per-class loss weighting. ``none`` = plain CE (current
+        # baseline). ``inverse_freq`` ∝ 1/N_c; ``sqrt_inv_freq`` is the
+        # gentler ∝ 1/√N_c variant that's safer when boosting the
+        # minority class would erode critical-class recall (here
+        # pneumonia is the majority + critical class, so over-weighting
+        # normal can drop pneumonia_recall — sqrt is the middle option).
+        "class_weight": Categorical(("none", "inverse_freq", "sqrt_inv_freq")),
     },
     inference_space={
         "temperature": LogUniform(0.5, 3.0),

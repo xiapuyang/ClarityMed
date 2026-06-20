@@ -124,12 +124,21 @@ class DetectionSplits:
     ``YOLO.train(data=...)``. Counts are reported separately so the
     framework can fail loud if a split came out empty (e.g., upstream
     archive shrank).
+
+    ``prep_info`` is a dataset-specific metadata bucket that the prepare
+    step fills with any settings that shape the on-disk data and must
+    be preserved in artifacts for later audit (e.g. RSNA's
+    ``negative_ratio`` mode + per-split pos/neg breakdown). The
+    framework treats it as opaque JSON-serialisable data and merges it
+    into ``eval_metrics.json["dataset_info"]`` so it's reachable from
+    any deployed checkpoint without re-reading prepare-time logs.
     """
 
     data_yaml_path: Path
     train_count: int
     val_count: int
     test_count: int
+    prep_info: dict[str, Any] = field(default_factory=dict)
 
     def assert_non_empty(self) -> None:
         """Raise ``RuntimeError`` if any split has zero samples."""

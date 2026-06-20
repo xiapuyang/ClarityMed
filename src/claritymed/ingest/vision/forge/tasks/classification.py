@@ -113,7 +113,11 @@ class ClassificationTask(Task):
     def compute_loss(self, outputs, targets: dict[str, Any], hp: dict[str, Any]):
         import torch.nn.functional as F
 
-        return F.cross_entropy(outputs, targets["labels"])
+        # ``_class_weight_tensor`` is stashed in hp by the framework when
+        # the trial picked an inverse_freq / sqrt_inv_freq scheme.
+        # Absent → plain unweighted CE (the historical default).
+        weight = hp.get("_class_weight_tensor")
+        return F.cross_entropy(outputs, targets["labels"], weight=weight)
 
     # --- per-epoch evaluation -----------------------------------------
 
@@ -126,17 +130,30 @@ class ClassificationTask(Task):
         labels: tuple[str, ...],
         hp: dict[str, Any],
     ) -> tuple[float, dict[str, float]]:
-        """Forward over ``loader``; return ``(mean_loss, breakdown)``."""
+        """Forward over ``loader``; return ``(mean_loss, breakdown)``.
+
+        Breakdown includes the legacy keys (``<critical>_recall``,
+        ``accuracy``, ``composite``) plus per-class precision / recall /
+        support under ``class/<label>/{precision,recall,support}``. The
+        per-class slash-keys are scalar so downstream consumers
+        (mlflow log_metrics, floors, composite) keep working unchanged.
+        """
         import torch
         import torch.nn.functional as F
 
         critical_idx = {labels.index(lbl) for lbl in self.critical_labels}
+        num_classes = len(labels)
 
         model.eval()
         correct = total = 0
         tp = fn = 0
         loss_sum = 0.0
         n_batches = 0
+        # Per-class confusion-matrix counters. Indexed by class index.
+        cm_tp = [0] * num_classes
+        cm_fp = [0] * num_classes
+        cm_fn = [0] * num_classes
+        cm_support = [0] * num_classes
         with torch.no_grad():
             for batch in loader:
                 imgs, targets = self.unpack_batch(batch)
@@ -159,6 +176,13 @@ class ClassificationTask(Task):
                 correct += int((preds == gt).sum())
                 total += int(gt.numel())
                 n_batches += 1
+                for c in range(num_classes):
+                    gt_is_c = gt == c
+                    pr_is_c = preds == c
+                    cm_tp[c] += int((gt_is_c & pr_is_c).sum())
+                    cm_fp[c] += int((~gt_is_c & pr_is_c).sum())
+                    cm_fn[c] += int((gt_is_c & ~pr_is_c).sum())
+                    cm_support[c] += int(gt_is_c.sum())
 
         critical_recall = tp / max(tp + fn, 1)
         accuracy = correct / max(total, 1)
@@ -166,10 +190,13 @@ class ClassificationTask(Task):
             self.composite_weights.get(self.critical_metric_name, 0.0) * critical_recall
             + self.composite_weights.get("accuracy", 0.0) * accuracy
         )
-        breakdown = {
+        breakdown: dict[str, Any] = {
             self.critical_metric_name: critical_recall,
             "accuracy": accuracy,
             "composite": composite,
+            "per_class": _per_class_breakdown(
+                labels, cm_tp=cm_tp, cm_fp=cm_fp, cm_fn=cm_fn, cm_support=cm_support
+            ),
         }
         return loss_sum / max(n_batches, 1), breakdown
 
@@ -235,11 +262,26 @@ class ClassificationTask(Task):
             self.composite_weights.get(self.critical_metric_name, 0.0) * critical_recall
             + self.composite_weights.get("accuracy", 0.0) * accuracy
         )
-        return {
+        cm_tp: list[int] = []
+        cm_fp: list[int] = []
+        cm_fn: list[int] = []
+        cm_support: list[int] = []
+        for c in range(len(labels)):
+            gt_is_c = gt == c
+            pr_is_c = preds == c
+            cm_tp.append(int((gt_is_c & pr_is_c).sum()))
+            cm_fp.append(int((~gt_is_c & pr_is_c).sum()))
+            cm_fn.append(int((gt_is_c & ~pr_is_c).sum()))
+            cm_support.append(int(gt_is_c.sum()))
+        breakdown: dict[str, Any] = {
             self.critical_metric_name: critical_recall,
             "accuracy": accuracy,
             "composite": composite,
+            "per_class": _per_class_breakdown(
+                labels, cm_tp=cm_tp, cm_fp=cm_fp, cm_fn=cm_fn, cm_support=cm_support
+            ),
         }
+        return breakdown
 
     # --- manifest tuned_inference block --------------------------------
 
@@ -292,6 +334,36 @@ class ClassificationTask(Task):
             "confidence_medium_max": 0.80,
             "tta_default": True,
         }
+
+
+def _per_class_breakdown(
+    labels: tuple[str, ...],
+    *,
+    cm_tp: list[int],
+    cm_fp: list[int],
+    cm_fn: list[int],
+    cm_support: list[int],
+) -> dict[str, dict[str, float]]:
+    """Nested per-class confusion stats: ``{label: {recall, precision, support}}``.
+
+    Returned shape is grouped per class for readability in
+    ``eval_metrics.json``. Callers stash this under the ``per_class``
+    key in the top-level breakdown — downstream consumers that walk the
+    breakdown for scalars (``log_metrics``, ``check_floors``,
+    ``feasibility_aware_score``) must filter out non-scalar values; the
+    helper :func:`claritymed.ingest.vision.forge.common.scalar_only`
+    centralises that.
+    """
+    out: dict[str, dict[str, float]] = {}
+    for c, lbl in enumerate(labels):
+        recall = cm_tp[c] / max(cm_tp[c] + cm_fn[c], 1)
+        precision = cm_tp[c] / max(cm_tp[c] + cm_fp[c], 1)
+        out[lbl] = {
+            "recall": recall,
+            "precision": precision,
+            "support": float(cm_support[c]),
+        }
+    return out
 
 
 __all__ = ["ClassificationTask"]

@@ -59,6 +59,10 @@ RESNET50_V1 = ModelSpec(
         "backbone": Categorical(("resnet50", "efficientnet_b0", "efficientnet_b3")),
         "lr": LogUniform(1e-5, 5e-3),
         "weight_decay": LogUniform(1e-6, 1e-3),
+        # Already 1:1 balanced — Optuna will likely settle on ``none``,
+        # but the option is here for consistency with the other
+        # classification specs.
+        "class_weight": Categorical(("none", "inverse_freq", "sqrt_inv_freq")),
     },
     inference_space={
         "temperature": LogUniform(0.5, 3.0),

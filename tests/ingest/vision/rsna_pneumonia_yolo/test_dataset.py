@@ -57,14 +57,39 @@ def test_split_patients_is_stratified_and_deterministic() -> None:
         **{f"pos_{i:03d}": [object()] for i in range(20)},
         **{f"neg_{i:03d}": [] for i in range(20)},
     }
-    splits = _split_patients(by_patient)  # type: ignore[arg-type]
+    splits = _split_patients(by_patient, negative_ratio=None)  # type: ignore[arg-type]
     # 70/15/15 of 20 per class.
     assert sum(1 for p in splits["train"] if p.startswith("pos")) == 14
     assert sum(1 for p in splits["val"] if p.startswith("pos")) == 3
     assert sum(1 for p in splits["test"] if p.startswith("pos")) == 3
     # Determinism: a second call returns identical assignments.
-    splits2 = _split_patients(by_patient)  # type: ignore[arg-type]
+    splits2 = _split_patients(by_patient, negative_ratio=None)  # type: ignore[arg-type]
     assert splits == splits2
+
+
+def test_split_patients_negative_ratio_modes() -> None:
+    """Verify the three canonical negative_ratio modes shape negatives correctly."""
+    # 10 pos + 30 neg → natural 3:1 imbalance per-split.
+    by_patient = {
+        **{f"pos_{i:03d}": [object()] for i in range(10)},
+        **{f"neg_{i:03d}": [] for i in range(30)},
+    }
+    # keep_all → all 30 negatives end up in splits, total 40 patients
+    keep = _split_patients(by_patient, negative_ratio=None)  # type: ignore[arg-type]
+    total_neg = sum(1 for split in keep.values() for p in split if p.startswith("neg"))
+    assert total_neg == 30
+    # drop → zero negatives
+    drop = _split_patients(by_patient, negative_ratio=0.0)  # type: ignore[arg-type]
+    assert all(not p.startswith("neg") for split in drop.values() for p in split)
+    # balanced → per-split negatives == positives in that split
+    bal = _split_patients(by_patient, negative_ratio=1.0)  # type: ignore[arg-type]
+    for split in ("train", "val", "test"):
+        n_pos = sum(1 for p in bal[split] if p.startswith("pos"))  # type: ignore[index]
+        n_neg = sum(1 for p in bal[split] if p.startswith("neg"))  # type: ignore[index]
+        assert n_pos == n_neg, f"{split}: pos={n_pos} != neg={n_neg}"
+    # Determinism within a mode.
+    bal2 = _split_patients(by_patient, negative_ratio=1.0)  # type: ignore[arg-type]
+    assert bal == bal2
 
 
 # --- end-to-end prepare -------------------------------------------------
@@ -77,7 +102,7 @@ def test_prepare_writes_yolo_layout_and_normalises_bboxes(tmp_path: Path) -> Non
     )
 
     splits = prepare_rsna_pneumonia_yolo(raw_root=raw)
-    prepared = raw / "yolo"
+    prepared = raw / "yolo_neg1"  # default negative_ratio=1.0 → balanced
 
     # --- data.yaml shape
     data = yaml.safe_load(splits.data_yaml_path.read_text())
@@ -116,7 +141,7 @@ def test_prepare_creates_image_symlinks_into_png_cache(tmp_path: Path) -> None:
     """Images directory holds symlinks pointing at the shared png_cache PNGs."""
     raw = make_fake_rsna_root(tmp_path / "raw", n_normal=4, n_pneumonia=4)
     prepare_rsna_pneumonia_yolo(raw_root=raw)
-    prepared = raw / "yolo"
+    prepared = raw / "yolo_neg1"  # default negative_ratio=1.0 → balanced
 
     images = (
         list((prepared / "images" / "train").glob("*.png"))
@@ -144,7 +169,7 @@ def test_prepare_label_dim_uses_actual_image_size(tmp_path: Path) -> None:
     """Normalisation uses real PNG dimensions, not a hardcoded size."""
     raw = make_fake_rsna_root(tmp_path / "raw", n_normal=2, n_pneumonia=2)
     prepare_rsna_pneumonia_yolo(raw_root=raw)
-    prepared = raw / "yolo"
+    prepared = raw / "yolo_neg1"  # default negative_ratio=1.0 → balanced
 
     # Find any positive label file and verify the normalisation matches
     # the synthetic image dimensions (FIXTURE_COLS × FIXTURE_ROWS).

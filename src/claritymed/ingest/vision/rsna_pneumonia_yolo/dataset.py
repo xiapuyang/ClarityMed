@@ -55,8 +55,25 @@ _PNG_CACHE_DIR = "png_cache"
 
 # YOLO-format prepared root lives next to the raw archive so the
 # image symlinks remain valid no matter where the YOLO tooling reads
-# from.
-_PREPARED_SUBDIR = "yolo"
+# from. Per-mode subdir name (see :func:`_prepared_subdir`) so the
+# three negative_ratio modes coexist on disk and switching between
+# them doesn't invalidate the other modes' caches.
+_PREPARED_SUBDIR_PREFIX = "yolo"
+
+
+def _prepared_subdir(negative_ratio: float | None) -> str:
+    """Per-mode prepared-dir name. Keep the three canonical modes
+    short and human-readable; arbitrary floats get a stringified suffix
+    so non-default ratios also cache deterministically.
+    """
+    if negative_ratio is None:
+        return f"{_PREPARED_SUBDIR_PREFIX}_negall"
+    if negative_ratio == 0.0:
+        return f"{_PREPARED_SUBDIR_PREFIX}_neg0"
+    if negative_ratio == 1.0:
+        return f"{_PREPARED_SUBDIR_PREFIX}_neg1"
+    return f"{_PREPARED_SUBDIR_PREFIX}_neg{negative_ratio:g}"
+
 
 # Same seed string as the classification stratified_split — keeping
 # splits aligned across pipelines is the whole point of this fork.
@@ -120,17 +137,31 @@ def _parse_bboxes(csv_path: Path) -> dict[str, list[_BBox]]:
 
 def _split_patients(
     by_patient: dict[str, list[_BBox]],
+    *,
+    negative_ratio: float | None,
 ) -> dict[Split, list[str]]:
     """Hash-based stratified split that matches the classification adapter.
 
     The same ``_SPLIT_SEED`` + same per-class hash ranking + same
     fractions as :func:`rsna_pneumonia.dataset.stratified_split`
-    guarantees patient-level parity across pipelines.
+    guarantees patient-level parity across pipelines for the **positive**
+    cohort. Negatives are then capped per-split according to
+    ``negative_ratio``:
+
+    * ``None`` — keep every negative (3.44:1 on full RSNA).
+    * ``0.0`` — drop all negatives. Train sees only positive cases.
+    * ``> 0.0`` — cap negatives per split at ``ratio × n_positives_in_split``.
+      Capping is deterministic (hash-ranked), so re-running with the
+      same ratio gives the same patient set.
+
+    Positive patients are always kept in their cross-pipeline-aligned
+    splits; only the negative cohort is subsampled.
     """
     pos = sorted(pid for pid, bboxes in by_patient.items() if bboxes)
     neg = sorted(pid for pid, bboxes in by_patient.items() if not bboxes)
     out: dict[Split, list[str]] = {"train": [], "val": [], "test": []}
-    for group in (pos, neg):
+    pos_per_split: dict[Split, int] = {"train": 0, "val": 0, "test": 0}
+    for is_pos, group in ((True, pos), (False, neg)):
         ranked = sorted(
             group,
             key=lambda pid: hashlib.sha256(f"{_SPLIT_SEED}|{pid}".encode()).hexdigest(),
@@ -138,10 +169,36 @@ def _split_patients(
         n = len(ranked)
         n_train = int(n * _TRAIN_FRAC)
         n_val = int(n * _VAL_FRAC)
-        out["train"].extend(ranked[:n_train])
-        out["val"].extend(ranked[n_train : n_train + n_val])
-        out["test"].extend(ranked[n_train + n_val :])
+        per_split: dict[Split, list[str]] = {
+            "train": ranked[:n_train],
+            "val": ranked[n_train : n_train + n_val],
+            "test": ranked[n_train + n_val :],
+        }
+        if is_pos:
+            for split, ids in per_split.items():
+                pos_per_split[split] = len(ids)
+                out[split].extend(ids)
+        else:
+            for split, ids in per_split.items():
+                kept = _cap_negatives(ids, pos_per_split[split], negative_ratio)
+                out[split].extend(kept)
     return out
+
+
+def _cap_negatives(
+    neg_ids: list[str], n_positives: int, negative_ratio: float | None
+) -> list[str]:
+    """Cap negative ids in one split per the ratio policy.
+
+    ``neg_ids`` is already hash-ranked (deterministic), so taking the
+    prefix ``[:cap]`` is reproducible across runs.
+    """
+    if negative_ratio is None:
+        return list(neg_ids)
+    if negative_ratio <= 0.0:
+        return []
+    cap = int(round(negative_ratio * n_positives))
+    return list(neg_ids[:cap])
 
 
 # --- YOLO label + symlink emit ------------------------------------------
@@ -226,6 +283,7 @@ def prepare_rsna_pneumonia_yolo(
     raw_root: Path | None = None,
     class_names: tuple[str, ...] = ("pneumonia",),
     max_samples: int | None = None,
+    negative_ratio: float | None = 1.0,
 ) -> DetectionSplits:
     """Materialise RSNA Pneumonia in YOLO format. Idempotent.
 
@@ -233,6 +291,25 @@ def prepare_rsna_pneumonia_yolo(
     (``CLARITYMED_HOME/data/vision/rsna_pneumonia``). ``max_samples``
     caps how many patients flow through — useful for tests / quick
     runs without paying for the full ~28k DICOM decode.
+
+    ``negative_ratio`` controls how many negative (no-bbox) images are
+    kept per split — RSNA's natural neg:pos ratio is 3.44:1 and that
+    image-level imbalance dilutes the positive training signal. Three
+    canonical modes (any positive float is also accepted):
+
+    * ``None`` — keep every negative (the natural ~3.44:1, was the
+      original behavior before this knob existed).
+    * ``0.0`` — drop all negatives. Only positive (pneumonia-bearing)
+      images flow through. Fastest training; the model never learns
+      "what normal looks like" so inference-time false positives may
+      rise on truly normal scans.
+    * ``1.0`` (default) — cap negatives at ``1 × n_positives`` per split
+      (balanced). Halves training compute vs ``None`` while keeping
+      enough normals for the model to learn suppression.
+
+    Each setting writes to its own prepared dir (``yolo_neg0`` /
+    ``yolo_neg1`` / ``yolo_negall``) so switching modes doesn't
+    invalidate the other modes' caches.
     """
     root = (raw_root or (rsna_pneumonia_data_root() / DATASET_SUBDIR)).resolve()
     csv_path = root / _LABELS_CSV
@@ -255,12 +332,16 @@ def prepare_rsna_pneumonia_yolo(
         keep = set(sorted(by_patient)[:max_samples])
         by_patient = {pid: bboxes for pid, bboxes in by_patient.items() if pid in keep}
 
-    splits = _split_patients(by_patient)
+    splits = _split_patients(by_patient, negative_ratio=negative_ratio)
 
-    prepared_root = root / _PREPARED_SUBDIR
+    prepared_root = root / _prepared_subdir(negative_ratio)
     prepared_root.mkdir(parents=True, exist_ok=True)
 
     counts: dict[Split, int] = {"train": 0, "val": 0, "test": 0}
+    # Per-split pos/neg breakdown tracked during the write loop (vs
+    # derived from ``splits``) so a PNG cache miss doesn't ghost-count.
+    pos_counts: dict[Split, int] = {"train": 0, "val": 0, "test": 0}
+    neg_counts: dict[Split, int] = {"train": 0, "val": 0, "test": 0}
     for split, patient_ids in splits.items():
         for patient_id in patient_ids:
             src_png = root / _PNG_CACHE_DIR / f"{patient_id}.png"
@@ -282,6 +363,10 @@ def prepare_rsna_pneumonia_yolo(
             _write_yolo_label(dst_label, by_patient[patient_id], w, h)
 
             counts[split] += 1
+            if by_patient[patient_id]:
+                pos_counts[split] += 1
+            else:
+                neg_counts[split] += 1
 
     data_yaml = _write_data_yaml(prepared_root, class_names)
     logger.info(
@@ -291,11 +376,23 @@ def prepare_rsna_pneumonia_yolo(
         counts["val"],
         counts["test"],
     )
+    prep_info = {
+        "negative_ratio": negative_ratio,
+        "prepared_subdir": _prepared_subdir(negative_ratio),
+        "splits_breakdown": {
+            split: {
+                "positive": pos_counts[split],
+                "negative": neg_counts[split],
+            }
+            for split in ("train", "val", "test")
+        },
+    }
     return DetectionSplits(
         data_yaml_path=data_yaml,
         train_count=counts["train"],
         val_count=counts["val"],
         test_count=counts["test"],
+        prep_info=prep_info,
     )
 
 

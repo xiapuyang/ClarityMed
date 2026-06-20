@@ -66,12 +66,15 @@ from claritymed.ingest.vision.forge.common import (
     append_latest_entry,
     check_floors,
     assert_vision_yaml_has_model,
+    class_weight_tensor_from_splits,
+    dataset_stats_from_splits,
     disease_root,
     latest_jsonl_path,
     latest_staging_dir,
     log_metrics,
     patch_vision_yaml,
     read_latest_entry,
+    scalar_only,
     select_device,
     sha256_file,
     staging_dir,
@@ -171,19 +174,34 @@ def _run_search_trial(
         pretrained=True,
     ).to(device)
     optimizer = _torch().optim.AdamW(model.parameters(), lr=params["lr"])
+    # ``hp`` carries the (per-batch) loss-time inputs: Optuna's suggested
+    # params plus any derived tensors that aren't JSON-serialisable.
+    # ``params`` stays clean so Optuna trial.params, mlflow params, and
+    # provenance.json don't get a torch tensor stuffed in them. Underscore
+    # prefix marks the derived key as internal.
+    hp = _build_hp_with_class_weight(params, splits, spec, device)
 
-    # ``num_workers=4`` — matches the train/eval phases' parallel
-    # dataloader pattern; the original ``0`` here was an oversight
-    # that didn't bite until RSNA (~20k train images) made the
-    # per-epoch PIL decode + resize a serial bottleneck that
-    # blocked GPU for >90% of wall time. Kermany / BUSI / chest CT
-    # at <6k images don't notice the difference; RSNA's first-cut
-    # search trial dropped from ~6.5h to ~1.5h after this change.
+    # ``num_workers=8`` + ``persistent_workers=True`` — RSNA's ~20k
+    # train images push the dataloader hard enough that worker count
+    # matters AND the spawn cost (Mac ``spawn`` start method re-
+    # imports torch / PIL / claritymed in each worker, ~1s each) was
+    # repeated every epoch with the old default. Pinning workers
+    # across epochs eliminates that. Smaller datasets (Kermany /
+    # BUSI / chest CT) pay a tiny bit more startup once but no per-
+    # epoch tax.
     train_loader = _torch().utils.data.DataLoader(
-        splits.train, batch_size=16, shuffle=True, num_workers=4
+        splits.train,
+        batch_size=16,
+        shuffle=True,
+        num_workers=8,
+        persistent_workers=True,
     )
     val_loader = _torch().utils.data.DataLoader(
-        splits.val, batch_size=16, shuffle=False, num_workers=4
+        splits.val,
+        batch_size=16,
+        shuffle=False,
+        num_workers=8,
+        persistent_workers=True,
     )
 
     best_score = -float("inf")
@@ -198,15 +216,34 @@ def _run_search_trial(
         tags={TASK_ID_TAG: task_id_of(trial)},
     ):
         for epoch in range(epochs):
-            _train_one_epoch(task, model, train_loader, optimizer, device, params)
+            train_loss = _train_one_epoch(
+                task, model, train_loader, optimizer, device, hp
+            )
             _, breakdown = task.evaluate(
-                model, val_loader, device, labels=spec.dataset.labels, hp=params
+                model, val_loader, device, labels=spec.dataset.labels, hp=hp
             )
             score = feasibility_aware_score(breakdown, floors, task.composite_weights)
             if score > best_score:
                 best_score = score
                 best_breakdown = breakdown
-            log_metrics({f"val/{k}": v for k, v in breakdown.items()}, step=epoch)
+            log_metrics(
+                {
+                    "train/loss": train_loss,
+                    **{f"val/{k}": v for k, v in scalar_only(breakdown).items()},
+                },
+                step=epoch,
+            )
+            # Per-epoch heartbeat — long search trials (15-25 min/epoch
+            # on RSNA pre-optimisations) need progress visible mid-run,
+            # not just the once-per-trial summary that fires at the end.
+            logger.info(
+                "forge.search trial=%d epoch=%d train_loss=%.4f score=%.4f breakdown=%s",
+                trial.number,
+                epoch,
+                train_loss,
+                score,
+                {k: f"{v:.3f}" for k, v in breakdown.items()},
+            )
             trial.report(score, epoch)
             if trial.should_prune():
                 import optuna as _optuna
@@ -300,6 +337,11 @@ class _TrainingHistory:
     test_breakdown: dict[str, float]
     test_score: float
     mlflow_info: dict[str, str]
+    # ``dataset_stats`` captures the train/val/test class distribution
+    # the model actually saw at training time, so any future re-eval can
+    # reproduce or interpret reported breakdowns. ``None`` in smoke mode
+    # (smoke skips ``build_splits()`` to stay fast).
+    dataset_stats: dict[str, Any] | None = None
 
 
 def run_train(
@@ -335,7 +377,7 @@ def run_train(
     _persist_weights(history.best_state_dict, weights, params=params, smoke=smoke)
     weights_sha = sha256_file(weights)
 
-    eval_metrics = {
+    eval_metrics: dict[str, Any] = {
         "params": params,
         "best_epoch": history.best_epoch,
         "best_val_composite": history.best_val_composite,
@@ -348,6 +390,8 @@ def run_train(
         "test_breakdown": history.test_breakdown,
         "test_score": history.test_score,
     }
+    if history.dataset_stats is not None:
+        eval_metrics["dataset_stats"] = history.dataset_stats
     _write_manifest(
         spec,
         target=staging / "manifest.json",
@@ -379,6 +423,7 @@ def _train_with_early_stopping(
     task = spec.task
     train_floors = task.phase_floors("train")
     splits = spec.dataset.build_splits()
+    dataset_stats = dataset_stats_from_splits(splits, spec.dataset.labels)
     device = select_device(torch, require_gpu=True)
     model = task.build_model(
         backbone=params["backbone"],
@@ -386,14 +431,35 @@ def _train_with_early_stopping(
         pretrained=True,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=params["lr"])
+    # See ``_run_search_trial`` for the ``hp`` vs ``params`` rationale.
+    hp = _build_hp_with_class_weight(params, splits, spec, device)
+    # ``num_workers=8`` + ``persistent_workers=True`` — see the search
+    # phase comment above; same reasoning, RSNA's epoch count is much
+    # higher here (default 100) so the per-epoch worker spawn savings
+    # compound. ``test_loader`` keeps ``persistent_workers=True`` even
+    # though it's iterated once: the spawn happens lazily on the first
+    # ``iter(...)`` and we'd rather pay it overlapped with model load
+    # than serially on the final eval.
     train_loader = torch.utils.data.DataLoader(
-        splits.train, batch_size=16, shuffle=True, num_workers=2
+        splits.train,
+        batch_size=16,
+        shuffle=True,
+        num_workers=8,
+        persistent_workers=True,
     )
     val_loader = torch.utils.data.DataLoader(
-        splits.val, batch_size=16, shuffle=False, num_workers=2
+        splits.val,
+        batch_size=16,
+        shuffle=False,
+        num_workers=8,
+        persistent_workers=True,
     )
     test_loader = torch.utils.data.DataLoader(
-        splits.test, batch_size=16, shuffle=False, num_workers=2
+        splits.test,
+        batch_size=16,
+        shuffle=False,
+        num_workers=8,
+        persistent_workers=True,
     )
 
     state = _LoopState()
@@ -408,10 +474,10 @@ def _train_with_early_stopping(
         run_id = run.info.run_id
         for epoch in range(max_epochs):
             train_loss = _train_one_epoch(
-                task, model, train_loader, optimizer, device, params
+                task, model, train_loader, optimizer, device, hp
             )
             val_loss, val_breakdown = task.evaluate(
-                model, val_loader, device, labels=spec.dataset.labels, hp=params
+                model, val_loader, device, labels=spec.dataset.labels, hp=hp
             )
             state.record(
                 epoch,
@@ -422,6 +488,16 @@ def _train_with_early_stopping(
                 task,
                 model,
                 patience,
+            )
+            # Per-epoch heartbeat — train phase runs up to ``max_epochs``
+            # (default 100) and silent epochs hide whether the loss is
+            # actually moving. Mirrors the search-phase line.
+            logger.info(
+                "forge.train epoch=%d train_loss=%.4f val_loss=%.4f breakdown=%s",
+                epoch,
+                train_loss,
+                val_loss,
+                {k: f"{v:.3f}" for k, v in val_breakdown.items()},
             )
             if state.early_stopped:
                 logger.info("early stop at epoch %d (patience=%d)", epoch, patience)
@@ -438,9 +514,9 @@ def _train_with_early_stopping(
         if state.best_state_dict is not None:
             model.load_state_dict(state.best_state_dict)
         _, test_breakdown = task.evaluate(
-            model, test_loader, device, labels=spec.dataset.labels, hp=params
+            model, test_loader, device, labels=spec.dataset.labels, hp=hp
         )
-        log_metrics({f"test/{k}": v for k, v in test_breakdown.items()})
+        log_metrics({f"test/{k}": v for k, v in scalar_only(test_breakdown).items()})
         mlflow_info = {
             "experiment_name": experiment_name(FEATURE, spec.dataset.disease_id),
             "run_id": run_id,
@@ -460,6 +536,7 @@ def _train_with_early_stopping(
         test_breakdown=test_breakdown,
         test_score=test_breakdown.get("composite", 0.0),
         mlflow_info=mlflow_info,
+        dataset_stats=dataset_stats,
     )
 
 
@@ -500,6 +577,11 @@ class _LoopState:
         epoch_is_feasible = is_feasible(val_breakdown, train_floors)
         if epoch_is_feasible:
             self.feasible_epoch_count += 1
+        val_scalar = scalar_only(val_breakdown)
+        # ``training_curve.json`` is a per-epoch timeline of scalars;
+        # the nested ``per_class`` block in val_breakdown is dropped
+        # here (only the final test/val breakdowns in eval_metrics.json
+        # keep it).
         self.curves.append(
             {
                 "epoch": epoch,
@@ -508,14 +590,14 @@ class _LoopState:
                 "val_score": val_composite,
                 "val_selection_score": score,
                 "val_feasible": float(epoch_is_feasible),
-                **{f"val_{k}": v for k, v in val_breakdown.items()},
+                **{f"val_{k}": v for k, v in val_scalar.items()},
             }
         )
         log_metrics(
             {
                 "train/loss": train_loss,
                 "val/loss": val_loss,
-                **{f"val/{k}": v for k, v in val_breakdown.items()},
+                **{f"val/{k}": v for k, v in val_scalar.items()},
             },
             step=epoch,
         )
@@ -792,8 +874,8 @@ def _run_inference_study(
                 trials,
                 summary["worst_deficits"],
             )
-        log_metrics({f"val/{k}": v for k, v in tuned_val.items()})
-        log_metrics({f"test/{k}": v for k, v in tuned_test.items()})
+        log_metrics({f"val/{k}": v for k, v in scalar_only(tuned_val).items()})
+        log_metrics({f"test/{k}": v for k, v in scalar_only(tuned_test).items()})
         mlflow_info = {
             "experiment_name": experiment_name(FEATURE, spec.dataset.disease_id),
             "run_id": mlflow_handle.info.run_id,
@@ -1212,6 +1294,36 @@ def _read_staging_breakdown(staging_dir: Path, key: str) -> dict[str, float] | N
     if not isinstance(block, dict):
         return None
     return {k: float(v) for k, v in block.items() if isinstance(v, (int, float))}
+
+
+# === hp helpers ==========================================================
+
+
+def _build_hp_with_class_weight(
+    params: dict[str, Any], splits, spec: ModelSpec, device
+) -> dict[str, Any]:
+    """Materialise the per-batch ``hp`` dict, including the weight tensor.
+
+    Reads ``params["class_weight"]`` (Optuna's pick: ``"none"`` /
+    ``"inverse_freq"`` / ``"sqrt_inv_freq"``). When the chosen scheme
+    requires per-class weights, builds the tensor once from
+    ``splits.train`` label counts and stashes it under
+    ``_class_weight_tensor`` (underscore prefix = derived, not a real
+    hparam — keeps it out of JSON dumps that read ``params`` directly).
+
+    No-op when ``class_weight`` is absent (e.g. legacy ModelSpec without
+    the new hparam, or smoke runs that synthesise minimal params).
+    """
+    hp = dict(params)
+    scheme = params.get("class_weight", "none")
+    if scheme == "none":
+        return hp
+    tensor = class_weight_tensor_from_splits(
+        splits, num_classes=len(spec.dataset.labels), scheme=scheme, device=device
+    )
+    if tensor is not None:
+        hp["_class_weight_tensor"] = tensor
+    return hp
 
 
 # === lazy torch handle =================================================

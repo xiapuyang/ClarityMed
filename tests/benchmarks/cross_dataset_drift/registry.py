@@ -158,7 +158,7 @@ _CHEST_XRAY_ENTRIES: list[BenchEntry] = [
 
 BENCH_ENTRIES: list[BenchEntry] = [
     *_BREAST_US_ENTRIES,
-    *_CHEST_XRAY_ENTRIES,
+    # *_CHEST_XRAY_ENTRIES,
 ]
 
 

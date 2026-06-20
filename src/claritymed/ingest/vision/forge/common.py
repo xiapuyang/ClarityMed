@@ -394,6 +394,95 @@ def check_floors(
         raise SystemExit("floor gate failed: " + "; ".join(fails))
 
 
+def scalar_only(breakdown: dict[str, Any]) -> dict[str, float]:
+    """Drop non-scalar entries from a breakdown dict.
+
+    Breakdowns produced by classification tasks now nest per-class stats
+    under ``per_class`` (a dict). Consumers that need flat ``{name: float}``
+    pairs — MLflow's ``log_metric``, the per-epoch ``training_curve.json``
+    rows, ``check_floors``, ``feasibility_aware_score`` — call this to
+    strip the nested block in one place instead of each site
+    open-coding the filter.
+    """
+    return {k: float(v) for k, v in breakdown.items() if isinstance(v, (int, float))}
+
+
+def class_weight_tensor_from_splits(
+    splits, num_classes: int, scheme: str, *, device=None
+):
+    """Build the per-class weight tensor for ``F.cross_entropy(weight=...)``.
+
+    Schemes:
+
+    * ``"none"`` → returns ``None`` (caller passes that straight to
+      ``F.cross_entropy`` for plain CE).
+    * ``"inverse_freq"`` → ``w_c ∝ 1/N_c``, mean-normalised to ~1 so the
+      logged loss magnitude stays comparable to the unweighted run.
+    * ``"sqrt_inv_freq"`` → ``w_c ∝ 1/√N_c``, the gentler variant.
+
+    Counts read from ``splits.train._items``; no image decode. Empty /
+    missing classes fall back to ``N=1`` so a tiny dataset with an
+    unrepresented class in train doesn't divide by zero.
+    """
+    if scheme == "none":
+        return None
+    if scheme not in ("inverse_freq", "sqrt_inv_freq"):
+        raise ValueError(f"unknown class_weight scheme: {scheme!r}")
+
+    from collections import Counter
+
+    import torch  # local — avoid torch import at module load time
+
+    counts = Counter(item.label for item in splits.train._items)  # noqa: SLF001
+    raw: list[float] = []
+    for c in range(num_classes):
+        n = max(counts.get(c, 0), 1)
+        raw.append(1.0 / n if scheme == "inverse_freq" else 1.0 / (n**0.5))
+    mean = sum(raw) / len(raw)
+    normalised = [r / mean for r in raw]
+    return torch.tensor(normalised, dtype=torch.float32, device=device)
+
+
+def dataset_stats_from_splits(splits, labels: tuple[str, ...]) -> dict[str, Any]:
+    """Per-split class counts + ratios + imbalance ratio.
+
+    Pure function over the train / val / test torch Datasets returned by
+    ``DatasetSpec.build_splits()``. Reads each Dataset's ``_items``
+    sample list to pull labels without triggering ``__getitem__`` (i.e.
+    no image decode). All datasets in this module wrap their sample list
+    on ``_items``; the coupling is intentional and project-local.
+
+    Returns a JSON-friendly dict written into ``eval_metrics.json`` so
+    every deployed model carries the training-time class distribution
+    next to its eval metrics.
+    """
+    from collections import Counter
+
+    out_splits: dict[str, Any] = {}
+    for split_name in ("train", "val", "test"):
+        ds = getattr(splits, split_name)
+        counts = Counter(item.label for item in ds._items)  # noqa: SLF001
+        total = sum(counts.values())
+        per_class = {
+            labels[idx]: {
+                "count": int(counts.get(idx, 0)),
+                "ratio": (counts.get(idx, 0) / total) if total > 0 else 0.0,
+            }
+            for idx in range(len(labels))
+        }
+        # imbalance_ratio over present classes (skip absent so a class
+        # missing from one split — possible if a tiny dataset's hash
+        # split lands no samples there — doesn't divide by zero).
+        present_counts = [c for c in counts.values() if c > 0]
+        imbalance = max(present_counts) / min(present_counts) if present_counts else 0.0
+        out_splits[split_name] = {
+            "total": total,
+            "per_class": per_class,
+            "imbalance_ratio": imbalance,
+        }
+    return {"labels": list(labels), "splits": out_splits}
+
+
 # --- MLflow shim ---------------------------------------------------------
 
 

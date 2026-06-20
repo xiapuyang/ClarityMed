@@ -66,6 +66,10 @@ RESNET50_V1 = ModelSpec(
         # Weight decay range is mild — large values shrink ImageNet
         # priors and undo most of the pretrain gain on a small dataset.
         "weight_decay": LogUniform(1e-6, 1e-3),
+        # Mild 1.8:1 train imbalance, with ``large_cell_carcinoma`` as
+        # the smallest cancer subtype — plain CE leaves its recall at
+        # ~0.72 vs 0.90+ on the rest. Optuna picks per trial.
+        "class_weight": Categorical(("none", "inverse_freq", "sqrt_inv_freq")),
     },
     inference_space={
         "temperature": LogUniform(0.5, 3.0),

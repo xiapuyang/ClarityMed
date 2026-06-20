@@ -169,6 +169,25 @@ def _resolve_device(requested: str | None) -> str:
 # --- prepare -------------------------------------------------------------
 
 
+def _dataset_info(splits: DetectionSplits) -> dict[str, Any]:
+    """Build the audit block embedded in every artifact ``eval_metrics.json``.
+
+    Surfaces split counts plus dataset-specific prep-time metadata
+    (e.g. RSNA's ``negative_ratio`` + per-split pos/neg breakdown) from
+    :attr:`DetectionSplits.prep_info`. ``prep_info`` is kept as a
+    single nested key (not flattened) so dataset-specific fields stay
+    grouped under one namespace and don't intermix with the
+    framework-owned counts above.
+    """
+    return {
+        "data_yaml_path": str(splits.data_yaml_path),
+        "train_count": splits.train_count,
+        "val_count": splits.val_count,
+        "test_count": splits.test_count,
+        "prep_info": dict(splits.prep_info),
+    }
+
+
 def run_prepare(spec: YoloModelSpec) -> DetectionSplits:
     """Materialise the dataset in YOLO format on disk; return splits info."""
     logger.info(
@@ -492,12 +511,7 @@ def _write_train_metadata(
         "model_version": spec.model_version,
         "base_weights": spec.base_weights,
         "train_hparams": hparams,
-        "splits": {
-            "data_yaml": str(splits.data_yaml_path),
-            "train_count": splits.train_count,
-            "val_count": splits.val_count,
-            "test_count": splits.test_count,
-        },
+        "dataset_info": _dataset_info(splits),
     }
     (out_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
 
@@ -602,6 +616,7 @@ def run_eval(
             {
                 "split": split,
                 "metrics": metrics,
+                "dataset_info": _dataset_info(splits),
                 "task_id": task_id,
                 "source": "run_eval",
             },
@@ -754,6 +769,7 @@ def run_tune(
         "metrics": test_metrics,
         "val_metrics_at_best": val_metrics,
         "tuned_inference_params": best_params,
+        "dataset_info": _dataset_info(splits),
         "task_id": task_id,
         "source": "run_tune",
     }
