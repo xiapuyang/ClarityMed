@@ -205,11 +205,11 @@ def _run_search_trial(
         logger.info("smoke trial: params=%s", params)
         return FEASIBLE_OFFSET + 0.5
 
-    # Per-trial FD-count heartbeat. With ``persistent_workers=True`` below
-    # we explicitly shut workers down in the ``finally`` block; if this
-    # number still climbs trial-over-trial the residual leak is somewhere
-    # other than DataLoader workers (MLflow nested runs are the next
-    # suspect) and we'll see it here.
+    # Per-trial FD-count heartbeat. After switching the search loaders
+    # to ``persistent_workers=False`` (workers die at end of every
+    # epoch and their queue FDs go with them) this number should hold
+    # flat trial-over-trial; any drift left is a non-DataLoader leak
+    # (MLflow nested runs are the next suspect).
     try:
         import psutil
 
@@ -248,25 +248,29 @@ def _run_search_trial(
     # in each worker (~1s each) and that cost dwarfs the actual
     # forward/backward pass at this scale.
     #
-    # ``persistent_workers=True`` everywhere — per-epoch worker respawn
-    # costs ~num_workers seconds (Mac ``spawn``) and that bill compounds
-    # fast over a multi-trial sweep. The cross-trial FD-leak concern is
-    # handled in the ``finally`` block below via ``_shutdown_dataloaders``
-    # + ``gc.collect()``.
+    # ``persistent_workers=False`` in search — the per-epoch respawn
+    # bill (~num_workers seconds on macOS ``spawn``) is small for the
+    # 3-15 epoch search budgets, and ``persistent_workers=True`` was
+    # leaking FDs across trials (mp Pipe/SemLock objects whose Python
+    # GC doesn't run on the heartbeat-to-heartbeat boundary even with
+    # explicit ``_shutdown_workers`` + ``gc.collect()``). Hit macOS's
+    # 256 launchd soft limit by trial ~30 and crashed train's test_loader
+    # spawn with ``EMFILE``. Train phase keeps ``persistent_workers=True``
+    # because its 100-epoch budget makes the respawn cost matter.
     train_workers, val_workers = spec.dataset.search_num_workers
     train_loader = _torch().utils.data.DataLoader(
         splits.train,
         batch_size=16,
         shuffle=True,
         num_workers=train_workers,
-        persistent_workers=True,
+        persistent_workers=False,
     )
     val_loader = _torch().utils.data.DataLoader(
         splits.val,
         batch_size=16,
         shuffle=False,
         num_workers=val_workers,
-        persistent_workers=True,
+        persistent_workers=False,
     )
 
     best_score = -float("inf")
@@ -334,7 +338,7 @@ def _run_search_trial(
                     score,
                     best_score,
                     best_epoch,
-                    {k: f"{v:.3f}" for k, v in breakdown.items()},
+                    {k: f"{v:.3f}" for k, v in scalar_only(breakdown).items()},
                 )
                 trial.report(score, epoch)
                 if trial.should_prune():

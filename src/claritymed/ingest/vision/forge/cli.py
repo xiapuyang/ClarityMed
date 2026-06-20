@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
+import resource
 import sys
 import time
 from pathlib import Path
@@ -199,10 +200,30 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _bump_fd_limit() -> None:
+    """Raise RLIMIT_NOFILE so multi-trial sweeps don't trip macOS's 256 default.
+
+    On macOS, processes launched outside an interactive login shell (IDE
+    terminals, ``nohup``, launchd agents) inherit launchd's 256 soft FD
+    limit instead of the bumped shell ulimit. With 8 search trials +
+    ``persistent_workers=True`` DataLoaders + MLflow/Optuna SQLite pools,
+    that ceiling gets hit somewhere around the train phase and
+    ``os.pipe()`` raises ``EMFILE`` inside ``multiprocessing.spawn``.
+    Bumping at process start is belt-and-braces — the leak is still
+    worth fixing, but this prevents the silent crash in the meantime.
+    """
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = min(hard, 1 << 20)
+    if soft < target:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        logger.info("bumped RLIMIT_NOFILE %d -> %d", soft, target)
+
+
 def main(argv: list[str]) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
+    _bump_fd_limit()
     args = _build_parser().parse_args(argv)
     spec = _resolve_model_spec(args.model)
     task_id = args.task_id or generate_task_id()

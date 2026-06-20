@@ -61,8 +61,25 @@ class AttachmentsFeature(FeaturePlugin):
     name = "attachments"
     mode = "deterministic"
 
-    def __init__(self, get_session_id: Callable[[], str | None]) -> None:
+    def __init__(
+        self,
+        get_session_id: Callable[[], str | None],
+        *,
+        get_vision_disabled_reason: Callable[[], str | None] | None = None,
+    ) -> None:
         self._get_session_id = get_session_id
+        # Callable so the lookup is lazy (vision plugin may be
+        # constructed after this one in the factory) and dynamic (the
+        # plugin can flip from healthy to disabled mid-session if a
+        # future hot-reload path lands). Returns the short reason
+        # string captured by :meth:`VisionFeature.ensure_bootstrapped`
+        # or ``None`` when vision is healthy / absent. ``None``-valued
+        # callable returned same shape — saves the renderer a branch.
+        self._get_vision_disabled_reason = (
+            get_vision_disabled_reason
+            if get_vision_disabled_reason is not None
+            else lambda: None
+        )
 
     async def pre_invoke(self, ctx: TurnContext) -> str:
         """No standalone prompt block.
@@ -117,7 +134,26 @@ class AttachmentsFeature(FeaturePlugin):
             hits = prefix_index.get(prefix, [])
             if len(hits) != 1:
                 return match.group(0)
-            return _render_inline_tag(blob_store, kind, hits[0])
+            # Sidecar override: a PDF rasterized into ``vision.png`` by
+            # the OCR worker's 1-page image-PDF fast-path was frozen as
+            # ``[File sha:…]`` at paste time (the TUI couldn't peek
+            # inside the PDF before storing the blob), but at prompt
+            # assembly we know better — the blob now has image bytes
+            # plus a medical-clip modality. Upgrade File → image so
+            # ``_vision_attrs`` runs and the LLM sees
+            # ``<image modality="ct" is_medical="true">`` instead of a
+            # plain ``<file>``. The reverse direction (image → file)
+            # never fires because raster ingest never grows a sidecar.
+            if kind == "file":
+                sha = hits[0].sha256
+                if (blob_store.dir(sha) / "vision.png").exists():
+                    kind = "image"
+            return _render_inline_tag(
+                blob_store,
+                kind,
+                hits[0],
+                vision_disabled_reason=self._get_vision_disabled_reason(),
+            )
 
         return _PLACEHOLDER_RE.sub(_replace, text)
 
@@ -128,7 +164,13 @@ class AttachmentsFeature(FeaturePlugin):
         return None
 
 
-def _render_inline_tag(blob_store: BlobStore, kind: str, att) -> str:
+def _render_inline_tag(
+    blob_store: BlobStore,
+    kind: str,
+    att,
+    *,
+    vision_disabled_reason: str | None = None,
+) -> str:
     """One ``<image>`` / ``<file>`` tag for one session attachment.
 
     Done status with non-empty OCR text → element form with the OCR
@@ -146,10 +188,26 @@ def _render_inline_tag(blob_store: BlobStore, kind: str, att) -> str:
     description can branch on them without parsing prose. Files
     (``<file>``) never carry these — they're meaningless for non-image
     blobs.
+
+    When ``vision_disabled_reason`` is set AND the rendered tag is an
+    image with ``is_medical="true"``, an extra ``vision_disabled="…"``
+    attribute is added. This tells the LLM "the vision tool you'd
+    normally call is offline right now; answer text-only and explain
+    that to the user" instead of trying to call a missing tool or
+    silently falling back to RAG without acknowledgement.
     """
     tag = "image" if kind == "image" else "file"
     sha = att.sha256
     vision_attrs = _vision_attrs(blob_store, sha) if tag == "image" else ""
+    if (
+        tag == "image"
+        and vision_disabled_reason
+        and 'is_medical="true"' in vision_attrs
+    ):
+        # Quote-escape so the reason text (which may contain a colon +
+        # an exception message + nested quotes) stays parseable.
+        escaped = vision_disabled_reason.replace('"', "&quot;")
+        vision_attrs = f'{vision_attrs} vision_disabled="{escaped}"'
     if att.ocr_status == "done":
         try:
             ocr = blob_store.read_extracted_text(sha).strip()

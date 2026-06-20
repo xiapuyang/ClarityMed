@@ -401,6 +401,15 @@ class ClarityMedApp(App):
         if load_retrieval_config().rag.enabled:
             self._warm_rag_strategy()
 
+        # Eagerly run the vision-feature bootstrap so a stale manifest
+        # sha, an unreachable server, or any other registry failure
+        # surfaces as a startup toast + status-bar chip — not as
+        # silently-missing tool calls 30 seconds later when the user
+        # finally pastes a CT and the LLM "answers from textbook" with
+        # no warning. The work itself is one HTTP round-trip per
+        # configured server; budget < 200ms in the healthy case.
+        self._warm_vision_bootstrap()
+
     @work(thread=True, exclusive=True, group="warm_paste")
     def _warm_paste_pipeline(self) -> None:
         """Pre-compute ``_supported_extensions`` on a background thread.
@@ -437,6 +446,58 @@ class ClarityMedApp(App):
             self.call_from_thread(conv.add_error_turn, f"service init failed: {exc}")
             return
         self.call_from_thread(loading.remove)
+
+    @work(exclusive=True, group="warm_vision")
+    async def _warm_vision_bootstrap(self) -> None:
+        """Bootstrap the vision feature on mount; surface failure visibly.
+
+        Runs as a Textual async worker — pydantic-ai's vision registry
+        ``bootstrap`` is async and uses ``httpx.AsyncClient``, so it
+        cannot run on a thread worker. Cheap when healthy (one
+        ``GET /v1/catalog`` per configured server).
+
+        Outcomes:
+
+        * No vision feature configured (``configs/vision.yaml`` absent
+          or every disease ``enabled: false``) — silently returns.
+        * Bootstrap succeeds — silently returns.
+        * Bootstrap fails — sticky error toast + ``StatusBar.vision_status``
+          chip carrying a short reason string. The same reason is
+          already in :attr:`VisionFeature.disabled_reason`, which the
+          ``AttachmentsFeature`` reads at prompt-assembly time so a
+          pasted CT also annotates its ``<image>`` tag with
+          ``vision_disabled="…"`` — the LLM stops trying to call the
+          missing tool and explains in text instead.
+        """
+        try:
+            service = await self._build_ask_service()
+        except Exception as exc:  # noqa: BLE001
+            # Service build failure is a separate, much bigger problem
+            # (RAG / providers / config) — surface its own error path
+            # rather than masquerade as a vision issue.
+            logger.warning("vision warmup skipped: ask-service build failed: %s", exc)
+            return
+        from claritymed.orchestrator.features.vision_plugin import VisionFeature
+
+        # Test stubs and future non-AskService impls may not expose
+        # ``_features``; the warmup is best-effort, so bail quietly
+        # instead of crashing the Textual worker.
+        features = getattr(service, "_features", None)
+        if features is None:
+            return
+        vision = next((f for f in features if isinstance(f, VisionFeature)), None)
+        if vision is None:
+            return
+        reason = await vision.ensure_bootstrapped()
+        if reason is None:
+            return
+        # Trim aggressively — status-bar chip needs to fit; toast can
+        # carry the full message. ``reason`` is already
+        # ``"<ExcType>: <msg>"`` from ``ensure_bootstrapped``.
+        short = reason if len(reason) <= 60 else f"{reason[:57]}…"
+        status = self.query_one(StatusBar)
+        status.vision_status = short
+        self._toast(f"Vision tool disabled: {reason}", kind="error")
 
     def on_unmount(self) -> None:
         # Persistence: ask-mode turns are flushed in real time by AskService

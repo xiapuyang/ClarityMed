@@ -37,6 +37,7 @@ composition guidance.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
@@ -277,10 +278,56 @@ class VisionFeature:
         # Per-request post_process state — keyed by request_id. Cleared
         # after post_process consumes it.
         self._stash: dict[str, dict[str, Any]] = {}
+        # Public health state — populated by ``ensure_bootstrapped`` (or
+        # the legacy ``AskService._bootstrap_vision_once`` path). Stays
+        # ``None`` while everything is healthy; on bootstrap failure
+        # carries a short human-readable reason that the TUI surfaces as
+        # a startup toast + status indicator and the AttachmentsFeature
+        # bakes into the ``<image>`` tag so the LLM stops trying to call
+        # the missing tool. Read by external surfaces, written here only.
+        self.disabled_reason: str | None = None
 
     async def pre_invoke(self, ctx: TurnContext) -> str:
         """No-op pre-invoke; vision feature does not preamble-inject."""
         return ""
+
+    async def ensure_bootstrapped(self) -> str | None:
+        """Run the registry's catalog cross-check, capturing failure as state.
+
+        Idempotent — second call is a no-op when bootstrap already
+        succeeded. On failure populates :attr:`disabled_reason` with a
+        short string the TUI can surface verbatim, and returns the same
+        string so the caller can branch without a second attribute read.
+        Returns ``None`` on success.
+
+        Two callers funnel through here:
+
+        * TUI ``on_mount`` — wants to surface the failure as a startup
+          toast + status indicator so the user knows before pasting a
+          medical image that the vision tool is offline.
+        * :meth:`AskService._bootstrap_vision_once` — legacy first-turn
+          deferred path, kept for code that does not run a TUI mount.
+
+        Both pre-existing failure modes (network unreachable, manifest
+        sha drift) collapse into the same ``disabled_reason`` string so
+        downstream surfaces (toast, ``<image vision_disabled="…">`` tag)
+        do not need to branch on exception type.
+        """
+        if self.disabled_reason is not None:
+            return self.disabled_reason
+        try:
+            await self._registry.bootstrap()
+        except Exception as exc:  # noqa: BLE001 — registry raises many shapes
+            reason = f"{type(exc).__name__}: {exc!s}"
+            self.disabled_reason = reason
+            logger.error(
+                "vision: registry bootstrap failed; disabling vision tool "
+                "for this session (%s)",
+                reason,
+                exc_info=True,
+            )
+            return reason
+        return None
 
     def system_prompt_fn(self) -> "Callable":
         """Return a dynamic system-prompt function for pydantic-ai.
@@ -690,7 +737,7 @@ class VisionFeature:
                 cleanly.
         """
         try:
-            image_bytes = _read_blob_bytes(attachment_user_id, attachment_sha)
+            image_bytes, wire_sha = _read_blob_bytes(attachment_user_id, attachment_sha)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "vision: failed to read blob bytes for sha=%s: %s",
@@ -733,7 +780,7 @@ class VisionFeature:
                     image_bytes=image_bytes,
                     language=language,
                     options=DetectOptions(),
-                    sha256=attachment_sha,
+                    sha256=wire_sha,
                 )
             except VisionServerUnreachableError as exc:
                 warnings.append(f"{spec.id}: server_unreachable: {exc!s}")
@@ -872,16 +919,32 @@ class VisionFeature:
 # --- module helpers --------------------------------------------------------
 
 
-def _read_blob_bytes(user_id: str, sha256: str) -> bytes:
-    """Read the raw ``content.<ext>`` for one blob.
+def _read_blob_bytes(user_id: str, sha256: str) -> tuple[bytes, str]:
+    """Resolve vision-decodable bytes + their wire sha for one blob.
+
+    Returns ``(bytes, sha)`` where ``sha`` is the digest the vision
+    server should cross-check on the wire. Two cases:
+
+    * ``vision.png`` sidecar exists — written by the OCR worker's
+      1-page image-PDF rasterizer. Returns the PNG bytes and their
+      sha (the source PDF's sha, which is what the caller has, would
+      mismatch and the server would reject as ``image_hash_mismatch``).
+    * No sidecar — falls back to the original ``content.<ext>`` and
+      reuses the caller's ``sha256`` since it equals the bytes' digest
+      by construction.
 
     The blob dir contains exactly one ``content.*`` file (other entries
-    are sidecars: ``ocr.md``, ``ocr.json``). We pick the first that
-    isn't a ``.tmp`` partial — mirrors the TUI's blob-loading shape.
+    are sidecars: ``ocr.md``, ``ocr.json``, ``vision.png``). We pick
+    the first content file that isn't a ``.tmp`` partial — mirrors the
+    TUI's blob-loading shape.
     """
     blob_dir = BlobStore(user_id).dir(sha256)
     if not blob_dir.exists():
         raise FileNotFoundError(f"blob directory missing: {blob_dir}")
+    sidecar = blob_dir / "vision.png"
+    if sidecar.exists():
+        png_bytes = sidecar.read_bytes()
+        return png_bytes, hashlib.sha256(png_bytes).hexdigest()
     candidates = [
         p
         for p in blob_dir.iterdir()
@@ -889,7 +952,7 @@ def _read_blob_bytes(user_id: str, sha256: str) -> bytes:
     ]
     if not candidates:
         raise FileNotFoundError(f"no content.* file in blob dir: {blob_dir}")
-    return candidates[0].read_bytes()
+    return candidates[0].read_bytes(), sha256
 
 
 def _wire_to_raw(response) -> RawDetection:

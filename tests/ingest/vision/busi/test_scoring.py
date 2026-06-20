@@ -74,7 +74,7 @@ def test_feasible_trial_scores_above_offset() -> None:
 def test_recall_only_degenerate_is_rejected_at_tune_floor() -> None:
     """The 2026-06-15 failure mode: recall=1, dice≈0, acc≈0.27."""
     degenerate = _bd(recall=1.0, accuracy=0.27, dice=0.04)
-    feasible = _bd(recall=0.85, accuracy=0.85, dice=0.70)
+    feasible = _bd(recall=0.92, accuracy=0.85, dice=0.70)
     assert feasibility_aware_score(degenerate, _TUNE, _WEIGHTS) < 0
     assert feasibility_aware_score(feasible, _TUNE, _WEIGHTS) >= FEASIBLE_OFFSET
     assert feasibility_aware_score(degenerate, _TUNE, _WEIGHTS) < (
@@ -104,8 +104,8 @@ def test_multiple_violations_aggregate() -> None:
 
 
 def test_breakdown_passes_search_but_fails_tune() -> None:
-    """5-epoch HP combo with recall 0.70, dice 0.45, acc 0.70."""
-    breakdown = _bd(recall=0.70, accuracy=0.70, dice=0.45)
+    """5-epoch HP combo at the search bar, short of train & tune."""
+    breakdown = _bd(recall=0.82, accuracy=0.70, dice=0.45)
     assert is_feasible(breakdown, _SEARCH)
     assert not is_feasible(breakdown, _TRAIN)
     assert not is_feasible(breakdown, _TUNE)
@@ -115,7 +115,7 @@ def test_breakdown_passes_search_but_fails_tune() -> None:
 
 
 def test_breakdown_passes_train_but_fails_tune() -> None:
-    breakdown = _bd(recall=0.82, accuracy=0.81, dice=0.64)
+    breakdown = _bd(recall=0.87, accuracy=0.81, dice=0.64)
     assert is_feasible(breakdown, _SEARCH)
     assert is_feasible(breakdown, _TRAIN)
     assert not is_feasible(breakdown, _TUNE)
@@ -170,9 +170,9 @@ class _FakeStudy:
 
 def test_study_feasibility_summary_counts_against_named_phase() -> None:
     trials = [
-        _FakeTrial(_bd(recall=0.70, accuracy=0.70, dice=0.45)),  # search only
-        _FakeTrial(_bd(recall=0.82, accuracy=0.82, dice=0.64)),  # train
-        _FakeTrial(_bd(recall=0.90, accuracy=0.90, dice=0.75)),  # tune
+        _FakeTrial(_bd(recall=0.80, accuracy=0.70, dice=0.45)),  # search only
+        _FakeTrial(_bd(recall=0.85, accuracy=0.82, dice=0.55)),  # train
+        _FakeTrial(_bd(recall=0.92, accuracy=0.90, dice=0.75)),  # tune
     ]
     study = _FakeStudy(trials)
     assert study_feasibility_summary(study, _SEARCH)["feasible_trials"] == 3
@@ -181,11 +181,11 @@ def test_study_feasibility_summary_counts_against_named_phase() -> None:
 
 def test_study_feasibility_summary_reports_worst_deficit() -> None:
     trials = [
-        _FakeTrial(_bd(recall=0.70, accuracy=0.90, dice=0.90)),  # recall short by .15
+        _FakeTrial(_bd(recall=0.70, accuracy=0.90, dice=0.90)),  # recall short by .20
         _FakeTrial(_bd(recall=0.80, accuracy=0.50, dice=0.90)),  # acc short by .35
     ]
     summary = study_feasibility_summary(_FakeStudy(trials), _TUNE)
     assert summary["feasible_trials"] == 0
     assert summary["infeasible_trials"] == 2
-    assert summary["worst_deficits"]["malignant_recall"] == pytest.approx(0.15)
+    assert summary["worst_deficits"]["malignant_recall"] == pytest.approx(0.20)
     assert summary["worst_deficits"]["accuracy"] == pytest.approx(0.35)

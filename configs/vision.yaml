@@ -118,11 +118,11 @@ models:
     server_id: local_default
     framework: pytorch
     accepted_modality: ultrasound               # KTD-V3 hard gate
-    weights_subpath: vision/breast_cancer_ultrasound/breast_busi_unet_v1__20260616T003324Z
+    weights_subpath: vision/breast_cancer_ultrasound/breast_busi_unet_v1__20260620T205819Z
     # Placeholder — replaced by Unit 6's train pipeline. Validator accepts any
     # 64-char hex so the file shape is valid; the server's startup check is
     # what catches a real mismatch.
-    manifest_sha256: "bd12c1ed0f7cdb8679802a34fbc942bea5824b9e2c7550dbeb11526564157032"
+    manifest_sha256: "0d6c23adf21427aa492a25df2b472b69a7e97d7f72786efe2403ef63d7da36e7"
     expected_ms: 800
   # Alternative breast-US training source (Kaggle vuppalaadithyasairam
   # ~9000 augmented 2-class images, no `normal` class). Scaffolded in

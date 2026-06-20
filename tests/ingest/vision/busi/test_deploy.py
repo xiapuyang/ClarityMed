@@ -138,7 +138,7 @@ def test_build_latest_entry_captures_full_provenance() -> None:
     }
     tuned_test = {
         "composite": 0.63,
-        "malignant_recall": 0.86,
+        "malignant_recall": 0.92,
         "dice": 0.72,
         "accuracy": 0.85,
     }

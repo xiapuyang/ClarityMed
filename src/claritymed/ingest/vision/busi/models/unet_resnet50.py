@@ -31,9 +31,9 @@ from claritymed.ingest.vision.forge.tasks.cls_segmentation import (
 # this replaces — search is "shows signs of life", train is "within
 # tune's reach of deploy", tune == deploy is the medical bar.
 _BUSI_FLOORS = FloorBundle(
-    search={"malignant_recall": 0.65, "accuracy": 0.65, "dice": 0.40},
-    train={"malignant_recall": 0.80, "accuracy": 0.80, "dice": 0.50},
-    deploy={"malignant_recall": 0.85, "accuracy": 0.85, "dice": 0.60},
+    search={"malignant_recall": 0.80, "accuracy": 0.65, "dice": 0.40},
+    train={"malignant_recall": 0.85, "accuracy": 0.80, "dice": 0.50},
+    deploy={"malignant_recall": 0.90, "accuracy": 0.85, "dice": 0.60},
 )
 
 # Composite: recall + dice (the medical bar + the seg signal). Accuracy

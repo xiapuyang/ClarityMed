@@ -471,7 +471,7 @@ async def test_compute_vision_tags_llm_override_when_clip_unknown(tmp_path):
         _LLMStubProvider(),
         medical_clip_client=fake_clip,
     )
-    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    job = OcrJob(user_id="test", session_id="s", sha256="ab" * 32, blob_path=img)
     result = ExtractResult(
         text="CT头颅平扫报告",
         provider_used="stub",
@@ -506,7 +506,7 @@ async def test_compute_vision_tags_clip_result_not_overridden_when_confident(tmp
     fake_clip.classify_modality = AsyncMock(return_value=clip_response)
 
     worker = OcrWorker(_LLMStubProvider(), medical_clip_client=fake_clip)
-    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    job = OcrJob(user_id="test", session_id="s", sha256="ab" * 32, blob_path=img)
     result = ExtractResult(
         text="B超: 肝胆脾胰肾未见异常",
         provider_used="stub",
@@ -544,7 +544,7 @@ async def test_compute_vision_tags_llm_override_when_clip_document_but_llm_histo
         _LLMStubProvider(modality="histopathology", is_medical=True),
         medical_clip_client=fake_clip,
     )
-    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    job = OcrJob(user_id="test", session_id="s", sha256="ab" * 32, blob_path=img)
     result = ExtractResult(
         text="",
         provider_used="stub",
@@ -584,7 +584,7 @@ async def test_compute_vision_tags_no_override_when_clip_document_llm_also_non_m
         _LLMStubProvider(modality="photo", is_medical=False),
         medical_clip_client=fake_clip,
     )
-    job = OcrJob(user_id="test", session_id="s", sha256="abc" * 20, blob_path=img)
+    job = OcrJob(user_id="test", session_id="s", sha256="ab" * 32, blob_path=img)
     result = ExtractResult(
         text="thank you",
         provider_used="stub",

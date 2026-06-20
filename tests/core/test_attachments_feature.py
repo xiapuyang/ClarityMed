@@ -506,3 +506,172 @@ async def test_ocr_with_brackets_doesnt_break_format(_ctx):
     assert weird in out
     assert out.startswith(f'<image sha="{sha}">\n')
     assert out.endswith("\n</image>")
+
+
+async def test_file_placeholder_with_vision_png_sidecar_upgrades_to_image(_ctx):
+    """A ``[File sha:…]`` placeholder for a PDF that the OCR worker
+    rasterized into ``vision.png`` must render as ``<image …>`` with
+    the modality/is_medical attrs the LLM-side routing keys off.
+
+    Regression: TUI's paste-time MIME check freezes ``kind=File`` for
+    PDFs before the worker peeks inside; without the renderer-level
+    sidecar override, a 1-page CT-wrapped-in-PDF ends up as a bare
+    ``<file ocr_status="empty"/>`` and the vision tool never fires.
+    """
+    bs = BlobStore(_USER_ID)
+    pdf_bytes = b"%PDF-fake-bytes-for-test"
+    sha = bs.store(pdf_bytes, "pdf")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha,
+        filename="000108 (3).pdf",
+        mime="application/pdf",
+        size=len(pdf_bytes),
+        source="paste",
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "empty")
+    # vision.png sidecar = worker's 1-page image-PDF fast-path fired.
+    (bs.dir(sha) / "vision.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    _seed_ocr_done_with_tags(
+        sha,
+        "",  # PDF page had no text by definition
+        status="empty",
+        provider="pdf_image_peek",
+        modality="ct",
+        is_medical=True,
+        modality_confidence=0.9995,
+    )
+    # Sentinel override — ``_seed_ocr_done_with_tags`` defaults status
+    # to "done"; this PDF case must use "empty" to match production.
+    payload = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    payload["status"] = "empty"
+    bs.ocr_meta_path(sha).write_text(json.dumps(payload), encoding="utf-8")
+
+    feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
+    out = await feature.expand_placeholders(
+        _placeholder(sha, kind="File"), _make_ctx_obj()
+    )
+    # The placeholder said "File" but the sidecar upgraded the kind.
+    assert out.startswith("<image "), f"expected <image>, got: {out!r}"
+    assert 'modality="ct"' in out
+    assert 'is_medical="true"' in out
+    assert 'ocr_status="empty"' in out
+
+
+async def test_file_placeholder_without_sidecar_stays_file(_ctx):
+    """A genuine ``<file>`` (multi-page report PDF) keeps rendering as one.
+
+    Guards against the override branch firing for any PDF with a
+    sentinel — it must be sidecar-gated, not status-gated.
+    """
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"%PDF-multipage-report", "pdf")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha,
+        filename="report.pdf",
+        mime="application/pdf",
+        size=10,
+        source="paste",
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "done")
+    _seed_ocr_done_with_tags(
+        sha, "FINDINGS: ...", modality="document", is_medical=False
+    )
+
+    feature = AttachmentsFeature(get_session_id=lambda: _SESSION_ID)
+    out = await feature.expand_placeholders(
+        _placeholder(sha, kind="File"), _make_ctx_obj()
+    )
+    assert out.startswith(f'<file sha="{sha}">'), (
+        f"no sidecar → must stay <file>, got: {out!r}"
+    )
+    assert "modality=" not in out
+    assert "is_medical=" not in out
+
+
+async def test_image_tag_includes_vision_disabled_when_feature_offline(_ctx):
+    """When the vision feature is disabled (bootstrap drift), every
+    medical ``<image>`` tag carries ``vision_disabled="…"`` so the LLM
+    stops trying to call the missing tool and explains text-only."""
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"abc", "png")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="ct.png", mime="image/png", size=3, source="paste"
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "empty")
+    _seed_ocr_done_with_tags(
+        sha,
+        "",
+        status="empty",
+        modality="ct",
+        is_medical=True,
+    )
+    # Force the sentinel to status=empty (the helper hard-codes done).
+    payload = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    payload["status"] = "empty"
+    bs.ocr_meta_path(sha).write_text(json.dumps(payload), encoding="utf-8")
+
+    reason = "VisionCatalogMismatchError: manifest sha drift for breast_busi_unet_v1"
+    feature = AttachmentsFeature(
+        get_session_id=lambda: _SESSION_ID,
+        get_vision_disabled_reason=lambda: reason,
+    )
+    out = await feature.expand_placeholders(
+        _placeholder(sha, kind="Image"), _make_ctx_obj()
+    )
+    assert f'vision_disabled="{reason}"' in out, (
+        f"expected vision_disabled attribute carrying the reason; got: {out!r}"
+    )
+    assert 'is_medical="true"' in out
+    assert 'modality="ct"' in out
+
+
+async def test_image_tag_omits_vision_disabled_when_feature_healthy(_ctx):
+    """Healthy vision (``get_vision_disabled_reason`` returns None) →
+    no ``vision_disabled`` attribute is added. Pure guard against a
+    refactor that accidentally always emits the attr."""
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"abc", "png")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="ct.png", mime="image/png", size=3, source="paste"
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "empty")
+    _seed_ocr_done_with_tags(sha, "", status="empty", modality="ct", is_medical=True)
+    payload = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    payload["status"] = "empty"
+    bs.ocr_meta_path(sha).write_text(json.dumps(payload), encoding="utf-8")
+
+    feature = AttachmentsFeature(
+        get_session_id=lambda: _SESSION_ID,
+        get_vision_disabled_reason=lambda: None,
+    )
+    out = await feature.expand_placeholders(
+        _placeholder(sha, kind="Image"), _make_ctx_obj()
+    )
+    assert "vision_disabled" not in out, (
+        f"healthy vision must not emit the attribute; got: {out!r}"
+    )
+
+
+async def test_image_tag_omits_vision_disabled_for_non_medical(_ctx):
+    """Disabled vision should NOT annotate ``is_medical="false"`` images.
+
+    Rule 1 of the tool-description (non-medical → don't call the tool)
+    already short-circuits, so adding ``vision_disabled`` here would be
+    noise that confuses the LLM about why it should explain anything.
+    Only medical images carry the attr."""
+    bs = BlobStore(_USER_ID)
+    sha = bs.store(b"abc", "png")
+    SessionAttachments(_USER_ID, _SESSION_ID).add(
+        sha256=sha, filename="cat.png", mime="image/png", size=3, source="paste"
+    )
+    SessionAttachments(_USER_ID, _SESSION_ID).mark_ocr_status(sha, "done")
+    _seed_ocr_done_with_tags(sha, "ocr text", modality="photo", is_medical=False)
+
+    feature = AttachmentsFeature(
+        get_session_id=lambda: _SESSION_ID,
+        get_vision_disabled_reason=lambda: "vision broken",
+    )
+    out = await feature.expand_placeholders(
+        _placeholder(sha, kind="Image"), _make_ctx_obj()
+    )
+    assert "vision_disabled" not in out

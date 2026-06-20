@@ -705,11 +705,15 @@ class AskService:
         ``make_vision_factory`` cannot bootstrap synchronously when it
         is constructed from inside a running asyncio loop (the TUI
         path), so it logs ``vision: bootstrap deferred`` and hands back
-        an unverified registry. This method honors that deferral: it
-        finds the live ``VisionFeature``, awaits ``registry.bootstrap()``
-        (idempotent — bench/e2e paths already bootstrapped), and on
-        failure logs ``ERROR`` then drops the feature so the rest of
-        the session keeps working without the vision tool.
+        an unverified registry. This method honors that deferral by
+        calling :meth:`VisionFeature.ensure_bootstrapped`, which writes
+        the failure into ``vision.disabled_reason`` so other surfaces
+        (TUI toast, ``<image vision_disabled="…">`` attribute) can react.
+        On failure we also drop the feature from the active session so
+        the LLM never sees a broken tool description.
+
+        TUI mount may have already called ``ensure_bootstrapped`` —
+        that's fine; the underlying method is idempotent.
         """
         if self._vision_bootstrap_attempted:
             return
@@ -719,14 +723,8 @@ class AskService:
         vision = next((f for f in self._features if isinstance(f, VisionFeature)), None)
         if vision is None:
             return
-        try:
-            await vision._registry.bootstrap()
-        except Exception:  # noqa: BLE001
-            logger.error(
-                "vision: registry bootstrap failed on first turn; "
-                "disabling vision tool for this session",
-                exc_info=True,
-            )
+        reason = await vision.ensure_bootstrapped()
+        if reason is not None:
             self._features = [f for f in self._features if f is not vision]
             self._feature_modes.pop(vision.name, None)
 

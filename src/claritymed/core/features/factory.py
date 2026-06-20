@@ -75,16 +75,31 @@ def build_features(
     plugins: list[FeaturePlugin] = [
         RagFeature(mode=rag_mode, strategy=rag_strategy),  # type: ignore[arg-type]
     ]
+    # Vision feature is built up-front so the attachments plugin can
+    # subscribe to its ``disabled_reason``. When vision is absent,
+    # ``AttachmentsFeature`` falls back to the no-op getter and
+    # ``<image>`` tags render unchanged.
+    vision_plugin = vision_factory() if vision_factory is not None else None
     if get_session_id is not None:
         from claritymed.core.attachments_feature import AttachmentsFeature
 
-        plugins.append(AttachmentsFeature(get_session_id=get_session_id))
+        get_vision_disabled_reason = (
+            (lambda: vision_plugin.disabled_reason)  # type: ignore[union-attr]
+            if vision_plugin is not None
+            else None
+        )
+        plugins.append(
+            AttachmentsFeature(
+                get_session_id=get_session_id,
+                get_vision_disabled_reason=get_vision_disabled_reason,
+            )
+        )
     if ingest_factory is not None:
         plugins.append(ingest_factory())
     if symptoms_factory is not None:
         plugins.append(symptoms_factory())
-    if vision_factory is not None:
-        plugins.append(vision_factory())
+    if vision_plugin is not None:
+        plugins.append(vision_plugin)
     if profile_context_factory is not None:
         plugins.append(profile_context_factory())
 

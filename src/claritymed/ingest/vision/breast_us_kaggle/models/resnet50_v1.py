@@ -38,7 +38,7 @@ _BREAST_US_KAGGLE_FLOORS = FloorBundle(
     deploy={"malignant_recall": 0.88, "accuracy": 0.85},
 )
 
-_BREAST_US_KAGGLE_COMPOSITE_WEIGHTS = {"malignant_recall": 0.65, "accuracy": 0.35}
+_BREAST_US_KAGGLE_COMPOSITE_WEIGHTS = {"malignant_recall": 0.8, "accuracy": 0.2}
 
 
 RESNET50_V1 = ModelSpec(

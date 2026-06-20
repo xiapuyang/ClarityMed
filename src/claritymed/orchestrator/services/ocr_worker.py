@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -31,6 +32,12 @@ from typing import Awaitable, Callable
 
 from claritymed.core.medical_clip.client import MedicalClipClient
 from claritymed.core.ocr.base import ExtractResult, OcrEmpty, OcrError, OcrProvider
+from claritymed.core.ocr.pdf_image_peek import (
+    has_vision_sidecar,
+    maybe_rasterize_single_image_pdf,
+    vision_sidecar_path,
+    write_vision_sidecar,
+)
 from claritymed.core.schemas.records import OcrStatus
 from claritymed.core.vision.ocr_report_detector import (
     DEFAULT_MIN_CHARS,
@@ -69,8 +76,41 @@ _LLM_MEDICAL_MODALITIES: frozenset[str] = frozenset(
 )
 
 
-def _is_image(blob_path: Path) -> bool:
-    return blob_path.suffix.lower() in _IMAGE_EXTS
+def _has_vision_payload(blob_dir: Path, blob_path: Path) -> bool:
+    """True iff this blob has bytes the vision pipeline can decode.
+
+    The ``vision.png`` sidecar (written by the 1-page image-PDF
+    rasterizer) takes precedence over the extension check: a PDF whose
+    single page was a CT scan gets ``content.pdf`` AND ``vision.png``
+    on disk, and the latter is what every downstream consumer
+    (medical-clip, vision server) should see.
+    """
+    return has_vision_sidecar(blob_dir) or blob_path.suffix.lower() in _IMAGE_EXTS
+
+
+def _resolve_vision_payload(
+    blob_dir: Path, blob_path: Path, content_sha: str
+) -> tuple[bytes, str] | None:
+    """Return ``(bytes, sha256)`` for the image source vision should see.
+
+    Prefers the ``vision.png`` sidecar (PDF-rasterized) over the
+    original ``content.<ext>``. ``content_sha`` is the pre-computed
+    sha of the original blob and is reused when no sidecar is present
+    so we don't re-hash the same bytes on every modality call. The
+    sidecar branch computes its own sha because the rasterized PNG's
+    hash differs from the source PDF's hash and the medical-clip
+    server cross-checks the digest on the wire.
+
+    Returns ``None`` when the blob has no vision-decodable payload
+    (non-image extension and no sidecar).
+    """
+    sidecar = vision_sidecar_path(blob_dir)
+    if sidecar.exists():
+        png_bytes = sidecar.read_bytes()
+        return png_bytes, hashlib.sha256(png_bytes).hexdigest()
+    if blob_path.suffix.lower() in _IMAGE_EXTS:
+        return blob_path.read_bytes(), content_sha
+    return None
 
 
 def _is_stale_sentinel(cached: dict) -> bool:
@@ -285,6 +325,19 @@ class OcrWorker:
                 provider="cache",
                 reason=cached.get("reason"),
             )
+        # Stage-1 PDF→image short-circuit: 1-page image-only PDFs (e.g.
+        # a CT slice exported as a PDF wrapper) are routed through the
+        # vision pipeline rather than MineRU. ``maybe_rasterize_…``
+        # returns ``None`` for every PDF that should keep flowing
+        # through the text path (multi-page reports, text-bearing
+        # forms, corrupt files). On a hit we write ``vision.png`` next
+        # to ``content.pdf`` and skip the OCR provider entirely — the
+        # page has no extractable text by definition, so MineRU would
+        # spend a 5-30s cloud round-trip returning the empty string.
+        if job.blob_path.suffix.lower() == ".pdf":
+            short_circuit = await self._handle_single_image_pdf(blob_store, job)
+            if short_circuit is not None:
+                return short_circuit
         # Stash the user-facing filename so the routing-layer audit
         # event can record it without growing the OcrProvider signature.
         from claritymed.core.ocr.routing_provider import (
@@ -387,13 +440,81 @@ class OcrWorker:
             provider=result.provider_used,
         )
 
+    async def _handle_single_image_pdf(
+        self, blob_store: BlobStore, job: OcrJob
+    ) -> OcrCompleted | None:
+        """Try the 1-page image-PDF fast path; return completion or None.
+
+        ``None`` means "this PDF is not a single embedded scan; fall
+        through to the normal OCR provider chain". A completion means
+        "we wrote ``vision.png`` + computed modality tags + persisted
+        the sentinel — caller should return this directly".
+
+        The sentinel goes out with ``status="empty"`` because there is
+        no text payload by construction; the rendering layer treats
+        empty + ``is_medical=True`` + ``modality=<scan kind>`` as an
+        image attachment (the LLM-side routing in
+        ``detect_disease_from_image_tool`` keys off those tags, not
+        text presence).
+        """
+        png_bytes = maybe_rasterize_single_image_pdf(job.blob_path)
+        if png_bytes is None:
+            return None
+        blob_dir = blob_store.dir(job.sha256)
+        try:
+            write_vision_sidecar(blob_dir, png_bytes)
+        except OSError as exc:
+            # Disk-full / permission errors — log and fall through so
+            # MineRU still gets a chance. We don't want a transient FS
+            # failure to permanently mark this blob as failed.
+            logger.warning(
+                "vision.png sidecar write failed for %s: %s; "
+                "falling back to OCR provider",
+                job.sha256[:8],
+                exc,
+            )
+            return None
+        empty_result = ExtractResult(text="", provider_used="", chain_tried=[])
+        vision_tags = await self._compute_vision_tags(job, empty_result)
+        blob_store.write_ocr_result(
+            job.sha256,
+            status="empty",
+            kind="ocr",
+            ext=job.blob_path.suffix.lstrip("."),
+            provider="pdf_image_peek",
+            chain_tried=["pdf_image_peek"],
+            reason="single-image PDF rasterized to vision.png",
+            text="",
+            original_filename=job.original_filename,
+            **vision_tags,
+        )
+        logger.info(
+            "ocr: PDF %s rasterized to vision.png (modality=%s, is_medical=%s)",
+            job.sha256[:8],
+            vision_tags.get("modality"),
+            vision_tags.get("is_medical"),
+        )
+        return OcrCompleted(
+            user_id=job.user_id,
+            session_id=job.session_id,
+            sha256=job.sha256,
+            status="empty",
+            provider="pdf_image_peek",
+        )
+
     async def _compute_vision_tags(self, job: OcrJob, result: ExtractResult) -> dict:
         """Build the modality / is_medical / ocr_has_report kwargs.
 
         Returns the subset of kwargs that should be threaded into
-        :meth:`BlobStore.write_ocr_result`. Skips silently for non-image
-        blobs (PDFs, plain text) so the sentinel stays free of
-        unmeaningful fields.
+        :meth:`BlobStore.write_ocr_result`. Skips silently for blobs
+        without a vision-decodable payload (plain text, multi-page
+        PDFs, etc.) so the sentinel stays free of unmeaningful fields.
+
+        The bytes fed to medical-clip come from
+        :func:`_resolve_vision_payload`, which prefers a ``vision.png``
+        sidecar (PDF-rasterized) over the original ``content.<ext>``.
+        That keeps the modality classifier fed even for the 1-page
+        image-PDF case that ``content.pdf`` alone could not satisfy.
 
         When medical-clip returns ``modality='unknown'`` or omits
         ``is_medical``, values supplied by the LLM OCR provider (via
@@ -401,17 +522,19 @@ class OcrWorker:
         fallback — the vision LLM reads both image and text, giving it
         better coverage than the CLIP classifier alone.
         """
-        if not _is_image(job.blob_path):
+        blob_dir = BlobStore(job.user_id).dir(job.sha256)
+        payload = _resolve_vision_payload(blob_dir, job.blob_path, job.sha256)
+        if payload is None:
             return {}
+        image_bytes, payload_sha = payload
         tags: dict = {}
         warnings: list[str] = []
         if self._medical_clip is not None:
             try:
-                image_bytes = job.blob_path.read_bytes()
                 response = await self._medical_clip.classify_modality(
                     image_bytes,
                     request_id=f"ocr_{job.sha256[:16]}",
-                    sha256=job.sha256,
+                    sha256=payload_sha,
                 )
                 tags["modality"] = response.modality
                 tags["modality_confidence"] = float(response.confidence)

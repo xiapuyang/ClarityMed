@@ -500,9 +500,29 @@ async def test_post_process_emits_audit_on_missing_keyword(home, monkeypatch):
 
 
 def test_read_blob_bytes_finds_content_file(home):
-    """``_read_blob_bytes`` returns the raw bytes regardless of extension."""
+    """``_read_blob_bytes`` returns ``(bytes, sha)`` and reuses the caller's sha."""
     sha = _seed_attachment(home, b"hello-world")
-    assert _read_blob_bytes(_USER_ID, sha) == b"hello-world"
+    image_bytes, wire_sha = _read_blob_bytes(_USER_ID, sha)
+    assert image_bytes == b"hello-world"
+    # No vision.png sidecar → wire sha is the caller's sha (content matches by construction).
+    assert wire_sha == sha
+
+
+def test_read_blob_bytes_prefers_vision_png_sidecar(home):
+    """When ``vision.png`` exists, ``_read_blob_bytes`` returns it + its own sha."""
+    import hashlib as _hashlib
+
+    pdf_bytes = b"%PDF-fake-bytes"
+    pdf_sha = BlobStore(_USER_ID).store(pdf_bytes, "pdf")
+    sidecar_bytes = b"\x89PNG\r\n\x1a\nfake-png-payload"
+    blob_dir = BlobStore(_USER_ID).dir(pdf_sha)
+    (blob_dir / "vision.png").write_bytes(sidecar_bytes)
+    image_bytes, wire_sha = _read_blob_bytes(_USER_ID, pdf_sha)
+    assert image_bytes == sidecar_bytes
+    assert wire_sha == _hashlib.sha256(sidecar_bytes).hexdigest()
+    # And the wire sha must differ from the PDF sha so a verbatim
+    # forward of the caller's sha would have failed server-side.
+    assert wire_sha != pdf_sha
 
 
 # --- validator error-path tests -------------------------------------------
@@ -571,3 +591,65 @@ def test_build_tool_description_no_diseases_enabled():
     result = feature._build_tool_description()
     assert result is not None
     assert "no diseases enabled" in result
+
+
+# --- ensure_bootstrapped -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_bootstrapped_returns_none_on_success(home):
+    """Healthy bootstrap leaves ``disabled_reason`` unset and returns None."""
+    from unittest.mock import AsyncMock
+
+    cfg = _vision_config()
+    registry = VisionRegistry(cfg)
+    registry.bootstrap = AsyncMock(return_value=None)
+    feature = VisionFeature(config=cfg, registry=registry, get_session_id=lambda: None)
+    assert feature.disabled_reason is None
+    assert await feature.ensure_bootstrapped() is None
+    assert feature.disabled_reason is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_bootstrapped_captures_failure_reason(home):
+    """Bootstrap exception → reason string written to disabled_reason and returned."""
+    from unittest.mock import AsyncMock
+
+    from claritymed.errors import VisionCatalogMismatchError
+
+    cfg = _vision_config()
+    registry = VisionRegistry(cfg)
+    registry.bootstrap = AsyncMock(
+        side_effect=VisionCatalogMismatchError(
+            "manifest sha drift for model 'breast_busi_unet_v1' on server 'local_default'"
+        )
+    )
+    feature = VisionFeature(config=cfg, registry=registry, get_session_id=lambda: None)
+
+    reason = await feature.ensure_bootstrapped()
+    assert reason is not None
+    assert "VisionCatalogMismatchError" in reason
+    assert "manifest sha drift" in reason
+    assert feature.disabled_reason == reason
+
+
+@pytest.mark.asyncio
+async def test_ensure_bootstrapped_is_idempotent_after_failure(home):
+    """Second call after a failure must NOT re-attempt bootstrap.
+
+    The registry has surfaced a hard-fail; re-running on every turn
+    would waste a /v1/catalog round-trip per turn for the rest of the
+    session for no semantic gain (the server isn't going to flip
+    states between turns unless a process restarts it).
+    """
+    from unittest.mock import AsyncMock
+
+    cfg = _vision_config()
+    registry = VisionRegistry(cfg)
+    registry.bootstrap = AsyncMock(side_effect=RuntimeError("boom"))
+    feature = VisionFeature(config=cfg, registry=registry, get_session_id=lambda: None)
+
+    first = await feature.ensure_bootstrapped()
+    second = await feature.ensure_bootstrapped()
+    assert first == second
+    assert registry.bootstrap.await_count == 1

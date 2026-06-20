@@ -41,12 +41,20 @@ class StatusBar(Static):
     provider_kind: reactive[str] = reactive("?")
     request_id: reactive[str] = reactive("-")
     context_chars: reactive[int] = reactive(0)
+    # Empty string when the vision feature is healthy (or absent). Any
+    # non-empty string is rendered verbatim as a trailing chip
+    # (``vision: ⚠ <reason>``) so a pasted CT can't fail silently —
+    # the user sees the warning the moment they look at the bar.
+    vision_status: reactive[str] = reactive("")
 
     def render(self) -> str:
-        return (
+        base = (
             f"user={self.user_id}  "
             f"lang={self.language}  "
             f"model={self.provider_id}({self.provider_kind})  "
             f"ctx={_fmt_ctx(self.context_chars)}  "
             f"req={self.request_id[-8:]}"
         )
+        if self.vision_status:
+            return f"{base}  vision:⚠ {self.vision_status}"
+        return base
