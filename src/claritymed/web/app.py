@@ -62,7 +62,7 @@ ENV_DEV = "CLARITYMED_DEV"
 ENV_CORS_ORIGINS = "CLARITYMED_CORS_ORIGINS"
 DEV_FRONTEND_ORIGIN = "http://localhost:5173"
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8000
+DEFAULT_PORT = 8120
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,10 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
 
 def create_app() -> FastAPI:
     """Factory used by both ``serve()`` and the test suite."""
+    # Mirror CLI ``bootstrap_once``: load ``~/.claritymed/.env`` so provider
+    # API keys (OMLX_API_KEY, OPENAI_API_KEY, ...) are visible to the
+    # uvicorn worker. Idempotent — keys already in os.environ win.
+    _cfg.load_env_file()
     dev = _is_dev()
     cors_origins = _resolve_cors_origins(dev)
 
