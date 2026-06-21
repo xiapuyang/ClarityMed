@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 
 from qdrant_client import AsyncQdrantClient
 
@@ -46,6 +47,24 @@ from claritymed.core.phi.guard import PhiGuard
 from claritymed.stores.paths import user_parent_docstore_path
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class IngestResult:
+    """Outcome of ``UserRagStore.add_document``.
+
+    Splits "things we wrote" from "things we skipped because they
+    cosine-matched existing content." Both counts are at the chunk
+    level — a single source document can land partly-new (e.g. 3 new
+    chunks, 2 dedup'd) when an earlier upload covered some of the same
+    material.
+
+    Callers that only care about the boolean "did anything new land"
+    can test ``result.written > 0``.
+    """
+
+    written: int
+    skipped_chunks: int = 0
 
 
 def collection_name(user_id: str) -> str:
@@ -90,8 +109,8 @@ class UserRagStore:
         *,
         metadata: dict | None = None,
         public: bool = False,
-    ) -> int:
-        """Scrub, chunk, embed, persist. Returns child-chunk count written.
+    ) -> IngestResult:
+        """Scrub, chunk, embed, dedupe, persist.
 
         When ``public=False`` (default) the raw text is PHI-scrubbed and
         the resulting chunks land with ``is_phi=True / can_cloud=False``.
@@ -99,15 +118,27 @@ class UserRagStore:
         ``is_phi=False / can_cloud=True`` — the user has explicitly
         consented to share this document with cloud models.
 
-        Empty / whitespace-only input writes nothing and returns 0.
+        Two dedupe layers run before persist:
+
+        * **Document-level** (``source_uri``) — if the caller supplied
+          one and it matches an existing row, raises
+          ``DuplicateDocumentError`` immediately.
+        * **Chunk-level** (cosine similarity) — each child's dense
+          embedding is KNN-searched against the user's existing
+          collection; matches at or above
+          ``upload.dedupe_cosine_threshold`` are dropped. Threshold
+          ``<= 0`` disables this layer.
+
+        Empty / whitespace-only input writes nothing and returns
+        ``IngestResult(0, 0)``.
         """
         if not text or not text.strip():
-            return 0
+            return IngestResult(written=0)
 
         # 0. dedup by source_uri (indexed — single lookup, not full scan)
         source_uri = (metadata or {}).get("source_uri")
+        col_store = self._collection_store(user_id)
         if source_uri:
-            col_store = self._collection_store(user_id)
             existing = await col_store.find_doc_id_by_source_uri(source_uri)
             if existing:
                 from claritymed.errors import DuplicateDocumentError
@@ -127,28 +158,57 @@ class UserRagStore:
         )
         chunked = self._chunker.chunk(doc)
         if not chunked.children:
-            return 0
+            return IngestResult(written=0)
 
-        # 3. persist parents (the JSON ParentStore is sync; small write)
-        parent_store = self._parent_store(user_id)
-        parent_store.bulk_put(chunked.parents)
-        parent_store.persist()
-
-        # 4. embed children
+        # 3. embed children (do this BEFORE persisting parents so a
+        # dedupe pass that drops every child also skips the parent
+        # write — no orphans).
         child_texts = [c.text for c in chunked.children]
         dense_vecs = await self._embedder.embed_dense(child_texts)
         sparse_vecs = await self._embedder.embed_sparse(child_texts)
 
-        # 5. write children to Qdrant
-        col_store = self._collection_store(user_id)
+        # 4. per-chunk cosine-sim dedupe
+        kept_children = chunked.children
+        kept_dense = dense_vecs
+        kept_sparse = sparse_vecs
+        skipped_chunks = 0
+        from claritymed import config as _cfg
+
+        threshold = _cfg.upload_dedupe_cosine_threshold()
+        if threshold > 0:
+            kept_indices: list[int] = []
+            for i, vec in enumerate(dense_vecs):
+                score = await col_store.search_dense_max_score(vec)
+                if score is not None and score >= threshold:
+                    skipped_chunks += 1
+                    continue
+                kept_indices.append(i)
+            kept_children = [chunked.children[i] for i in kept_indices]
+            kept_dense = [dense_vecs[i] for i in kept_indices]
+            kept_sparse = [sparse_vecs[i] for i in kept_indices]
+
+        if not kept_children:
+            # Every chunk was a near-duplicate — skip the parent write
+            # so the on-disk ParentStore JSON stays clean.
+            return IngestResult(written=0, skipped_chunks=skipped_chunks)
+
+        # 5. persist parents (the JSON ParentStore is sync; small write).
+        # We persist all parents from the chunker output, even if some
+        # of their children were dropped — surviving children still
+        # reference them.
+        parent_store = self._parent_store(user_id)
+        parent_store.bulk_put(chunked.parents)
+        parent_store.persist()
+
+        # 6. write surviving children to Qdrant
         written = await col_store.upsert(
-            children=chunked.children,
-            dense_vectors=dense_vecs,
-            sparse_vectors=sparse_vecs,
+            children=kept_children,
+            dense_vectors=kept_dense,
+            sparse_vectors=kept_sparse,
             is_phi=not public,
             can_cloud=public,
         )
-        return written
+        return IngestResult(written=written, skipped_chunks=skipped_chunks)
 
     # --- search (independent path; HybridRetriever uses lower stores) --
 

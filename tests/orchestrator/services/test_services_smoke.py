@@ -70,6 +70,18 @@ def _phi_guard() -> PhiGuard:
     return PhiGuard.from_config()
 
 
+@pytest.fixture(autouse=True)
+def _disable_cosine_dedupe(monkeypatch):
+    """Disable per-chunk cosine-sim dedupe for these smoke tests.
+
+    The StubEmbedder is deterministic — running these tests with the
+    production default threshold would silently drop identical-text
+    re-ingests, masking the assertions. Tests that need to exercise
+    the dedupe path live in tests/stores/test_user_rag.py.
+    """
+    monkeypatch.setattr("claritymed.config.upload_dedupe_cosine_threshold", lambda: 0.0)
+
+
 @pytest.fixture
 def rag_store(_phi_guard: PhiGuard):
     return UserRagStore(

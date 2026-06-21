@@ -92,16 +92,29 @@ def store(_phi_guard: PhiGuard) -> UserRagStore:
     )
 
 
+@pytest.fixture(autouse=True)
+def _disable_cosine_dedupe(monkeypatch):
+    """Default cosine-sim dedupe to OFF for these tests.
+
+    The StubEmbedder is deterministic SHA-256 → identical text would
+    100% cosine-match itself and short-circuit every "add the same
+    document twice" assertion. Tests that specifically exercise the
+    cosine-sim path opt in with their own monkeypatch.
+    """
+    monkeypatch.setattr("claritymed.config.upload_dedupe_cosine_threshold", lambda: 0.0)
+
+
 # --- ingest --------------------------------------------------------
 
 
 async def test_add_document_round_trip(store):
-    n = await store.add_document(
+    result = await store.add_document(
         user_id="alice",
         doc_id="doc1",
         text="diabetes is a chronic metabolic condition",
     )
-    assert n == 1
+    assert result.written == 1
+    assert result.skipped_chunks == 0
     hits = await store.search("alice", "diabetes", top_k=2)
     assert len(hits) == 1
     assert "diabetes" in hits[0].text
@@ -168,10 +181,10 @@ async def test_only_cloud_safe_filter(store):
 
 
 async def test_empty_text_writes_nothing(store):
-    n = await store.add_document("alice", "empty", text="")
-    assert n == 0
-    n = await store.add_document("alice", "empty2", text="   \n  ")
-    assert n == 0
+    result = await store.add_document("alice", "empty", text="")
+    assert result.written == 0
+    result = await store.add_document("alice", "empty2", text="   \n  ")
+    assert result.written == 0
 
 
 # --- search ---------------------------------------------------------
@@ -248,20 +261,67 @@ async def test_add_document_allows_same_uri_different_users(store):
         metadata={"source_uri": "/docs/aha.pdf"},
     )
     # Must not raise for bob even though URI is the same
-    n = await store.add_document(
+    result = await store.add_document(
         "bob",
         "doc1",
         text="shared guideline",
         metadata={"source_uri": "/docs/aha.pdf"},
     )
-    assert n == 1
+    assert result.written == 1
 
 
 async def test_add_document_without_source_uri_allows_duplicates(store):
-    """No source_uri in metadata → dedup is skipped (backward compat)."""
+    """No source_uri in metadata + cosine dedupe disabled → both
+    documents persist. (Cosine dedupe is exercised separately —
+    see ``test_cosine_dedupe_*``.)"""
     await store.add_document("alice", "doc1", text="some clinical note")
-    n = await store.add_document("alice", "doc2", text="some clinical note")
-    assert n == 1
+    result = await store.add_document("alice", "doc2", text="some clinical note")
+    assert result.written == 1
+
+
+# --- cosine-sim dedupe (Layer 3) ---------------------------------------
+
+
+async def test_cosine_dedupe_skips_identical_chunks(store, monkeypatch):
+    """With cosine dedupe enabled at a reachable threshold, re-ingesting
+    the same text via a different doc_id drops every chunk.
+
+    StubEmbedder hashes text deterministically, so identical text →
+    identical vectors → cosine score 1.0 against the existing chunk.
+    """
+    monkeypatch.setattr("claritymed.config.upload_dedupe_cosine_threshold", lambda: 0.9)
+    first = await store.add_document("alice", "doc1", text="some clinical note")
+    assert first.written == 1
+    assert first.skipped_chunks == 0
+
+    second = await store.add_document("alice", "doc2", text="some clinical note")
+    # Nothing new landed; the chunk was a near-duplicate.
+    assert second.written == 0
+    assert second.skipped_chunks == 1
+
+
+async def test_cosine_dedupe_keeps_distinct_chunks(store, monkeypatch):
+    """Different texts produce different SHA-256 hashes → very different
+    vectors → cosine score well below threshold → both land."""
+    monkeypatch.setattr("claritymed.config.upload_dedupe_cosine_threshold", lambda: 0.9)
+    first = await store.add_document("alice", "doc1", text="note about aspirin")
+    second = await store.add_document(
+        "alice", "doc2", text="completely unrelated text about ibuprofen"
+    )
+    assert first.written == 1
+    assert second.written == 1
+    assert second.skipped_chunks == 0
+
+
+async def test_cosine_dedupe_threshold_zero_is_disabled(store, monkeypatch):
+    """Threshold ``<= 0`` bypasses the cosine query entirely — a
+    convenient kill switch for clients that don't want chunk-level
+    dedupe (or for tests like the rest of this file)."""
+    monkeypatch.setattr("claritymed.config.upload_dedupe_cosine_threshold", lambda: 0.0)
+    await store.add_document("alice", "doc1", text="duplicate me")
+    result = await store.add_document("alice", "doc2", text="duplicate me")
+    assert result.written == 1
+    assert result.skipped_chunks == 0
 
 
 # --- list_documents / get_chunks ----------------------------------------

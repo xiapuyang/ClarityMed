@@ -39,12 +39,23 @@ class IngestReceipt(BaseModel):
 
 
 class IngestionReceipt(BaseModel):
-    """Output of ``rag`` mode: a document landed in the user RAG store."""
+    """Output of ``rag`` mode: a document landed in the user RAG store.
+
+    ``chunk_count`` is the number of *new* chunks written. Per-chunk
+    cosine-similarity dedupe (``upload.dedupe_cosine_threshold``) can
+    drop chunks that closely match existing content; those land in
+    ``skipped_chunk_count`` instead. A document whose every chunk is a
+    near-duplicate of existing material returns
+    ``chunk_count=0, skipped_chunk_count=N > 0`` — callers treat that
+    as "already in library" semantically equivalent to
+    ``DuplicateDocumentError``.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     doc_id: str = Field(min_length=1)
     chunk_count: int = Field(ge=0)
+    skipped_chunk_count: int = Field(default=0, ge=0)
     embedding_status: Literal["ok", "stub", "failed"] = "ok"
     public: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

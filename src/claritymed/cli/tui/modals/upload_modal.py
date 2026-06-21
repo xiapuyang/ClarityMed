@@ -1,37 +1,46 @@
-"""Upload modal — pick a file and tag it record-vs-reference.
+"""Upload modal — yes/no approve gate for an ``UploadBundle``.
 
-The modal dismisses with a 2-tuple ``(text_to_ingest, public: bool)`` when the
-user confirms. ``public=False`` means PHI scrubbing applies and the chunk
-stays cloud-blocked; ``public=True`` is for published / reference material.
-Dismisses with ``None`` on cancel — the caller treats that as a no-op.
+The modal is purely presentational: the caller does all I/O upstream
+(read file from disk in path mode, resolve placeholders in mixed-text
+mode), assembles an ``UploadBundle``, then hands it here. We render
+the per-part preview, run ``bundle.validate()``, and dismiss with
+``True`` on approve / ``None`` on cancel.
+
+If validation fails the Yes button is disabled and the gate reasons
+are listed under the part rows so the user sees exactly which part is
+the problem. Mirrors the ``ToolApprovalModal`` pattern (explicit deny,
+no silent skipping) — same focus-cycling keybindings.
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, RadioButton, RadioSet, Static
+from textual.widgets import Button, Label, Static
 
-from claritymed import config as _cfg
+from claritymed.core.i18n import t
+from claritymed.core.upload import PartStatus, UploadBundle, UploadPart
 
 logger = logging.getLogger(__name__)
 
 
-def _human_size(size: int) -> str:
-    """Render a byte count as B / KB / MB for error messages."""
-    if size < 1024:
-        return f"{size} B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.1f} KB"
-    return f"{size / (1024 * 1024):.1f} MB"
+# Per-part status → icon glyph. These are intentionally NOT in i18n
+# YAML — the glyphs are universal and embedding them inline keeps the
+# render fast (no t() call per row per status).
+_STATUS_ICON: dict[PartStatus, str] = {
+    "ok": "✓",
+    "low_content": "⚠",
+    "ocr_pending": "⟳",
+    "ocr_failed": "✗",
+}
 
 
 class UploadModal(ModalScreen):
-    """Path input + record/reference radio + Confirm/Cancel."""
+    """Yes / No approval for adding a bundle to the public library."""
 
     DEFAULT_CSS = """
     UploadModal {
@@ -41,11 +50,13 @@ class UploadModal(ModalScreen):
         background: $surface;
         border: thick $primary;
         padding: 1 2;
-        width: 70;
+        width: 80;
         height: auto;
     }
-    UploadModal Input.error {
-        border: tall $error;
+    UploadModal #parts {
+        color: $text;
+        margin-top: 1;
+        margin-bottom: 1;
     }
     UploadModal #error {
         color: $error;
@@ -56,107 +67,161 @@ class UploadModal(ModalScreen):
         height: auto;
         margin-top: 1;
     }
+    UploadModal Button:focus {
+        border: tall $accent;
+        background: $surface-lighten-1;
+        color: $text;
+    }
+    UploadModal Button.-disabled {
+        opacity: 0.5;
+    }
     """
 
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
+        ("y", "confirm", "Yes"),
+        ("n", "cancel", "No"),
     ]
 
-    def __init__(self, initial_path: str = "") -> None:
+    def __init__(
+        self,
+        bundle: UploadBundle,
+        *,
+        language: str = "en",
+    ) -> None:
         super().__init__()
-        self._initial_path = initial_path
+        self._bundle = bundle
+        self._language = language
+        self._validation = bundle.validate()
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("Upload a file")
-            yield Input(
-                value=self._initial_path,
-                placeholder="/path/to/file.pdf",
-                id="path",
-            )
-            yield Static("", id="error")
-            yield Label("Document kind:")
-            with RadioSet(id="kind"):
-                yield RadioButton(
-                    "My medical record (PHI — scrubbed, local only)",
-                    value=True,
-                    id="record",
-                )
-                yield RadioButton(
-                    "Public reference (paper, guideline — no scrub)",
-                    id="reference",
-                )
+            yield Label(t("rag.upload.confirm.title", lang=self._language))
+            yield Static(self._render_parts(), id="parts")
+            error_text = self._render_reasons() if not self._validation.ok else ""
+            yield Static(error_text, id="error")
             with Horizontal(id="buttons"):
-                yield Button("Cancel", id="cancel")
-                yield Button("Upload", id="confirm", variant="primary")
+                yield Button(
+                    t("rag.upload.confirm.no_button", lang=self._language),
+                    id="cancel",
+                )
+                # The disabled flag governs the click path; the focus
+                # cycling is allowed either way so screen-reader users
+                # can still see the disabled state on the focused row.
+                yield Button(
+                    t("rag.upload.confirm.yes_button", lang=self._language),
+                    id="confirm",
+                    variant="primary",
+                    disabled=not self._validation.ok,
+                )
+
+    def on_mount(self) -> None:
+        # Default focus mirrors the validation state: on the Yes button
+        # when the user can proceed, on Cancel when they can't (so the
+        # most obvious action is one Enter away).
+        target_id = "confirm" if self._validation.ok else "cancel"
+        self.query_one(f"#{target_id}", Button).focus()
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key not in ("left", "right"):
+            return
+        event.stop()
+        buttons = list(self.query("Button"))
+        if not buttons:
+            return
+        try:
+            idx = buttons.index(self.focused)
+        except ValueError:
+            idx = 0
+        delta = 1 if event.key == "right" else -1
+        buttons[(idx + delta) % len(buttons)].focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_confirm(self) -> None:
+        # ``y`` keybind respects the same disabled gate as the button.
+        if not self._validation.ok:
+            return
+        self.dismiss(True)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
             return
-        if event.button.id == "confirm":
-            self._try_confirm()
+        if event.button.id == "confirm" and self._validation.ok:
+            self.dismiss(True)
 
-    def _try_confirm(self) -> None:
-        import time
+    # ----- render helpers -----------------------------------------------
 
-        path_input = self.query_one("#path", Input)
-        error = self.query_one("#error", Static)
-        raw = path_input.value.strip()
-        if not raw:
-            self._mark_error(path_input, error, "Path is required.")
-            return
-        path = Path(raw)
-        if not path.exists() or not path.is_file():
-            self._mark_error(path_input, error, "File not found.")
-            return
-        # Size gate before read_text(): a 1GB text file would otherwise
-        # block the event loop on a multi-second decode and lock the UI.
-        try:
-            size = path.stat().st_size
-        except OSError as exc:
-            self._mark_error(path_input, error, f"Stat failed: {exc}")
-            return
-        limit = _cfg.paste_max_file_size_bytes()
-        if size > limit:
-            logger.warning(
-                "upload modal rejected (oversize): path=%s size=%d limit=%d",
-                path,
-                size,
-                limit,
-            )
-            self._mark_error(
-                path_input,
-                error,
-                f"File too large: {_human_size(size)} (limit {_human_size(limit)}).",
-            )
-            return
-        logger.info("upload modal start path=%s size=%d", path, size)
-        t0 = time.monotonic()
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            self._mark_error(path_input, error, f"Read failed: {exc}")
-            return
-        duration_ms = int((time.monotonic() - t0) * 1000)
-        logger.info(
-            "upload modal complete path=%s size=%d duration_ms=%d",
-            path,
-            size,
-            duration_ms,
+    def _render_parts(self) -> str:
+        """One ``rag.upload.part.row`` per Part, joined with newlines.
+
+        Parts with no extracted content yet (OCR pending / failed) use
+        a slightly different template so we don't print
+        "(image, 0 chars)" — that misreads as "the file is empty"
+        rather than "we don't know yet".
+        """
+        if not self._bundle.parts:
+            return ""
+        lines: list[str] = []
+        for part in self._bundle.parts:
+            lines.append(self._format_part(part))
+        return "\n".join(lines)
+
+    def _format_part(self, part: UploadPart) -> str:
+        icon = _STATUS_ICON.get(part.status, "?")
+        kind_label = t(f"rag.upload.kind.{part.kind}", lang=self._language)
+        key = "rag.upload.part.row_empty" if part.chars == 0 else "rag.upload.part.row"
+        return t(
+            key,
+            lang=self._language,
+            icon=icon,
+            source=part.source,
+            kind=kind_label,
+            chars=part.chars,
         )
-        public = self._is_reference()
-        self.dismiss((text, public))
 
-    def _is_reference(self) -> bool:
-        radio_set = self.query_one(RadioSet)
-        pressed = radio_set.pressed_button
-        return pressed is not None and pressed.id == "reference"
+    def _render_reasons(self) -> str:
+        """Translate each validation reason via ``rag.upload.gate.*``.
 
-    @staticmethod
-    def _mark_error(input_w: Input, error: Static, msg: str) -> None:
-        input_w.add_class("error")
-        error.update(msg)
+        Reasons come in three shapes:
+
+        * ``"empty"`` — bare key.
+        * ``"<code>:<source>"`` — ocr_failed / ocr_pending / low_content.
+        * ``"total_too_short:<actual>/<floor>"`` — special-case format.
+        """
+        out: list[str] = []
+        for reason in self._validation.reasons:
+            out.append(self._translate_reason(reason))
+        return "\n".join(out)
+
+    def _translate_reason(self, reason: str) -> str:
+        if reason == "empty":
+            return t("rag.upload.gate.empty", lang=self._language)
+        if ":" not in reason:
+            return reason
+        code, arg = reason.split(":", 1)
+        if code == "total_too_short" and "/" in arg:
+            actual, floor = arg.split("/", 1)
+            return t(
+                "rag.upload.gate.total_too_short",
+                lang=self._language,
+                actual=actual,
+                floor=floor,
+            )
+        return t(
+            f"rag.upload.gate.{code}",
+            lang=self._language,
+            source=arg,
+        )
+
+    # ----- accessors used by tests --------------------------------------
+
+    @property
+    def bundle(self) -> UploadBundle:
+        return self._bundle
+
+    @property
+    def validation_ok(self) -> bool:
+        return self._validation.ok

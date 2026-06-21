@@ -34,6 +34,64 @@ rag:
     statpearls_en: "MedRAG-StatPearls"
     textbooks_en: "MedRAG-Textbooks"
     user_rag: "我的资料库"
+  upload:
+    # /upload 完成后会话里显示的结果行。优先用带 filename 的版本，
+    # 兜底（display_name 缺失时）用 added。
+    added_named: "✓ 已将 {filename} 加入资料库（{summary}）"
+    added: "rag ✓ {summary}"
+    confirm:
+      # UploadModal 的确认弹窗文案
+      title: "加入资料库？"
+      yes_button: "是 (y)"
+      no_button: "否 (n)"
+    part:
+      # 单个 part 在预览里的一行
+      row: "{icon} {source}（{kind}，{chars} 字）"
+      row_empty: "{icon} {source}（{kind}，无文本）"
+    kind:
+      text: "文本"
+      image: "图片"
+      file: "文件"
+    gate:
+      empty: "没有可上传的内容。"
+      ocr_failed: "{source} 的 OCR 失败。"
+      ocr_pending: "{source} 仍在提取文本——稍后重试。"
+      low_content: "{source} 的内容太少。"
+      total_too_short: "总内容 {actual} 字；至少需要 {floor} 字。"
+    result:
+      bundle: "✓ 加入 {added} 项，{skipped} 项已在资料库，{failed} 项失败（新增 {chunks} 个 chunk）"
+      all_skipped: "{source} 已在资料库——无新增内容。"
+
+library:
+  # LibraryModal 的文案。每一行里的 topic 列保持英文不翻译——它们直接来自
+  # configs/retrieval.yaml 的医学领域名，没有维护并行中文表。
+  title: "资料库 — RAG 集合 + 实时检索"
+  search_placeholder: "搜索…"
+  columns:
+    kind: "类型"
+    name: "名称"
+    chunks: "分片数"
+    notes: "备注"
+    topics: "领域"
+  loading: "加载中…"
+  error: "错误：{error}"
+  tier: "tier {tier}"
+  tier_unknown: "tier ?"
+  topics_none: "（未声明领域）"
+  user:
+    not_initialised: "（未初始化——/upload 来填充）"
+    your_uploads: "（你上传的内容）"
+    notes: "用户 '{user_id}'"
+  list_status: "{system_count} 系统 + 1 用户 · 检索：{state}"
+  retrieval_ready: "就绪"
+  retrieval_disabled: "已禁用 (rag.enabled=false)"
+  disabled_banner: "RAG 已禁用（configs/retrieval.yaml: rag.enabled=false）——无法搜索。"
+  search_status: "从 [{collections}] 中获取 {count} 个分片\n扩展查询：{expanded}\n{timings}"
+  timings: "embed {embed_ms}ms · search {search_ms}ms · rerank {rerank_ms}ms · parent {parent_ms}ms"
+  none_collections: "（无）"
+  no_expansion: "（无扩展）"
+  score: "score={score}"
+  close_button: "关闭"
 
 ask_modal:
   answer_header: "↳ 你的回答"

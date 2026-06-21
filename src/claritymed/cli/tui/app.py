@@ -795,16 +795,90 @@ class ClarityMedApp(App):
         self.query_one(ToolSteps).reset()
         self._toast("New chat session started", kind="info")
 
-    def _open_upload_modal(self, path: str) -> None:
+    def _open_upload_modal(self, arg: str) -> None:
+        """Open the upload approval modal for ``/upload <arg>``.
+
+        ``arg`` may be:
+
+        * a filesystem path (single token, no placeholders) — the file
+          is read off disk and wrapped as a one-part bundle here;
+        * one or more ``[Image|File sha:XXXX]`` placeholders, optionally
+          interleaved with inline text — resolved against
+          ``SessionAttachments`` by :func:`build_upload_bundle`;
+        * plain text — becomes a single inline-text part.
+
+        Path-mode I/O errors (oversize, read failed, decode failed)
+        toast and never reach the modal. Anything that *can* be
+        previewed reaches the modal so the user sees per-part status
+        and can decide; the modal's own validator gates the Yes
+        button.
+        """
         from claritymed.cli.tui.modals.upload_modal import UploadModal
 
-        def _handle(result):
-            if result is None:
-                return
-            payload, public = result
-            self._dispatch_upload_to_rag(payload, public=public)
+        language = self.query_one(StatusBar).language
+        bundle = self._build_upload_bundle_from_arg(arg)
+        if bundle is None:
+            return  # path-mode I/O error already toasted
 
-        self.push_screen(UploadModal(initial_path=path), _handle)
+        def _handle(approved):
+            if not approved:
+                return
+            self._dispatch_upload_to_rag(bundle, language=language)
+
+        self.push_screen(UploadModal(bundle=bundle, language=language), _handle)
+
+    def _build_upload_bundle_from_arg(self, arg: str):
+        """Decide path-mode vs text-mode and return an ``UploadBundle``.
+
+        Returns ``None`` when path-mode I/O fails (oversize / unreadable);
+        the caller treats that as "modal not shown, error already
+        toasted." Empty input returns an empty bundle so the modal can
+        render the gate's ``empty`` reason consistently with other
+        validation failures.
+        """
+        from pathlib import Path
+
+        from claritymed.core.upload import build_upload_bundle, UploadBundle
+
+        arg = arg.strip()
+        if not arg:
+            return UploadBundle(parts=())
+
+        # Path-mode heuristic: single token, no placeholders / newlines,
+        # exists on disk. Placeholders contain ``[`` which is illegal in
+        # filesystem paths anyway, so this also avoids treating a
+        # mixed-text upload as a path.
+        if "[" not in arg and "\n" not in arg:
+            path = Path(arg).expanduser()
+            if path.is_file():
+                return self._build_path_mode_bundle(path)
+
+        session_id = (
+            self._chat_session.session_id if self._chat_session is not None else None
+        )
+        return build_upload_bundle(
+            arg, user_id=self._current_user_id, session_id=session_id
+        )
+
+    def _build_path_mode_bundle(self, path):
+        """Thin App-side wrapper around ``build_path_mode_bundle``.
+
+        Delegates the size + decode gates to a pure function so the
+        rules can be unit-tested without a Textual app. Surfaces the
+        function's error string as a toast — ``None`` return signals
+        the caller to skip opening the modal entirely.
+        """
+        from claritymed.core.upload import build_path_mode_bundle
+
+        bundle, error = build_path_mode_bundle(
+            path,
+            max_bytes=_cfg.paste_max_file_size_bytes(),
+            min_part_chars=_cfg.upload_min_part_chars(),
+        )
+        if error is not None:
+            self._toast(error, kind="error")
+            return None
+        return bundle
 
     def _open_library_modal(self, query: str = "") -> None:
         from claritymed.cli.tui.modals.library_modal import LibraryModal
@@ -847,15 +921,65 @@ class ClarityMedApp(App):
         self._begin_turn(text)
         self._stream_worker = self._run_stream(text)
 
-    def _dispatch_upload_to_rag(self, text: str, public: bool) -> None:
-        """Run the upload payload through ``RagService`` in its own worker.
+    def _format_upload_result(
+        self,
+        *,
+        added: int,
+        skipped: int,
+        failed: int,
+        chunks: int,
+        single_source: str | None,
+        language: str,
+    ) -> str:
+        """Translate aggregate upload counts into the system-turn line.
+
+        Picks the most specific i18n key for the outcome:
+
+        * single part, success → ``rag.upload.added_named`` (named line)
+        * single part, dedup'd → ``rag.upload.result.all_skipped``
+        * any other shape → ``rag.upload.result.bundle`` with counts
+
+        Keeping the per-shape branching here (and not in the i18n
+        template) means the en/zh translators only need one shape per
+        key — formatting templates with optional segments tends to
+        produce awkward translations.
+        """
+        if single_source is not None and added == 1 and skipped == 0 and failed == 0:
+            return t(
+                "rag.upload.added_named",
+                lang=language,
+                filename=single_source,
+                summary=f"chunks={chunks}",
+            )
+        if single_source is not None and added == 0 and skipped == 1:
+            return t(
+                "rag.upload.result.all_skipped",
+                lang=language,
+                source=single_source,
+            )
+        return t(
+            "rag.upload.result.bundle",
+            lang=language,
+            added=added,
+            skipped=skipped,
+            failed=failed,
+            chunks=chunks,
+        )
+
+    def _dispatch_upload_to_rag(self, bundle, *, language: str) -> None:
+        """Run an ``UploadBundle`` through ``RagService`` part-by-part.
 
         Skips the mode dispatcher: rag ingestion is not a user-facing mode,
-        only an internal flow triggered by ``/upload`` and the paste→OCR
-        pipeline.
+        only an internal flow triggered by ``/upload``.
+
+        Does NOT go through ``_begin_turn`` — dumping a multi-page OCR'd
+        PDF into the conversation as a user bubble is noise. The user
+        already saw the file in the modal preview; they only need the
+        final aggregated "✓ X added, Y already in library" line.
         """
-        self._begin_turn(text)
-        self._stream_worker = self._run_rag_upload(text, public)
+        self.query_one(ToolSteps).reset(preserve_active=True)
+        self.query_one(InputBar).set_streaming(True)
+        self._stream_worker = self._run_rag_upload(bundle, language=language)
 
     @work(exclusive=True)
     async def _run_stream(self, text: str) -> None:
@@ -1019,14 +1143,22 @@ class ClarityMedApp(App):
         self.query_one(StatusBar).context_chars = total
 
     @work(exclusive=True)
-    async def _run_rag_upload(self, text: str, public: bool) -> None:
-        """Stream a ``/upload``-style ingest through ``RagService``.
+    async def _run_rag_upload(self, bundle, *, language: str) -> None:
+        """Stream an ``UploadBundle`` through ``RagService`` part-by-part.
 
-        Mirrors ``_run_stream``'s ContextVar + audit + event-pump shape but
-        only handles the small event set ``RagService`` actually emits
-        (``ToolStarted`` / ``ToolCompleted`` / ``Done`` / ``Error``). Audit
-        rows carry ``mode="rag"`` for continuity with prior history.
+        Each Part's ``content`` is one ``RagService.run`` call keyed by
+        ``source_uri=part.source_hash``. This buys exact-hash dedupe
+        across uploads via ``UserRagStore`` — a re-uploaded part raises
+        ``DuplicateDocumentError`` and is counted as ``skipped`` rather
+        than ingested again. Per-chunk cosine-sim dedupe lives in
+        ``RagService`` itself (see follow-up task) and is invisible here.
+
+        Aggregate counts (``added`` / ``skipped`` / ``failed`` /
+        ``chunks``) drive the final system-turn message; the modal
+        already gated low-quality parts so anything reaching this
+        worker should be ingest-eligible.
         """
+        from claritymed.errors import DuplicateDocumentError
         from claritymed.orchestrator.services import RagService
         from claritymed.stores.user_rag import make_user_rag_store
 
@@ -1036,51 +1168,99 @@ class ClarityMedApp(App):
         rid = new_request_id()
         status.request_id = rid
 
-        per_turn = apply_context(rid, status.user_id, status.language)
+        per_turn = apply_context(rid, status.user_id, language)
         access = get_access_logger()
         request_status = "ok"
+
+        added_parts = 0
+        skipped_parts = 0
+        failed_parts = 0
+        added_chunks = 0
+        # When the bundle has exactly one part the final message wants
+        # the source name for a friendlier "paper.pdf added to library"
+        # line; multi-part bundles aggregate by count.
+        single_source = bundle.parts[0].source if len(bundle.parts) == 1 else None
+
         try:
             audit_event(
                 "request_start",
                 payload={"entry": "tui", "mode": "rag"},
             )
             access.info("tui_turn_start mode=rag")
+
             try:
-                service = RagService(store=make_user_rag_store(status.user_id))
-                events = service.run(text, user_id=status.user_id, public=public)
+                store = make_user_rag_store(status.user_id)
             except Exception as exc:  # noqa: BLE001
                 request_status = "init_error"
                 conv.add_error_turn(f"service init failed: {exc}")
                 return
 
-            try:
-                async for event in events:
-                    if isinstance(event, ToolStarted):
-                        steps.push_start(event.tool_name, event.args_preview)
-                    elif isinstance(event, ToolCompleted):
-                        steps.push_complete(
-                            event.tool_name, event.duration_ms, event.summary
-                        )
-                    elif isinstance(event, Error):
-                        conv.add_error_turn(f"{event.error_type}: {event.message}")
-                        request_status = "error"
-                        return
-                    elif isinstance(event, Done):
-                        final = event.final
-                        summary = getattr(final, "summary", None) or (
-                            f"doc_id={final.doc_id} chunks={final.chunk_count}"
-                            if hasattr(final, "doc_id")
-                            else repr(final)
-                        )
-                        conv.add_system_turn(f"rag ✓ {summary}")
-                        self._session_turns.append(
-                            ChatTurn(role="system", text=f"rag: {summary}")
-                        )
-                        self._refresh_context_chars()
-                        return
-            except Exception as exc:  # noqa: BLE001
-                request_status = "exception"
-                conv.add_error_turn(f"stream failed: {exc}")
+            for part in bundle.parts:
+                if part.status != "ok":
+                    # Validator should have blocked this — defensive
+                    # only. Counted as failed so the user sees a non-
+                    # silent outcome.
+                    failed_parts += 1
+                    continue
+                service = RagService(store=store)
+                events = service.run(
+                    part.content,
+                    user_id=status.user_id,
+                    public=True,
+                    source_uri=part.source_hash,
+                )
+                try:
+                    async for event in events:
+                        if isinstance(event, ToolStarted):
+                            steps.push_start(event.tool_name, event.args_preview)
+                        elif isinstance(event, ToolCompleted):
+                            steps.push_complete(
+                                event.tool_name,
+                                event.duration_ms,
+                                event.summary,
+                            )
+                        elif isinstance(event, Error):
+                            conv.add_error_turn(f"{event.error_type}: {event.message}")
+                            failed_parts += 1
+                            break
+                        elif isinstance(event, Done):
+                            final = event.final
+                            # All-chunks-deduped → semantically the
+                            # same as DuplicateDocumentError: nothing
+                            # new landed. Count as ``skipped`` so the
+                            # user sees one consistent "already in
+                            # library" bucket regardless of whether
+                            # the exact-hash or the cosine-sim layer
+                            # caught it.
+                            if final.chunk_count == 0 and final.skipped_chunk_count > 0:
+                                skipped_parts += 1
+                            else:
+                                added_parts += 1
+                                added_chunks += final.chunk_count
+                            break
+                except DuplicateDocumentError:
+                    skipped_parts += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("rag upload part failed")
+                    failed_parts += 1
+                    conv.add_error_turn(f"part failed: {exc}")
+
+            if failed_parts and not added_parts and not skipped_parts:
+                # All parts failed — treat as an error turn so request
+                # status reflects reality.
+                request_status = "error"
+
+            message = self._format_upload_result(
+                added=added_parts,
+                skipped=skipped_parts,
+                failed=failed_parts,
+                chunks=added_chunks,
+                single_source=single_source,
+                language=language,
+            )
+            conv.add_system_turn(message)
+            self._session_turns.append(ChatTurn(role="system", text=message))
+            self._refresh_context_chars()
         finally:
             try:
                 audit_event(

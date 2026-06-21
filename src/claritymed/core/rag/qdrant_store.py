@@ -381,6 +381,34 @@ class RagCollectionStore:
 
     # --- hybrid query --------------------------------------------------
 
+    async def search_dense_max_score(self, dense_vector: list[float]) -> float | None:
+        """Return the cosine score of the closest existing chunk, or None.
+
+        Single dense-only query against the collection — no sparse leg,
+        no RRF fusion. Used by per-chunk upload dedupe to ask "is there
+        already something this similar in the user's library?" before
+        spending the upsert bandwidth.
+
+        Returns ``None`` when the collection doesn't exist yet
+        (new user) or scroll yields no points. Returns the raw cosine
+        score (Qdrant stores cosine distance, queries return similarity
+        in ``[-1, 1]``); callers compare against their configured
+        threshold (typically ``0.92``-``0.95``).
+        """
+        if not await self._aclient.collection_exists(self._collection):
+            return None
+        result = await self._aclient.query_points(
+            collection_name=self._collection,
+            query=dense_vector,
+            using=DENSE_VECTOR_NAME,
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+        if not result.points:
+            return None
+        return float(result.points[0].score)
+
     async def search_hybrid(
         self,
         dense_vector: list[float],

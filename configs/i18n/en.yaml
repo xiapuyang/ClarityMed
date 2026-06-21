@@ -40,6 +40,77 @@ rag:
     statpearls_en: "MedRAG-StatPearls"
     textbooks_en: "MedRAG-Textbooks"
     user_rag: "My Library"
+  upload:
+    # Final status line shown in the conversation after /upload completes.
+    # `added_named` is preferred when the upload modal knew the source
+    # filename (path mode → `path.name`, approve mode → SessionAttachment.filename);
+    # `added` is the fallback used when no display name is available.
+    added_named: "✓ {filename} added to library ({summary})"
+    added: "rag ✓ {summary}"
+    confirm:
+      # UploadModal copy (yes/no approve dialog before RAG ingest).
+      title: "Add to library?"
+      yes_button: "Yes (y)"
+      no_button: "No (n)"
+    part:
+      # Per-part row in the bundle preview. ``{source}`` is the
+      # filename (attachments) or "inline" (typed text). ``{kind}``
+      # comes from ``rag.upload.kind.*`` below.
+      row: "{icon} {source} ({kind}, {chars} chars)"
+      row_empty: "{icon} {source} ({kind}, no text)"
+    kind:
+      text: "text"
+      image: "image"
+      file: "file"
+    gate:
+      # Validation reasons rendered under the part list. Multi-line
+      # block joins each reason with a newline. Source is the
+      # offending part's source label.
+      empty: "Nothing to upload."
+      ocr_failed: "OCR failed for {source}."
+      ocr_pending: "Still extracting text for {source} — try again in a moment."
+      low_content: "Too little content in {source}."
+      total_too_short: "Total content {actual} chars; minimum is {floor}."
+    result:
+      # Final conversation-system line emitted by the RAG worker after
+      # the bundle has been dispatched. `bundle` covers the multi-part
+      # case; `all_skipped` is the special-case for "every part was
+      # already in the library, nothing new landed."
+      bundle: "✓ {added} added, {skipped} already in library, {failed} failed ({chunks} new chunks)"
+      all_skipped: "{source} already in library — nothing new added."
+
+library:
+  # LibraryModal copy. The modal lists every RAG collection + runs the
+  # live retrieval pipeline. Topic strings inside each row stay in
+  # English on purpose — they come from `configs/retrieval.yaml` and
+  # are scientific terms we don't maintain a parallel translation for.
+  title: "Library — RAG collections + live retrieval"
+  search_placeholder: "Search…"
+  columns:
+    kind: "KIND"
+    name: "NAME"
+    chunks: "CHUNKS"
+    notes: "NOTES"
+    topics: "TOPICS"
+  loading: "Loading…"
+  error: "Error: {error}"
+  tier: "tier {tier}"
+  tier_unknown: "tier ?"
+  topics_none: "(no topics declared)"
+  user:
+    not_initialised: "(not initialised — /upload to populate)"
+    your_uploads: "(your uploads)"
+    notes: "user '{user_id}'"
+  list_status: "{system_count} system + 1 user · retrieval: {state}"
+  retrieval_ready: "ready"
+  retrieval_disabled: "disabled (rag.enabled=false)"
+  disabled_banner: "RAG is disabled (configs/retrieval.yaml: rag.enabled=false) — cannot search."
+  search_status: "{count} chunk(s) from [{collections}]\nexpanded query: {expanded}\n{timings}"
+  timings: "embed {embed_ms}ms · search {search_ms}ms · rerank {rerank_ms}ms · parent {parent_ms}ms"
+  none_collections: "(none)"
+  no_expansion: "(no expansion)"
+  score: "score={score}"
+  close_button: "Close"
 
 ask_modal:
   answer_header: "↳ Your answer"

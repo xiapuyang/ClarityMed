@@ -171,8 +171,15 @@ async def _embed_library_task(result: dict, kwargs: dict) -> None:
         if not text.strip():
             return
         store = make_user_rag_store(user_id)
-        n = await store.add_document(user_id, library_path, text, public=parsed.public)
-        logger.debug("embed_library: %s → %d chunks", library_path, n)
+        ingest = await store.add_document(
+            user_id, library_path, text, public=parsed.public
+        )
+        logger.debug(
+            "embed_library: %s → %d chunks (skipped=%d)",
+            library_path,
+            ingest.written,
+            ingest.skipped_chunks,
+        )
     except Exception:  # noqa: BLE001
         logger.warning("embed_library: background task failed", exc_info=True)
 

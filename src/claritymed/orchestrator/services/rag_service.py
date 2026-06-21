@@ -61,7 +61,7 @@ class RagService:
         t0 = time.monotonic()
         metadata = {"source_uri": source_uri} if source_uri else None
         doc_id = generate_doc_id()
-        written = await self._store.add_document(
+        result = await self._store.add_document(
             user_id=user_id,
             doc_id=doc_id,
             text=user_input,
@@ -70,15 +70,26 @@ class RagService:
         )
         receipt = IngestionReceipt(
             doc_id=doc_id,
-            chunk_count=written,
-            embedding_status="ok" if written else "stub",
+            chunk_count=result.written,
+            skipped_chunk_count=result.skipped_chunks,
+            # ``stub`` survives for the truly-empty case (no text /
+            # chunker produced nothing); when every chunk dedup'd
+            # against existing content the embedding pipeline ran fine,
+            # so ``ok`` is the honest status.
+            embedding_status="ok"
+            if result.written or result.skipped_chunks
+            else "stub",
             public=public,
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
+        summary = (
+            f"doc_id={receipt.doc_id} chunks={receipt.chunk_count}"
+            f" skipped={receipt.skipped_chunk_count}"
+        )
         yield ToolCompleted(
             tool_name="embed_and_store",
             duration_ms=duration_ms,
-            summary=f"doc_id={receipt.doc_id} chunks={receipt.chunk_count}",
+            summary=summary,
         )
 
         audit_event(
@@ -87,6 +98,7 @@ class RagService:
                 "user_id": user_id,
                 "doc_id": receipt.doc_id,
                 "chunk_count": receipt.chunk_count,
+                "skipped_chunk_count": receipt.skipped_chunk_count,
                 "public": public,
             },
         )

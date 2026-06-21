@@ -21,6 +21,7 @@ banner.
 from __future__ import annotations
 
 import logging
+import unicodedata
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -28,6 +29,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from claritymed import config as _cfg
+from claritymed.core.i18n import t
 from claritymed.core.rag.strategies.base import RagStrategy, RetrievalContext
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,29 @@ _TOPIC_INDENT = " " * (
 )
 
 
+def _display_width(text: str) -> int:
+    """Terminal display width counting CJK Wide/Fullwidth chars as 2 cells.
+
+    `str.format` pads by character count, but Chinese headers like "类型"
+    render 4 cells wide in a monospace font. Without this helper the
+    column header drifts right of the body rows.
+    """
+    return sum(
+        2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text
+    )
+
+
+def _pad(text: str, width: int, *, right: bool = False) -> str:
+    """Pad ``text`` to ``width`` display cells (not characters).
+
+    Equivalent of ``f"{text:<width}"`` / ``f"{text:>width}"`` but uses
+    ``_display_width`` so CJK strings line up with ASCII rows.
+    """
+    deficit = max(0, width - _display_width(text))
+    pad = " " * deficit
+    return pad + text if right else text + pad
+
+
 def _system_rag_collections() -> list[dict]:
     """Return the configured system RAG collections from ``retrieval.yaml``."""
     retrieval = _cfg.load_yaml("retrieval.yaml")
@@ -78,14 +103,14 @@ def _label_for_collection(collection_name: str) -> str:
     return f"{_SYS_TAG} {collection_name}"
 
 
-def _list_header() -> str:
+def _list_header(lang: str) -> str:
     """Column header for the list mode table."""
     return (
-        f"{'KIND':<{_COL_KIND}}{_GAP}"
-        f"{'NAME':<{_COL_NAME}}{_GAP}"
-        f"{'CHUNKS':>{_COL_CHUNKS}}{_GAP}"
-        f"{'NOTES':<{_COL_NOTES}}{_GAP}"
-        f"TOPICS"
+        f"{_pad(t('library.columns.kind', lang=lang), _COL_KIND)}{_GAP}"
+        f"{_pad(t('library.columns.name', lang=lang), _COL_NAME)}{_GAP}"
+        f"{_pad(t('library.columns.chunks', lang=lang), _COL_CHUNKS, right=True)}{_GAP}"
+        f"{_pad(t('library.columns.notes', lang=lang), _COL_NOTES)}{_GAP}"
+        f"{t('library.columns.topics', lang=lang)}"
     )
 
 
@@ -94,10 +119,10 @@ def _row_first_line(
 ) -> str:
     """Render the first visual line of a collection row (all 5 columns)."""
     return (
-        f"{tag:<{_COL_KIND}}{_GAP}"
-        f"{name:<{_COL_NAME}}{_GAP}"
-        f"{chunks_str:>{_COL_CHUNKS}}{_GAP}"
-        f"{notes:<{_COL_NOTES}}{_GAP}"
+        f"{_pad(tag, _COL_KIND)}{_GAP}"
+        f"{_pad(name, _COL_NAME)}{_GAP}"
+        f"{_pad(chunks_str, _COL_CHUNKS, right=True)}{_GAP}"
+        f"{_pad(notes, _COL_NOTES)}{_GAP}"
         f"{first_topic}"
     )
 
@@ -167,18 +192,19 @@ class LibraryModal(ModalScreen):
         self._initial_query = initial_query
 
     def compose(self) -> ComposeResult:
+        lang = self._language
         with Vertical():
-            yield Label("Library — RAG collections + live retrieval", id="title")
+            yield Label(t("library.title", lang=lang), id="title")
             yield Input(
                 value=self._initial_query,
-                placeholder="Search…",
+                placeholder=t("library.search_placeholder", lang=lang),
                 id="query",
             )
             yield Static("", id="header")
             yield ListView(id="results")
             yield Static("", id="status")
             with Horizontal(id="buttons"):
-                yield Button("Close", id="close")
+                yield Button(t("library.close_button", lang=lang), id="close")
 
     async def on_mount(self) -> None:
         if self._initial_query:
@@ -199,21 +225,22 @@ class LibraryModal(ModalScreen):
         self.run_worker(self._reload(event.value.strip()), exclusive=True)
 
     async def _reload(self, query: str) -> None:
+        lang = self._language
         listview = self.query_one("#results", ListView)
         status = self.query_one("#status", Static)
         header = self.query_one("#header", Static)
         await listview.clear()
-        status.update("Loading…")
+        status.update(t("library.loading", lang=lang))
         try:
             if query:
                 header.update("")
                 await self._render_search(listview, status, query)
             else:
-                header.update(_list_header())
+                header.update(_list_header(lang))
                 await self._render_list(listview, status)
         except Exception as exc:  # noqa: BLE001
             logger.exception("library modal load failed (query=%r)", query)
-            status.update(f"Error: {exc}")
+            status.update(t("library.error", lang=lang, error=str(exc)))
 
     async def _render_list(self, listview: ListView, status: Static) -> None:
         """Render every collection as a 5-column row with one topic per line.
@@ -222,22 +249,28 @@ class LibraryModal(ModalScreen):
         a multi-topic row blank-pad the first 4 columns and indent the
         topic under the TOPICS header.
         """
+        lang = self._language
         system_cols = _system_rag_collections()
         system_counts = await self._system_collection_counts(
             [c.get("name", "") for c in system_cols if c.get("name")]
         )
         user_chunk_count = await self._count_user_rag_chunks()
 
+        topics_none_label = t("library.topics_none", lang=lang)
         for col in system_cols:
             name = col.get("name", "?")
-            language = col.get("language", "?")
+            col_language = col.get("language", "?")
             tier = col.get("authority_tier")
-            tier_str = f"tier {tier}" if tier is not None else "tier ?"
-            notes = f"{language} · {tier_str}"
+            tier_str = (
+                t("library.tier", lang=lang, tier=tier)
+                if tier is not None
+                else t("library.tier_unknown", lang=lang)
+            )
+            notes = f"{col_language} · {tier_str}"
             count = system_counts.get(name)
             chunks_str = str(count) if count is not None else "?"
             topics = col.get("topics") or []
-            first_topic = topics[0] if topics else "(no topics declared)"
+            first_topic = topics[0] if topics else topics_none_label
             row_lines = [
                 _row_first_line(_SYS_TAG, name, chunks_str, notes, first_topic)
             ]
@@ -247,35 +280,42 @@ class LibraryModal(ModalScreen):
 
         if user_chunk_count is None:
             user_chunks_str = "?"
-            user_topic = "(not initialised — /upload to populate)"
+            user_topic = t("library.user.not_initialised", lang=lang)
         else:
             user_chunks_str = str(user_chunk_count)
-            user_topic = "(your uploads)"
-        user_notes = f"user '{self._user_id}'"
+            user_topic = t("library.user.your_uploads", lang=lang)
+        user_notes = t("library.user.notes", lang=lang, user_id=self._user_id)
         user_row = _row_first_line(
             _USER_TAG, "user_rag", user_chunks_str, user_notes, user_topic
         )
         await listview.append(ListItem(Label(user_row)))
 
         rag_state = (
-            "ready" if self._strategy is not None else "disabled (rag.enabled=false)"
+            t("library.retrieval_ready", lang=lang)
+            if self._strategy is not None
+            else t("library.retrieval_disabled", lang=lang)
         )
-        status.update(f"{len(system_cols)} system + 1 user · retrieval: {rag_state}")
+        status.update(
+            t(
+                "library.list_status",
+                lang=lang,
+                system_count=len(system_cols),
+                state=rag_state,
+            )
+        )
 
     async def _render_search(
         self, listview: ListView, status: Static, query: str
     ) -> None:
         """Run the same strategy AskService uses and surface chunks + trace."""
+        lang = self._language
         if self._strategy is None:
-            status.update(
-                "RAG is disabled (configs/retrieval.yaml: rag.enabled=false) — "
-                "cannot search."
-            )
+            status.update(t("library.disabled_banner", lang=lang))
             return
         ctx = RetrievalContext(
             query=query,
             user_id=self._user_id,
-            language=self._language,  # type: ignore[arg-type]
+            language=lang,  # type: ignore[arg-type]
         )
         bundle = await self._strategy.retrieve(ctx)
         chunks = bundle.chunks
@@ -290,20 +330,32 @@ class LibraryModal(ModalScreen):
             doc_short = (chunk.doc_id or "?")[:8]
             # Tag and score on the head row, snippet indented underneath —
             # snippets need their own line because they wrap.
-            head = f"{tag} {doc_short} · score={score_str}"
+            score_label = t("library.score", lang=lang, score=score_str)
+            head = f"{tag} {doc_short} · {score_label}"
             label = f"{head}\n  {_one_line(chunk.text)}"
             await listview.append(ListItem(Label(label)))
 
-        active = ", ".join(trace.active_collections) or "(none)"
-        expanded = trace.expanded_query or "(no expansion)"
-        timings = (
-            f"embed {trace.embed_ms}ms · search {trace.search_ms}ms · "
-            f"rerank {trace.rerank_ms}ms · parent {trace.parent_expand_ms}ms"
+        active = ", ".join(trace.active_collections) or t(
+            "library.none_collections", lang=lang
+        )
+        expanded = trace.expanded_query or t("library.no_expansion", lang=lang)
+        timings = t(
+            "library.timings",
+            lang=lang,
+            embed_ms=trace.embed_ms,
+            search_ms=trace.search_ms,
+            rerank_ms=trace.rerank_ms,
+            parent_ms=trace.parent_expand_ms,
         )
         status.update(
-            f"{len(chunks)} chunk(s) from [{active}]\n"
-            f"expanded query: {expanded}\n"
-            f"{timings}"
+            t(
+                "library.search_status",
+                lang=lang,
+                count=len(chunks),
+                collections=active,
+                expanded=expanded,
+                timings=timings,
+            )
         )
 
     async def _count_user_rag_chunks(self) -> int | None:

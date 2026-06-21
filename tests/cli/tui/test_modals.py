@@ -12,6 +12,8 @@ from claritymed.cli.tui.modals import (
     UploadModal,
 )
 from claritymed.cli.tui.modals.provider_modal import ProviderModal
+from claritymed.core.upload import UploadBundle, UploadPart
+from claritymed.core.upload.bundle import hash_inline_text
 
 
 class _ModalHostApp(App):
@@ -29,9 +31,42 @@ class _ModalHostApp(App):
         self.push_screen(self._modal, _capture)
 
 
+def _ok_bundle(*, source: str = "report.pdf", chars: int = 500) -> UploadBundle:
+    """Bundle that clears all gates — single OK file part."""
+    content = "x" * chars
+    return UploadBundle(
+        parts=(
+            UploadPart(
+                kind="file",
+                source=source,
+                content=content,
+                source_hash=hash_inline_text(content),
+                status="ok",
+                chars=chars,
+            ),
+        )
+    )
+
+
+def _failing_bundle() -> UploadBundle:
+    """Bundle that fails validation (OCR-failed part)."""
+    return UploadBundle(
+        parts=(
+            UploadPart(
+                kind="file",
+                source="broken.pdf",
+                content="",
+                source_hash="deadbeef" * 8,
+                status="ocr_failed",
+                chars=0,
+            ),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_upload_modal_cancel_dismisses_with_none():
-    app = _ModalHostApp(UploadModal(initial_path=""))
+    app = _ModalHostApp(UploadModal(_ok_bundle()))
     async with app.run_test() as pilot:
         await pilot.pause()
         modal = app.screen
@@ -41,32 +76,94 @@ async def test_upload_modal_cancel_dismisses_with_none():
 
 
 @pytest.mark.asyncio
-async def test_upload_modal_rejects_missing_file(tmp_path):
-    app = _ModalHostApp(UploadModal(initial_path=str(tmp_path / "ghost.txt")))
+async def test_upload_modal_confirms_with_valid_bundle():
+    app = _ModalHostApp(UploadModal(_ok_bundle(source="note.txt")))
     async with app.run_test() as pilot:
         await pilot.pause()
         modal = app.screen
         modal.query_one("#confirm", Button).press()
         await pilot.pause()
-        # Still on the modal — dismiss never fired.
-        assert app.result == "<unset>"
+    # Approved bundles dismiss with True; the caller already holds the bundle.
+    assert app.result is True
 
 
 @pytest.mark.asyncio
-async def test_upload_modal_confirms_with_valid_file(tmp_path):
-    sample = tmp_path / "note.txt"
-    sample.write_text("hello world", encoding="utf-8")
-    app = _ModalHostApp(UploadModal(initial_path=str(sample)))
+async def test_upload_modal_disables_yes_for_invalid_bundle():
+    """OCR-failed parts must block the Yes button so the user can't
+    accidentally dispatch a doomed upload."""
+    app = _ModalHostApp(UploadModal(_failing_bundle()))
     async with app.run_test() as pilot:
         await pilot.pause()
         modal = app.screen
-        modal.query_one("#confirm", Button).press()
+        confirm = modal.query_one("#confirm", Button)
+        assert confirm.disabled is True
+        # Pressing the disabled button should not dismiss.
+        confirm.press()
         await pilot.pause()
-    assert app.result is not None
-    text, public = app.result
-    assert text == "hello world"
-    # Default radio is "record" → public=False.
-    assert public is False
+        assert app.result == "<unset>"
+        # `y` keybind respects the same gate as the button.
+        await pilot.press("y")
+        await pilot.pause()
+        assert app.result == "<unset>"
+        # Default focus on cancel when the bundle is invalid.
+        assert modal.focused is modal.query_one("#cancel", Button)
+
+
+@pytest.mark.asyncio
+async def test_upload_modal_renders_parts_preview():
+    """Every part is listed in the preview with status + source name."""
+    bundle = UploadBundle(
+        parts=(
+            UploadPart(
+                kind="image",
+                source="scan.png",
+                content="ok content " * 20,
+                source_hash="a" * 64,
+                status="ok",
+                chars=200,
+            ),
+            UploadPart(
+                kind="file",
+                source="broken.pdf",
+                content="",
+                source_hash="b" * 64,
+                status="ocr_failed",
+                chars=0,
+            ),
+        )
+    )
+    app = _ModalHostApp(UploadModal(bundle, language="en"))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from textual.widgets import Static
+
+        modal = app.screen
+        rendered = str(modal.query_one("#parts", Static).renderable)
+        assert "scan.png" in rendered
+        assert "broken.pdf" in rendered
+        # Status icon for the failed row should be the failure glyph.
+        assert "✗" in rendered
+        modal.query_one("#cancel", Button).press()
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_upload_modal_arrow_keys_cycle_buttons():
+    """←/→ should move focus between Yes/No so the active choice is
+    visible before the user hits Enter — matches ToolApprovalModal."""
+    app = _ModalHostApp(UploadModal(_ok_bundle()))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        # Default focus = confirm (Yes is the primary action when valid).
+        assert modal.focused is modal.query_one("#confirm", Button)
+        await pilot.press("left")
+        assert modal.focused is modal.query_one("#cancel", Button)
+        await pilot.press("right")
+        assert modal.focused is modal.query_one("#confirm", Button)
+        # Cancel before the host app tears down.
+        await pilot.press("escape")
+        await pilot.pause()
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,11 @@ DEFAULT_PASTE_MAX_TEXT_CHARS = 100_000
 DEFAULT_PASTE_PLACEHOLDER_MIN_LINES = 6
 DEFAULT_PASTE_PLACEHOLDER_MIN_CHARS = 800
 
+# /upload quality gates — see core/upload/bundle.py
+DEFAULT_UPLOAD_MIN_TOTAL_CHARS = 100
+DEFAULT_UPLOAD_MIN_PART_CHARS = 30
+DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD = 0.93
+
 
 def ensure_runtime_dirs() -> None:
     """Create ``data/``, ``shared/``, and ``logs/`` under the runtime root.
@@ -125,6 +130,49 @@ def paste_placeholder_min_chars() -> int:
     if n is None:
         n = DEFAULT_PASTE_PLACEHOLDER_MIN_CHARS
     return int(n)
+
+
+def upload_min_total_chars() -> int:
+    """Assembled-payload floor for ``/upload``.
+
+    Bundles whose combined non-whitespace char count falls below this
+    are rejected by ``UploadBundle.validate`` before any RAG insert. Read
+    from ``app.yaml`` ``upload.min_total_chars``; falls back to
+    ``DEFAULT_UPLOAD_MIN_TOTAL_CHARS`` when missing.
+    """
+    n = load_yaml("app.yaml").get("upload", {}).get("min_total_chars")
+    if n is None:
+        n = DEFAULT_UPLOAD_MIN_TOTAL_CHARS
+    return int(n)
+
+
+def upload_min_part_chars() -> int:
+    """Per-part floor for ``/upload``.
+
+    Individual parts (one OCR'd image, one file, one inline-text run)
+    shorter than this are marked ``low_content`` during validation. Read
+    from ``app.yaml`` ``upload.min_part_chars``; falls back to
+    ``DEFAULT_UPLOAD_MIN_PART_CHARS`` when missing.
+    """
+    n = load_yaml("app.yaml").get("upload", {}).get("min_part_chars")
+    if n is None:
+        n = DEFAULT_UPLOAD_MIN_PART_CHARS
+    return int(n)
+
+
+def upload_dedupe_cosine_threshold() -> float:
+    """Cosine-similarity threshold for per-chunk RAG dedupe.
+
+    During ingest each new chunk's dense embedding is KNN-searched
+    against the user's existing collection; matches at or above this
+    score are skipped (already-in-library). Read from ``app.yaml``
+    ``upload.dedupe_cosine_threshold``; falls back to
+    ``DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD`` when missing.
+    """
+    n = load_yaml("app.yaml").get("upload", {}).get("dedupe_cosine_threshold")
+    if n is None:
+        n = DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD
+    return float(n)
 
 
 def supported_langs() -> tuple[str, ...]:

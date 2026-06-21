@@ -644,11 +644,13 @@ async def test_embed_library_task_calls_store_on_happy_path(_ctx, monkeypatch):
 
     captured = {}
 
+    from claritymed.stores.user_rag import IngestResult
+
     class _StubStore:
         async def add_document(self, user_id, library_path, text, public):
             captured["public"] = public
             captured["library_path"] = library_path
-            return 7
+            return IngestResult(written=7)
 
     monkeypatch.setattr(_ur, "make_user_rag_store", lambda uid: _StubStore())
     await _itp._embed_library_task(

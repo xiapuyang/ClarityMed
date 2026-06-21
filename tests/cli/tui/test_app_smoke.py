@@ -1532,37 +1532,41 @@ async def test_paste_image_pushes_upload_step_row(monkeypatch):
         assert "sha:" in upload_rows[0]
 
 
-@pytest.mark.asyncio
-async def test_upload_modal_rejects_oversize_file(tmp_path, monkeypatch):
-    """/upload modal stat()s the file before read_text(); oversize files
-    surface an error inline without dismissing the modal."""
-    from claritymed.cli.tui.modals import UploadModal
+def test_path_mode_bundle_rejects_oversize(tmp_path):
+    """``build_path_mode_bundle`` returns ``(None, error)`` when the file
+    exceeds ``max_bytes`` — the App layer toasts the error and never
+    opens the modal."""
+    from claritymed.core.upload import build_path_mode_bundle
 
     sample = tmp_path / "big.md"
     sample.write_bytes(b"y" * 4096)
-    # Shrink the cap globally so the read never runs.
-    monkeypatch.setattr("claritymed.config.paste_max_file_size_bytes", lambda: 1024)
+    bundle, error = build_path_mode_bundle(sample, max_bytes=1024, min_part_chars=10)
+    assert bundle is None
+    assert error is not None
+    assert "too large" in error.lower()
 
-    class _Host(__import__("textual.app", fromlist=["App"]).App):
-        def __init__(self):
-            super().__init__()
-            self.result = "<unset>"
 
-        def on_mount(self):
-            self.push_screen(
-                UploadModal(initial_path=str(sample)),
-                lambda v: setattr(self, "result", v),
-            )
+def test_path_mode_bundle_returns_ok_part(tmp_path):
+    """Happy-path build wraps the file content as a single ``file`` part."""
+    from claritymed.core.upload import build_path_mode_bundle
 
-    from textual.widgets import Button, Static
+    sample = tmp_path / "note.txt"
+    sample.write_text("hello " * 50, encoding="utf-8")
+    bundle, error = build_path_mode_bundle(sample, max_bytes=10_000, min_part_chars=10)
+    assert error is None
+    assert bundle is not None
+    assert len(bundle.parts) == 1
+    part = bundle.parts[0]
+    assert part.kind == "file"
+    assert part.source == "note.txt"
+    assert part.status == "ok"
 
-    app = _Host()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        modal = app.screen
-        modal.query_one("#confirm", Button).press()
-        await pilot.pause()
-        # Modal stayed up (no dismiss with payload).
-        assert app.result == "<unset>"
-        err = modal.query_one("#error", Static)
-        assert "too large" in str(err.renderable).lower()
+
+def test_path_mode_bundle_marks_low_content(tmp_path):
+    sample = tmp_path / "tiny.txt"
+    sample.write_text("hi", encoding="utf-8")
+    from claritymed.core.upload import build_path_mode_bundle
+
+    bundle, error = build_path_mode_bundle(sample, max_bytes=10_000, min_part_chars=100)
+    assert error is None
+    assert bundle.parts[0].status == "low_content"
