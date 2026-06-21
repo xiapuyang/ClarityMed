@@ -170,6 +170,16 @@ ocr-office = [
 ocr-image = [
     "rapidocr-onnxruntime>=1.4",
 ]
+# Web layer — FastAPI app + JWT cookie auth + CSRF + chat SSE. Lives
+# behind an optional extra so plain CLI / TUI installs don't drag in
+# fastapi + uvicorn + jose + passlib. Install on the host that serves
+# the browser frontend with ``uv sync --extra web``.
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+]
 # yolo_forge — Ultralytics-backed detection pipeline (RSNA Pneumonia
 # bbox is the first dataset). Heavy: ultralytics drags torch + opencv
 # + matplotlib, ~2GB on top of vision-server. Optional so the cloud
@@ -230,6 +240,10 @@ claritymed-vision-forge = "claritymed.ingest.vision.forge.cli:cli"
 # yolo_forge — Ultralytics-backed detection pipeline. Sibling to
 # vision-forge; usable after ``uv sync --extra yolo-forge``.
 claritymed-vision-yolo-forge = "claritymed.ingest.vision.yolo_forge.cli:cli"
+# Web layer entry point — only usable after ``uv sync --extra web``
+# (fastapi + uvicorn + python-jose + passlib). Binds uvicorn to
+# 127.0.0.1:8000 by default; production tops it with a reverse proxy.
+claritymed-web = "claritymed.web.app:serve"
 
 [build-system]
 requires = ["hatchling"]

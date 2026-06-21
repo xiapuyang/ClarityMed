@@ -232,6 +232,67 @@ AuditKind = Literal[
     #   payload allowlist: disease_id, clinical_action,
     #                      observed_leading_chars (count, not text)
     "vision.specialist_keywords.missing",
+    # --- web layer (FastAPI app + JWT cookie auth + CSRF + chat SSE) -----
+    #
+    # All web.* kinds are emitted only when the web extra is loaded.
+    # Web-side context (request_id / user_id / language) is populated by
+    # WebContextMiddleware before any handler runs, so audit_event never
+    # raises MissingContextError inside the web path.
+    #
+    # JWT lifecycle:
+    #   web.jwt.invalid — silent downgrade (signature mismatch, expired,
+    #     malformed). Normal lifecycle event.
+    #     payload allowlist: reason
+    #   web.jwt.tamper_suspected — fail-loud (valid HMAC + disallowed
+    #     `lang` claim or other schema violation). Implies secret
+    #     compromise or buggy issuer.
+    #     payload allowlist: reason
+    "web.jwt.invalid",
+    "web.jwt.tamper_suspected",
+    # Auth router:
+    #   web.auth.login_success — successful credential verification +
+    #     JWT issuance.
+    #     payload allowlist: user_id
+    #   web.auth.login_failed — unknown user OR wrong password (same
+    #     response shape, but the audit distinguishes via ip_hmac). The
+    #     ip_hmac field lets post-hoc clustering detect login-spray
+    #     without storing raw IPs.
+    #     payload allowlist: user_id_attempted, ip_hmac
+    #   web.auth.logout — explicit logout (cookie clear).
+    #     payload allowlist: user_id
+    "web.auth.login_success",
+    "web.auth.login_failed",
+    "web.auth.logout",
+    # CSRF middleware:
+    #   web.csrf.blocked — mutation request without a matching
+    #     X-CSRF-Token header (or missing csrf_token cookie).
+    #     payload allowlist: path, method
+    "web.csrf.blocked",
+    # OpenAPI gating:
+    #   web.openapi.access_blocked — /openapi.json or /docs requested in
+    #     production by a non-admin (or unauthenticated). Returns 404 to
+    #     avoid revealing existence.
+    #     payload allowlist: path, reason
+    "web.openapi.access_blocked",
+    # /me router:
+    #   web.me.language_changed — PATCH /api/v1/me {language} succeeded;
+    #     JWT cookie reissued with new lang claim.
+    #     payload allowlist: from, to
+    "web.me.language_changed",
+    # Chat SSE router:
+    #   web.chat.unknown_provider — user's Account.provider_id (or the
+    #     default) is not in app.state.ask_services. Config error.
+    #     payload allowlist: provider_id
+    #   web.chat.q_invalid — body validation rejected `q` (empty or
+    #     length cap exceeded). Surfaces malformed clients.
+    #     payload allowlist: reason
+    #   web.chat.session_busy — second concurrent stream against the
+    #     same session_id; returns 409 immediately (interleaved tokens
+    #     would be user-visible garbage).
+    #     payload allowlist: session_id
+    "web.chat.unknown_provider",
+    "web.chat.q_invalid",
+    "web.chat.session_busy",
 ]
 
 
