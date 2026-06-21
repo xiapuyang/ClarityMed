@@ -109,6 +109,57 @@ class Splits:
     test: Any
 
 
+def standard_splits(
+    *,
+    root: Any,
+    missing_message: str,
+    discover: Callable[..., Any],
+    stratified_split: Callable[..., Any],
+    build_dataset: Callable[..., Any],
+    is_present: Callable[..., bool] | None = None,
+    post_discover: Callable[..., Any] | None = None,
+) -> Splits:
+    """Shared "discover → stratified_split → build" pipeline.
+
+    Every classification dataset spec used to inline the same four-step
+    body: presence check, ``discover``, ``stratified_split``, three
+    ``build_dataset`` calls into a :class:`Splits`. Eight near-identical
+    copies meant adding a flag (e.g. a dry-run mode, a new split key)
+    required eight synchronised edits. This helper centralises the
+    pattern; per-dataset specs only declare what differs.
+
+    Args:
+        root: Resolved data-root path. Caller is responsible for
+            joining ``DATASET_SUBDIR`` and any ``.resolve()`` it needs.
+        missing_message: ``SystemExit`` text shown when
+            ``is_present(root)`` returns False. Should include the
+            ``download`` invocation so the operator can recover.
+        discover: Dataset-specific function ``(root) -> list[sample]``.
+        stratified_split: Dataset-specific function
+            ``(samples) -> {"train": ..., "val": ..., "test": ...}``.
+        build_dataset: Dataset-specific function
+            ``(sample_list) -> torch Dataset``.
+        is_present: Override the default ``root.is_dir()`` presence
+            check (RSNA, e.g., looks for ``stage_2_train_labels.csv``).
+        post_discover: Optional ``(samples, root) -> samples`` hook
+            for dataset-specific transforms applied after ``discover``
+            and before ``stratified_split`` (e.g. resized-image cache
+            materialisation).
+    """
+    present = is_present or (lambda p: p.is_dir())
+    if not present(root):
+        raise SystemExit(missing_message)
+    samples = discover(root)
+    if post_discover is not None:
+        samples = post_discover(samples, root)
+    raw = stratified_split(samples)
+    return Splits(
+        train=build_dataset(raw["train"]),
+        val=build_dataset(raw["val"]),
+        test=build_dataset(raw["test"]),
+    )
+
+
 @dataclass(frozen=True)
 class DatasetSpec:
     """Identity + labels + IO for one dataset.

@@ -30,7 +30,7 @@ from claritymed.ingest.vision.chest_xray_pneumonia.download import (
     KAGGLE_SLUG,
     chest_xray_pneumonia_data_root,
 )
-from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits
+from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits, standard_splits
 
 # Per-label metadata. ``cancer_status`` left as ``None`` everywhere
 # because pneumonia is not on the cancer-status enum; downstream code
@@ -57,18 +57,16 @@ CHEST_XRAY_PNEUMONIA_LABELS_META: dict[str, LabelMeta] = {
 def _build_splits() -> Splits:
     """Run discover + stratified split + build the three Torch Datasets."""
     root = chest_xray_pneumonia_data_root() / DATASET_SUBDIR
-    if not root.is_dir():
-        raise SystemExit(
+    return standard_splits(
+        root=root,
+        missing_message=(
             f"chest_xray_pneumonia not present at {root}. Run "
             "`uv run python -m claritymed.ingest.vision.chest_xray_pneumonia.download` "
             "first."
-        )
-    samples = discover(root)
-    raw = stratified_split(samples)
-    return Splits(
-        train=build_dataset(raw["train"]),
-        val=build_dataset(raw["val"]),
-        test=build_dataset(raw["test"]),
+        ),
+        discover=discover,
+        stratified_split=stratified_split,
+        build_dataset=build_dataset,
     )
 
 

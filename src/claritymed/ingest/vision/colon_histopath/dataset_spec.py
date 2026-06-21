@@ -25,7 +25,7 @@ from claritymed.ingest.vision.colon_histopath.dataset import (
     discover,
     stratified_split,
 )
-from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits
+from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits, standard_splits
 from claritymed.ingest.vision.lung_colon_histopath.download import (
     DATASET_SUBDIR,
     KAGGLE_SLUG,
@@ -58,17 +58,15 @@ def _build_splits() -> Splits:
     :mod:`lung_colon_histopath` download wrapper.
     """
     root = lung_colon_histopath_data_root() / DATASET_SUBDIR
-    if not root.is_dir():
-        raise SystemExit(
+    return standard_splits(
+        root=root,
+        missing_message=(
             f"LC25000 archive not present at {root}. Run "
             "`uv run python -m claritymed.ingest.vision.lung_colon_histopath.download` first."
-        )
-    samples = discover(root)
-    raw = stratified_split(samples)
-    return Splits(
-        train=build_dataset(raw["train"]),
-        val=build_dataset(raw["val"]),
-        test=build_dataset(raw["test"]),
+        ),
+        discover=discover,
+        stratified_split=stratified_split,
+        build_dataset=build_dataset,
     )
 
 

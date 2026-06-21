@@ -25,7 +25,7 @@ from claritymed.ingest.vision.breast_us_kaggle.download import (
     KAGGLE_SLUG,
     breast_us_kaggle_data_root,
 )
-from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits
+from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits, standard_splits
 
 
 # Per-label metadata. Mirrors BUSI's benign + malignant entries —
@@ -48,17 +48,15 @@ BREAST_US_KAGGLE_LABELS_META: dict[str, LabelMeta] = {
 def _build_splits() -> Splits:
     """Run discover + stratified split + build the three Torch Datasets."""
     root = breast_us_kaggle_data_root() / DATASET_SUBDIR
-    if not root.is_dir():
-        raise SystemExit(
+    return standard_splits(
+        root=root,
+        missing_message=(
             f"breast_us_kaggle not present at {root}. Run "
             "`uv run python -m claritymed.ingest.vision.breast_us_kaggle.download` first."
-        )
-    samples = discover(root)
-    raw = stratified_split(samples)
-    return Splits(
-        train=build_dataset(raw["train"]),
-        val=build_dataset(raw["val"]),
-        test=build_dataset(raw["test"]),
+        ),
+        discover=discover,
+        stratified_split=stratified_split,
+        build_dataset=build_dataset,
     )
 
 

@@ -29,7 +29,7 @@ See ``docs/plans/2026-06-17-001-feat-cross-dataset-drift-bench-plan.md``.
 from __future__ import annotations
 
 from claritymed.core.vision.schemas import LabelMeta
-from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits
+from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits, standard_splits
 from claritymed.ingest.vision.rsna_pneumonia.dataset import (
     DEFAULT_INPUT_SIZE,
     RSNA_PNEUMONIA_LABELS,
@@ -66,24 +66,29 @@ RSNA_PNEUMONIA_LABELS_META: dict[str, LabelMeta] = {
 
 
 def _build_splits() -> Splits:
-    """Run discover + stratified split + build the three Torch Datasets."""
-    root = rsna_pneumonia_data_root() / DATASET_SUBDIR
-    # DATASET_SUBDIR is "." for RSNA (no top-level wrapper); resolve so
-    # the fail-loud check below points at the actual root path.
-    root = root.resolve()
-    if not (root / "stage_2_train_labels.csv").is_file():
-        raise SystemExit(
+    """Run discover + stratified split + build the three Torch Datasets.
+
+    DATASET_SUBDIR is ``"."`` for RSNA (no top-level wrapper); resolve
+    so the fail-loud message points at the actual root path. Presence
+    is keyed on the labels CSV rather than the directory because the
+    Kaggle archive is sometimes extracted to a flat tree where the dir
+    exists empty before the user has run the download.
+    """
+    root = (rsna_pneumonia_data_root() / DATASET_SUBDIR).resolve()
+    return standard_splits(
+        root=root,
+        missing_message=(
             f"rsna_pneumonia not present at {root}. Run "
             "`uv run python -m claritymed.ingest.vision.rsna_pneumonia.download` "
             "first (requires accepting competition rules on Kaggle)."
-        )
-    samples = discover(root)
-    samples = ensure_resized_cache(samples, root, input_size=DEFAULT_INPUT_SIZE)
-    raw = stratified_split(samples)
-    return Splits(
-        train=build_dataset(raw["train"]),
-        val=build_dataset(raw["val"]),
-        test=build_dataset(raw["test"]),
+        ),
+        discover=discover,
+        stratified_split=stratified_split,
+        build_dataset=build_dataset,
+        is_present=lambda p: (p / "stage_2_train_labels.csv").is_file(),
+        post_discover=lambda samples, root: ensure_resized_cache(
+            samples, root, input_size=DEFAULT_INPUT_SIZE
+        ),
     )
 
 

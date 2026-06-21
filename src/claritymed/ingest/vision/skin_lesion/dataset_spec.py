@@ -18,7 +18,7 @@ skin lesion model variant uses :class:`ClassificationTask`.
 from __future__ import annotations
 
 from claritymed.core.vision.schemas import LabelMeta
-from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits
+from claritymed.ingest.vision.forge.spec import DatasetSpec, Splits, standard_splits
 from claritymed.ingest.vision.skin_lesion.dataset import (
     SKIN_LESION_LABELS,
     build_dataset,
@@ -116,17 +116,15 @@ def _build_splits() -> Splits:
     in val + test.
     """
     root = skin_lesion_data_root() / DATASET_SUBDIR
-    if not root.is_dir():
-        raise SystemExit(
+    return standard_splits(
+        root=root,
+        missing_message=(
             f"skin lesion data not present at {root}. Run "
             "`uv run python -m claritymed.ingest.vision.skin_lesion.download` first."
-        )
-    samples = discover(root)
-    raw = stratified_split(samples)
-    return Splits(
-        train=build_dataset(raw["train"]),
-        val=build_dataset(raw["val"]),
-        test=build_dataset(raw["test"]),
+        ),
+        discover=discover,
+        stratified_split=stratified_split,
+        build_dataset=build_dataset,
     )
 
 
