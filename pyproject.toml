@@ -178,7 +178,13 @@ web = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-jose[cryptography]>=3.3",
-    "passlib[bcrypt]>=1.7",
+    # bcrypt directly, not via passlib. passlib 1.7.4 (last release
+    # 2020) tries to detect a CVE workaround using a 250-byte test
+    # password that bcrypt 4+ rejects with a 72-byte cap; the detection
+    # routine raises during ``CryptContext`` construction and there's
+    # no patched passlib release. Using bcrypt directly is ~15 lines
+    # of glue in stores/auth.py and side-steps the maintenance trap.
+    "bcrypt>=4.0,<6",
 ]
 # yolo_forge — Ultralytics-backed detection pipeline (RSNA Pneumonia
 # bbox is the first dataset). Heavy: ultralytics drags torch + opencv

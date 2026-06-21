@@ -36,6 +36,7 @@ from claritymed.cli.commands.rag import rag_app
 from claritymed.cli.commands.terminology import terminology_app
 from claritymed.cli.commands.tool import tool_app
 from claritymed.cli.commands.tui import tui
+from claritymed.cli.commands.user import user_app
 from claritymed.cli.common import bootstrap_once
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ app.add_typer(audit_app, name="audit")
 # v1 PHI ingest tools — headless mirror of the LLM tool surface.
 app.add_typer(tool_app, name="tool")
 app.add_typer(bench_app, name="bench")
+# Out-of-band user-state management (currently: set-password). Required
+# because the web layer never exposes a password endpoint (origin R13).
+app.add_typer(user_app, name="user")
 
 # ``eval`` sub-app — installed only when the ``evals`` optional extra is
 # present. Importing it pulls in lm-eval transitively (torch, datasets),

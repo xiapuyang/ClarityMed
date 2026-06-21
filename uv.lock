@@ -730,8 +730,8 @@ vision-server = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 web = [
+    { name = "bcrypt" },
     { name = "fastapi" },
-    { name = "passlib", extra = ["bcrypt"] },
     { name = "python-jose", extra = ["cryptography"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -770,6 +770,7 @@ runtime-ocr = [
 [package.metadata]
 requires-dist = [
     { name = "arize-phoenix-client", specifier = ">=2.7.0" },
+    { name = "bcrypt", marker = "extra == 'web'", specifier = ">=4.0,<6" },
     { name = "datasets", specifier = ">=2.20" },
     { name = "deepeval", marker = "extra == 'e2e'", specifier = ">=4.0" },
     { name = "fastapi", marker = "extra == 'medical-clip-server'", specifier = ">=0.115" },
@@ -801,7 +802,6 @@ requires-dist = [
     { name = "optuna", specifier = ">=4.9.0" },
     { name = "optuna-dashboard", specifier = ">=0.20.0" },
     { name = "pandas", marker = "extra == 'symptoms-server'", specifier = ">=2.0" },
-    { name = "passlib", extras = ["bcrypt"], marker = "extra == 'web'", specifier = ">=1.7" },
     { name = "pillow", marker = "extra == 'medical-clip-server'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'vision-server'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'yolo-forge'", specifier = ">=10.0" },
@@ -4295,20 +4295,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/1e/1bac1a839d12e6a82ec6cb40cda2edde64a2013a66963293696bbf31fbbb/pandas-2.3.3-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2e3ebdb170b5ef78f19bfb71b0dc5dc58775032361fa188e814959b74d726dd5", size = 12121582, upload-time = "2025-09-29T23:30:43.391Z" },
     { url = "https://files.pythonhosted.org/packages/44/91/483de934193e12a3b1d6ae7c8645d083ff88dec75f46e827562f1e4b4da6/pandas-2.3.3-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:d051c0e065b94b7a3cea50eb1ec32e912cd96dba41647eb24104b6c6c14c5788", size = 12699963, upload-time = "2025-09-29T23:31:10.009Z" },
     { url = "https://files.pythonhosted.org/packages/70/44/5191d2e4026f86a2a109053e194d3ba7a31a2d10a9c2348368c63ed4e85a/pandas-2.3.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:3869faf4bd07b3b66a9f462417d0ca3a9df29a9f6abd5d0d0dbab15dac7abe87", size = 13202175, upload-time = "2025-09-29T23:31:59.173Z" },
-]
-
-[[package]]
-name = "passlib"
-version = "1.7.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b6/06/9da9ee59a67fae7761aab3ccc84fa4f3f33f125b370f1ccdb915bf967c11/passlib-1.7.4.tar.gz", hash = "sha256:defd50f72b65c5402ab2c573830a6978e5f202ad0d984793c8dde2c4152ebe04", size = 689844, upload-time = "2020-10-08T19:00:52.121Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/a4/ab6b7589382ca3df236e03faa71deac88cae040af60c071a78d254a62172/passlib-1.7.4-py2.py3-none-any.whl", hash = "sha256:aa6bca462b8d8bda89c70b382f0c298a20b5560af6cbfa2dce410c0a2fb669f1", size = 525554, upload-time = "2020-10-08T19:00:49.856Z" },
-]
-
-[package.optional-dependencies]
-bcrypt = [
-    { name = "bcrypt" },
 ]
 
 [[package]]

@@ -293,6 +293,11 @@ AuditKind = Literal[
     "web.chat.unknown_provider",
     "web.chat.q_invalid",
     "web.chat.session_busy",
+    # CLI out-of-band password management:
+    #   cli.user.password_set — `claritymed user set-password <user_id>`
+    #     succeeded. Payload carries the user_id only; the plaintext is
+    #     never logged or echoed.
+    "cli.user.password_set",
 ]
 
 
