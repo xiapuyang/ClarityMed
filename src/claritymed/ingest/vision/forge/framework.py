@@ -624,7 +624,7 @@ def _train_with_early_stopping(
                 score,
                 state.best_selection_score,
                 state.best_epoch,
-                {k: f"{v:.3f}" for k, v in val_breakdown.items()},
+                {k: f"{v:.3f}" for k, v in scalar_only(val_breakdown).items()},
             )
             if state.early_stopped:
                 logger.info("early stop at epoch %d (patience=%d)", epoch, patience)
@@ -658,7 +658,7 @@ def _train_with_early_stopping(
             "forge.train test eval: score=%.4f composite=%.4f breakdown=%s",
             test_score,
             test_composite,
-            {k: f"{v:.3f}" for k, v in test_breakdown.items()},
+            {k: f"{v:.3f}" for k, v in scalar_only(test_breakdown).items()},
         )
         mlflow_info = {
             "experiment_name": experiment_name(FEATURE, spec.dataset.disease_id),
