@@ -52,6 +52,7 @@ from claritymed.web.deps import require_admin
 from claritymed.web.jwt import validate_secret_or_raise
 from claritymed.web.middleware import WebContextMiddleware
 from claritymed.web.routers.auth import router as auth_router
+from claritymed.web.routers.me import router as me_router
 
 ENV_DEV = "CLARITYMED_DEV"
 ENV_CORS_ORIGINS = "CLARITYMED_CORS_ORIGINS"
@@ -148,8 +149,9 @@ def create_app() -> FastAPI:
     _register_openapi_routes(app)
 
     # Business routers — auth lives at /auth/* (unversioned); v1 data
-    # routers go under /api/v1 in later units.
+    # routers go under /api/v1.
     app.include_router(auth_router)
+    app.include_router(me_router)
 
     return app
 

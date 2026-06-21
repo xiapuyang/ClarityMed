@@ -70,3 +70,45 @@ class LoginResponse(BaseModel):
 # 204 No Content; cookie cleared via Set-Cookie.
 
 LogoutMethod = Literal["POST"]
+
+
+# --- /api/v1/me --------------------------------------------------------
+
+
+class AccountResponse(BaseModel):
+    """Shape returned by ``GET /api/v1/me`` and ``PATCH /api/v1/me``.
+
+    Mirrors :class:`claritymed.core.schemas.account.Account` minus the
+    timestamps and the future-PHI fields. ``provider_id`` is exposed
+    because the SPA chrome surfaces it ("Connected to: Ollama"); the
+    role is read-only via this endpoint (admin promotion is out-of-band
+    via direct YAML edit per the MVP scope).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    display_name: str
+    role: Role
+    language: Language
+    provider_id: str | None = None
+
+
+class MePatch(BaseModel):
+    """Mutable subset of ``Account`` for ``PATCH /api/v1/me``.
+
+    ``extra="forbid"`` keeps the frontend from accidentally promoting a
+    user to admin via this endpoint — ``role`` is not mutable here.
+    ``provider_id`` and ``active_system_rag_collections`` are mutable in
+    the underlying schema but deliberately out of scope for MVP; admin
+    pages will expose them later.
+
+    Both fields are optional; the patch is a partial update. An empty
+    body is allowed and is a no-op (caller decides if that's a 200 or a
+    422 — we return 200 with the unchanged Account).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=64)
+    language: Language | None = None
