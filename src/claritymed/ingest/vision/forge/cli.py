@@ -162,7 +162,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--deploy-force",
         action="store_true",
-        help="Skip the floor gate (WARNING: development only).",
+        help="Skip the floor and regression gates (WARNING: development only).",
     )
 
     # ---- pipeline --------------------------------------------------
@@ -183,7 +183,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--deploy-force",
         action="store_true",
-        help="Skip the deploy floor gate (WARNING: development only).",
+        help="Skip the deploy floor and regression gates (WARNING: development only).",
     )
     sp.add_argument(
         "--quick",

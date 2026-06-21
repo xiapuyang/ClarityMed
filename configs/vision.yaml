@@ -137,8 +137,8 @@ models:
     server_id: local_default
     framework: pytorch
     accepted_modality: ultrasound               # KTD-V3 hard gate
-    weights_subpath: vision/breast_cancer_ultrasound/breast_us_kaggle_resnet50_v1__20260617T021107Z
-    manifest_sha256: "4cdec76a82b45d2da0f92bffb252dee49b35aed937f6d2b20a9046b6cbbe4fca"
+    weights_subpath: vision/breast_cancer_ultrasound/breast_us_kaggle_resnet50_v1__20260621T183047Z
+    manifest_sha256: "64e41e9163fb86ad214957126bdc9e898d85f151af322d27ba485e1c06d4c7f3"
     expected_ms: 700
   # Chest CT model entry — paired with the lung_cancer_chest_ct disease
   # above. Both stay disabled until the chest_ct training pipeline produces

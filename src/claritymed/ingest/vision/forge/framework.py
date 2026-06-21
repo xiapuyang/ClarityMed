@@ -1291,7 +1291,18 @@ def run_deploy(
     )
     if previous is not None:
         assert previous_score is not None
-        _check_regression(previous["version_tag"], previous_score, candidate_score)
+        if force:
+            logger.warning(
+                "deploy --force: skipping regression gate. candidate "
+                "tuned_test_score=%.4f vs active %.4f (Δ=%+.4f, version %s). "
+                "Do NOT use in production.",
+                candidate_score,
+                previous_score,
+                candidate_score - previous_score,
+                previous["version_tag"],
+            )
+        else:
+            _check_regression(previous["version_tag"], previous_score, candidate_score)
 
     # Validate registry-side wiring up-front, so a missing
     # configs/vision.yaml entry fails BEFORE copytree / symlink — not
