@@ -94,6 +94,66 @@ class AccountResponse(BaseModel):
     provider_id: str | None = None
 
 
+# --- /api/v1/sessions --------------------------------------------------
+
+
+# Mirrors ``ChatSession._path_for``'s validation: no slashes, no leading
+# dot, length <= 128. The Pydantic regex is the API-boundary version of
+# the same constraint; both layers stay in agreement.
+SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+
+
+class SessionMetaResponse(BaseModel):
+    """One entry in ``GET /api/v1/sessions``.
+
+    Mirrors :class:`claritymed.orchestrator.services.chat_session.SessionMeta`
+    minus the on-disk ``path`` (an implementation detail) and ``size_bytes``
+    (frontend doesn't need it for MVP).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    preview: str
+    modified_at: str
+
+
+class NewSessionResponse(BaseModel):
+    """Returned by ``POST /api/v1/sessions``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+
+
+class TurnResponse(BaseModel):
+    """One turn in ``GET /api/v1/sessions/{id}/turns``.
+
+    Projection of ``ChatTurn`` plus a ``cancelled`` flag so the SPA can
+    render half-finished assistant bubbles with the right state.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant", "system"]
+    text: str
+    cancelled: bool = False
+
+
+class StreamRequest(BaseModel):
+    """Body of ``POST /api/v1/sessions/{id}/stream``.
+
+    ``q`` is the user's question — PHI lives in the request body (not
+    the URL) so uvicorn's access log never captures it. The 8000-char
+    cap matches the plan's chosen bound; longer questions should be
+    broken into multiple turns.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    q: str = Field(min_length=1, max_length=8000)
+
+
 class MePatch(BaseModel):
     """Mutable subset of ``Account`` for ``PATCH /api/v1/me``.
 

@@ -52,6 +52,10 @@ from claritymed.web.deps import require_admin
 from claritymed.web.jwt import validate_secret_or_raise
 from claritymed.web.middleware import WebContextMiddleware
 from claritymed.web.routers.auth import router as auth_router
+from claritymed.web.routers.chat import (
+    build_default_ask_service,
+    router as chat_router,
+)
 from claritymed.web.routers.me import router as me_router
 
 ENV_DEV = "CLARITYMED_DEV"
@@ -101,16 +105,23 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
     validate_secret_or_raise()
     app.state.default_lang = _cfg.default_lang()
     app.state.dev = _is_dev()
-    app.state.ask_services = {}
-    app.state.session_locks = {}
+    # Per-session busy set — synchronous check-and-add in the chat
+    # route handler keeps the 409-on-concurrency decision atomic in
+    # the single-threaded asyncio loop. asyncio.Lock would force the
+    # acquire INSIDE the streaming generator, which is too late.
+    app.state.busy_sessions = set()
+    # ``ask_service_factory`` is overridable per-app (tests inject a
+    # fake before issuing chat requests). Default is the catalog-driven
+    # builder defined in the chat router.
+    if not getattr(app.state, "ask_service_factory", None):
+        app.state.ask_service_factory = build_default_ask_service
     logger.info(
         "web.app.lifespan ready dev=%s default_lang=%s",
         app.state.dev,
         app.state.default_lang,
     )
     yield
-    app.state.ask_services.clear()
-    app.state.session_locks.clear()
+    app.state.busy_sessions.clear()
 
 
 def create_app() -> FastAPI:
@@ -152,6 +163,7 @@ def create_app() -> FastAPI:
     # routers go under /api/v1.
     app.include_router(auth_router)
     app.include_router(me_router)
+    app.include_router(chat_router)
 
     return app
 
