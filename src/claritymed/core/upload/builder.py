@@ -41,7 +41,9 @@ import logging
 import re
 from pathlib import Path
 
+from claritymed import config as _cfg
 from claritymed.core.upload.bundle import (
+    PartKind,
     PartStatus,
     UploadBundle,
     UploadPart,
@@ -191,8 +193,6 @@ def _append_text_part(
     3. Duplicates of an earlier ``source_hash`` — collapses repeated
        paragraphs.
     """
-    from claritymed import config as _cfg
-
     if not segment.strip():
         return
     part = UploadPart.from_text(segment, source="inline")
@@ -249,8 +249,6 @@ def _resolve_attachment_part(
                 status="ocr_failed",
             )
         chars = count_meaningful_chars(content)
-        from claritymed import config as _cfg
-
         status: PartStatus = (
             "ok" if chars >= _cfg.upload_min_part_chars() else "low_content"
         )
@@ -279,7 +277,7 @@ def _resolve_attachment_part(
 
 def _attachment_part(
     *,
-    kind,
+    kind: PartKind,
     source: str,
     source_hash: str,
     content: str,

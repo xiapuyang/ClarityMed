@@ -11,7 +11,7 @@ from claritymed.stores.blob_store import BlobStore, make_blob_store
 
 
 def test_store_writes_content_addressable_path():
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"hello world", "txt")
     assert sha == hashlib.sha256(b"hello world").hexdigest()
     assert store.path(sha, "txt").exists()
@@ -22,7 +22,7 @@ def test_store_writes_content_addressable_path():
 
 
 def test_store_is_idempotent_no_rewrite():
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha1 = store.store(b"hello", "txt")
     target = store.path(sha1, "txt")
     mtime_before = target.stat().st_mtime_ns
@@ -33,7 +33,7 @@ def test_store_is_idempotent_no_rewrite():
 
 
 def test_store_rejects_empty_bytes():
-    store = BlobStore("alice")
+    store = BlobStore("test")
     with pytest.raises(ValueError):
         store.store(b"", "pdf")
 
@@ -44,7 +44,7 @@ def test_blob_store_rejects_invalid_user_id():
 
 
 def test_store_rejects_invalid_extension():
-    store = BlobStore("alice")
+    store = BlobStore("test")
     with pytest.raises(ValueError):
         store.store(b"hello", "")
     with pytest.raises(ValueError):
@@ -54,7 +54,7 @@ def test_store_rejects_invalid_extension():
 
 
 def test_path_rejects_bad_sha():
-    store = BlobStore("alice")
+    store = BlobStore("test")
     with pytest.raises(ValueError):
         store.path("not-a-sha", "pdf")
 
@@ -63,7 +63,7 @@ def test_ocr_done_false_when_only_partial(tmp_path):
     """``ocr_done`` must NOT return true for a half-written ocr.md without
     the ocr.json sentinel — the whole point of the sentinel is to defend
     against half-written extraction results."""
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"hello", "txt")
     # Manually drop ocr.md but no ocr.json yet.
     store.ocr_path(sha).write_text("# partial", encoding="utf-8")
@@ -76,7 +76,7 @@ def test_write_ocr_result_ocr_kind_writes_md_and_sentinel(tmp_path):
     """kind=ocr lands both ocr.md + ocr.json; sentinel carries kind/ext."""
     import json
 
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"%PDF fake", "pdf")
     store.write_ocr_result(
         sha,
@@ -107,7 +107,7 @@ def test_write_ocr_result_text_kind_skips_ocr_md(tmp_path):
     extracted text, so duplicating it as ocr.md would waste bytes."""
     import json
 
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"col1,col2\n1,2\n", "csv")
     store.write_ocr_result(
         sha,
@@ -133,7 +133,7 @@ def test_write_ocr_result_records_failure(tmp_path):
     is still written (empty) so any stale orphan is overwritten."""
     import json
 
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"some pdf", "pdf")
     store.write_ocr_result(
         sha,
@@ -155,7 +155,7 @@ def test_write_ocr_result_records_failure(tmp_path):
 def test_read_extracted_text_text_kind_reads_content_file(tmp_path):
     """For kind=text, the reader pulls from content.<ext> directly,
     not from ocr.md (which doesn't exist for text blobs)."""
-    store = BlobStore("alice")
+    store = BlobStore("test")
     payload = "col1,col2\n1,2\n3,4\n"
     sha = store.store(payload.encode("utf-8"), "csv")
     store.write_ocr_result(
@@ -173,7 +173,7 @@ def test_read_extracted_text_text_kind_reads_content_file(tmp_path):
 
 def test_read_extracted_text_ocr_kind_reads_ocr_md(tmp_path):
     """For kind=ocr, the reader pulls from ocr.md (the OCR output)."""
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"%PDF fake", "pdf")
     store.write_ocr_result(
         sha,
@@ -189,7 +189,7 @@ def test_read_extracted_text_ocr_kind_reads_ocr_md(tmp_path):
 
 
 def test_exists_filters_partial_writes():
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"abc", "pdf")
     assert store.exists(sha)
     # Synthetic .tmp file should be ignored by exists().
@@ -198,7 +198,7 @@ def test_exists_filters_partial_writes():
 
 
 def test_factory_returns_blob_store():
-    assert isinstance(make_blob_store("alice"), BlobStore)
+    assert isinstance(make_blob_store("test"), BlobStore)
 
 
 def test_blob_store_dedupes_across_extensions_via_sha():
@@ -208,7 +208,7 @@ def test_blob_store_dedupes_across_extensions_via_sha():
     ``content.<ext>``), but the deduplication key is the bytes' sha. So
     storing the same bytes with two different exts produces two files in
     one directory — not two directories."""
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"same bytes", "txt")
     sha2 = store.store(b"same bytes", "txt")  # exact dedup
     assert sha == sha2
@@ -217,7 +217,7 @@ def test_blob_store_dedupes_across_extensions_via_sha():
 
 def test_disk_full_simulation_cleans_tmp(monkeypatch):
     """If write_bytes fails, the .tmp file must be removed; original path stays absent."""
-    store = BlobStore("alice")
+    store = BlobStore("test")
 
     def boom(self, data):
         # Create the file then raise — simulates partial disk-full where
@@ -247,7 +247,7 @@ def test_ocr_sentinel_carries_original_filename(tmp_path):
     recovery from the blob CAS alone has a name to show the user."""
     import json
 
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"%PDF fake", "pdf")
     store.write_ocr_result(
         sha,
@@ -272,7 +272,7 @@ def test_ocr_sentinel_omits_filename_field_when_none(tmp_path):
     parsers don't see a surprise key."""
     import json
 
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"data", "pdf")
     store.write_ocr_result(
         sha,
@@ -298,7 +298,7 @@ def test_ocr_sentinel_first_write_wins_on_reuse(tmp_path):
     """
     import json
 
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"%PDF fake", "pdf")
     store.write_ocr_result(
         sha,
@@ -330,7 +330,7 @@ def test_ocr_sentinel_chinese_filename_not_escaped(tmp_path):
     """Chinese names land verbatim on disk — that's the whole point of
     ensure_ascii=False, otherwise the sentinel becomes unreadable
     ``\\u5316\\u9a8c\\u5355`` and grepping for a name fails."""
-    store = BlobStore("alice")
+    store = BlobStore("test")
     sha = store.store(b"%PDF fake", "pdf")
     store.write_ocr_result(
         sha,

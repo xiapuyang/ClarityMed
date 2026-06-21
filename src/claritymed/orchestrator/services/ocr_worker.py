@@ -58,6 +58,14 @@ _IMAGE_EXTS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".gif", ".heic"}
 )
 
+# Per-job wall-clock cap. Without this, one hung provider (LLM-OCR call
+# that never returns, frozen subprocess, network stall to MineRU) holds
+# the single asyncio.Queue indefinitely and every subsequent paste sits
+# in ``pending`` forever. 5 minutes is generous for the slowest
+# realistic chain (LLM-OCR with a large multi-page PDF) but short enough
+# that a stuck queue self-heals within one TUI session.
+OCR_JOB_TIMEOUT_S = 300.0
+
 # medical-clip's non-medical buckets — when ``classify_modality`` lands on
 # one of these, its ``is_medical`` is forced false by the server's gating
 # layer regardless of confidence (see ``servers/medical_clip/app.py``).
@@ -249,41 +257,29 @@ class OcrWorker:
                 task = asyncio.get_running_loop().create_task(
                     self._extract(job), context=ctx
                 )
-                completion = await task
+                # ``wait_for`` cancels ``task`` on timeout and re-raises
+                # ``TimeoutError``. Without this cap a single hung OCR
+                # call (e.g. an LLM provider that never returns) would
+                # block the queue forever and every subsequent paste
+                # would sit in ``pending`` indefinitely.
+                completion = await asyncio.wait_for(task, timeout=OCR_JOB_TIMEOUT_S)
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                logger.error(
+                    "ocr worker: job timed out after %.0fs for %s",
+                    OCR_JOB_TIMEOUT_S,
+                    job.sha256[:8],
+                )
+                completion = self._failure_completion(
+                    job,
+                    reason=f"timed out after {OCR_JOB_TIMEOUT_S:.0f}s",
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("ocr worker: unhandled error for %s", job.sha256[:8])
-                # Without writing the failure sentinel, BlobStore.ocr_done
-                # stays False forever and the blob is stuck in "pending"
-                # across restarts even though the worker already gave up.
-                # Mirror the OcrError branch in _extract: persist a failed
-                # ocr.json so a subsequent worker run either re-tries (the
-                # _read_cached_sentinel branch treats status="failed" as
-                # a miss) or short-circuits if the failure is permanent.
-                try:
-                    BlobStore(job.user_id).write_ocr_result(
-                        job.sha256,
-                        status="failed",
-                        kind="ocr",
-                        ext=job.blob_path.suffix.lstrip("."),
-                        provider=None,
-                        chain_tried=[],
-                        reason=f"worker error: {exc!r}",
-                        text="",
-                        original_filename=job.original_filename,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "ocr worker: failed to persist failure sentinel for %s",
-                        job.sha256[:8],
-                    )
-                completion = OcrCompleted(
-                    user_id=job.user_id,
-                    session_id=job.session_id,
-                    sha256=job.sha256,
-                    status="failed",
-                    reason="worker error",
+                completion = self._failure_completion(
+                    job,
+                    reason=f"worker error: {exc!r}",
                 )
             # ``_emit`` updates SessionAttachments + calls the listener; a
             # listener exception must NOT kill _loop or every subsequent
@@ -295,6 +291,43 @@ class OcrWorker:
                     "ocr worker: emit failed for %s; continuing", job.sha256[:8]
                 )
             self._queue.task_done()
+
+    def _failure_completion(self, job: "OcrJob", *, reason: str) -> "OcrCompleted":
+        """Persist a failure sentinel and build the matching event.
+
+        Used by both the timeout path and the unhandled-exception path
+        in ``_loop``. Without writing the sentinel, ``BlobStore.ocr_done``
+        stays False forever and the blob is stuck in ``pending`` across
+        restarts even though the worker already gave up. Mirrors the
+        OcrError branch in ``_extract``: persist a failed ``ocr.json``
+        so a subsequent worker run either re-tries (the
+        ``_read_cached_sentinel`` branch treats ``status="failed"`` as
+        a miss) or short-circuits if the failure is permanent.
+        """
+        try:
+            BlobStore(job.user_id).write_ocr_result(
+                job.sha256,
+                status="failed",
+                kind="ocr",
+                ext=job.blob_path.suffix.lstrip("."),
+                provider=None,
+                chain_tried=[],
+                reason=reason,
+                text="",
+                original_filename=job.original_filename,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "ocr worker: failed to persist failure sentinel for %s",
+                job.sha256[:8],
+            )
+        return OcrCompleted(
+            user_id=job.user_id,
+            session_id=job.session_id,
+            sha256=job.sha256,
+            status="failed",
+            reason=reason,
+        )
 
     async def _extract(self, job: OcrJob) -> OcrCompleted:
         # Sentinel on disk = a prior worker run already produced a result

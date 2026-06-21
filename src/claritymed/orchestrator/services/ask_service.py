@@ -107,23 +107,46 @@ def _strip_evidence_block(text: str) -> str:
     return _EVIDENCE_BLOCK_RE.sub("", text, count=1)
 
 
+class HistoryScrubFailed(Exception):
+    """Privacy-filter model failed during cross-turn history scrub.
+
+    Raised from the ``scrub`` callable passed to
+    :func:`_sanitize_history_for_llm` when the ONNX privacy-filter model
+    layer reports ``model_failed=True``. The caller is expected to
+    catch this and refuse the cloud-bound request — mirrors the
+    fail-loud contract of the user-input scrub at the top of
+    ``_run_scoped`` (see ``"scrub_unavailable"`` Error path).
+    """
+
+
 def _sanitize_history_for_llm(messages: list, *, scrub=None) -> list:
     """Return a copy of message history with Evidence blocks removed.
 
-    Only touches ``UserPromptPart`` content strings; multimodal content
-    lists are passed through untouched (no Evidence splice path exists
-    for them today). ``ModelRequest`` / ``UserPromptPart`` are
-    dataclasses in pydantic-ai, so we ``dataclasses.replace`` rather
-    than ``model_copy``.
+    Touches ``UserPromptPart`` content in both shapes pydantic-ai uses:
 
-    When ``scrub`` is provided (callable ``str -> str``), every
-    ``UserPromptPart`` string is scrubbed in addition to the Evidence
-    strip. This is the cloud-turn defense against cross-turn PHI replay:
-    local-turn prompts persisted into ``messages_json`` carry raw user
-    input, and switching providers mid-session would otherwise leak that
-    history to the cloud LLM unscrubbed. The scrub callable is supplied
-    by the caller (typically ``PhiGuard.scrub_free_text`` lambda) so
-    this helper stays decoupled from the guard.
+    * Plain string content — Evidence block stripped, then (when
+      ``scrub`` is supplied) the cleaned text scrubbed.
+    * List-form multimodal content — each ``str`` element is scrubbed
+      individually so PHI smuggled in via an OCR-text part during a
+      prior local turn does not bypass the cloud-bound check. Non-string
+      elements (``BinaryContent``, ``ImageUrl``, structured parts) pass
+      through unchanged: they carry no free text to scrub. Evidence
+      blocks are *not* stripped from list-form content because the
+      retrieval pipeline never splices via list-form today.
+
+    ``ModelRequest`` / ``UserPromptPart`` are dataclasses in pydantic-ai,
+    so we ``dataclasses.replace`` rather than ``model_copy``.
+
+    When ``scrub`` is provided (callable ``str -> str``), every text
+    surface above is scrubbed. This is the cloud-turn defense against
+    cross-turn PHI replay: local-turn prompts persisted into
+    ``messages_json`` carry raw user input, and switching providers
+    mid-session would otherwise leak that history to the cloud LLM
+    unscrubbed. The scrub callable is supplied by the caller (typically
+    a ``PhiGuard.scrub_free_text``-backed closure) so this helper stays
+    decoupled from the guard. The callable may raise
+    :class:`HistoryScrubFailed` to fail loud — this helper does not
+    swallow it.
     """
     import dataclasses
 
@@ -137,14 +160,30 @@ def _sanitize_history_for_llm(messages: list, *, scrub=None) -> list:
         new_parts: list = []
         changed = False
         for p in m.parts:
-            if isinstance(p, UserPromptPart) and isinstance(p.content, str):
-                cleaned = _strip_evidence_block(p.content)
-                if scrub is not None:
-                    cleaned = scrub(cleaned)
-                if cleaned != p.content:
-                    new_parts.append(dataclasses.replace(p, content=cleaned))
-                    changed = True
-                    continue
+            if isinstance(p, UserPromptPart):
+                if isinstance(p.content, str):
+                    cleaned = _strip_evidence_block(p.content)
+                    if scrub is not None:
+                        cleaned = scrub(cleaned)
+                    if cleaned != p.content:
+                        new_parts.append(dataclasses.replace(p, content=cleaned))
+                        changed = True
+                        continue
+                elif isinstance(p.content, list) and scrub is not None:
+                    new_content: list = []
+                    part_changed = False
+                    for el in p.content:
+                        if isinstance(el, str):
+                            cleaned_el = scrub(el)
+                            if cleaned_el != el:
+                                part_changed = True
+                            new_content.append(cleaned_el)
+                        else:
+                            new_content.append(el)
+                    if part_changed:
+                        new_parts.append(dataclasses.replace(p, content=new_content))
+                        changed = True
+                        continue
             new_parts.append(p)
         out.append(dataclasses.replace(m, parts=new_parts) if changed else m)
     return out
@@ -173,14 +212,12 @@ def _trim_message_history(messages, budget: int):
     max_drop_pairs = (len(messages) - HISTORY_MIN_KEEP) // 2
     if max_drop_pairs <= 0:
         return messages, 0
-    # Bisect on the number of pairs to drop. Invariant: lo always fits
-    # within budget (or equals 0), hi never fits. We start with the
-    # cheapest serializations (largest drops) so the common case of
-    # 'one extra-long turn pushed us slightly over' still costs only
-    # 1-2 dumps.
-    # Invariant: lo never fits (precondition for the full slice); hi
-    # either fits or is the unknown upper bound (max_drop_pairs + 1).
-    # We want the smallest drop_pairs that fits.
+    # Bisect on the number of pairs to drop. `lo` is the largest known
+    # drop count whose kept slice does NOT fit budget (starts at 0:
+    # the full slice was already shown over-budget above). `hi` is the
+    # smallest drop count whose kept slice fits, or `max_drop_pairs + 1`
+    # as the open upper sentinel until we find one. We want the smallest
+    # drop_pairs that fits, which is `hi` when the loop terminates.
     lo, hi = 0, max_drop_pairs + 1
     while hi - lo > 1:
         mid = (lo + hi) // 2
@@ -483,11 +520,16 @@ class AskService:
     ):
         """Drive the approval channel for each pending tool call.
 
-        Returns a ``DeferredToolResults`` ready to be passed back into
-        ``agent.run``, or ``None`` if the user cancelled mid-batch and no
-        further work should be done. Each iteration emits
-        ``ToolStarted`` / ``ToolCompleted`` events so the UI shows
-        progress through the modals.
+        Always returns a ``DeferredToolResults`` (never ``None``).
+        Cancellation / channel-unavailable is signalled by inserting
+        ``ToolDenied`` entries into the ``approvals`` map for the
+        affected calls — the caller does not need a separate None branch
+        for that case. The defensive ``if resolved is None`` guard at
+        the call site is kept as belt-and-braces against future
+        refactors that introduce a real None return.
+
+        Each iteration emits ``ToolStarted`` / ``ToolCompleted`` events
+        so the UI shows progress through the modals.
 
         Decision mapping:
 
@@ -1178,7 +1220,16 @@ class AskService:
             if producer_is_cloud and message_history:
 
                 def _history_scrub(s: str) -> str:
-                    scrubbed, _r = self._guard.scrub_free_text(s)
+                    # Capture the report so we can fail loud when the
+                    # privacy-filter model layer drops out. Matches the
+                    # ``"scrub_unavailable"`` posture of the user-input
+                    # scrub: regex-only output is never enough to send
+                    # to a cloud provider — the regex layer is documented
+                    # as the floor, the model layer is the actual
+                    # contract.
+                    scrubbed, report = self._guard.scrub_free_text(s)
+                    if report.model_failed:
+                        raise HistoryScrubFailed(s[:40])
                     return scrubbed
 
                 history_scrub = _history_scrub
@@ -1232,11 +1283,50 @@ class AskService:
                 base_run_kwargs["usage_limits"] = UsageLimits(
                     request_limit=_request_limit
                 )
-            initial_history = (
-                _sanitize_history_for_llm(message_history, scrub=history_scrub)
-                if message_history
-                else None
-            )
+            try:
+                # Offload to thread because ``history_scrub`` runs the
+                # ONNX privacy-filter pipeline per ``UserPromptPart`` —
+                # on long sessions that would block the event loop for
+                # seconds. The user-input scrub a few lines up uses the
+                # same pattern.
+                initial_history = (
+                    await asyncio.to_thread(
+                        _sanitize_history_for_llm,
+                        message_history,
+                        scrub=history_scrub,
+                    )
+                    if message_history
+                    else None
+                )
+            except HistoryScrubFailed:
+                logger.error(
+                    "privacy-filter model failed during history scrub on "
+                    "cloud turn; refusing to replay prior turns to %s",
+                    self._provider_id,
+                )
+                audit_event(
+                    "mode.ask.scrub",
+                    payload={
+                        "user_id": user_id,
+                        "stage": "history",
+                        "model_failed": True,
+                    },
+                )
+                result["had_error"] = True
+                await out.put(
+                    Error(
+                        error_type="scrub_unavailable",
+                        message=(
+                            "Privacy filter is configured but unavailable; "
+                            "refusing to replay prior turns to the cloud "
+                            "provider. Switch to a local provider or fix "
+                            "the filter setup, then retry."
+                        ),
+                        retryable=False,
+                    )
+                )
+                await out.put(None)
+                return
             try:
                 # Deferred-tool resume loop. The first iteration sends the
                 # user prompt; subsequent iterations replay the previous

@@ -138,6 +138,10 @@ def _load_config_sync() -> None:
                 model=model,
                 manifest=manifest,
             )
+            # Stash the ModelSpec by id so /v1/catalog doesn't re-read
+            # vision.yaml on every hit. _spec_for_resources falls back to
+            # disk only if the lookup is somehow missing.
+            _state.setdefault("specs", {})[spec.id] = spec
             logger.info(
                 "loaded vision model id=%s disease=%s version=%s "
                 "framework=%s device=%s",
@@ -389,12 +393,18 @@ def _resolve_model(req: DetectRequest, disease: DiseaseSpec) -> InferenceResourc
 
 
 def _spec_for_resources(resources: InferenceResources) -> ModelSpec:
-    """Round-trip the ModelSpec back from disk for the catalog endpoint.
+    """Return the ModelSpec for a loaded inference resource.
 
-    Cached at boot would be nicer; v1 just re-reads the config each
-    catalog hit (one call per orchestrator boot — Unit 5 caches the
-    catalog response, so the per-call cost is negligible).
+    Reads from the in-memory spec cache populated by ``_load_config_sync``
+    at boot. Falls back to a disk re-read only if a spec id is missing
+    from the cache (shouldn't happen — the cache is populated for every
+    loaded model). Avoids parsing vision.yaml on every catalog hit even
+    when client-side response caching is bypassed (health checks,
+    integration tests, polling).
     """
+    cached = _state.get("specs", {}).get(resources.spec_id)
+    if cached is not None:
+        return cached
     cfg = load_vision_config()
     return _find_model_spec(cfg.models, resources.spec_id)
 

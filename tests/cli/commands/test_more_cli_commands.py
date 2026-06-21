@@ -527,7 +527,12 @@ def test_audit_grep_filters_by_kind(tmp_path, monkeypatch):
     assert "mode.rag" not in result.stdout
 
 
-def test_audit_grep_no_matches_exits_1(tmp_path, monkeypatch):
+def test_audit_grep_no_matches_exits_0(tmp_path, monkeypatch):
+    """Zero matches is a valid outcome (clean log window), not an error.
+
+    Exit 0 keeps cron / agent scripts simple — they don't have to
+    distinguish "no events of kind X" from "command broke".
+    """
     log_dir = tmp_path / "logs"
     _write_audit_log(log_dir, kinds=("mode.ask",))
     monkeypatch.setenv("CLARITYMED_LOG_DIR", str(log_dir))
@@ -537,7 +542,7 @@ def test_audit_grep_no_matches_exits_1(tmp_path, monkeypatch):
 
     importlib.reload(cfg_mod)
     result = runner.invoke(app, ["audit", "grep", "--kind", "no.such.kind"])
-    assert result.exit_code == 1
+    assert result.exit_code == 0
 
 
 def test_audit_grep_filters_by_request_and_user_and_trace(tmp_path, monkeypatch):

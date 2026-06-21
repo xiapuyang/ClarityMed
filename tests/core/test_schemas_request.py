@@ -51,10 +51,10 @@ def test_user_id_path_traversal_rejected():
 
 
 def test_from_and_apply_to_context_round_trips():
-    tokens = apply_context("20260606222522DEADBEEF", "bob", "zh")
+    tokens = apply_context("20260606222522DEADBEEF", "test", "zh")
     try:
         rc = RequestContext.from_context_vars(entry="api")
-        assert rc.user_id == "bob"
+        assert rc.user_id == "test"
         assert rc.language == "zh"
         assert rc.entry == "api"
     finally:

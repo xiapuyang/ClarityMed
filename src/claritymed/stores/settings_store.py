@@ -98,20 +98,37 @@ class SettingsStore:
 
         ``now`` is overridable for tests; production callers pass nothing
         and get ``datetime.now(UTC)``.
+
+        Fast path (no expired rows): no lock — the read is a single YAML
+        load and the caller does not need write semantics.
+
+        Slow path (prune triggers a write): take the same ``file_lock``
+        ``add_rule`` / ``revoke_rule`` use and **re-read inside the lock**
+        before persisting. Without the re-read, a concurrent ``add_rule``
+        that lands between our pre-lock load and our write would be
+        silently overwritten by our stale snapshot — that was the
+        race adversarial reviewer ADV-006 surfaced (a freshly persisted
+        ``always_tool`` grant disappearing because a sibling
+        ``list_rules`` call was mid-prune).
         """
         now = now or _utcnow()
         raw = self._load_raw()
         rules = self._parse_rules(raw)
         live = [r for r in rules if r.expires_at > now]
-        if len(live) != len(rules):
-            # Persist the prune so future reads are O(n) on live rows.
-            self._persist_rules(raw, live)
-            for r in rules:
-                if r.expires_at <= now:
-                    audit_event(
-                        "tool.rule_expired",
-                        {"rule_id": r.id, "tool": r.tool},
-                    )
+        if len(live) == len(rules):
+            return live
+        with file_lock(self._lock_path()):
+            raw = self._load_raw()
+            rules = self._parse_rules(raw)
+            live = [r for r in rules if r.expires_at > now]
+            if len(live) != len(rules):
+                self._persist_rules(raw, live)
+                for r in rules:
+                    if r.expires_at <= now:
+                        audit_event(
+                            "tool.rule_expired",
+                            {"rule_id": r.id, "tool": r.tool},
+                        )
         return live
 
     def match_rule(

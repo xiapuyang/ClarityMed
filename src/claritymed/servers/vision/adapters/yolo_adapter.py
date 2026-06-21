@@ -63,19 +63,14 @@ from claritymed.core.vision.schemas import (
     SegmentationResult,
     round_sig,
 )
+from claritymed.servers.vision.adapters.torch_adapter import (
+    _LOW_TIER_CEILING,
+    _MEDIUM_TIER_CEILING,
+    _MIN_RESOLUTION,
+)
 from claritymed.servers.vision.loader import register_adapter
 
 logger = logging.getLogger(__name__)
-
-# Confidence-tier cut points. Mirror the ONNX classifier adapter so the
-# KTD-V10 clinical-action override fires the same way regardless of
-# whether the disease's primary model is a classifier or a detector.
-_LOW_TIER_CEILING = 0.55
-_MEDIUM_TIER_CEILING = 0.80
-
-# Quality-gate minimum side length. Same value as the classifier adapters
-# — the gate is about input sanity, not model task.
-_MIN_RESOLUTION = 64
 
 # Letterbox target side. 640 is the YOLOv5/v8/v11 default. Square inputs
 # match the training-time aug pipeline so detection accuracy isn't

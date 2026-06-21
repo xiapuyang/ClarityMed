@@ -61,7 +61,7 @@ def test_audit_event_has_null_trace_id_when_no_span_is_active(caplog):
     """Tracing-off path: trace_id present in the JSON but ``null`` — schema
     stays the same so downstream parsers do not have to special-case it."""
     rid = new_request_id()
-    tokens = apply_context(rid, "alice", "en")
+    tokens = apply_context(rid, "test", "en")
     try:
         with caplog.at_level("INFO", logger="claritymed.audit"):
             event = audit_event("mode.ask", payload={"answer_len": 12})
@@ -76,7 +76,7 @@ def test_audit_event_has_null_trace_id_when_no_span_is_active(caplog):
 def test_audit_event_picks_up_active_span_trace_id(in_memory_tracer, caplog):
     provider, _ = in_memory_tracer
     rid = new_request_id()
-    tokens = apply_context(rid, "alice", "en")
+    tokens = apply_context(rid, "test", "en")
     try:
         tracer = provider.get_tracer("test")
         with tracer.start_as_current_span("mode.ask") as span:
@@ -97,7 +97,7 @@ def test_audit_event_picks_up_active_span_trace_id(in_memory_tracer, caplog):
 def test_baggage_processor_copies_request_id_and_user_id_onto_span(in_memory_tracer):
     provider, exporter = in_memory_tracer
     rid = new_request_id()
-    tokens = apply_context(rid, "alice", "en")
+    tokens = apply_context(rid, "test", "en")
     try:
         tracer = provider.get_tracer("test")
         with tracer.start_as_current_span("custom-work"):
@@ -109,7 +109,7 @@ def test_baggage_processor_copies_request_id_and_user_id_onto_span(in_memory_tra
     assert spans, "span did not finish"
     last = spans[-1]
     assert last.attributes.get(BAGGAGE_REQUEST_ID) == rid
-    assert last.attributes.get(BAGGAGE_USER_ID) == "alice"
+    assert last.attributes.get(BAGGAGE_USER_ID) == "test"
 
 
 def test_session_id_baggage_appears_on_span_when_attached(in_memory_tracer):
@@ -118,7 +118,7 @@ def test_session_id_baggage_appears_on_span_when_attached(in_memory_tracer):
     Phoenix can group a trace by conversation."""
     provider, exporter = in_memory_tracer
     rid = new_request_id()
-    outer = apply_context(rid, "alice", "en")
+    outer = apply_context(rid, "test", "en")
     sid = "session-abc-123"
     inner = attach_session_baggage(sid)
     try:
@@ -134,13 +134,13 @@ def test_session_id_baggage_appears_on_span_when_attached(in_memory_tracer):
     assert last.attributes.get(BAGGAGE_SESSION_ID) == sid
     # The request + user baggage still rides along on the same span.
     assert last.attributes.get(BAGGAGE_REQUEST_ID) == rid
-    assert last.attributes.get(BAGGAGE_USER_ID) == "alice"
+    assert last.attributes.get(BAGGAGE_USER_ID) == "test"
 
 
 def test_session_baggage_detach_does_not_leak_to_next_run(in_memory_tracer):
     provider, exporter = in_memory_tracer
     rid = new_request_id()
-    outer = apply_context(rid, "alice", "en")
+    outer = apply_context(rid, "test", "en")
     inner = attach_session_baggage("session-A")
     detach_session_baggage(inner)
     try:
@@ -167,7 +167,7 @@ def test_baggage_is_detached_after_reset(in_memory_tracer):
     baggage — otherwise multi-request servers leak user identity."""
     provider, exporter = in_memory_tracer
     rid_a = new_request_id()
-    tokens = apply_context(rid_a, "alice", "en")
+    tokens = apply_context(rid_a, "test", "en")
     reset_context(tokens)
 
     tracer = provider.get_tracer("test")
@@ -182,7 +182,7 @@ def test_baggage_is_detached_after_reset(in_memory_tracer):
 
 def test_apply_context_returns_four_tuple_even_without_otel():
     """Tuple shape is stable so callers can rely on `len(tokens) == 4`."""
-    tokens = apply_context(new_request_id(), "alice", "en")
+    tokens = apply_context(new_request_id(), "test", "en")
     try:
         assert len(tokens) == 4
     finally:
@@ -198,6 +198,6 @@ def test_reset_context_accepts_legacy_three_tuple():
     from claritymed.context import language_ctx, request_id_ctx, user_id_ctx
 
     rid_token = request_id_ctx.set("20260606222522DEADBEEF")
-    uid_token = user_id_ctx.set("alice")
+    uid_token = user_id_ctx.set("test")
     lang_token = language_ctx.set("en")
     reset_context((rid_token, uid_token, lang_token))  # no exception, no OTel touch

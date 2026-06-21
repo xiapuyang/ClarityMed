@@ -102,7 +102,9 @@ def upload(
 
     has_init_error = any(e.stage in ("client_init", "manifest") for e in result.errors)
     for err in result.errors:
-        typer.echo(f"  ! [{err.stage}] {err.detail}")
+        # Error lines go to stderr so the success summary on stdout
+        # stays parseable by agents capturing experiment URLs.
+        typer.echo(f"  ! [{err.stage}] {err.detail}", err=True)
     if has_init_error:
         raise typer.Exit(code=2)
 

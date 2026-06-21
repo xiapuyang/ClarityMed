@@ -107,8 +107,9 @@ def audit_grep(
                 if limit is not None and matched >= limit:
                     return
     if matched == 0:
+        # Zero matches is a valid outcome, not an error — exit 0 so cron
+        # / agent callers don't conflate "clean window" with "command broke".
         logger.info("no matches")
-        raise typer.Exit(code=1)
 
 
 @audit_app.command("list-rules")
@@ -185,6 +186,7 @@ def audit_scan(
                 "description": rep.description,
                 "total_relevant": rep.total_relevant,
                 "counts": rep.counts,
+                "rates": rep.rates,
                 "findings": rep.findings,
                 "samples": rep.samples,
             }
@@ -313,5 +315,5 @@ def audit_ocr_overrides(
                 return
 
     if matched == 0:
+        # Zero matches is a valid outcome — exit 0 to keep scripts simple.
         logger.info("no blobs with ocr_has_report=true")
-        raise typer.Exit(code=1)

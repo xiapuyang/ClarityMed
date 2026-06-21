@@ -27,6 +27,8 @@ from claritymed.servers._devices import LOG_CONFIG, add_logging_middleware
 try:
     import uvicorn
     from fastapi import APIRouter, FastAPI, HTTPException, Request
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
 except ImportError as exc:  # pragma: no cover — import-time guard
     raise SystemExit(
         "claritymed-symptoms-server requires the 'symptoms-server' extra. "
@@ -213,6 +215,83 @@ app = FastAPI(title="claritymed-symptoms-server", lifespan=lifespan)
 add_logging_middleware(app, server_logger=logger)
 
 
+# --- error envelope -------------------------------------------------------
+
+
+def _error_payload(
+    code: str, message: str, *, request_id: str | None = None, **details: Any
+) -> dict[str, Any]:
+    """Build the uniform ``{"error": {...}}`` envelope body.
+
+    Mirrors :func:`vision/app.py:_error_payload` byte-for-byte so a
+    single client error parser works against vision, symptoms, and
+    medical-clip responses.
+    """
+    payload: dict[str, Any] = {"code": code, "message": message}
+    if request_id:
+        payload["request_id"] = request_id
+    if details:
+        payload["details"] = details
+    return {"error": payload}
+
+
+def _default_code(status_code: int) -> str:
+    return {
+        400: "bad_request",
+        404: "not_found",
+        413: "payload_too_large",
+        422: "unprocessable_entity",
+        500: "inference_failed",
+        503: "service_unavailable",
+    }.get(status_code, "error")
+
+
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Wrap every HTTPException response in the standard envelope.
+
+    Accepts both legacy bare-string ``detail`` (wraps with a default
+    code derived from the status) and a pre-built ``{"error": {...}}``
+    dict (used as-is, with ``request_id`` enriched from the request
+    headers when the dict didn't carry one).
+    """
+    request_id = request.headers.get("X-Request-ID")
+    detail = exc.detail
+    if isinstance(detail, dict) and "error" in detail:
+        body = detail
+        envelope = body.get("error", {})
+        if request_id and isinstance(envelope, dict) and "request_id" not in envelope:
+            envelope["request_id"] = request_id
+    else:
+        body = _error_payload(
+            code=_default_code(exc.status_code),
+            message=str(detail) if detail else _default_code(exc.status_code),
+            request_id=request_id,
+        )
+    return JSONResponse(status_code=exc.status_code, content=body)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Normalize Pydantic 422s to 400 + the standard envelope.
+
+    Matches vision/medical-clip: a single client error parser keyed on
+    ``error.code`` handles all three servers without per-server
+    branching on FastAPI's stock 422 shape.
+    """
+    return JSONResponse(
+        status_code=400,
+        content=_error_payload(
+            code="bad_request",
+            message="request body failed validation",
+            request_id=request.headers.get("X-Request-ID"),
+            errors=exc.errors(),
+        ),
+    )
+
+
 # --- helpers --------------------------------------------------------------
 
 
@@ -222,9 +301,10 @@ def _require_dataset(dataset_id: str) -> LoadedDataset:
     if ds is None:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"dataset {dataset_id!r} not loaded; available: "
-                f"{sorted(SERVER_STATE.datasets)!r}"
+            detail=_error_payload(
+                code="dataset_not_loaded",
+                message=f"dataset {dataset_id!r} not loaded",
+                available=sorted(SERVER_STATE.datasets),
             ),
         )
     return ds
@@ -234,7 +314,13 @@ def _require_session(session_id: str) -> SubSessionState:
     """Return the active session state or raise HTTP 404 if expired or unknown."""
     sub = SERVER_STATE.sessions.get(session_id)
     if sub is None:
-        raise HTTPException(status_code=404, detail="session expired or unknown")
+        raise HTTPException(
+            status_code=404,
+            detail=_error_payload(
+                code="session_not_found",
+                message="session expired or unknown",
+            ),
+        )
     return sub
 
 
@@ -328,7 +414,11 @@ def _apply_answer(
     """Mutate ``sub.state`` to encode the user's answer for ``sub.last_ev_idx``."""
     if sub.last_ev_idx is None:
         raise HTTPException(
-            status_code=400, detail="session has no pending question to answer"
+            status_code=400,
+            detail=_error_payload(
+                code="no_pending_question",
+                message="session has no pending question to answer",
+            ),
         )
     try:
         synth = synth_patient(
@@ -340,7 +430,13 @@ def _apply_answer(
             language=payload.language,
         )
     except QuestionPayloadError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=_error_payload(
+                code="question_payload_error",
+                message=str(exc.detail),
+            ),
+        ) from None
     env = _writer_env(ds)
     env._write(sub.state[0], sub.last_ev_idx, synth)
     ev = ds.canonical.evidence_by_idx(sub.last_ev_idx)
@@ -364,7 +460,13 @@ def _try_render_question(
             ds.canonical, ds.spec, ev_idx, language=sub.language
         ), ev_idx
     except QuestionPayloadError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=_error_payload(
+                code="question_payload_error",
+                message=str(exc.detail),
+            ),
+        ) from None
 
 
 def _diagnose(ds: LoadedDataset, sub: SubSessionState) -> np.ndarray:
@@ -480,7 +582,13 @@ def turn(
     sub = _require_session(session_id)
     if sub.dataset_id != dataset_id:
         raise HTTPException(
-            status_code=404, detail="session does not belong to this dataset"
+            status_code=404,
+            detail=_error_payload(
+                code="session_dataset_mismatch",
+                message="session does not belong to this dataset",
+                expected_dataset_id=sub.dataset_id,
+                requested_dataset_id=dataset_id,
+            ),
         )
     # Update language for late turns where the plugin's locale changed.
     sub.language = req.language
@@ -553,7 +661,13 @@ def cancel_session(
     sub = _require_session(session_id)
     if sub.dataset_id != dataset_id:
         raise HTTPException(
-            status_code=404, detail="session does not belong to this dataset"
+            status_code=404,
+            detail=_error_payload(
+                code="session_dataset_mismatch",
+                message="session does not belong to this dataset",
+                expected_dataset_id=sub.dataset_id,
+                requested_dataset_id=dataset_id,
+            ),
         )
     probs = _diagnose(ds, sub)
     outcome = format_cancel_outcome(ds, sub, probs)

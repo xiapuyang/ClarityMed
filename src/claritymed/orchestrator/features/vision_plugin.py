@@ -273,6 +273,10 @@ class VisionFeature:
         self._registry = registry
         self._get_session_id = get_session_id
         self._prompt_registry = prompt_registry or PromptRegistry()
+        # Cache the model_id → ModelSpec lookup. Built once at construction
+        # time so per-tool-call paths (``_run_fallback_flow``,
+        # ``_covered_diseases_block``) don't rebuild a dict every invocation.
+        self._models_by_id: dict[str, Any] = {m.id: m for m in self._config.models}
         _validate_vision_prompts(self._prompt_registry)
         _validate_specialist_keywords()
         # Per-request post_process state — keyed by request_id. Cleared
@@ -377,12 +381,11 @@ class VisionFeature:
             return None
         if "{covered_diseases}" not in template:
             return template
-        models_by_id = {m.id: m for m in self._config.models}
         lines: list[str] = []
         for disease in self._registry.diseases.values():
             if not disease.enabled:
                 continue
-            modality = models_by_id[disease.primary_model_id].accepted_modality
+            modality = self._models_by_id[disease.primary_model_id].accepted_modality
             intent = t(disease.intent_hints_i18n_key, lang="en")
             # ``t`` returns the bare key on miss; we want the intent
             # surface to either be the localized one-liner or an empty
@@ -617,11 +620,30 @@ class VisionFeature:
             }
 
         # Step 8: build the LLM-facing payload + stash for post_process.
-        payload = to_llm_payload(
-            raw,
-            top_k=self._config.tool.top_k,
-            language=language,
-        )
+        # Wrap in try/except so a payload-shaping bug never raises into the
+        # LLM tool loop — the tool docstring guarantees a structured dict.
+        try:
+            payload = to_llm_payload(
+                raw,
+                top_k=self._config.tool.top_k,
+                language=language,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "to_llm_payload failed for disease_id=%s model_id=%s",
+                disease_id,
+                raw.model_id,
+            )
+            return {
+                "disease_id": disease_id,
+                "fallback_count": attempted,
+                "warnings": ["payload_build_failed"],
+                "message": (
+                    "vision model returned a result but the payload could "
+                    "not be shaped; tell the user the analysis is "
+                    f"inconclusive ({type(exc).__name__})"
+                ),
+            }
         baggage_token = _attach_vision_baggage(disease_id, raw.model_id, server.id)
         try:
             self._emit_detection_event_and_payload(
@@ -753,10 +775,9 @@ class VisionFeature:
         attempted = 0
         last_low: RawDetection | None = None
 
-        models_by_id = {m.id: m for m in self._config.models}
         chain = disease.effective_flow
         for model_id in chain:
-            spec = models_by_id.get(model_id)
+            spec = self._models_by_id.get(model_id)
             if spec is None:
                 continue
             remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))

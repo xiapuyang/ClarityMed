@@ -41,6 +41,21 @@ _TEXT_LEN_CEILING_CHARS = 50
 # 381x282 ICC-based raster in a small PDF balloons to ~50-150 KB).
 _RASTER_DPI = 200
 
+# Decompression-bomb guard. A hand-crafted PDF can declare a giant
+# MediaBox or embed an absurdly large JBIG2 / JPEG2000 image so the
+# rasterizer (or PyMuPDF's image decoder) allocates GBs before we ever
+# touch a pixel. Sized to comfortably fit any legitimate medical scan
+# wrapped in a PDF — a full-body CT slice at 200 DPI is ~10 MP, an
+# ultrasound capture ~2 MP. Anything larger almost certainly isn't a
+# scan-wrapped-in-PDF and is safer to route through the existing
+# OCR/text path (or fail loud upstream) than to rasterize.
+#
+# 25 MP at RGB ≈ 75 MB raw pixel buffer; 100 MP embedded image is
+# ≈ 300 MB after decode but pre-bomb scenarios that exceed it are
+# always synthetic.
+_MAX_RASTER_PIXELS = 25_000_000
+_MAX_EMBEDDED_IMAGE_PIXELS = 100_000_000
+
 
 def maybe_rasterize_single_image_pdf(pdf_path: Path) -> bytes | None:
     """Return rasterized PNG bytes for a 1-page image-only PDF, else None.
@@ -93,6 +108,35 @@ def maybe_rasterize_single_image_pdf(pdf_path: Path) -> bytes | None:
         # page's resource dict.
         if len(page.get_images()) < 1:
             return None
+        # Decompression-bomb guards (cheap metadata reads only — neither
+        # call decodes pixel data).
+        target_px = int(page.rect.width * page.rect.height * (_RASTER_DPI / 72) ** 2)
+        if target_px > _MAX_RASTER_PIXELS:
+            logger.warning(
+                "pdf peek: refusing rasterize for %s — page %dx%dpt at "
+                "%d DPI would allocate %d px (cap %d)",
+                pdf_path.name,
+                page.rect.width,
+                page.rect.height,
+                _RASTER_DPI,
+                target_px,
+                _MAX_RASTER_PIXELS,
+            )
+            return None
+        for info in page.get_image_info():
+            w = int(info.get("width", 0))
+            h = int(info.get("height", 0))
+            if w * h > _MAX_EMBEDDED_IMAGE_PIXELS:
+                logger.warning(
+                    "pdf peek: refusing rasterize for %s — embedded image "
+                    "%dx%d (%d px) exceeds cap %d",
+                    pdf_path.name,
+                    w,
+                    h,
+                    w * h,
+                    _MAX_EMBEDDED_IMAGE_PIXELS,
+                )
+                return None
         pixmap = page.get_pixmap(dpi=_RASTER_DPI, alpha=False)
         return pixmap.tobytes("png")
     except Exception as exc:  # noqa: BLE001
@@ -133,7 +177,14 @@ def write_vision_sidecar(blob_dir: Path, png_bytes: bytes) -> Path:
     """
     blob_dir.mkdir(parents=True, exist_ok=True)
     target = blob_dir / "vision.png"
-    if target.exists() and target.read_bytes() == png_bytes:
+    # Stat-size short-circuit avoids reading the full file (potentially
+    # several MB) when sizes differ. Only fall through to byte compare
+    # when both sizes match.
+    if (
+        target.exists()
+        and target.stat().st_size == len(png_bytes)
+        and target.read_bytes() == png_bytes
+    ):
         return target
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_bytes(png_bytes)

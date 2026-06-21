@@ -335,8 +335,11 @@ class ClarityMedApp(App):
         if sys.__stderr__ is not None:
             try:
                 faulthandler.register(signal.SIGUSR1, file=sys.__stderr__)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # SIGUSR1 isn't available on Windows; other platforms may
+                # also block it. Log so operators know the freeze-dump
+                # facility (CLAUDE.md threading rule) is inactive.
+                logger.warning("faulthandler.register(SIGUSR1) failed: %s", exc)
         # Boot tracing first turn — no-op when tracing.enabled is false
         # in app.yaml, so headless tests and offline runs stay untouched.
         setup_tracing()
@@ -499,26 +502,30 @@ class ClarityMedApp(App):
         status.vision_status = short
         self._toast(f"Vision tool disabled: {reason}", kind="error")
 
-    def on_unmount(self) -> None:
-        # Persistence: ask-mode turns are flushed in real time by AskService
-        # via ``ChatSession.append_assistant`` after each turn. ingest / rag
-        # turns are transient UI feedback, not chat history. The only thing
-        # we own beyond the event loop is the OcrWorker — its background
-        # task gets cancelled here so a half-finished extraction doesn't
-        # leak past app exit.
-        worker = getattr(self, "_ocr_worker", None)
-        if worker is not None:
-            try:
-                import asyncio
+    async def on_unmount(self) -> None:
+        """Drain the OcrWorker before the event loop tears down.
 
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(worker.stop())
-                else:
-                    loop.run_until_complete(worker.stop())
-            except Exception:  # noqa: BLE001
-                logger.exception("OcrWorker stop failed during unmount")
-        return
+        Async so we can ``await`` ``worker.stop()`` directly. The prior
+        version scheduled ``loop.create_task(worker.stop())`` and
+        returned synchronously — the framework would tear down the loop
+        before the task got a chance to run, leaving ``_task.cancel()``
+        and the post-cancel ``await`` un-executed. Result: the background
+        OCR coroutine leaked past process exit (reliability reviewer
+        REL-001). Textual awaits async handlers as part of its own
+        teardown sequence, so this is the right hook to do it from.
+
+        Persistence note: ask-mode turns are flushed in real time by
+        AskService via ``ChatSession.append_assistant`` after each turn;
+        ingest / rag turns are transient UI feedback. The only thing
+        we own beyond the event loop is the OcrWorker.
+        """
+        worker = getattr(self, "_ocr_worker", None)
+        if worker is None:
+            return
+        try:
+            await worker.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("OcrWorker stop failed during unmount")
 
     # ----- mode + placeholder ---------------------------------------------
 
@@ -736,7 +743,11 @@ class ClarityMedApp(App):
             store = AccountStore(self._current_user_id)
             if store.exists():
                 account = store.load()
-                store.save(account.model_copy(update={"provider_id": provider.id}))
+                # model_validate so any Account.provider_id validator runs;
+                # model_copy(update=...) would skip validators (see _switch_language).
+                data = account.model_dump(mode="python")
+                data["provider_id"] = provider.id
+                store.save(type(account).model_validate(data))
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to persist provider switch: %s", exc)
         self.query_one(Conversation).add_system_turn(

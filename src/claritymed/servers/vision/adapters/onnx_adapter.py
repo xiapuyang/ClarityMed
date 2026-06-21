@@ -58,20 +58,14 @@ from claritymed.core.vision.schemas import (
     SegmentationResult,
     round_sig,
 )
+from claritymed.servers.vision.adapters.torch_adapter import (
+    _LOW_TIER_CEILING,
+    _MEDIUM_TIER_CEILING,
+    _MIN_RESOLUTION,
+)
 from claritymed.servers.vision.loader import register_adapter
 
 logger = logging.getLogger(__name__)
-
-# Confidence-tier cut points. Mirror :mod:`torch_adapter` exactly so the
-# KTD-V10 clinical-action override fires the same way whether the
-# disease's primary model is .pt or .onnx. Drifting the cuts here would
-# silently change behavior for ONNX-backed diseases — keep in sync.
-_LOW_TIER_CEILING = 0.55
-_MEDIUM_TIER_CEILING = 0.80
-
-# Quality-gate minimum side length. Same value as the torch adapter —
-# the gate is about input sanity, not the framework choice.
-_MIN_RESOLUTION = 64
 
 # Spatial size fallback when the ONNX session declares a dynamic
 # H or W dim. 256 matches :data:`forge_torch._DEFAULT_INPUT_SIZE`, so a

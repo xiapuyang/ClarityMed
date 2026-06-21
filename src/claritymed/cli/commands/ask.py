@@ -63,7 +63,15 @@ def ask(
     language: str | None = typer.Option(None, "--lang", "-l"),
     provider_id: str | None = typer.Option(None, "--provider", "-p"),
 ) -> None:
-    """Stream a grounded answer to ``question``."""
+    """Stream a grounded answer to ``question``.
+
+    Each invocation starts a fresh ChatSession; use ``--user``,
+    ``--lang``, and ``--provider`` to replicate the TUI's
+    ``/user``, ``/lang``, and ``/provider`` slash commands for
+    a single headless call. To switch them durably, run
+    ``claritymed init-user`` (per-user defaults live in
+    ``data/users/<uid>/settings.yaml``).
+    """
 
     async def _run() -> None:
         from claritymed.orchestrator.services import ChatSession

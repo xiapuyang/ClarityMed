@@ -7,6 +7,7 @@ app never tries to resolve a real provider.
 
 from __future__ import annotations
 
+import asyncio
 import faulthandler
 import sys
 from collections.abc import AsyncIterator
@@ -241,6 +242,63 @@ async def test_unmount_is_a_noop_now():
         await pilot.pause()
     # Reaching here means unmount completed cleanly.
     assert True
+
+
+@pytest.mark.asyncio
+async def test_on_unmount_awaits_worker_stop_to_completion():
+    """REL-001 regression: ``on_unmount`` must AWAIT ``worker.stop()``
+    rather than fire-and-forget ``loop.create_task(worker.stop())``.
+
+    The previous sync ``on_unmount`` returned immediately after
+    scheduling the stop coroutine. The event loop tore down before the
+    scheduled task could run, so ``OcrWorker._task.cancel()`` and the
+    post-cancel ``await`` never executed and the background coroutine
+    leaked past process exit.
+
+    We exercise the contract directly: a stub worker records every
+    ``stop()`` invocation and asserts the call ran to completion before
+    ``on_unmount`` returned.
+    """
+    from claritymed.cli.tui.app import ClarityMedApp
+
+    class _StubWorker:
+        def __init__(self) -> None:
+            self.stop_count = 0
+            self.stopped = False
+
+        async def stop(self) -> None:
+            # Yield to the scheduler before completing — proves the
+            # caller actually awaits us instead of scheduling and
+            # returning.
+            await asyncio.sleep(0)
+            self.stop_count += 1
+            self.stopped = True
+
+    class _Holder:
+        pass
+
+    holder = _Holder()
+    holder._ocr_worker = _StubWorker()
+    # Call the unbound method directly — the real ``on_unmount`` only
+    # reads ``self._ocr_worker``, so a holder with that attribute is
+    # enough to exercise the method without standing up a full
+    # Textual app.
+    await ClarityMedApp.on_unmount(holder)
+    assert holder._ocr_worker.stop_count == 1
+    assert holder._ocr_worker.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_on_unmount_handles_missing_worker_attribute():
+    """``on_unmount`` runs even when bootstrap never set ``_ocr_worker``
+    (e.g. the worker construction itself failed). Used to be a silent
+    AttributeError; the ``getattr(..., None)`` branch covers it."""
+    from claritymed.cli.tui.app import ClarityMedApp
+
+    class _Empty:
+        pass
+
+    await ClarityMedApp.on_unmount(_Empty())  # must not raise
 
 
 @pytest.mark.asyncio

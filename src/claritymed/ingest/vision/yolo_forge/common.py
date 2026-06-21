@@ -25,14 +25,11 @@ from claritymed.ingest.mlflow_utils import (
     generate_task_id,
     mlflow_run as _mlflow_run,
 )
-from claritymed.ingest.vision.forge.common import log_metrics
+from claritymed.ingest.vision.forge.common import FEATURE, log_metrics
 from claritymed.ingest.vision.yolo_forge.spec import YoloModelSpec
 
 logger = logging.getLogger(__name__)
 
-# Shared with forge so cross-pipeline MLflow comparisons land in the
-# same ``claritymed-vision-<disease_id>`` experiment.
-FEATURE = "vision"
 # Discriminator tag value used on every run yolo_forge starts. Pairs
 # with forge's runs (which omit the tag or set it to ``"forge"``) so
 # the MLflow UI can filter cleanly.

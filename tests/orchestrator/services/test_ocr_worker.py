@@ -386,6 +386,135 @@ async def test_cached_new_empty_short_circuits(_ctx):
     assert completions[0].provider == "cache"
 
 
+class _HangingProvider(OcrProvider):
+    """OcrProvider that blocks forever inside ``extract_text``.
+
+    Used to verify the worker's per-job wall-clock timeout fires and
+    leaves the queue ready for the next job. Without the timeout this
+    provider would hold the queue indefinitely.
+    """
+
+    is_local = True
+    label = "hanging"
+
+    async def extract_text(self, path: Path):
+        import asyncio as _aio
+
+        await _aio.Event().wait()  # never set → blocks forever
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+async def test_ocr_worker_job_timeout_writes_failed_sentinel(_ctx, monkeypatch):
+    """ADV-005 regression: a hung OCR provider must not block the queue.
+
+    The worker enforces ``OCR_JOB_TIMEOUT_S`` via ``asyncio.wait_for``;
+    on timeout it persists a ``failed`` sentinel (so the blob isn't
+    stuck in ``pending`` across restarts) and the loop continues.
+    """
+    from claritymed.orchestrator.services import ocr_worker as ow_mod
+
+    monkeypatch.setattr(ow_mod, "OCR_JOB_TIMEOUT_S", 0.1)
+
+    bs = BlobStore("test")
+    sha = bs.store(b"will hang", "pdf")
+    sa = SessionAttachments("test", "sess-1")
+    sa.add(sha256=sha, filename="hang.pdf", mime="application/pdf", size=9)
+
+    completions: list[OcrCompleted] = []
+
+    async def _listen(c: OcrCompleted) -> None:
+        completions.append(c)
+
+    worker = OcrWorker(_HangingProvider(), listener=_listen)
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "pdf"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "failed"
+    assert "timed out" in sentinel["reason"]
+    assert completions and completions[0].status == "failed"
+    row = sa.get(sha)
+    assert row is not None and row.ocr_status == "failed"
+
+
+async def test_ocr_worker_timeout_does_not_block_next_job(_ctx, monkeypatch):
+    """A timed-out job must not stall subsequent jobs in the queue.
+
+    Mixed workload: first job hangs (will time out), second is fast.
+    The fast job must complete in well under the timeout-recovery
+    horizon — proves the loop returns to ``get()`` after the timeout
+    path rather than serializing on the hung extract.
+    """
+    from claritymed.orchestrator.services import ocr_worker as ow_mod
+
+    monkeypatch.setattr(ow_mod, "OCR_JOB_TIMEOUT_S", 0.1)
+
+    bs = BlobStore("test")
+    sha_hang = bs.store(b"hang one", "pdf")
+    sha_ok = bs.store(b"hang two ok", "pdf")
+    sa = SessionAttachments("test", "sess-1")
+    sa.add(sha256=sha_hang, filename="a.pdf", mime="application/pdf", size=8)
+    sa.add(sha256=sha_ok, filename="b.pdf", mime="application/pdf", size=11)
+
+    # Provider that hangs on the first job and succeeds on the second.
+    class _MixedProvider(OcrProvider):
+        is_local = True
+        label = "mixed"
+
+        def __init__(self) -> None:
+            self._calls = 0
+
+        async def extract_text(self, path: Path):
+            self._calls += 1
+            if self._calls == 1:
+                import asyncio as _aio
+
+                await _aio.Event().wait()
+                raise AssertionError("unreachable")  # pragma: no cover
+            return ExtractResult(
+                text="second job ok",
+                provider_used=self.label,
+                chain_tried=[self.label],
+            )
+
+    completions: list[OcrCompleted] = []
+    worker = OcrWorker(_MixedProvider(), listener=lambda c: completions.append(c))
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha_hang,
+            blob_path=bs.path(sha_hang, "pdf"),
+        )
+    )
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha_ok,
+            blob_path=bs.path(sha_ok, "pdf"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    s_hang = json.loads(bs.ocr_meta_path(sha_hang).read_text(encoding="utf-8"))
+    s_ok = json.loads(bs.ocr_meta_path(sha_ok).read_text(encoding="utf-8"))
+    assert s_hang["status"] == "failed"
+    assert s_ok["status"] == "done"
+    assert {c.status for c in completions} == {"failed", "done"}
+
+
 async def test_ocr_empty_marks_empty_not_failed(_ctx):
     """OcrEmpty from the provider writes status='empty', not 'failed'.
 

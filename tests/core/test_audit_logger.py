@@ -17,7 +17,7 @@ from claritymed.core.observability.audit import AuditEvent, audit_event
 def test_happy_event_round_trips_via_json(caplog):
     import logging
 
-    tokens = apply_context("20260606222522A1B2C3D4", "alice", "en")
+    tokens = apply_context("20260606222522A1B2C3D4", "test", "en")
     try:
         with caplog.at_level(logging.INFO, logger="claritymed.audit"):
             ev = audit_event("retrieval", payload={"chunks": ["a", "b"]})
@@ -30,7 +30,7 @@ def test_happy_event_round_trips_via_json(caplog):
     parsed = json.loads(audit_records[-1].getMessage())
     assert parsed["kind"] == "retrieval"
     assert parsed["payload"] == {"chunks": ["a", "b"]}
-    assert parsed["user_id"] == "alice"
+    assert parsed["user_id"] == "test"
     assert parsed["language"] == "en"
 
 
@@ -47,7 +47,7 @@ def test_invalid_kind_rejected_at_construction():
             kind="not_in_enum",  # type: ignore[arg-type]
             payload={},
             request_id="20260606222522DEADBEEF",
-            user_id="alice",
+            user_id="test",
             language="en",
         )
 
@@ -55,7 +55,7 @@ def test_invalid_kind_rejected_at_construction():
 def test_one_line_per_event(caplog):
     import logging
 
-    tokens = apply_context("20260606222522A1B2C3D4", "alice", "en")
+    tokens = apply_context("20260606222522A1B2C3D4", "test", "en")
     try:
         with caplog.at_level(logging.INFO, logger="claritymed.audit"):
             for i in range(20):

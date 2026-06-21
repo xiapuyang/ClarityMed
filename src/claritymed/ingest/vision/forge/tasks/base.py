@@ -133,7 +133,7 @@ class Task(ABC):
     # --- architecture + batch interface ----------------------------------
 
     @abstractmethod
-    def build_model(self, *, backbone: str, num_classes: int, pretrained: bool):
+    def build_model(self, *, backbone: str, num_classes: int, pretrained: bool) -> Any:
         """Construct the model. Returns a ``torch.nn.Module``.
 
         ``pretrained=True`` should be passed only from real training
@@ -154,7 +154,7 @@ class Task(ABC):
         """
 
     @abstractmethod
-    def compute_loss(self, outputs, targets: dict[str, Any], hp: dict[str, Any]):
+    def compute_loss(self, outputs, targets: dict[str, Any], hp: dict[str, Any]) -> Any:
         """Return a scalar torch loss tensor.
 
         ``hp`` is the per-trial hyperparameter dict — Tasks pull

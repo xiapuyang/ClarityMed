@@ -50,7 +50,7 @@ class _FakeResponse:
 @pytest.fixture
 def _ctx():
     """Provide ContextVars so audit_event doesn't refuse."""
-    tokens = apply_context("20260611000000ABCDEF12", "alice", "en")
+    tokens = apply_context("20260611000000ABCDEF12", "test", "en")
     yield
     from claritymed.context import reset_context
 

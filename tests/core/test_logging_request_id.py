@@ -37,16 +37,16 @@ def test_app_logger_writes_with_relpath(tmp_path):
 
 def test_request_id_in_app_log(tmp_path):
     setup_logging("test", console_level=None)
-    tokens = apply_context("20260606222522A1B2C3D4", "alice", "zh")
+    tokens = apply_context("20260606222522A1B2C3D4", "test", "zh")
     try:
         logging.getLogger(APP_LOGGER).info("with context")
     finally:
         reset_context(tokens)
     text = _read(tmp_path / "logs" / "app.log")
     assert "20260606222522A1B2C3D4" in text
-    assert "alice" in text
+    assert "test" in text
     # language only shows up in audit format, not app — check just the labels.
-    assert "[20260606222522A1B2C3D4][alice]" in text
+    assert "[20260606222522A1B2C3D4][test]" in text
 
 
 def test_missing_context_renders_dashes(tmp_path):
@@ -91,7 +91,7 @@ def test_audit_logger_includes_language(tmp_path):
     # Use file-based assertion: ClarityMedFormatter injects [zh] and request_id
     # at format time; caplog stores raw records and never calls the formatter.
     install_test_file_handlers(tmp_path / "logs", propagate=False)
-    tokens = apply_context("20260606222522DEADBEEF", "alice", "zh")
+    tokens = apply_context("20260606222522DEADBEEF", "test", "zh")
     try:
         get_audit_logger().info("trace")
     finally:

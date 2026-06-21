@@ -311,6 +311,14 @@ class ScrubService:
         self._pipeline: Any = None
         self._pipeline_tried = False
         self._lock = threading.Lock()
+        # Pre-compile the regex layer once at construction. ScrubService is
+        # long-lived (cached in PhiGuard) and ``_layer_regex`` runs on every
+        # cloud-bound prompt; re-compiling per call was a measurable hot-
+        # path cost.
+        self._compiled_patterns: list[tuple[str, re.Pattern[str], str]] = [
+            (rule.name, re.compile(rule.regex), rule.replacement)
+            for rule in self._config.free_text_patterns
+        ]
 
     @classmethod
     def from_config(cls) -> "ScrubService":
@@ -481,11 +489,10 @@ class ScrubService:
 
     def _layer_regex(self, text: str) -> tuple[str, dict[str, int]]:
         rule_hits: dict[str, int] = {}
-        for rule in self._config.free_text_patterns:
-            pattern = re.compile(rule.regex)
-            new_text, count = pattern.subn(rule.replacement, text)
+        for name, pattern, replacement in self._compiled_patterns:
+            new_text, count = pattern.subn(replacement, text)
             if count > 0:
-                rule_hits[rule.name] = count
+                rule_hits[name] = count
                 text = new_text
         return text, rule_hits
 

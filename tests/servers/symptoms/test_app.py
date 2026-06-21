@@ -236,13 +236,29 @@ def test_start_session_returns_first_question(client: TestClient) -> None:
 
 
 def test_start_session_unknown_dataset_returns_404(client: TestClient) -> None:
+    """Unknown dataset → 404 wrapped in the shared error envelope.
+
+    The error envelope shape is shared across vision, symptoms, and
+    medical-clip — a single client parser keys on ``error.code``. The
+    pre-envelope behaviour returned bare strings under ``detail`` and
+    broke any client that assumed the unified shape.
+    """
     SERVER_STATE.config_loaded = True
     response = client.post("/v1/datasets/missing/sessions", json=_start_payload())
     assert response.status_code == 404
-    assert "not loaded" in response.json()["detail"]
+    body = response.json()
+    assert body["error"]["code"] == "dataset_not_loaded"
+    assert "missing" in body["error"]["message"]
+    assert "available" in body["error"]["details"]
 
 
 def test_start_session_rejects_invalid_age(client: TestClient) -> None:
+    """Pydantic 422s are normalized to 400 + standard error envelope.
+
+    Without the ``RequestValidationError`` handler this would surface
+    FastAPI's stock ``{"detail": [{...}]}`` 422 — incompatible with
+    vision/medical-clip's normalized shape.
+    """
     SERVER_STATE.datasets["testds"] = _loaded_dataset(
         agent=_StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
     )
@@ -250,7 +266,10 @@ def test_start_session_rejects_invalid_age(client: TestClient) -> None:
     bad = _start_payload()
     bad["profile"]["age_years"] = 999  # out of [0, 120]
     response = client.post("/v1/datasets/testds/sessions", json=bad)
-    assert response.status_code == 422
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "bad_request"
+    assert isinstance(body["error"]["details"].get("errors"), list)
 
 
 # --- turn lifecycle (done / cap / continuing) ----------------------------
@@ -332,6 +351,7 @@ def test_turn_hits_cap_at_maxstep(client: TestClient) -> None:
 
 
 def test_turn_rejects_unknown_session(client: TestClient) -> None:
+    """Unknown session → 404 in the shared envelope."""
     SERVER_STATE.datasets["testds"] = _loaded_dataset(
         agent=_StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
     )
@@ -341,6 +361,27 @@ def test_turn_rejects_unknown_session(client: TestClient) -> None:
         json={"answer": "Yes", "language": "en"},
     )
     assert response.status_code == 404
+    body = response.json()
+    assert body["error"]["code"] == "session_not_found"
+    assert "session" in body["error"]["message"]
+
+
+def test_error_envelope_carries_request_id_when_header_set(client: TestClient) -> None:
+    """The ``X-Request-ID`` header round-trips through the error envelope
+    so client-side traces can correlate failures end-to-end.
+
+    Locks the contract that vision/medical-clip clients depend on:
+    every 4xx response from a claritymed server includes
+    ``error.request_id`` whenever the request carried the header.
+    """
+    SERVER_STATE.config_loaded = True
+    response = client.post(
+        "/v1/datasets/missing/sessions",
+        json=_start_payload(),
+        headers={"X-Request-ID": "20260621123456ABCDEF12"},
+    )
+    body = response.json()
+    assert body["error"]["request_id"] == "20260621123456ABCDEF12"
 
 
 # --- cancel ---------------------------------------------------------------
