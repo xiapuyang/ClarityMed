@@ -16,7 +16,7 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from claritymed.core.events import (
     Done,
@@ -991,52 +991,34 @@ class AskService:
                     )
             detach_session_baggage(session_token)
 
-    async def _stream_turn(
-        self,
-        scrubbed: str,
-        deps: AskDeps,
-        message_history,
-        user_id: str,
-        result: dict,
-    ) -> AsyncIterator[Event]:
-        """Compose feature plugins into one turn and stream events.
+    async def _wait_for_ocr_and_expand_placeholders(
+        self, scrubbed: str, deps: AskDeps, user_id: str
+    ) -> tuple[str, TurnContext]:
+        """Block on in-flight OCR then expand attachment placeholders.
 
-        Deterministic features run pre-LLM and contribute prompt text;
-        tool features register callables on the agent. The same loop
-        handles both shapes — the only branch is whether the prompt
-        gets a prepended evidence block.
+        Without the OCR wait the user can paste an image, hit Enter
+        immediately, and the inline placeholder expansion renders
+        ``ocr_status="pending"`` to the LLM — which then answers without
+        the extracted text. Capped at ``OCR_AWAIT_TIMEOUT_S`` so a stuck
+        provider can't block the turn forever.
+
+        Placeholder expansion runs BEFORE any feature sees the prompt so
+        ``RagFeature.pre_invoke``'s query-rewrite call sees real OCR'd
+        text, not the raw ``[Image sha:abcd1234]`` placeholder (which
+        would otherwise hallucinate a query from a placeholder string).
+        Only placeholders the user kept in their text get expanded —
+        session attachments without a matching placeholder this turn
+        stay out of the prompt so "delete the placeholder" remains a
+        meaningful UI gesture.
+
+        Returns the (possibly rewritten) scrubbed text and a fresh
+        :class:`TurnContext` reflecting it.
         """
-        from pydantic_ai import UsageLimits
-        from pydantic_ai.exceptions import UsageLimitExceeded
-
-        turn_ctx = TurnContext(scrubbed=scrubbed, deps=deps)
-
-        # Wait for any in-flight OCR jobs in this session to finish before
-        # the prompt envelope is assembled. Without this the user can paste
-        # an image, hit Enter immediately, and the inline placeholder
-        # expansion renders ``ocr_status="pending"`` to the LLM — which
-        # then answers without the extracted text. The LLM almost always
-        # then says "I can't read the image", forcing the user to retry
-        # by hand. Capped at OCR_AWAIT_S so a truly stuck provider can't
-        # block the turn forever.
-        if self._chat_session is not None:
-            await self._await_pending_ocr(user_id, self._chat_session.session_id)
-
-        # Substitute attachment placeholders in the user's input with
-        # inline ``<image sha="...">OCR</image>`` tags BEFORE any
-        # downstream feature sees the text. RagFeature's deterministic
-        # pre_invoke embeds ``ctx.scrubbed`` directly into the retrieval
-        # query rewrite call; if the placeholder were still raw at that
-        # point the retriever would see ``[Image sha:abcd1234]`` instead
-        # of the OCR'd content and the LLM-side query rewriter would
-        # hallucinate a query from the placeholder text.
-        #
-        # Only placeholders the user kept in their text get expanded —
-        # session attachments with no matching placeholder this turn
-        # stay out of the prompt so "delete the placeholder" is a
-        # meaningful UI gesture.
         from claritymed.core.attachments_feature import AttachmentsFeature
 
+        turn_ctx = TurnContext(scrubbed=scrubbed, deps=deps)
+        if self._chat_session is not None:
+            await self._await_pending_ocr(user_id, self._chat_session.session_id)
         attachments_feature = next(
             (f for f in self._features if isinstance(f, AttachmentsFeature)),
             None,
@@ -1044,11 +1026,26 @@ class AskService:
         if attachments_feature is not None:
             scrubbed = await attachments_feature.expand_placeholders(scrubbed, turn_ctx)
             turn_ctx = TurnContext(scrubbed=scrubbed, deps=deps)
+        return scrubbed, turn_ctx
 
-        # Deterministic pre-invoke: ordered concatenation so a future
-        # plugin can rely on stable layout (e.g. vision findings always
-        # above RAG evidence).
+    async def _run_deterministic_pre_invoke(
+        self, turn_ctx: TurnContext, deps: AskDeps
+    ) -> tuple[str, "Event | None", list["Event"]]:
+        """Run every deterministic feature's ``pre_invoke``; join the blocks.
+
+        Order matters: features run in registration order so future
+        plugins can rely on stable layout (e.g. vision findings always
+        above RAG evidence). A failing ``pre_invoke`` short-circuits the
+        loop and returns an ``Error`` event in the second slot — the
+        caller is responsible for yielding it.
+
+        Returns ``(joined_text, error_event_or_None, drained_events)``.
+        ``drained_events`` are events the deterministic features queued
+        on ``deps.event_queue`` (e.g. ``RetrievalPending``) that the
+        caller should yield before ``LlmCallStarted``.
+        """
         pre_blocks: list[str] = []
+        error: "Event | None" = None
         for feature in self._features:
             if feature.mode != "deterministic":
                 continue
@@ -1056,75 +1053,89 @@ class AskService:
                 text = await feature.pre_invoke(turn_ctx)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("pre_invoke failed for %s", feature.name)
-                yield Error(
+                error = Error(
                     error_type="config_error",
                     message=f"{feature.name}.pre_invoke: {exc}",
                     retryable=False,
                 )
-                result["had_error"] = True
-                return
+                break
             if text:
                 pre_blocks.append(text)
-        # Drain any events the pre-invoke steps queued (RetrievalPending
-        # etc) so the UI sees them before LlmCallStarted.
+        drained: list["Event"] = []
         while not deps.event_queue.empty():
             try:
-                yield deps.event_queue.get_nowait()
+                drained.append(deps.event_queue.get_nowait())
             except Exception:  # noqa: BLE001
                 break
+        return "\n\n".join(pre_blocks), error, drained
 
-        pre_text = "\n\n".join(pre_blocks)
-        prompt = f"{pre_text}\n\nQuestion: {scrubbed}" if pre_text else scrubbed
+    async def _scrub_assembled_prompt_for_cloud(
+        self, prompt: str, user_id: str
+    ) -> tuple[str, "Event | None"]:
+        """Second-pass PHI scrub on the assembled cloud-bound prompt.
 
-        # Attachment OCR expansion (line 917) and feature pre_invoke blocks
-        # (line 928) join the prompt AFTER the user_input scrub at line 674.
-        # For cloud-bound turns the final prompt must pass through the guard
-        # one more time so OCR'd PHI and profile-context fields don't ride
-        # past the gate. Local turns skip the second pass — the user already
-        # consented to send raw text to their own machine.
-        if getattr(self._provider_config, "kind", None) == "cloud":
-            prompt, assembly_report = await asyncio.to_thread(
-                self._guard.scrub_free_text, prompt
+        Attachment OCR expansion and feature ``pre_invoke`` blocks join
+        the prompt AFTER the user-input scrub. For cloud-bound turns
+        the final prompt must pass through the guard once more so OCR'd
+        PHI and profile-context fields don't ride past the gate. Local
+        turns skip this pass — the user already consented to send raw
+        text to their own machine.
+
+        Returns ``(prompt, error_event_or_None)``. The error is set
+        when the privacy-filter model layer fails — caller yields it
+        and aborts the turn.
+        """
+        if getattr(self._provider_config, "kind", None) != "cloud":
+            return prompt, None
+        scrubbed, report = await asyncio.to_thread(self._guard.scrub_free_text, prompt)
+        audit_event(
+            "mode.ask.scrub_assembled",
+            payload={
+                "user_id": user_id,
+                "rule_hits": report.rule_hits,
+                "model_hits": report.model_hits,
+                "model_failed": report.model_failed,
+                "text_len_before": report.text_len_before,
+                "text_len_after": report.text_len_after,
+            },
+        )
+        if report.model_failed:
+            logger.error(
+                "privacy-filter model failed on assembled cloud prompt; "
+                "refusing to send unscrubbed pre_blocks/attachments to %s",
+                self._provider_id,
             )
-            audit_event(
-                "mode.ask.scrub_assembled",
-                payload={
-                    "user_id": user_id,
-                    "rule_hits": assembly_report.rule_hits,
-                    "model_hits": assembly_report.model_hits,
-                    "model_failed": assembly_report.model_failed,
-                    "text_len_before": assembly_report.text_len_before,
-                    "text_len_after": assembly_report.text_len_after,
-                },
+            return scrubbed, Error(
+                error_type="scrub_unavailable",
+                message=(
+                    "Privacy filter is configured but unavailable for "
+                    "the assembled prompt; refusing to send unscrubbed "
+                    "context to the cloud provider. Switch to a local "
+                    "provider or fix the filter setup, then retry."
+                ),
+                retryable=False,
             )
-            if assembly_report.model_failed:
-                logger.error(
-                    "privacy-filter model failed on assembled cloud prompt; "
-                    "refusing to send unscrubbed pre_blocks/attachments to %s",
-                    self._provider_id,
-                )
-                yield Error(
-                    error_type="scrub_unavailable",
-                    message=(
-                        "Privacy filter is configured but unavailable for "
-                        "the assembled prompt; refusing to send unscrubbed "
-                        "context to the cloud provider. Switch to a local "
-                        "provider or fix the filter setup, then retry."
-                    ),
-                    retryable=False,
-                )
-                result["had_error"] = True
-                return
+        return scrubbed, None
 
+    def _build_agent_for_turn(self) -> tuple[Any, bool]:
+        """Construct the per-turn pydantic-ai agent.
+
+        Collects tools and toolsets across every feature, conditionally
+        registers ``ask_user_question`` when a prompt channel is wired,
+        builds the union output type (``str | DeferredToolRequests``
+        when any toolset is present so approval-required tool calls
+        bubble back as deferred requests instead of looping forever),
+        and resolves dynamic system prompts from features that expose
+        ``system_prompt_fn``.
+
+        Returns ``(agent, any_tool)`` — the boolean lets the caller
+        decide whether to wire ``UsageLimits`` (only meaningful when
+        the LLM can loop via tool calls).
+        """
         tools: list = [t for f in self._features if (t := f.as_tool()) is not None]
         toolsets: list = [
             ts for f in self._features if (ts := f.as_toolset()) is not None
         ]
-        # Register ``ask_user_question`` only when a channel is wired up.
-        # Without a channel the tool would always return the "unavailable"
-        # hint, which wastes a turn and shows up as noise in the LLM's
-        # tool list — better to omit it entirely for one-shot CLI / eval
-        # runs.
         if self._prompt_channel is not None:
             from claritymed.config import ask_user_question_max_retries
             from claritymed.core.interaction import build_ask_user_question_tool
@@ -1140,22 +1151,16 @@ class AskService:
                 )
             )
         any_tool = bool(tools) or bool(toolsets)
-        # The union output type lets pydantic-ai bubble approval-required
-        # tool calls back to us as DeferredToolRequests instead of looping
-        # forever on a tool that always raises. ``str`` stays the success
-        # path; isinstance disambiguates downstream.
         if toolsets:
             from pydantic_ai.tools import DeferredToolRequests
 
-            agent_output_type = str | DeferredToolRequests
+            agent_output_type: Any = str | DeferredToolRequests
         else:
             agent_output_type = str
         # ``tool_proposal`` carries the LLM-facing meta-rules for the
         # seven write tools (when to propose save_record vs save_allergy,
         # how to reference attachments by sha256, etc.). Only relevant
-        # when at least one approval-gated toolset is wired — without it
-        # the LLM doesn't have those tools anyway and the extra prose
-        # just inflates the system prompt.
+        # when at least one approval-gated toolset is wired.
         extra_prompts = ["tool_proposal"] if toolsets else None
         # ``symptoms_final_reply`` is injected dynamically: SymptomsFeature
         # sets deps.symptoms_reply_guide only when the tool returns a real
@@ -1176,6 +1181,58 @@ class AskService:
             extra_prompt_names=extra_prompts,
             dynamic_system_prompts=dynamic_sys_prompts or None,
         )
+        return agent, any_tool
+
+    async def _stream_turn(
+        self,
+        scrubbed: str,
+        deps: AskDeps,
+        message_history,
+        user_id: str,
+        result: dict,
+    ) -> AsyncIterator[Event]:
+        """Compose feature plugins into one turn and stream events.
+
+        Deterministic features run pre-LLM and contribute prompt text;
+        tool features register callables on the agent. The same loop
+        handles both shapes — the only branch is whether the prompt
+        gets a prepended evidence block.
+
+        The body delegates each named phase to a helper so this method
+        stays readable: OCR + placeholder expansion, deterministic
+        pre-invoke, cloud-side assembled-prompt scrub, agent construction,
+        and the producer / drainer event loop. Helpers return
+        ``(payload, error_event_or_None)`` so the generator only yields
+        from one place per phase.
+        """
+        from pydantic_ai import UsageLimits
+        from pydantic_ai.exceptions import UsageLimitExceeded
+
+        scrubbed, turn_ctx = await self._wait_for_ocr_and_expand_placeholders(
+            scrubbed, deps, user_id
+        )
+
+        pre_text, pre_error, drained_events = await self._run_deterministic_pre_invoke(
+            turn_ctx, deps
+        )
+        for ev in drained_events:
+            yield ev
+        if pre_error is not None:
+            result["had_error"] = True
+            yield pre_error
+            return
+
+        prompt = f"{pre_text}\n\nQuestion: {scrubbed}" if pre_text else scrubbed
+
+        prompt, scrub_error = await self._scrub_assembled_prompt_for_cloud(
+            prompt, user_id
+        )
+        if scrub_error is not None:
+            result["had_error"] = True
+            yield scrub_error
+            return
+
+        agent, any_tool = self._build_agent_for_turn()
 
         out: asyncio.Queue[Event | None] = asyncio.Queue()
         st: dict = {
