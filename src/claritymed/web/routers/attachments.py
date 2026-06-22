@@ -204,6 +204,25 @@ async def get_attachments_meta(
     return AttachmentMetaResponse(items=items)
 
 
+@router.get("/sessions/{session_id}/attachments/{sha}/blob")
+async def get_attachment_blob(
+    session_id: str,
+    sha: str,
+    account: Account = Depends(get_current_user),
+) -> Response:
+    """Return raw bytes for **any** attachment kind. Accepts 8–64 char sha.
+
+    The image-only sibling at ``/attachments/{sha}`` exists for tags like
+    ``<img src>`` that won't follow a download disposition; this route
+    is the general "give me the bytes" endpoint the FileChip uses for
+    PDFs, text, and other non-image kinds. ``Content-Disposition`` hints
+    the filename so direct hits land with the right name on disk.
+    Status codes mirror :func:`get_attachment` minus the 415.
+    """
+    row = _lookup_attachment(account.user_id, session_id, sha)
+    return _serve_blob(account.user_id, row)
+
+
 @router.get("/sessions/{session_id}/attachments/{sha}")
 async def get_attachment(
     session_id: str,
@@ -213,9 +232,10 @@ async def get_attachment(
     """Return raw image bytes inline. Accepts full or 8+ char prefix sha.
 
     Only ``image/*`` rows are served from this endpoint — non-image
-    attachments (PDF, text) get a 415 because the SPA renders those as
-    filename chips, not inline content, and the bytes carry no value to
-    the browser. Use ``/meta`` to resolve their metadata.
+    attachments hit ``/attachments/{sha}/blob`` instead. Splitting the
+    routes lets ``<img src>`` consumers stay strict (they should never
+    accidentally render a PDF) while the FileChip path still has a way
+    to fetch the bytes.
 
     Status codes:
     * 400 — sha is not 8–64 hex chars.
@@ -225,18 +245,31 @@ async def get_attachment(
       with more characters. Frontend stores 8-char prefixes by default so
       collisions on real sha256 are vanishingly rare, but fail-loud is
       better than serving a guess.
-    * 415 — the matched attachment is not an image.
+    * 415 — the matched attachment is not an image; use ``/blob``.
     """
-    _validate_session_ownership(account.user_id, session_id)
+    row = _lookup_attachment(account.user_id, session_id, sha)
+    if not row.mime.startswith("image/"):
+        raise HTTPException(
+            status_code=415,
+            detail="Only image/* attachments are served here; use /blob",
+        )
+    return _serve_blob(account.user_id, row)
 
-    sha = sha.lower()
-    if not _SHA_LOOKUP_RE.match(sha):
+
+def _lookup_attachment(user_id: str, session_id: str, sha: str) -> SessionAttachment:
+    """Validate ownership + sha, resolve a single matching row.
+
+    Centralizes the 400/403/404/409 contract so the two byte-serving
+    endpoints stay consistent — adding a third would just call this.
+    """
+    _validate_session_ownership(user_id, session_id)
+    sha_norm = sha.lower()
+    if not _SHA_LOOKUP_RE.match(sha_norm):
         raise HTTPException(
             status_code=400, detail="Invalid sha; expected 8–64 hex chars"
         )
-
-    rows = SessionAttachments(account.user_id, session_id).list()
-    matches = [r for r in rows if r.sha256.startswith(sha)]
+    rows = SessionAttachments(user_id, session_id).list()
+    matches = [r for r in rows if r.sha256.startswith(sha_norm)]
     if not matches:
         raise HTTPException(status_code=404, detail="Attachment not found")
     if len(matches) > 1:
@@ -246,15 +279,12 @@ async def get_attachment(
                 f"Sha prefix matches {len(matches)} attachments; use more characters"
             ),
         )
-    row = matches[0]
+    return matches[0]
 
-    if not row.mime.startswith("image/"):
-        raise HTTPException(
-            status_code=415,
-            detail="Only image/* attachments are served as bytes; use /meta",
-        )
 
-    blob_dir = BlobStore(account.user_id).dir(row.sha256)
+def _serve_blob(user_id: str, row: SessionAttachment) -> Response:
+    """Read the on-disk content file and wrap it in a Response."""
+    blob_dir = BlobStore(user_id).dir(row.sha256)
     content_path: Path | None = None
     if blob_dir.exists():
         content_path = next(

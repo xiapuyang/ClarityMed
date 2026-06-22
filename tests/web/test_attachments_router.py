@@ -221,6 +221,117 @@ async def test_get_attachment_non_image_returns_415(
     assert resp.status_code == 415
 
 
+# --- GET /attachments/{sha}/blob --------------------------------------
+
+
+async def test_get_blob_returns_text_bytes(web_client, test_user, auth_cookies):  # noqa: ARG001
+    sid = await _new_session(web_client, auth_cookies)
+    upload = await web_client.post(
+        f"/api/v1/sessions/{sid}/attachments",
+        files={"files": ("notes.txt", b"hello world", "text/plain")},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    sha_full = upload.json()["attachments"][0]["id"]
+
+    resp = await web_client.get(
+        f"/api/v1/sessions/{sid}/attachments/{sha_full}/blob",
+        cookies=auth_cookies,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"hello world"
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "notes.txt" in resp.headers["content-disposition"]
+
+
+async def test_get_blob_returns_image_bytes(web_client, test_user, auth_cookies):  # noqa: ARG001
+    sid = await _new_session(web_client, auth_cookies)
+    png = b"\x89PNG\r\n\x1a\n" + b"\xab" * 32
+    upload = await web_client.post(
+        f"/api/v1/sessions/{sid}/attachments",
+        files={"files": ("scan.png", png, "image/png")},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    sha_full = upload.json()["attachments"][0]["id"]
+
+    resp = await web_client.get(
+        f"/api/v1/sessions/{sid}/attachments/{sha_full}/blob",
+        cookies=auth_cookies,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.content == png
+    assert resp.headers["content-type"].startswith("image/png")
+
+
+async def test_get_blob_short_prefix(web_client, test_user, auth_cookies):  # noqa: ARG001
+    sid = await _new_session(web_client, auth_cookies)
+    upload = await web_client.post(
+        f"/api/v1/sessions/{sid}/attachments",
+        files={"files": ("notes.txt", b"hello blob", "text/plain")},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    sha_full = upload.json()["attachments"][0]["id"]
+    prefix = sha_full[:8]
+
+    resp = await web_client.get(
+        f"/api/v1/sessions/{sid}/attachments/{prefix}/blob",
+        cookies=auth_cookies,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"hello blob"
+
+
+async def test_get_blob_not_found_returns_404(web_client, auth_cookies):
+    sid = await _new_session(web_client, auth_cookies)
+    resp = await web_client.get(
+        f"/api/v1/sessions/{sid}/attachments/{'a' * 8}/blob",
+        cookies=auth_cookies,
+    )
+    assert resp.status_code == 404
+
+
+async def test_get_blob_invalid_sha_returns_400(web_client, auth_cookies):
+    sid = await _new_session(web_client, auth_cookies)
+    resp = await web_client.get(
+        f"/api/v1/sessions/{sid}/attachments/abcdef0/blob",
+        cookies=auth_cookies,
+    )
+    assert resp.status_code == 400
+
+
+async def test_get_blob_prefix_collision_returns_409(
+    web_client, test_user, auth_cookies
+):
+    sid = await _new_session(web_client, auth_cookies)
+    prefix = "feedface"
+    tray = SessionAttachments(test_user.user_id, sid)
+    tray.add(sha256=prefix + "0" * 56, filename="a.txt", mime="text/plain", size=1)
+    tray.add(sha256=prefix + "1" * 56, filename="b.txt", mime="text/plain", size=1)
+
+    resp = await web_client.get(
+        f"/api/v1/sessions/{sid}/attachments/{prefix}/blob",
+        cookies=auth_cookies,
+    )
+    assert resp.status_code == 409
+
+
+async def test_get_blob_other_user_session_returns_403(
+    web_client,
+    test_user,
+    auth_cookies,  # noqa: ARG001
+):
+    other = init_user("other", display_name="Other")
+    other_session = ChatSession.new(other.user_id)
+    other_session.append_system("init", kind="start")
+    resp = await web_client.get(
+        f"/api/v1/sessions/{other_session.session_id}/attachments/{'a' * 8}/blob",
+        cookies=auth_cookies,
+    )
+    assert resp.status_code == 403
+
+
 async def test_get_attachment_not_found_returns_404(web_client, auth_cookies):
     sid = await _new_session(web_client, auth_cookies)
     resp = await web_client.get(
