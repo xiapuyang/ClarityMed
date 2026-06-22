@@ -97,10 +97,26 @@ def reset_context(
     Accepts both the legacy 3-tuple and the new 4-tuple (which carries the
     OTel attach token) so callers older than the tracing-correlation work
     keep functioning.
+
+    ``ValueError`` from individual ``ContextVar.reset`` is swallowed: when
+    an async generator that called ``apply_context`` is finalised via
+    asyncio's ``aclose()`` hook, the finally-block runs inside a fresh
+    finaliser task whose Context is not the one where the tokens were
+    issued. Python rejects the cross-Context reset, but semantically it
+    is a no-op anyway — the finaliser Context never carried our values
+    and is about to be torn down — so a hard raise here turns a benign
+    cleanup race into a noisy ``Task exception was never retrieved`` log.
     """
-    request_id_ctx.reset(tokens[0])
-    user_id_ctx.reset(tokens[1])
-    language_ctx.reset(tokens[2])
+    for ctx_var, token in (
+        (request_id_ctx, tokens[0]),
+        (user_id_ctx, tokens[1]),
+        (language_ctx, tokens[2]),
+    ):
+        try:
+            ctx_var.reset(token)
+        except ValueError:
+            # Different Context (async-generator finaliser); see docstring.
+            pass
     if len(tokens) >= 4 and tokens[3] is not None:  # type: ignore[misc]
         _detach_baggage(tokens[3])  # type: ignore[index]
 

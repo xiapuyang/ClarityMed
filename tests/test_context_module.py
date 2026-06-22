@@ -8,11 +8,13 @@ import pytest
 
 from claritymed.context import (
     MissingContextError,
+    apply_context,
     attach_session_baggage,
     detach_session_baggage,
     get_context_or_raise,
     is_valid_request_id,
     new_request_id,
+    reset_context,
 )
 
 
@@ -151,3 +153,28 @@ def test_attach_session_baggage_returns_none_when_otel_missing(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert attach_session_baggage("sid-1") is None
+
+
+def test_reset_context_swallows_cross_context_value_error():
+    """Tokens issued in Context A must not raise when reset in Context B.
+
+    Reproduces the async-generator finaliser race: an async gen calls
+    ``apply_context`` while iterating, then the consumer abandons it
+    early. asyncio's ``aclose()`` finaliser fires on a fresh task with
+    its own Context, and Python's ``ContextVar.reset`` would otherwise
+    raise ``ValueError`` for the cross-Context token. ``reset_context``
+    must silently no-op so a benign cleanup doesn't surface as an
+    unretrieved task exception.
+    """
+    import contextvars
+
+    tokens_holder: list = []
+
+    def _grab_tokens():
+        tokens_holder.append(apply_context(new_request_id(), "test", "en"))
+
+    # Allocate the tokens inside an isolated Context.
+    contextvars.copy_context().run(_grab_tokens)
+    # Now reset from the outer Context — would raise ValueError without
+    # the defensive try/except inside reset_context.
+    reset_context(tokens_holder[0])
