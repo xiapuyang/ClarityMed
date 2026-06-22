@@ -325,3 +325,173 @@ class InteractionResponse(BaseModel):
 
     kind: Literal["ask_user_question", "tool_approval"]
     payload: dict = Field(default_factory=dict)
+
+
+# --- /api/v1/library --------------------------------------------------
+
+
+class LibrarySystemCollection(BaseModel):
+    """One system-managed RAG collection entry in ``GET /api/v1/library``.
+
+    Mirrors :class:`claritymed.core.rag.schemas.CollectionMetadata` minus
+    the routing-only fields (``source_uri_prefix``, ``disease_codes``,
+    ``cross_lingual``) the SPA does not yet render. ``chunk_count`` is
+    ``None`` when the shared Qdrant server does not yet know about the
+    collection — the row displays as ``?`` chunks rather than failing
+    the whole list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    language: Literal["en", "zh"]
+    authority_tier: int
+    topics: list[str] = Field(default_factory=list)
+    license: str | None = None
+    chunk_count: int | None = None
+
+
+class LibraryUserCollection(BaseModel):
+    """The current user's per-account ``user_rag_<uid>`` collection.
+
+    ``chunk_count`` is ``None`` when the user has never ingested anything
+    (collection not yet created). Zero is a valid value separate from
+    None — it means every previously-ingested document was later removed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    chunk_count: int | None = None
+
+
+class LibraryListResponse(BaseModel):
+    """Body returned by ``GET /api/v1/library``.
+
+    ``rag_enabled`` carries the same flag the chat router consults: when
+    ``False`` the search endpoint will refuse with 503, and the SPA
+    should render a banner rather than calling it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    system_collections: list[LibrarySystemCollection]
+    user_collection: LibraryUserCollection
+    rag_enabled: bool
+
+
+class LibrarySearchRequest(BaseModel):
+    """Body of ``POST /api/v1/library/search``.
+
+    Mirrors the TUI library modal's input. The 8000-char cap matches
+    ``StreamRequest.q`` so an oversized query is rejected the same way
+    in both surfaces.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    q: str = Field(min_length=1, max_length=8000)
+
+
+class LibrarySearchChunk(BaseModel):
+    """One retrieved chunk in the search response.
+
+    ``tag`` is the coarse origin label the SPA uses to badge results:
+    ``USER`` for ``user_rag_<uid>`` chunks, ``SYS`` for everything else.
+    ``score`` falls back to the pre-rerank score when the reranker did
+    not produce one (TUI mirrors this same fallback).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tag: Literal["USER", "SYS"]
+    collection_name: str
+    doc_id: str
+    score: float | None = None
+    snippet: str
+
+
+class LibrarySearchTrace(BaseModel):
+    """Per-stage timings + active collections, mirrors ``RetrievalTrace``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    active_collections: list[str] = Field(default_factory=list)
+    expanded_query: str | None = None
+    embed_ms: int = 0
+    search_ms: int = 0
+    rerank_ms: int = 0
+    parent_expand_ms: int = 0
+
+
+class LibrarySearchResponse(BaseModel):
+    """Body returned by ``POST /api/v1/library/search``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunks: list[LibrarySearchChunk]
+    trace: LibrarySearchTrace
+
+
+class LibraryIngestRequest(BaseModel):
+    """Body of ``POST /api/v1/library/ingest``.
+
+    ``text`` is the raw input bar contents — it may carry
+    ``[Image sha:…]`` / ``[File sha:…]`` placeholders that resolve
+    against ``session_id``'s SessionAttachments. ``session_id`` is
+    optional only when ``text`` carries no placeholders (pure inline
+    text). The server runs ``UploadBundle.validate`` and returns 422
+    with the reasons list when the bundle fails the floor / pending /
+    failed gates — identical to the TUI's modal gate.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=200_000)
+    session_id: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
+
+
+class LibraryIngestPart(BaseModel):
+    """Per-part outcome included in the ingest response.
+
+    ``status`` is the post-ingest verdict, distinct from the pre-ingest
+    ``UploadPart.status`` gate result: it captures what happened when
+    the part was actually sent through ``RagService`` — ``added`` (new
+    chunks landed), ``skipped`` (cosine-dedup or duplicate source_uri),
+    or ``failed`` (the LLM / embedder raised).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    kind: Literal["text", "image", "file"]
+    status: Literal["added", "skipped", "failed"]
+    chunks: int = 0
+    error: str | None = None
+
+
+class LibraryIngestResponse(BaseModel):
+    """Body returned by ``POST /api/v1/library/ingest``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    added_parts: int
+    skipped_parts: int
+    failed_parts: int
+    added_chunks: int
+    parts: list[LibraryIngestPart]
+
+
+class LibraryIngestValidationError(BaseModel):
+    """422 body when ``UploadBundle.validate`` fails.
+
+    The same shape FastAPI uses for built-in validation errors would
+    work, but the per-part ``reasons`` list is more useful for the SPA
+    than a generic ``detail`` string — the modal can map each reason to
+    a per-attachment chip warning.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str
+    reasons: list[str] = Field(default_factory=list)

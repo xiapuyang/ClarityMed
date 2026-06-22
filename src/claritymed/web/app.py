@@ -60,6 +60,7 @@ from claritymed.web.routers.chat import (
     router as chat_router,
 )
 from claritymed.web.routers.attachments import router as attachments_router
+from claritymed.web.routers.library import router as library_router
 from claritymed.web.routers.me import router as me_router
 from claritymed.web.routers.providers import router as providers_router
 
@@ -221,6 +222,7 @@ def create_app() -> FastAPI:
     app.include_router(me_router)
     app.include_router(providers_router)
     app.include_router(attachments_router)
+    app.include_router(library_router)
     app.include_router(chat_router)
 
     return app

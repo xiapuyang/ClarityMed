@@ -302,6 +302,12 @@ AuditKind = Literal[
     "web.chat.unknown_provider",
     "web.chat.q_invalid",
     "web.chat.session_busy",
+    #   web.library.ingest — POST /api/v1/library/ingest finished a run;
+    #     aggregate counts go here so the audit log carries a single line
+    #     per upload bundle (per-part outcomes stay in the response only).
+    #     payload allowlist: user_id, added_parts, skipped_parts,
+    #     failed_parts, added_chunks
+    "web.library.ingest",
     # CLI out-of-band password management:
     #   cli.user.password_set — `claritymed user set-password <user_id>`
     #     succeeded. Payload carries the user_id only; the plaintext is
