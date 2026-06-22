@@ -281,6 +281,31 @@ class AttachmentListResponse(BaseModel):
     attachments: list[AttachmentResponse]
 
 
+class AttachmentMetaItem(BaseModel):
+    """One entry in the batch meta-lookup response.
+
+    ``requested`` echoes the input verbatim so the caller can correlate
+    results without depending on response order. Exactly one of
+    ``resolved`` / ``error`` is populated: success → ``resolved`` carries
+    the full attachment shape; failure → ``error`` names the failure mode
+    so the frontend can render an appropriate placeholder chip.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    requested: str
+    resolved: AttachmentResponse | None = None
+    error: Literal["not_found", "ambiguous", "invalid"] | None = None
+
+
+class AttachmentMetaResponse(BaseModel):
+    """Body returned by ``GET /api/v1/sessions/{id}/attachments/meta``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AttachmentMetaItem]
+
+
 # --- /api/v1/sessions/{id}/interactions/{id} -------------------------
 
 

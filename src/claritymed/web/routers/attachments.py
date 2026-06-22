@@ -18,9 +18,19 @@ than dead-end the upload.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.schemas import Account
@@ -31,7 +41,12 @@ from claritymed.stores.session_attachments import (
     SessionAttachments,
 )
 from claritymed.web.deps import get_current_user
-from claritymed.web.schemas import AttachmentListResponse, AttachmentResponse
+from claritymed.web.schemas import (
+    AttachmentListResponse,
+    AttachmentMetaItem,
+    AttachmentMetaResponse,
+    AttachmentResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +66,16 @@ _MAX_FILES = 8
 # and failing later during OCR.
 _IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "heic"})
 _DOC_EXTS = frozenset({"pdf"})
+
+# Accept either a full 64-char sha or an 8+ char hex prefix on the
+# GET-by-sha route. The TUI / web persist references as `[File sha:XXXXXXXX]`
+# with an 8-char prefix by default, so the read path must resolve them.
+_SHA_LOOKUP_RE = re.compile(r"^[a-f0-9]{8,64}$")
+
+# Batch meta-lookup ceiling. A long chat history could carry many
+# attachment markers; 50 covers practical chat scrollback in one round
+# trip without inviting unbounded fan-out. Bump after measuring.
+_META_BATCH_LIMIT = 50
 
 
 @router.post(
@@ -143,7 +168,158 @@ async def upload_attachments(
     return AttachmentListResponse(attachments=accepted)
 
 
+@router.get(
+    "/sessions/{session_id}/attachments/meta",
+    response_model=AttachmentMetaResponse,
+)
+async def get_attachments_meta(
+    session_id: str,
+    sha: list[str] = Query(default_factory=list),  # noqa: B008
+    account: Account = Depends(get_current_user),
+) -> AttachmentMetaResponse:
+    """Batch resolve sha prefixes / full shas to attachment metadata.
+
+    Required when the chat transcript carries multiple ``[File sha:…]`` /
+    ``[Image sha:…]`` markers and the SPA wants to render chips for all
+    of them in one round trip. Each ``sha`` query param is resolved
+    independently; per-entry errors do not fail the whole call so the
+    frontend can still render the hits and flag the misses.
+    """
+    _validate_session_ownership(account.user_id, session_id)
+
+    if not sha:
+        raise HTTPException(
+            status_code=422, detail="At least one sha query param is required"
+        )
+    if len(sha) > _META_BATCH_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {_META_BATCH_LIMIT} sha values per request",
+        )
+
+    rows = SessionAttachments(account.user_id, session_id).list()
+    items: list[AttachmentMetaItem] = []
+    for raw in sha:
+        items.append(_resolve_one_meta(raw, rows))
+    return AttachmentMetaResponse(items=items)
+
+
+@router.get("/sessions/{session_id}/attachments/{sha}")
+async def get_attachment(
+    session_id: str,
+    sha: str,
+    account: Account = Depends(get_current_user),
+) -> Response:
+    """Return raw image bytes inline. Accepts full or 8+ char prefix sha.
+
+    Only ``image/*`` rows are served from this endpoint — non-image
+    attachments (PDF, text) get a 415 because the SPA renders those as
+    filename chips, not inline content, and the bytes carry no value to
+    the browser. Use ``/meta`` to resolve their metadata.
+
+    Status codes:
+    * 400 — sha is not 8–64 hex chars.
+    * 403 — session belongs to another user.
+    * 404 — no session, no matching attachment, or blob bytes missing.
+    * 409 — prefix matches more than one attachment; caller must refetch
+      with more characters. Frontend stores 8-char prefixes by default so
+      collisions on real sha256 are vanishingly rare, but fail-loud is
+      better than serving a guess.
+    * 415 — the matched attachment is not an image.
+    """
+    _validate_session_ownership(account.user_id, session_id)
+
+    sha = sha.lower()
+    if not _SHA_LOOKUP_RE.match(sha):
+        raise HTTPException(
+            status_code=400, detail="Invalid sha; expected 8–64 hex chars"
+        )
+
+    rows = SessionAttachments(account.user_id, session_id).list()
+    matches = [r for r in rows if r.sha256.startswith(sha)]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Sha prefix matches {len(matches)} attachments; use more characters"
+            ),
+        )
+    row = matches[0]
+
+    if not row.mime.startswith("image/"):
+        raise HTTPException(
+            status_code=415,
+            detail="Only image/* attachments are served as bytes; use /meta",
+        )
+
+    blob_dir = BlobStore(account.user_id).dir(row.sha256)
+    content_path: Path | None = None
+    if blob_dir.exists():
+        content_path = next(
+            (
+                p
+                for p in blob_dir.iterdir()
+                if p.name.startswith("content.") and not p.name.endswith(".tmp")
+            ),
+            None,
+        )
+    if content_path is None:
+        raise HTTPException(status_code=404, detail="Blob bytes missing")
+
+    data = content_path.read_bytes()
+    # RFC 5987 filename encoding — handles unicode and quote characters
+    # without breaking the header. Browsers fall back to the bare token
+    # if they can't parse `filename*`, which is fine.
+    encoded = quote(row.filename, safe="")
+    return Response(
+        content=data,
+        media_type=row.mime,
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{encoded}"},
+    )
+
+
 # --- helpers -----------------------------------------------------------
+
+
+def _resolve_one_meta(raw: str, rows: list[SessionAttachment]) -> AttachmentMetaItem:
+    """Resolve a single sha query value against the session's rows.
+
+    Mirrors the per-sha endpoint's lookup semantics (lowercase, 8–64 hex
+    chars, ``startswith`` match) but returns a structured per-entry
+    result instead of raising — the batch endpoint stays partially-
+    successful even when one item collides or is missing.
+    """
+    sha = raw.lower()
+    if not _SHA_LOOKUP_RE.match(sha):
+        return AttachmentMetaItem(requested=raw, error="invalid")
+    matches = [r for r in rows if r.sha256.startswith(sha)]
+    if not matches:
+        return AttachmentMetaItem(requested=raw, error="not_found")
+    if len(matches) > 1:
+        return AttachmentMetaItem(requested=raw, error="ambiguous")
+    row = matches[0]
+    return AttachmentMetaItem(
+        requested=raw,
+        resolved=AttachmentResponse(
+            id=row.sha256,
+            filename=row.filename,
+            mime_type=row.mime,
+            size_bytes=row.size,
+            kind=_kind_from_mime(row.mime),
+            ocr_status=row.ocr_status,
+        ),
+    )
+
+
+def _kind_from_mime(mime: str) -> str:
+    """Map mime → coarse ``kind`` label used by ``AttachmentResponse``."""
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("text/"):
+        return "text"
+    return "other"
 
 
 def _store_one(
