@@ -4,6 +4,7 @@
     "cancelled",
     "done",
     "error",
+    "interaction_requested",
     "llm_call_started",
     "llm_first_token",
     "retrieval_completed",
@@ -11,6 +12,7 @@
     "retrieval_pending",
     "retrieval_started",
     "token_chunk",
+    "tokens_used",
     "tool_completed",
     "tool_started"
   ]

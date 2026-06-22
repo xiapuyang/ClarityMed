@@ -278,7 +278,16 @@ AuditKind = Literal[
     #   web.me.language_changed — PATCH /api/v1/me {language} succeeded;
     #     JWT cookie reissued with new lang claim.
     #     payload allowlist: from, to
+    #   web.me.provider_changed — PATCH /api/v1/me {provider_id} succeeded.
+    #     The next stream call will resolve against the new id.
+    #     payload allowlist: from, to
+    #   web.me.unknown_provider — PATCH /api/v1/me {provider_id} requested
+    #     an id absent from the catalog; rejected with 422 before the
+    #     change touches disk.
+    #     payload allowlist: requested
     "web.me.language_changed",
+    "web.me.provider_changed",
+    "web.me.unknown_provider",
     # Chat SSE router:
     #   web.chat.unknown_provider — user's Account.provider_id (or the
     #     default) is not in app.state.ask_services. Config error.

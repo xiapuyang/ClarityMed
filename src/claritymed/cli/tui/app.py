@@ -1307,8 +1307,12 @@ class ClarityMedApp(App):
         # event loop free while we wait, so the UI stays responsive.
         import asyncio
 
+        from claritymed.cli.tui.prompt_channel import TextualPromptChannel
+        from claritymed.cli.tui.tool_approval_channel import (
+            TextualToolApprovalChannel,
+        )
         from claritymed.core.llm.model import build_model
-        from claritymed.orchestrator.services import AskService
+        from claritymed.orchestrator.services import build_ask_service
         from claritymed.stores.models import resolve_provider
 
         provider = resolve_provider(override=self._current_provider_id)
@@ -1316,56 +1320,16 @@ class ClarityMedApp(App):
         strategy = await asyncio.to_thread(self._strategy_for_session, model=model)
         if self._chat_session is None:
             self._chat_session = ChatSession.new(self._current_user_id)
-        from claritymed.core.rag import load_retrieval_config
-        from claritymed.core.translation import make_translation_provider
 
-        mode_name = load_retrieval_config().rag.mode
-        from claritymed.cli.tui.prompt_channel import TextualPromptChannel
-        from claritymed.cli.tui.tool_approval_channel import (
-            TextualToolApprovalChannel,
-        )
-        from claritymed.config import load_yaml
-
-        profile_context_mode = (
-            load_yaml("app.yaml")
-            .get("profile_context", {})
-            .get("mode", "deterministic")
-        )
-        from claritymed.orchestrator.features.symptoms_plugin import (
-            make_symptoms_factory,
-        )
-        from claritymed.orchestrator.features.vision_plugin import (
-            make_vision_factory,
-        )
-
-        _app = self
-
-        def _tui_session_id() -> str | None:
-            return (
-                _app._chat_session.session_id
-                if _app._chat_session is not None
-                else None
-            )
-
-        service = AskService(
+        language = self.query_one(StatusBar).language
+        service = build_ask_service(
             model=model,
-            language=self.query_one(StatusBar).language,
+            language=language,
             chat_session=self._chat_session,
-            provider_id=provider.id,
-            model_name=provider.model,
-            strategy=strategy,
-            provider_config=provider,
-            translation_service=make_translation_provider(
-                model, phi_kind=provider.kind
-            ),
-            rag_mode=mode_name,
-            profile_context_mode=profile_context_mode,
+            provider=provider,
             prompt_channel=TextualPromptChannel(self),
-            tool_approval_channel=TextualToolApprovalChannel(
-                self, language=self.query_one(StatusBar).language
-            ),
-            symptoms_factory=make_symptoms_factory(),
-            vision_factory=make_vision_factory(get_session_id=_tui_session_id),
+            tool_approval_channel=TextualToolApprovalChannel(self, language=language),
+            strategy=strategy,
         )
         self._cached_ask_service = service
         return service
@@ -1396,23 +1360,10 @@ class ClarityMedApp(App):
             logger.debug("_strategy_for_session: lock acquired")
             if self._cached_strategy is not None:
                 return self._cached_strategy
-            from claritymed.core.rag import load_retrieval_config
+            from claritymed.orchestrator.services import build_rag_strategy
 
-            cfg = load_retrieval_config()
-            if not cfg.rag.enabled:
-                return None
-            from claritymed.core.rag import build_hybrid_retriever
-            from claritymed.core.rag.strategies import build_strategy
-
-            logger.debug("_strategy_for_session: building retriever")
-            retriever = build_hybrid_retriever(cfg)
             logger.debug("_strategy_for_session: building strategy")
-            self._cached_strategy = build_strategy(
-                retriever,
-                config=cfg.strategies,
-                max_evidence=cfg.rag.max_evidence,
-                model=model,
-            )
+            self._cached_strategy = build_rag_strategy(model=model)
             logger.debug("_strategy_for_session: strategy ready")
             return self._cached_strategy
         finally:
@@ -2045,44 +1996,13 @@ class ClarityMedApp(App):
         worker = getattr(self, "_ocr_worker", None)
         if worker is not None:
             return worker
-        try:
-            from claritymed.config import CONFIGS_DIR, load_yaml
-            from claritymed.core.medical_clip.client import (
-                DEFAULT_BASE_URL as MEDICAL_CLIP_DEFAULT_BASE_URL,
-                MedicalClipClient,
-            )
-            from claritymed.core.ocr.factory import make_ocr_provider
-            from claritymed.core.vision.ocr_report_detector import (
-                load_ocr_report_config,
-            )
-            from claritymed.orchestrator.services.ocr_worker import OcrWorker
+        from claritymed.orchestrator.services.ocr_worker_factory import (
+            build_ocr_worker,
+        )
 
-            provider = make_ocr_provider()
-            # Medical-clip client construction is unconditional; the
-            # server may not be running, but `classify_modality` raises
-            # MedicalClipUnreachableError which the worker catches and
-            # tags `modality=unknown`. Building the client up-front
-            # (vs lazily) keeps OcrWorker free of base_url plumbing.
-            medical_clip_base_url = (
-                load_yaml("app.yaml")
-                .get("medical_clip", {})
-                .get("base_url", MEDICAL_CLIP_DEFAULT_BASE_URL)
-            )
-            medical_clip_client = MedicalClipClient(base_url=medical_clip_base_url)
-            ocr_report_config = load_ocr_report_config(CONFIGS_DIR / "vision.yaml")
-            worker = OcrWorker(
-                provider,
-                listener=self._on_ocr_completed,
-                medical_clip_client=medical_clip_client,
-                ocr_report_config=ocr_report_config,
-            )
-            worker.start()
-            self._ocr_worker = worker
-            return worker
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("OCR worker build failed: %s", exc)
-            self._ocr_worker = None
-            return None
+        worker = build_ocr_worker(listener=self._on_ocr_completed)
+        self._ocr_worker = worker
+        return worker
 
     def _on_ocr_completed(self, completion) -> None:
         """OcrWorker listener — flips the ToolSteps row to ✓ when the job

@@ -31,6 +31,7 @@ from starlette.types import ASGIApp
 
 from claritymed.context import apply_context, new_request_id, reset_context
 from claritymed.core.observability.audit import audit_event
+from claritymed.core.observability.request_scope import request_scope
 from claritymed.web.jwt import (
     Invalid,
     Tamper,
@@ -45,6 +46,12 @@ ANONYMOUS_USER_ID = "__anonymous__"
 
 COOKIE_ACCESS_TOKEN = "access_token"
 HEADER_REQUEST_ID = "X-Request-ID"
+
+# Paths excluded from ``request_scope`` so audit.log isn't flooded by
+# infrastructure traffic. Kubernetes-style liveness probes hit /health
+# every few seconds; browsers issue an OPTIONS preflight before every
+# cross-origin POST. Neither carries user-meaningful state.
+_AUDIT_SKIP_PATHS = frozenset({"/health"})
 
 
 class WebContextMiddleware(BaseHTTPMiddleware):
@@ -92,7 +99,18 @@ class WebContextMiddleware(BaseHTTPMiddleware):
                     payload={"reason": decode_result.reason},
                 )
 
-            response = await call_next(request)
+            # Bracket the actual handler in request_scope so audit.log
+            # gets the same paired start/end emit as CLI entries. Skip
+            # liveness probes + CORS preflight so the log isn't drowned
+            # in infrastructure traffic. Sync ``with`` around ``await``
+            # is intentional — request_scope is sync by design.
+            method = request.method
+            path = request.url.path
+            if method == "OPTIONS" or path in _AUDIT_SKIP_PATHS:
+                response = await call_next(request)
+            else:
+                with request_scope("web", method=method, path=path):
+                    response = await call_next(request)
             response.headers[HEADER_REQUEST_ID] = rid
             return response
         finally:

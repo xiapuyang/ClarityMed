@@ -143,16 +143,33 @@ async def test_patch_extra_field_returns_422(web_client, test_user, auth_cookies
     assert resp.status_code == 422
 
 
-async def test_patch_provider_id_extra_forbid(web_client, test_user, auth_cookies):
-    # ``provider_id`` is mutable in the underlying schema but explicitly
-    # NOT through this endpoint — MVP doesn't expose model switching.
+async def test_patch_unknown_provider_id_returns_422(
+    web_client, test_user, auth_cookies
+):
+    # Unknown provider ids are rejected at the router, BEFORE the change
+    # lands on disk — otherwise a typo would survive in settings.yaml and
+    # blow up at the next stream call with a confusing UnknownProviderError.
     resp = await web_client.patch(
         ME_URL,
-        json={"provider_id": "fake-provider"},
+        json={"provider_id": "this-provider-does-not-exist"},
         cookies=auth_cookies,
         headers=_csrf_headers(),
     )
     assert resp.status_code == 422
+
+
+async def test_patch_known_provider_id_persists(web_client, test_user, auth_cookies):
+    # ``omlx`` is the catalog default and is always present in models.yaml.
+    resp = await web_client.patch(
+        ME_URL,
+        json={"provider_id": "omlx"},
+        cookies=auth_cookies,
+        headers=_csrf_headers(),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["provider_id"] == "omlx"
+    reread = AccountStore(test_user.user_id).load()
+    assert reread.provider_id == "omlx"
 
 
 # --- CSRF -------------------------------------------------------------

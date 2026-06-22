@@ -140,6 +140,47 @@ class Error(_EventBase):
     retryable: bool = False
 
 
+class TokensUsed(_EventBase):
+    """Per-turn LLM token usage.
+
+    Emitted by ask mode just before ``Done`` so a SPA can render a
+    ``12k / 128k`` context-window ratio next to the model picker. All
+    fields default to zero — emitters that don't know one of these
+    values (local providers that omit usage) leave the field at 0 and
+    the consumer treats it as "unknown".
+    """
+
+    type: Literal["tokens_used"] = "tokens_used"
+    model_name: str = ""
+    provider_id: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    context_window: int = 0
+
+
+class InteractionRequested(_EventBase):
+    """A tool wants the user to answer something or approve a write.
+
+    ``kind`` selects which channel raised the request:
+
+    * ``ask_user_question`` — payload is the JSON dump of
+      :class:`~claritymed.core.interaction.schemas.AskUserQuestionInput`.
+    * ``tool_approval`` — payload carries ``tool_name``, ``args``, and
+      a short breadcrumb (``"Tool 2/5"``) the UI can show.
+
+    The turn stream pauses on this event; the host UI POSTs to
+    ``/sessions/{id}/interactions/{interaction_id}`` to resume.
+    Channels in headless/CLI contexts never emit this event — the
+    rendezvous lives entirely inside the web layer.
+    """
+
+    type: Literal["interaction_requested"] = "interaction_requested"
+    interaction_id: str
+    kind: Literal["ask_user_question", "tool_approval"]
+    payload: dict[str, Any] = {}
+
+
 Event = Union[
     ToolStarted,
     ToolCompleted,
@@ -153,4 +194,6 @@ Event = Union[
     Cancelled,
     Done,
     Error,
+    TokensUsed,
+    InteractionRequested,
 ]

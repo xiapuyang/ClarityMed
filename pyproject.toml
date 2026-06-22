@@ -178,6 +178,11 @@ web = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-jose[cryptography]>=3.3",
+    # Multipart parser for the attachments upload endpoint
+    # (POST /api/v1/sessions/{id}/attachments). Tiny dep, but
+    # FastAPI refuses to register a route with `UploadFile` /
+    # `Form` parameters without it.
+    "python-multipart>=0.0.9",
     # bcrypt directly, not via passlib. passlib 1.7.4 (last release
     # 2020) tries to detect a CVE workaround using a 250-byte test
     # password that bcrypt 4+ rejects with a 72-byte cap; the detection

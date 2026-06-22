@@ -147,11 +147,50 @@ class StreamRequest(BaseModel):
     the URL) so uvicorn's access log never captures it. The 8000-char
     cap matches the plan's chosen bound; longer questions should be
     broken into multiple turns.
+
+    ``attachment_ids`` references blobs already uploaded for this
+    session via ``POST /sessions/{id}/attachments``. The backend
+    converts each id into the ``[Image sha:…]`` placeholder text the
+    LLM expansion path expects so the frontend never needs to know
+    about placeholders.
+
+    ``provider_id`` is a per-turn override of the persisted
+    ``Account.provider_id``. Unset → resolve via account preference →
+    catalog default. Persisting a switch happens via PATCH /api/v1/me;
+    this field is for one-off "try another model" without changing the
+    default.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     q: str = Field(min_length=1, max_length=8000)
+    attachment_ids: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Attachment ids returned by POST /sessions/{id}/attachments. "
+            "Each one becomes an inline image/file placeholder visible to "
+            "the LLM."
+        ),
+    )
+    provider_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Per-turn provider override; persisted default still lives on "
+            "Account.provider_id."
+        ),
+    )
+    language: Language | None = Field(
+        default=None,
+        description=(
+            "Per-turn language override; if absent the request falls back "
+            "to Account.language. Lets the SPA flip the picker and have "
+            "the very next turn use the new language without waiting on a "
+            "PATCH /api/v1/me round-trip."
+        ),
+    )
 
 
 class MePatch(BaseModel):
@@ -159,16 +198,105 @@ class MePatch(BaseModel):
 
     ``extra="forbid"`` keeps the frontend from accidentally promoting a
     user to admin via this endpoint — ``role`` is not mutable here.
-    ``provider_id`` and ``active_system_rag_collections`` are mutable in
-    the underlying schema but deliberately out of scope for MVP; admin
-    pages will expose them later.
+    ``active_system_rag_collections`` remains read-only via this endpoint;
+    admin pages will expose it later.
 
-    Both fields are optional; the patch is a partial update. An empty
-    body is allowed and is a no-op (caller decides if that's a 200 or a
-    422 — we return 200 with the unchanged Account).
+    ``provider_id`` is mutable so the web model picker can persist the
+    user's chosen model across sessions. The router validates the id
+    against the live catalog and rejects unknown values with 422.
+
+    All fields are optional; the patch is a partial update. An empty
+    body is allowed and is a no-op (router returns 200 with the
+    unchanged Account).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     display_name: str | None = Field(default=None, min_length=1, max_length=64)
     language: Language | None = None
+    provider_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+# --- /api/v1/providers ------------------------------------------------
+
+
+class ProviderResponse(BaseModel):
+    """One entry in ``GET /api/v1/providers``.
+
+    The shape is intentionally wide so future UI additions (capability
+    chips, thinking-toggle indicator, family icon, cost tier) can be
+    rendered without an API change. Fields the catalog does not supply
+    are filled with safe defaults — the frontend treats absent /
+    zero / None as "feature unknown" and degrades gracefully.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    kind: Literal["local", "cloud"]
+    model: str
+    family: str
+    display_name: str
+    context_window: int = 0
+    available: bool = True
+    thinking: str | bool | None = None
+
+
+class ProviderListResponse(BaseModel):
+    """Body returned by ``GET /api/v1/providers``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    providers: list[ProviderResponse]
+    default_provider_id: str
+    current_provider_id: str
+
+
+# --- /api/v1/sessions/{id}/attachments -------------------------------
+
+
+class AttachmentResponse(BaseModel):
+    """One uploaded attachment.
+
+    The frontend renders a preview chip from ``filename`` + ``kind`` +
+    ``ocr_status``. ``id`` is the blob's sha256 and is what the
+    StreamRequest references on the next turn.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    kind: Literal["image", "text", "other"]
+    ocr_status: Literal["pending", "done", "empty", "failed"] = "pending"
+
+
+class AttachmentListResponse(BaseModel):
+    """Body returned by ``POST /api/v1/sessions/{id}/attachments``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attachments: list[AttachmentResponse]
+
+
+# --- /api/v1/sessions/{id}/interactions/{id} -------------------------
+
+
+class InteractionResponse(BaseModel):
+    """Body submitted to ``POST /sessions/{id}/interactions/{interaction_id}``.
+
+    One generic shape carries every interaction kind. The web layer
+    rendezvous looks up the pending interaction by id and dispatches
+    based on its declared kind, then validates ``payload`` against the
+    matching channel schema (ask_user_question → AskUserQuestionResult,
+    tool_approval → ApprovalDecision). Keeping the wire shape generic
+    means the SPA can support new interaction kinds without minting a
+    new endpoint per kind.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["ask_user_question", "tool_approval"]
+    payload: dict = Field(default_factory=dict)

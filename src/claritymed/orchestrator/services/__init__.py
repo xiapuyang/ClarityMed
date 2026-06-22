@@ -14,6 +14,10 @@ from claritymed.orchestrator.services.chat_session import (
     ChatTurn,
     SessionMeta,
 )
+from claritymed.orchestrator.services.factory import (
+    build_ask_service,
+    build_rag_strategy,
+)
 from claritymed.core.events import (
     Cancelled,
     Done,
@@ -51,5 +55,7 @@ __all__ = [
     "TokenChunk",
     "ToolCompleted",
     "ToolStarted",
+    "build_ask_service",
+    "build_rag_strategy",
     "build_step_records",
 ]

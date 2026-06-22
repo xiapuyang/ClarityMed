@@ -25,6 +25,7 @@ from claritymed.core.events import (
     LlmCallStarted,
     LlmFirstToken,
     TokenChunk,
+    TokensUsed,
     ToolCompleted,
     ToolStarted,
 )
@@ -1593,6 +1594,35 @@ class AskService:
         )
         if result["had_error"]:
             return
+        # TokensUsed before Done so consumers that close on Done still
+        # see the usage row. ``usage`` may be None when the run failed
+        # before recording a RunUsage (kept defensive even though the
+        # had_error branch above already returned).
+        usage = result.get("usage")
+        if usage is not None:
+            from claritymed.core.llm.context_window import estimate_context_window
+
+            input_tokens = (
+                getattr(usage, "input_tokens", None)
+                or getattr(usage, "request_tokens", None)
+                or 0
+            )
+            output_tokens = (
+                getattr(usage, "output_tokens", None)
+                or getattr(usage, "response_tokens", None)
+                or 0
+            )
+            total_tokens = getattr(usage, "total_tokens", None) or (
+                input_tokens + output_tokens
+            )
+            yield TokensUsed(
+                model_name=self._model_name,
+                provider_id=self._provider_id,
+                input_tokens=int(input_tokens),
+                output_tokens=int(output_tokens),
+                total_tokens=int(total_tokens),
+                context_window=estimate_context_window(self._model_name),
+            )
         yield Done(final=result["final_text"])
 
     async def _await_pending_ocr(self, user_id: str, session_id: str) -> None:

@@ -16,8 +16,7 @@ from typing import Iterator
 
 from claritymed import config as _cfg
 from claritymed.context import apply_context, new_request_id, reset_context
-from claritymed.core.observability.audit import audit_event
-from claritymed.core.observability.logging import get_access_logger
+from claritymed.core.observability.request_scope import request_scope
 from claritymed.core.observability.tracing import setup_tracing
 
 DEFAULT_USER_ID = "default"
@@ -94,17 +93,9 @@ def inject_context(
     setup_tracing()
 
     tokens = apply_context(rid, uid, lang)
-    access = get_access_logger()
     cmd_label = command or "unknown"
     try:
-        audit_event("request_start", payload={"entry": "cli", "command": cmd_label})
-        access.info("cli.start cmd=%s", cmd_label)
-        yield rid, uid, lang
-        audit_event("request_end", payload={"status": "ok"})
-        access.info("cli.end cmd=%s status=ok", cmd_label)
-    except BaseException:
-        audit_event("request_end", payload={"status": "exception"})
-        access.info("cli.end cmd=%s status=exception", cmd_label)
-        raise
+        with request_scope("cli", command=cmd_label):
+            yield rid, uid, lang
     finally:
         reset_context(tokens)

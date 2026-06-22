@@ -38,9 +38,16 @@ class FakeAskService:
 
 
 def _install_factory(app, events=None, sleep_s: float = 0.0):
-    """Replace the default ask_service_factory with a FakeAskService."""
+    """Replace the default ask_service_factory with a FakeAskService.
 
-    def factory(account, chat_session):  # noqa: ARG001
+    The production factory accepts ``provider_override`` /
+    ``prompt_channel`` / ``tool_approval_channel`` kwargs (web layer
+    plumbing for interactions + per-turn model picker). The fake
+    accepts the same shape via ``**_`` so router tests don't need to
+    care which kwargs land.
+    """
+
+    def factory(account, chat_session, **_):  # noqa: ARG001
         return FakeAskService(events=events, sleep_s=sleep_s)
 
     app.state.ask_service_factory = factory
@@ -293,7 +300,7 @@ async def test_unknown_provider_returns_500_and_audits(
 ):  # noqa: ARG001
     from claritymed.errors import UnknownProviderError
 
-    def boom_factory(account, chat_session):  # noqa: ARG001
+    def boom_factory(account, chat_session, **_):  # noqa: ARG001
         raise UnknownProviderError("test-typo")
 
     web_client._transport.app.state.ask_service_factory = boom_factory  # type: ignore[attr-defined]
@@ -319,7 +326,7 @@ async def test_stream_error_inside_run_yields_error_event(
             raise RuntimeError("provider down")
 
     web_client._transport.app.state.ask_service_factory = (  # type: ignore[attr-defined]
-        lambda a, c: ExplodingService()
+        lambda a, c, **_: ExplodingService()
     )
     sid = await _new_session_id(web_client, auth_cookies)
 
@@ -356,3 +363,241 @@ async def test_stream_unauthenticated_returns_401(web_client, test_user):  # noq
         cookies={"csrf_token": "csrf-test"},
     )
     assert resp.status_code == 401
+
+
+# --- provider override -------------------------------------------------
+
+
+async def test_stream_unknown_provider_override_returns_422(
+    web_client, test_user, auth_cookies
+):  # noqa: ARG001
+    """Per-turn override is user input; surface the typo as 422, not 500."""
+    from claritymed.errors import UnknownProviderError
+
+    def factory(account, chat_session, *, provider_override=None, **_):  # noqa: ARG001
+        if provider_override == "not-a-real-provider":
+            raise UnknownProviderError("not-a-real-provider")
+        return FakeAskService()
+
+    web_client._transport.app.state.ask_service_factory = factory  # type: ignore[attr-defined]
+    sid = await _new_session_id(web_client, auth_cookies)
+    resp = await web_client.post(
+        f"/api/v1/sessions/{sid}/stream",
+        json={"q": "hi", "provider_id": "not-a-real-provider"},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 422
+
+
+async def test_stream_provider_override_passed_to_factory(
+    web_client, test_user, auth_cookies
+):  # noqa: ARG001
+    """StreamRequest.provider_id is plumbed into the factory."""
+    seen: dict[str, str | None] = {}
+
+    def factory(account, chat_session, *, provider_override=None, **_):  # noqa: ARG001
+        seen["override"] = provider_override
+        return FakeAskService()
+
+    web_client._transport.app.state.ask_service_factory = factory  # type: ignore[attr-defined]
+    sid = await _new_session_id(web_client, auth_cookies)
+    await web_client.post(
+        f"/api/v1/sessions/{sid}/stream",
+        json={"q": "hi", "provider_id": "omlx"},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert seen["override"] == "omlx"
+
+
+# --- interactions endpoint --------------------------------------------
+
+
+async def test_respond_interaction_404_when_missing(
+    web_client, test_user, auth_cookies
+):  # noqa: ARG001
+    sid = await _new_session_id(web_client, auth_cookies)
+    resp = await web_client.post(
+        f"/api/v1/sessions/{sid}/interactions/no-such-id",
+        json={"kind": "ask_user_question", "payload": {}},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 404
+
+
+async def test_respond_interaction_resumes_stream(web_client, test_user, auth_cookies):  # noqa: ARG001
+    """End-to-end rendezvous: stream → InteractionRequested → POST → resume."""
+    from claritymed.core.events import Done, TokenChunk
+    from claritymed.web.channels import WebPromptChannel
+
+    captured: dict = {}
+
+    async def fake_stream_run(channel, q, user_id):  # noqa: ARG001
+        yield TokenChunk(text="thinking… ")
+        # Real PromptChannel.ask: pause until POST resolves the future.
+        from claritymed.core.interaction.schemas import (
+            AskUserQuestionInput,
+            Question,
+            QuestionOption,
+        )
+
+        payload = AskUserQuestionInput(
+            questions=[
+                Question(
+                    question="What is your symptom?",
+                    header="Symptom",
+                    options=[
+                        QuestionOption(label="Fever", description="High temperature"),
+                        QuestionOption(label="Cough", description="Persistent cough"),
+                    ],
+                )
+            ]
+        )
+        answer = await channel.ask(payload)
+        captured["answer"] = answer.model_dump(mode="json")
+        yield TokenChunk(text="ok")
+        yield Done(final="ok")
+
+    class WrappedService:
+        def __init__(self, channel):
+            self._channel = channel
+
+        async def run(self, q, user_id):
+            async for ev in fake_stream_run(self._channel, q, user_id):
+                yield ev
+
+    def factory(account, chat_session, *, prompt_channel=None, **_):  # noqa: ARG001
+        assert isinstance(prompt_channel, WebPromptChannel)
+        return WrappedService(prompt_channel)
+
+    app = web_client._transport.app  # type: ignore[attr-defined]
+    app.state.ask_service_factory = factory
+    sid = await _new_session_id(web_client, auth_cookies)
+
+    # Issue the stream and POST the answer once we see the prompt event.
+    async def respond_when_pending():
+        # Poll the rendezvous until the channel registers the interaction.
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while asyncio.get_running_loop().time() < deadline:
+            recs = list(app.state.web_interactions.items())
+            if recs:
+                iid, _ = recs[0]
+                return await web_client.post(
+                    f"/api/v1/sessions/{sid}/interactions/{iid}",
+                    json={
+                        "kind": "ask_user_question",
+                        "payload": {
+                            "answers": {"What is your symptom?": "Fever"},
+                        },
+                    },
+                    cookies=auth_cookies,
+                    headers=_csrf(),
+                )
+            await asyncio.sleep(0.01)
+        raise AssertionError("interaction never registered")
+
+    async def issue_stream():
+        return await web_client.post(
+            f"/api/v1/sessions/{sid}/stream",
+            json={"q": "tell me"},
+            cookies=auth_cookies,
+            headers=_csrf(),
+        )
+
+    stream_resp, post_resp = await asyncio.gather(
+        issue_stream(), respond_when_pending()
+    )
+    assert stream_resp.status_code == 200
+    assert post_resp.status_code == 204
+    events = _parse_sse_lines(stream_resp.content)
+    kinds = [e["type"] for e in events]
+    assert "interaction_requested" in kinds
+    assert kinds[-1] == "done"
+    assert captured["answer"]["answers"]["What is your symptom?"] == "Fever"
+
+
+# --- tokens_used event ------------------------------------------------
+
+
+async def test_stream_emits_tokens_used_before_done(
+    web_client, test_user, auth_cookies
+):  # noqa: ARG001
+    """AskService yields TokensUsed before Done; router relays it."""
+    from claritymed.core.events import Done, TokenChunk, TokensUsed
+
+    def factory(account, chat_session, **_):  # noqa: ARG001
+        return FakeAskService(
+            events=[
+                TokenChunk(text="hi"),
+                TokensUsed(
+                    model_name="m",
+                    provider_id="p",
+                    input_tokens=10,
+                    output_tokens=5,
+                    total_tokens=15,
+                    context_window=128_000,
+                ),
+                Done(final="hi"),
+            ]
+        )
+
+    web_client._transport.app.state.ask_service_factory = factory  # type: ignore[attr-defined]
+    sid = await _new_session_id(web_client, auth_cookies)
+    resp = await web_client.post(
+        f"/api/v1/sessions/{sid}/stream",
+        json={"q": "hi"},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    events = _parse_sse_lines(resp.content)
+    types = [e["type"] for e in events]
+    assert "tokens_used" in types
+    tu = next(e for e in events if e["type"] == "tokens_used")
+    assert tu["input_tokens"] == 10
+    assert tu["context_window"] == 128_000
+
+
+# --- attachments inline ------------------------------------------------
+
+
+async def test_stream_attachment_ids_prepend_placeholder(
+    web_client, test_user, auth_cookies
+):  # noqa: ARG001
+    """attachment_ids → [Image sha:...] prepended to q before AskService."""
+    from claritymed.stores.session_attachments import SessionAttachments
+
+    seen: dict[str, str] = {}
+
+    class CaptureService:
+        async def run(self, q, user_id):  # noqa: ARG002
+            seen["q"] = q
+            from claritymed.core.events import Done
+
+            yield Done(final="ok")
+
+    def factory(account, chat_session, **_):  # noqa: ARG001
+        return CaptureService()
+
+    web_client._transport.app.state.ask_service_factory = factory  # type: ignore[attr-defined]
+    sid = await _new_session_id(web_client, auth_cookies)
+
+    sha = "a" * 64
+    SessionAttachments(test_user.user_id, sid).add(
+        sha256=sha,
+        filename="scan.png",
+        mime="image/png",
+        size=42,
+        source="upload",
+    )
+
+    resp = await web_client.post(
+        f"/api/v1/sessions/{sid}/stream",
+        json={"q": "what is this", "attachment_ids": [sha]},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200
+    assert "[Image sha:aaaaaaaa]" in seen["q"]
+    assert "what is this" in seen["q"]

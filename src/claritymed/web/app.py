@@ -28,6 +28,7 @@ endpoint already keeps PHI off the URL by using POST + body.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -40,7 +41,9 @@ from fastapi.openapi.utils import get_openapi
 from starlette.responses import JSONResponse, Response
 
 from claritymed import config as _cfg
+from claritymed.bootstrap import bootstrap_once, prefetch_models
 from claritymed.core.observability.audit import audit_event
+from claritymed.core.observability.tracing import setup_tracing
 from claritymed.errors import (
     InvalidUserIdError,
     PermissionDeniedError,
@@ -56,7 +59,9 @@ from claritymed.web.routers.chat import (
     build_default_ask_service,
     router as chat_router,
 )
+from claritymed.web.routers.attachments import router as attachments_router
 from claritymed.web.routers.me import router as me_router
+from claritymed.web.routers.providers import router as providers_router
 
 ENV_DEV = "CLARITYMED_DEV"
 ENV_CORS_ORIGINS = "CLARITYMED_CORS_ORIGINS"
@@ -103,6 +108,21 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
     later units can populate them without touching this lifespan.
     """
     validate_secret_or_raise()
+    # Shared host bootstrap — same code path as the CLI's Typer callback
+    # (see ``cli/common.py``). Installs app/access/audit/llm file
+    # handlers and silences noisy library loggers (httpx, urllib3, …).
+    # Idempotent; safe across test app re-creation.
+    bootstrap_once(script_name="claritymed-web")
+    # Pre-download the PHI scrubber's HF model if ``privacy_filter.enabled``
+    # — cloud-bound requests would crash on first turn otherwise. No-op when
+    # the privacy filter is off. ``SystemExit(1)`` on failure: surfacing the
+    # missing-deps error during startup beats serving 500s.
+    prefetch_models()
+    # Install OTel tracing alongside CLI/TUI hosts. ``setup_tracing``
+    # is idempotent and reads ``tracing.enabled`` from ``configs/app.yaml``
+    # — disabled paths short-circuit before any exporter touches the
+    # network, so the web worker stays no-op when tracing is off.
+    setup_tracing()
     app.state.default_lang = _cfg.default_lang()
     app.state.dev = _is_dev()
     # Per-session busy set — synchronous check-and-add in the chat
@@ -110,6 +130,22 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
     # the single-threaded asyncio loop. asyncio.Lock would force the
     # acquire INSIDE the streaming generator, which is too late.
     app.state.busy_sessions = set()
+    # Process-wide RAG strategy cache. Sentinel ``_RAG_UNSET`` means
+    # "not yet built"; the chat router's first request acquires
+    # ``rag_strategy_lock`` and stores either a :class:`RagStrategy`
+    # or ``None`` (when ``rag.enabled=false`` in ``retrieval.yaml``).
+    # ``None`` is a valid cached value — hence the sentinel. The
+    # underlying qdrant clients are released by Python GC at process
+    # exit, matching the TUI's lifetime semantics.
+    from claritymed.web.routers.chat import RAG_UNSET
+
+    app.state.rag_strategy = RAG_UNSET
+    app.state.rag_strategy_lock = asyncio.Lock()
+    # Per-app in-memory rendezvous for ask_user_question / tool_approval
+    # interactions. Key = interaction_id, value = {session_id, user_id,
+    # kind, future, ...}. Populated by ``web/channels.py``; resolved by
+    # ``POST /api/v1/sessions/{id}/interactions/{interaction_id}``.
+    app.state.web_interactions = {}
     # ``ask_service_factory`` is overridable per-app (tests inject a
     # fake before issuing chat requests). Default is the catalog-driven
     # builder defined in the chat router.
@@ -122,6 +158,22 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
     )
     yield
     app.state.busy_sessions.clear()
+    # Cancel any still-pending interaction futures so listeners awaiting
+    # them get a clean error instead of hanging on shutdown.
+    for rec in list(app.state.web_interactions.values()):
+        fut = rec.get("future")
+        if fut is not None and not fut.done():
+            fut.cancel()
+    app.state.web_interactions.clear()
+    # Drain the OCR worker so a torn-down uvicorn loop doesn't leave a
+    # background task pointing at a dead provider chain.
+    worker = getattr(app.state, "ocr_worker", None)
+    if worker is not None:
+        try:
+            await worker.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("ocr worker stop failed during lifespan shutdown")
+        app.state.ocr_worker = None
 
 
 def create_app() -> FastAPI:
@@ -167,6 +219,8 @@ def create_app() -> FastAPI:
     # routers go under /api/v1.
     app.include_router(auth_router)
     app.include_router(me_router)
+    app.include_router(providers_router)
+    app.include_router(attachments_router)
     app.include_router(chat_router)
 
     return app
