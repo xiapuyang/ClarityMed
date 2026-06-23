@@ -13,25 +13,43 @@
 default_sensitivity: balanced
 
 sensitivity_profiles:
+  # High recall, tolerates false alarms. Drops chest-pain qualifier
+  # threshold to zero so any chest_pain fires the ACS rule; longer
+  # qualifier-elicitation budget so the agent gets more turns to
+  # gather missing details before backing off. Footer disclosed.
   strict:
-    rule_overrides: {}
+    rule_overrides:
+      acs_acute_coronary_syndrome:
+        min_qualifier_matches: 0
+      sah_thunderclap_headache:
+        min_qualifier_matches: 0
     ambiguous_rules_enabled: true
     qualifier_elicitation_max_rounds: 3
     reply_footer_i18n_key: emergency.footer.strict_mode_active
 
+  # Default. Targets ≥95% critical recall with ≤15% adversarial FPR.
+  # Rule defaults are tuned for this profile so no overrides needed.
   balanced:
     rule_overrides: {}
     ambiguous_rules_enabled: true
     qualifier_elicitation_max_rounds: 2
 
+  # High precision. Tight qualifier budget; ambiguous catch-alls
+  # disabled. The acs `min=2` override raises the threshold — allowed
+  # because ACS's floor is `balanced` (not `lenient`). Anaphylaxis,
+  # active_suicidal_ideation, and ectopic_pregnancy_bleed cannot be
+  # overridden here (their floor is `lenient`); the floor validator
+  # at config-load rejects any attempt.
   lenient:
-    rule_overrides: {}
+    rule_overrides:
+      acs_acute_coronary_syndrome:
+        min_qualifier_matches: 2
     ambiguous_rules_enabled: false
     qualifier_elicitation_max_rounds: 1
 
-  # Quoted so PyYAML does not coerce the bareword `off` to boolean
-  # False — that turns the key into Python `False` and breaks the
-  # `SensitivityName` Literal validator.
+  # Gate does not run. Service short-circuits to routine and the
+  # disclaimer footer is auto-appended (un-bypassable). Quoted so
+  # PyYAML does not coerce the bareword `off` to boolean False.
   "off":
     short_circuit_to: routine
     reply_footer_i18n_key: emergency.footer.gate_disabled

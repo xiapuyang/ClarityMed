@@ -23,7 +23,7 @@ from claritymed.core.emergency import (
     EmergencyTriage,
     resolve_sensitivity,
 )
-from claritymed.core.emergency.config import load_emergency_config
+from claritymed.core.emergency.rules import load_validated_emergency_config
 from claritymed.core.events import (
     Done,
     Error,
@@ -367,17 +367,22 @@ class AskService:
         # preference are inputs; app default comes from emergency.yaml.
         # The env-override downgrade (CLARITYMED_FORCE_EMERGENCY_GATE)
         # is applied inside ``resolve_sensitivity``.
-        emergency_cfg = load_emergency_config()
+        emergency_cfg, emergency_rules = load_validated_emergency_config()
         self._resolved_sensitivity = resolve_sensitivity(
             cli_override=emergency_sensitivity_override,  # type: ignore[arg-type]
             user_pref=user_sensitivity_pref,  # type: ignore[arg-type]
             app_default=emergency_cfg.default_sensitivity,
         )
-        # Phase 1 ships an empty-rules EmergencyTriage that always
-        # returns ``routine`` (except for the off short-circuit, which
-        # emits the gate_disabled audit event). Phase 2-3 will inject a
-        # service wired with rules + extractor + composer.
-        self._triage_service = triage_service or EmergencyTriage()
+        # Phase 2 wires rules + config; the extractor LLM lands in
+        # Phase 3, so production turns still go through the routine
+        # path (the extractor=None branch in ``assess``). Tests
+        # exercise the rule pipeline via ``assess_from_symptoms``.
+        # Callers may inject a fully-wired ``triage_service`` to
+        # override the default — used by Phase 3 + integration tests.
+        self._triage_service = triage_service or EmergencyTriage(
+            rules=emergency_rules,
+            config=emergency_cfg,
+        )
 
     @property
     def last_chunks(self) -> list:

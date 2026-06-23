@@ -1,0 +1,131 @@
+# Emergency triage rule pack v1 — high-yield 10 (this file ships the
+# first 5 + 1 ambiguous-high-risk; the remaining 5 land in Phase 5
+# alongside the eval baseline so additions can be quality-graded
+# against the same dataset).
+#
+# Each rule cites a real, public clinical guideline. The `level` and
+# `action_key` are policy decisions tied to the citation — when the
+# evidence base shifts, the citation and the level move together. The
+# `minimum_sensitivity_floor` is the rule author's veto on profile
+# downgrade: a `lenient` floor means no profile may raise the rule's
+# threshold (anaphylaxis, active SI, ectopic pregnancy w/ bleed are
+# the canonical examples — miss = irreversible harm).
+#
+# Trigger semantics:
+#   - `primary`: the extractor's `primary_complaint` must match exactly.
+#   - `any_of`: list of qualifier tokens; at least `min_qualifier_matches`
+#     must appear in `ExtractedSymptoms.qualifiers`.
+#   - `min_qualifier_matches`: default 1; set to 0 for the catch-all
+#     ambiguous rules (any chest_pain → urgent, regardless of qualifier).
+#   - `age_min`, `age_max`, `sex`, `key_history_any_of`: optional
+#     additional gates. All gates use AND semantics.
+#   - `ambiguous: true` flags a low-confidence catch-all that the
+#     `lenient` profile disables (ambiguous_rules_enabled=false).
+#
+# Wire `action_key` lookups to `configs/i18n/{en,zh}/emergency.yaml`
+# under the `emergency.action.*` namespace.
+
+rules:
+  - id: acs_acute_coronary_syndrome
+    triggers:
+      primary: chest_pain
+      any_of:
+        - radiation_left_arm
+        - radiation_jaw
+        - diaphoresis
+        - dyspnea
+        - syncope
+      min_qualifier_matches: 1
+      age_min: 35
+    level: critical
+    action_key: emergency.action.call_ems_cardiac
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "AHA/ACC 2021 Chest Pain Guideline (Circulation 144:e368)"
+      - "ESI v4 Level 1-2"
+
+  - id: stroke_fast_positive
+    triggers:
+      primary: neuro_deficit
+      any_of:
+        - facial_droop
+        - arm_weakness
+        - speech_slurred
+        - sudden_onset
+      min_qualifier_matches: 2
+    level: critical
+    action_key: emergency.action.call_ems_stroke
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "AHA/ASA Stroke Guidelines 2019"
+      - "Cincinnati Prehospital Stroke Scale"
+
+  - id: anaphylaxis
+    triggers:
+      any_of:
+        - throat_tightness
+        - lip_tongue_swelling
+        - urticaria_plus_wheeze
+        - urticaria_plus_hypotension
+      min_qualifier_matches: 1
+    level: critical
+    action_key: emergency.action.epi_then_ems
+    # `lenient` floor — even the lenient profile keeps this threshold.
+    # Anaphylaxis kills in minutes; false positives cost less than
+    # false negatives, full stop.
+    minimum_sensitivity_floor: lenient
+    citations:
+      - "WAO Anaphylaxis Guidance 2020"
+
+  - id: sah_thunderclap_headache
+    triggers:
+      primary: headache
+      any_of:
+        - sudden_onset
+        - worst_of_life
+        - peak_under_1min
+        - neck_stiffness
+      min_qualifier_matches: 1
+    level: critical
+    action_key: emergency.action.call_ems_sah
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "Ottawa SAH Rule (JAMA 2013;310:1248)"
+      - "ACEP Clinical Policy 2019"
+
+  - id: active_suicidal_ideation
+    triggers:
+      primary: suicidal_ideation
+      any_of:
+        - plan_specific
+        - means_available
+        - intent_stated
+      # Even one of the three is enough — C-SSRS treats ideation +
+      # any one of plan/means/intent as the critical-risk threshold.
+      min_qualifier_matches: 1
+    level: critical
+    action_key: emergency.action.crisis_hotline_988
+    minimum_sensitivity_floor: lenient
+    citations:
+      - "Columbia-Suicide Severity Rating Scale (C-SSRS)"
+      - "SAMHSA 988 guidance"
+
+  # Ambiguous-high-risk catch-all. Lower confidence: any chest_pain
+  # complaint, even without qualifiers, gets `urgent` and drives the
+  # missing_qualifiers prompt. Disabled in the `lenient` profile.
+  - id: chest_pain_ambiguous_high_risk
+    triggers:
+      primary: chest_pain
+      any_of: []
+      min_qualifier_matches: 0
+    level: urgent
+    action_key: emergency.action.urgent_eval_chest_pain
+    minimum_sensitivity_floor: balanced
+    ambiguous: true
+    missing_qualifiers_hint:
+      - onset_speed
+      - radiation_left_arm
+      - diaphoresis
+      - dyspnea
+    citations:
+      - "ACEP Clinical Policy: Chest Pain 2018"
