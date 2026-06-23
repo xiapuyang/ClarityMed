@@ -103,6 +103,38 @@ Prompts 以 `core/prompts/store/*.yaml` 为**运行时唯一真相**。Phoenix �
   下沉到 core 时，先把它抽成不依赖 orchestrator 的纯接口，再让 orchestrator
   去 wire；不要让 `core/llm/*.py` 反过来 `from claritymed.core.orchestrator …`。
   破坏这条会让 plugin 模型瓦解，编排层无处可下手。
+- **EmergencyTriage 只能从 AskService.handle 的 pre-step 调用**（KTD-E5）。
+  这是个确定性的安全门：先于 agent loop 跑，结果一律放进
+  `deps.triage` + `GroundedAnswer.red_flags[]`。**任何 tool plugin（包括
+  `symptoms_plugin` / `vision_plugin` / 未来的 plugin）禁止 import
+  `EmergencyTriage` / `EmergencyAssessment`，也禁止往 `red_flags[]` 写
+  东西**。Tool 自己的安全机制（如 `symptoms_plugin.severity_override` +
+  `symptoms.safety_keywords` 审计）保持独立——这是有意为之的两条并行
+  安全路径，不是缺口。让 gate 反向 callback 进 tool 会迫使每个 tool 都
+  变成 gate-aware，把松耦合彻底破坏，永远不要走这条回头路。
+- **EmergencyTriage 的 LLM 必须用 local provider**。extractor 看的是原始
+  对话历史（含 PHI），composer 看 matched_rules + 结构化症状（不含原文
+  PHI 但仍是医疗判断面）；都必须留在本地。`core/emergency/_provider.py`
+  通过 `models.yaml` 找第一个 `kind: local` provider，没有就让 gate 静默
+  停在 noop 模式（不阻塞用户答题，但日志会响），**不要**回退到 cloud。
+- **`critical` 永远短路 agent loop**（KTD-E3）。`triage.level=="critical"`
+  时 AskService 直接走 `_stream_critical_short_circuit`：i18n 行动文案
+  + `emergency_reply.yaml` 组合输出，不跑 retrieval / tool dispatch /
+  agent.run。给 STEMI 用户省下 3-5 秒是这个分支存在的全部理由；不要
+  为了"丰富回复"在这里加任何 hop。
+- **Rule 的 `minimum_sensitivity_floor` 是规则作者的 veto 权**（KTD-E10）。
+  `floor=lenient` 意味着任何 profile（包括 `lenient`）都不能改这条规则的
+  `min_qualifier_matches` —— anaphylaxis / active_SI / ectopic_pregnancy
+  是 canonical 的"漏报代价无限大"案例。`load_validated_emergency_config`
+  在启动期 fail-loud 拒绝违反 floor 的 profile override；新增规则时把
+  floor 想清楚再写。
+- **`off` 灵敏度有六条 hard safeguard**（Phase 1 全部上线，不能少其中
+  任何一条就让用户进 off）：env override (`CLARITYMED_FORCE_EMERGENCY_GATE`)
+  默认 on 会把用户 off 降级到 lenient；deterministic disclaimer footer
+  追加在每条回复末尾；写入 `settings.yaml` 需要 `off_acknowledged_at`；
+  off-path 每次都发 `redflag.gate_disabled` 审计；`default_sensitivity:
+  off` 在 `emergency.yaml` 加载时拒收；CLI `--emergency-sensitivity off`
+  也走完同样的 safeguard 链。
 
 ## Use pydantic-ai's built-ins before writing your own
 

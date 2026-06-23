@@ -44,9 +44,13 @@ AuditKind = Literal[
     #     exhausted its retry budget; reply passed through with original
     #     text. Operators grep this to spot prompt drift.
     #     payload allowlist: rule_id, level, retries
+    #   redflag.critical_short_circuit — KTD-E3: triage.level=="critical"
+    #     bypassed the agent loop. payload allowlist: user_id, rule_ids,
+    #     suggested_action_i18n_key, effective_sensitivity, had_composer.
     "redflag.gate_disabled",
     "redflag.reply_missing_action",
     "redflag.validator_unrecoverable",
+    "redflag.critical_short_circuit",
     "phi_guard_block",
     "phi_guard_allow",
     # Layer-3 PHI defense (PhiAssertionModel). Fires when a cloud-bound

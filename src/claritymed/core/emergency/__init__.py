@@ -18,6 +18,21 @@ module. The gate is one-way; ``symptoms_plugin`` and any future tool
 retain their own independent safety mechanisms.
 """
 
+from claritymed.core.emergency.composer import (
+    Composer,
+    LLMComposer,
+    build_default_composer,
+)
+from claritymed.core.emergency.critical_reply import (
+    CriticalReplyComposer,
+    CriticalReplyResult,
+    build_default_critical_reply,
+)
+from claritymed.core.emergency.extractor import (
+    Extractor,
+    LLMExtractor,
+    build_default_extractor,
+)
 from claritymed.core.emergency.schemas import (
     EmergencyAssessment,
     ExtractedSymptoms,
@@ -30,10 +45,19 @@ from claritymed.core.emergency.sensitivity import (
 from claritymed.core.emergency.service import EmergencyTriage
 
 __all__ = [
+    "Composer",
+    "CriticalReplyComposer",
+    "CriticalReplyResult",
     "EmergencyAssessment",
     "EmergencyTriage",
+    "Extractor",
     "ExtractedSymptoms",
+    "LLMComposer",
+    "LLMExtractor",
     "MatchedRule",
     "ResolvedSensitivity",
+    "build_default_composer",
+    "build_default_critical_reply",
+    "build_default_extractor",
     "resolve_sensitivity",
 ]

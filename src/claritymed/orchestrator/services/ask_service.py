@@ -21,9 +21,17 @@ from typing import TYPE_CHECKING, Any, Callable
 from claritymed.core.emergency import (
     EmergencyAssessment,
     EmergencyTriage,
+    ExtractedSymptoms,
+    build_default_composer,
+    build_default_critical_reply,
+    build_default_extractor,
     resolve_sensitivity,
 )
 from claritymed.core.emergency.rules import load_validated_emergency_config
+from claritymed.core.emergency.validators import (
+    audit_reply_missing_action_if_needed,
+    make_triage_output_validator,
+)
 from claritymed.core.events import (
     Done,
     Error,
@@ -113,6 +121,62 @@ def _strip_evidence_block(text: str) -> str:
     now opaque to the model.
     """
     return _EVIDENCE_BLOCK_RE.sub("", text, count=1)
+
+
+def _triage_system_prompt(ctx) -> str:  # noqa: ANN001
+    """Dynamic system_prompt that injects [SAFETY CONTEXT] from triage.
+
+    pydantic-ai calls this before every LLM request inside the agent
+    run (we pass it to ``Agent.system_prompt`` via
+    ``make_ask_agent(dynamic_system_prompts=...)``). The agent then
+    composes its reply with the triage guidance as first-class context
+    rather than as a post-hoc append (KTD-E4).
+
+    Behaviour:
+
+    * No triage on deps, or routine-with-no-matches → empty string
+      (zero tokens added).
+    * ``critical`` → empty string too, defensively — the short-circuit
+      in :meth:`AskService._stream_turn` already returned before agent
+      construction, but a future code path that builds the agent under
+      a critical assessment must not silently leak the gate's
+      preempt into the LLM context.
+    * ``urgent`` / ``moderate`` → emit a structured block with the
+      localized action wording, the missing-qualifier hints (so the
+      agent knows what to elicit on this turn), and the rule reasoning.
+    """
+    deps = getattr(ctx, "deps", None)
+    triage = getattr(deps, "triage", None)
+    if triage is None or not triage.matched_rules:
+        return ""
+    if triage.level in ("critical", "routine"):
+        return ""
+
+    lang = getattr(deps, "language", "en")
+    lines = [
+        "[SAFETY CONTEXT]",
+        f"level: {triage.level}",
+    ]
+    if triage.suggested_action_i18n_key:
+        action = i18n_t(triage.suggested_action_i18n_key, lang=lang)
+        if action and action != triage.suggested_action_i18n_key:
+            lines.append("suggested_action (LEAD with this verbatim):")
+            lines.append(action.strip())
+    if triage.missing_qualifiers:
+        lines.append(
+            "missing_qualifiers (elicit these from the user this turn "
+            "BEFORE giving general advice):"
+        )
+        lines.append(", ".join(triage.missing_qualifiers))
+    if triage.reasoning:
+        lines.append(f"reasoning: {triage.reasoning}")
+    lines.append(
+        "Lead your reply with the suggested_action above (verbatim), "
+        "then elicit any missing_qualifiers, then add your answer to "
+        "the user's question. Do not soften, paraphrase, or move the "
+        "suggested_action below your answer."
+    )
+    return "\n".join(lines)
 
 
 class HistoryScrubFailed(Exception):
@@ -373,16 +437,25 @@ class AskService:
             user_pref=user_sensitivity_pref,  # type: ignore[arg-type]
             app_default=emergency_cfg.default_sensitivity,
         )
-        # Phase 2 wires rules + config; the extractor LLM lands in
-        # Phase 3, so production turns still go through the routine
-        # path (the extractor=None branch in ``assess``). Tests
-        # exercise the rule pipeline via ``assess_from_symptoms``.
-        # Callers may inject a fully-wired ``triage_service`` to
-        # override the default — used by Phase 3 + integration tests.
+        # Phase 3 wires the extractor + composer against the first
+        # available local provider (PHI never leaves the box — see
+        # ``core/emergency/_provider.py``). When no local provider is
+        # configured / reachable, both factories return None and the
+        # gate stays in noop mode — assess() then returns routine_noop
+        # via the existing extractor=None branch. The host can still
+        # inject a fully-wired ``triage_service`` to override (tests,
+        # eval rigs).
         self._triage_service = triage_service or EmergencyTriage(
             rules=emergency_rules,
             config=emergency_cfg,
+            extractor=build_default_extractor(language=language),
+            composer=build_default_composer(),
         )
+        # Critical short-circuit composer (KTD-E3). Built once at init
+        # so per-turn critical replies do not re-instantiate the model.
+        # None ⇒ short-circuit sends the deterministic action text
+        # alone, which is still complete.
+        self._critical_reply = build_default_critical_reply()
 
     @property
     def last_chunks(self) -> list:
@@ -1227,6 +1300,14 @@ class AskService:
             for f in self._features
             if hasattr(f, "system_prompt_fn")
         ]
+        # Emergency-gate [SAFETY CONTEXT] (KTD-E4). Non-critical triage
+        # findings (urgent / moderate / routine_with_matches) are
+        # *injected* into the system prompt rather than appended to the
+        # agent's reply — the agent then composes a single coherent
+        # answer that incorporates the safety guidance. Critical level
+        # never reaches here (the short-circuit in _stream_turn returns
+        # before agent construction).
+        dynamic_sys_prompts.append(_triage_system_prompt)
         agent = make_ask_agent(
             self._model,
             language=self._language,
@@ -1236,6 +1317,10 @@ class AskService:
             extra_prompt_names=extra_prompts,
             dynamic_system_prompts=dynamic_sys_prompts or None,
         )
+        # Emergency-gate output validator (R8). Closure-bound counter
+        # resets per agent build — make_triage_output_validator called
+        # here, not at module level, so retry state is per-turn.
+        agent.output_validator(make_triage_output_validator(language=self._language))
         return agent, any_tool
 
     async def _stream_turn(
@@ -1280,6 +1365,7 @@ class AskService:
                 scrubbed,
                 message_history,
                 sensitivity=self._resolved_sensitivity.effective,  # type: ignore[arg-type]
+                language=self._language,
             )
         except Exception:  # noqa: BLE001
             # Fail-open: gate downtime must not block the user. Log
@@ -1287,6 +1373,16 @@ class AskService:
             # routine assessment.
             logger.exception("EmergencyTriage.assess failed; falling open")
             deps.triage = EmergencyAssessment.routine_noop()
+
+        # Critical short-circuit (KTD-E3). Bypasses pre_invoke / RAG /
+        # agent loop entirely so a STEMI patient does not wait for
+        # retrieval + tool dispatch + LLM composition. Reply is the
+        # localized action text + an LLM-composed supporting paragraph
+        # (or action-only when no composer is wired).
+        if deps.triage is not None and deps.triage.level == "critical":
+            async for ev in self._stream_critical_short_circuit(deps, user_id, result):
+                yield ev
+            return
 
         pre_text, pre_error, drained_events = await self._run_deterministic_pre_invoke(
             turn_ctx, deps
@@ -1753,6 +1849,133 @@ class AskService:
                 return
             await asyncio.sleep(OCR_AWAIT_POLL_S)
 
+    async def _stream_critical_short_circuit(
+        self,
+        deps: AskDeps,
+        user_id: str,
+        result: dict,
+    ) -> AsyncIterator[Event]:
+        """Emit a critical-level reply without running the agent loop.
+
+        Pipeline:
+
+        1. Resolve the deterministic action text from the top matched
+           rule's ``suggested_action_i18n_key`` via the i18n loader.
+           This is the load-bearing safety sentence — un-bypassable.
+        2. Try to compose 2–4 supporting sentences via the
+           ``emergency_reply`` LLM (``self._critical_reply``). On any
+           failure, fall through with just the action text.
+        3. Stream the assembled text as one ``TokenChunk`` and emit the
+           usual ``LlmCallStarted`` / ``LlmFirstToken`` / ``Done``
+           bookkeeping events so the consumer behaves identically to a
+           normal agent turn.
+        4. Populate ``result`` so :meth:`_finalize_turn` persists the
+           transcript + audit row (including the existing
+           ``redflag_trigger`` event already wired there).
+
+        Fail-soft contract: if i18n is empty AND the composer is unwired,
+        we still emit a minimum-viable safety reply ("If this may be a
+        medical emergency, call your local emergency number now.") —
+        the gate is supposed to make the safe call even on internal
+        failure.
+        """
+        triage = deps.triage
+        assert triage is not None  # noqa: S101 — caller checks
+        action_text = ""
+        if triage.suggested_action_i18n_key:
+            text = i18n_t(triage.suggested_action_i18n_key, lang=self._language)
+            # ``i18n_t`` returns the bare key on miss — treat as "no
+            # text available" so the fallback line below kicks in.
+            if text and text != triage.suggested_action_i18n_key:
+                action_text = text.strip()
+
+        t_start = time.perf_counter()
+        await asyncio.sleep(0)  # let the producer-style metrics behave
+        yield LlmCallStarted(
+            model_name=self._model_name,
+            provider_id=self._provider_id,
+        )
+
+        supporting_text = ""
+        messages_json: bytes = b""
+        usage_obj = None
+        if self._critical_reply is not None:
+            try:
+                reply = await self._critical_reply.compose(
+                    triage.matched_rules,
+                    # Symptoms snapshot is reconstructed minimally —
+                    # we only carry what the prompt actually reads
+                    # (rule list is the load-bearing input).
+                    ExtractedSymptoms(),
+                    language=self._language,
+                )
+                supporting_text = reply.text
+                messages_json = reply.messages_json
+                usage_obj = reply.usage
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "emergency_reply composer failed; sending action text alone"
+                )
+
+        if not action_text and not supporting_text:
+            # Last-resort safety floor. The gate already decided this
+            # is critical; we owe the user *some* directive even if
+            # every other layer failed.
+            action_text = i18n_t(
+                "emergency.action.generic_emergency",
+                lang=self._language,
+            )
+            if action_text == "emergency.action.generic_emergency":
+                action_text = (
+                    "If this may be a medical emergency, please call your "
+                    "local emergency number now (US: 911, UK: 999, CN: 120)."
+                )
+
+        final_text = (
+            f"{action_text}\n\n{supporting_text}".strip()
+            if supporting_text
+            else action_text
+        )
+
+        # Mirror the producer's TTFT timing so latency rows stay
+        # comparable across short-circuit and normal turns.
+        ttft_ms = int((time.perf_counter() - t_start) * 1000)
+        yield LlmFirstToken(ttft_ms=ttft_ms)
+        yield TokenChunk(text=final_text)
+        if usage_obj is not None:
+            try:
+                yield TokensUsed(
+                    model_name=self._model_name,
+                    provider_id=self._provider_id,
+                    input_tokens=getattr(usage_obj, "input_tokens", None) or 0,
+                    output_tokens=getattr(usage_obj, "output_tokens", None) or 0,
+                    total_tokens=getattr(usage_obj, "total_tokens", None) or 0,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("TokensUsed emit skipped for critical short-circuit")
+
+        total_ms = int((time.perf_counter() - t_start) * 1000)
+        result["final_text"] = final_text
+        result["messages_json"] = messages_json
+        result["usage"] = usage_obj
+        result["latency"] = LatencyTrace(
+            ttft_ms=ttft_ms,
+            completion_ms=total_ms - ttft_ms,
+            total_ms=total_ms,
+        )
+        result["steps"] = []
+        audit_event(
+            "redflag.critical_short_circuit",
+            payload={
+                "user_id": user_id,
+                "rule_ids": [r.rule_id for r in triage.matched_rules],
+                "suggested_action_i18n_key": triage.suggested_action_i18n_key,
+                "effective_sensitivity": deps.effective_sensitivity,
+                "had_composer": self._critical_reply is not None,
+            },
+        )
+        yield Done(final=final_text)
+
     def _emergency_footer_text(self) -> str:
         """Return the localized footer text for the active sensitivity.
 
@@ -1820,6 +2043,16 @@ class AskService:
                     "suggested_action_i18n_key": triage.suggested_action_i18n_key,
                     "effective_sensitivity": deps.effective_sensitivity,
                 },
+            )
+            # R10 defense-in-depth tripwire: independent of the output
+            # validator (which runs on the LLM's raw text, pre-finalize).
+            # This pass scans the *persisted* final text — catches drift
+            # that a learnt model could otherwise hide behind a
+            # validator-friendly first-attempt output.
+            audit_reply_missing_action_if_needed(
+                result["final_text"],
+                triage,
+                language=self._language,
             )
 
         payload: dict[str, object] = {
