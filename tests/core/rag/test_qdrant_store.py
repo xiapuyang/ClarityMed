@@ -84,6 +84,86 @@ async def test_upsert_empty_is_noop(aclient):
     assert await store.upsert([], [], [], is_phi=False, can_cloud=True) == 0
 
 
+async def test_upsert_splits_large_input_into_batches(aclient, monkeypatch):
+    """Large inputs round-trip as multiple smaller upsert calls.
+
+    Sending all points in one request causes Qdrant to tear down the
+    HTTP connection mid-write for big corpora (manifests as
+    ``httpx.ReadError``). The store must cap each request at the
+    module-level ``_UPSERT_BATCH_SIZE``.
+
+    The test shrinks the constant to make the assertion visible without
+    forcing a real 128+ point fixture; it spies on the underlying
+    ``aclient.upsert`` to count requests and per-request batch sizes,
+    while letting the real ``:memory:`` client persist points so the
+    end-to-end count is still verified.
+    """
+    from claritymed.core.rag import qdrant_store as qdrant_store_mod
+
+    monkeypatch.setattr(qdrant_store_mod, "_UPSERT_BATCH_SIZE", 5)
+
+    store = RagCollectionStore(aclient, "batched", DENSE_DIM)
+    real_upsert = aclient.upsert
+    batch_sizes: list[int] = []
+
+    async def spy(*, collection_name, points, **kwargs):
+        batch_sizes.append(len(points))
+        return await real_upsert(
+            collection_name=collection_name, points=points, **kwargs
+        )
+
+    monkeypatch.setattr(aclient, "upsert", spy)
+
+    n = 13  # 5 + 5 + 3 → exercises full + partial trailing batch
+    children = [_child(f"{i:08d}-0000-0000-0000-000000000000") for i in range(n)]
+    denses = [_vec(0.01 * (i + 1)) for i in range(n)]
+    sparses = [{1: 0.5} for _ in range(n)]
+
+    written = await store.upsert(
+        children, denses, sparses, is_phi=False, can_cloud=True
+    )
+
+    assert written == n
+    assert batch_sizes == [5, 5, 3]
+    # Every batch must respect the cap; defensive in case the loop is
+    # ever rewritten and skips the slice arithmetic.
+    assert all(size <= 5 for size in batch_sizes)
+    # End-to-end: every point landed despite the split.
+    assert await store.count() == n
+
+
+async def test_upsert_single_call_when_within_batch_size(aclient, monkeypatch):
+    """Inputs that fit in one batch must not pay an extra HTTP round-trip."""
+    from claritymed.core.rag import qdrant_store as qdrant_store_mod
+
+    monkeypatch.setattr(qdrant_store_mod, "_UPSERT_BATCH_SIZE", 5)
+
+    store = RagCollectionStore(aclient, "single_batch", DENSE_DIM)
+    real_upsert = aclient.upsert
+    call_count = 0
+
+    async def spy(*, collection_name, points, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return await real_upsert(
+            collection_name=collection_name, points=points, **kwargs
+        )
+
+    monkeypatch.setattr(aclient, "upsert", spy)
+
+    n = 3
+    children = [_child(f"{i:08d}-0000-0000-0000-000000000000") for i in range(n)]
+    await store.upsert(
+        children,
+        [_vec(0.01 * (i + 1)) for i in range(n)],
+        [{1: 0.5} for _ in range(n)],
+        is_phi=False,
+        can_cloud=True,
+    )
+
+    assert call_count == 1
+
+
 async def test_payload_carries_phi_and_cloud_flags(aclient):
     store = RagCollectionStore(aclient, "phi_test", DENSE_DIM)
     children = [_child("22222222-2222-2222-2222-222222222222")]

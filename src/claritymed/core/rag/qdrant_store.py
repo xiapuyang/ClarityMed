@@ -138,6 +138,16 @@ def _lock_is_held_by_another_process(lock_file: Path) -> bool:
 # to merge meaningfully.
 PREFETCH_MULTIPLIER = 4
 
+# Cap per-request point count on upsert. A single guideline PDF can chunk
+# into 500-2000 children; sending them as one PointStruct[] inflates the
+# request body to several MB of JSON and routinely trips Qdrant's HTTP
+# transport (server tears down the connection mid-write, surfacing as
+# httpx.ReadError). 128 sits well inside Qdrant's recommended 100-200
+# batch size and keeps each request comfortably under typical body
+# limits. Tune via this constant only — do not parameterise per-call,
+# the right value is a property of the wire transport, not the caller.
+_UPSERT_BATCH_SIZE = 128
+
 
 def build_qdrant_client(
     *,
@@ -359,7 +369,13 @@ class RagCollectionStore:
             )
             for i, child in enumerate(children)
         ]
-        await self._aclient.upsert(collection_name=self._collection, points=points)
+        # Batch to stay under Qdrant's HTTP body limits (see
+        # ``_UPSERT_BATCH_SIZE`` for context). The fan-out is sequential
+        # on purpose: each upsert acks a write to the same collection,
+        # so concurrent batches would only contend for the same WAL.
+        for start in range(0, len(points), _UPSERT_BATCH_SIZE):
+            batch = points[start : start + _UPSERT_BATCH_SIZE]
+            await self._aclient.upsert(collection_name=self._collection, points=batch)
         return len(points)
 
     async def delete_by_doc_id(self, doc_id: str) -> None:
