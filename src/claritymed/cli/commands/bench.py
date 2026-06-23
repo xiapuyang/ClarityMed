@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -141,7 +140,7 @@ def show_manifest(
     else:
         typer.echo("prompts:       (none captured)")
     cfg = manifest.config
-    tpl: Optional[list[str]] = cfg.tool_prompt_langs
+    tpl: list[str] | None = cfg.tool_prompt_langs
     tpl_str = ",".join(tpl) if tpl else "-"
     typer.echo(
         f"config:        models={','.join(cfg.models)} "

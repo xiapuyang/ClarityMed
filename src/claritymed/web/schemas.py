@@ -8,7 +8,8 @@ in TypeScript until codegen lands with the first admin-endpoint PR.
 
 from __future__ import annotations
 
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -115,7 +116,10 @@ class SessionMetaResponse(BaseModel):
 
     session_id: str
     preview: str
-    modified_at: str
+    # ``datetime`` so OpenAPI emits ``format: date-time`` and the SPA
+    # codegen receives a typed Date. Pydantic v2 serializes to ISO-8601
+    # in JSON, matching the previous wire shape exactly.
+    modified_at: datetime
 
 
 class NewSessionResponse(BaseModel):
@@ -324,7 +328,10 @@ class InteractionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["ask_user_question", "tool_approval"]
-    payload: dict = Field(default_factory=dict)
+    # ``dict[str, Any]`` so OpenAPI exposes a non-empty schema; the
+    # per-kind payload validation still happens in the rendezvous
+    # handler against the matching channel schema.
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 # --- /api/v1/library --------------------------------------------------
@@ -443,12 +450,22 @@ class LibraryIngestRequest(BaseModel):
     text). The server runs ``UploadBundle.validate`` and returns 422
     with the reasons list when the bundle fails the floor / pending /
     failed gates — identical to the TUI's modal gate.
+
+    ``public`` is the user's explicit consent to ingest *without* the
+    PHI scrub layer and to mark resulting chunks ``can_cloud=True``.
+    Default ``False`` — text is PHI-scrubbed at ingest and chunks land
+    ``can_cloud=False`` (cloud-bound retrieval skips them). The SPA
+    must surface this as a per-upload toggle when offering to make
+    library content cloud-queryable; passing ``true`` silently would
+    re-introduce the flag-error that retrieval defense-in-depth was
+    designed to compensate for.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=200_000)
     session_id: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
+    public: bool = False
 
 
 class LibraryIngestPart(BaseModel):

@@ -85,17 +85,15 @@ async def patch_me(
     ):
         return _to_response(account)
 
-    # ``model_copy(update=…)`` skips validators — but display_name,
-    # language, and provider_id are simple str/Literal fields, no
-    # coercion needed. model_dump → mutate → model_validate is the safe
-    # form if any constraint tightens later. For now, model_copy is fine.
-    updated = account.model_copy(
-        update={
-            "display_name": new_display,
-            "language": new_language,
-            "provider_id": new_provider_id,
-        }
-    )
+    # ``model_dump → mutate → model_validate`` runs the full validator
+    # chain — required by CLAUDE.md whenever a date/datetime/Decimal/Enum
+    # field could land in this patch surface later (``model_copy(update=)``
+    # silently skips coercion and writes raw strings into typed fields).
+    data = account.model_dump(mode="python")
+    data["display_name"] = new_display
+    data["language"] = new_language
+    data["provider_id"] = new_provider_id
+    updated = Account.model_validate(data)
     AccountStore(account.user_id).save(updated)
     # Invalidate the (user_id, mtime) cache so the next ``current_account``
     # read sees the updated fields rather than the pre-save copy.

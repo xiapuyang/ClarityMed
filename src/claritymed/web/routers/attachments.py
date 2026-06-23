@@ -17,6 +17,7 @@ than dead-end the upload.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from pathlib import Path
@@ -512,25 +513,23 @@ def _ensure_ocr_worker(app_state):
     return worker
 
 
+@functools.lru_cache(maxsize=1)
 def _load_text_extensions() -> frozenset[str]:
-    """Cached load of OcrConfig.text_extensions (lowercased, dotted)."""
-    global _TEXT_EXT_CACHE
-    cached = _TEXT_EXT_CACHE
-    if cached is not None:
-        return cached
+    """Cached load of OcrConfig.text_extensions (lowercased, dotted).
+
+    Tests that mutate ``OcrConfig.text_extensions`` between cases must
+    call ``_load_text_extensions.cache_clear()`` in their teardown so
+    each test sees the freshly-loaded config rather than a stale
+    process-level snapshot.
+    """
     try:
         from claritymed.core.schemas.ocr import load_ocr_config
 
         cfg = load_ocr_config()
-        cached = frozenset(cfg.text_extensions)
+        return frozenset(cfg.text_extensions)
     except Exception:  # noqa: BLE001
         logger.exception("ocr config load failed; text fast-path disabled")
-        cached = frozenset()
-    _TEXT_EXT_CACHE = cached
-    return cached
-
-
-_TEXT_EXT_CACHE: frozenset[str] | None = None
+        return frozenset()
 
 
 def _resolve_extension(filename: str, text_exts: frozenset[str]) -> str | None:

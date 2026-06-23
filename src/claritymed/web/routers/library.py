@@ -261,6 +261,7 @@ async def ingest_library(
                 content=part.content,
                 source_hash=part.source_hash,
                 language=account.language,
+                public=req.public,
             )
         except DuplicateDocumentError:
             skipped_parts += 1
@@ -332,6 +333,7 @@ async def _run_one_part(
     content: str,
     source_hash: str,
     language: str,
+    public: bool,
 ) -> dict:
     """Drain one ``RagService.run`` stream and project to an outcome dict.
 
@@ -339,11 +341,17 @@ async def _run_one_part(
     ``chunk_count == 0 and skipped_chunk_count > 0`` means every chunk
     cosine-dedup'd against existing content — semantically the same as
     "already in library", so it counts as ``skipped`` not ``added``.
+
+    ``public`` propagates the per-bundle consent flag. ``False`` (the
+    default at the request schema) runs PHI scrub at ingest and marks
+    chunks ``can_cloud=False``; ``True`` skips the ingest scrub and
+    marks them ``can_cloud=True``. Retrieval still runs a regex layer
+    over surviving chunks for cloud-bound prompts as defense-in-depth.
     """
     events = service.run(
         content,
         user_id=user_id,
-        public=True,
+        public=public,
         language=language,
         source_uri=source_hash,
     )

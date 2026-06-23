@@ -36,7 +36,9 @@ def audit_grep(
     request_id: str | None = typer.Option(
         None, "--request-id", help="Filter by request id."
     ),
-    user_id: str | None = typer.Option(None, "--user-id", help="Filter by user id."),
+    user_id: str | None = typer.Option(
+        None, "--user", "--user-id", "-u", help="Filter by user id."
+    ),
     kind: str | None = typer.Option(
         None, "--kind", help="Filter by audit kind, e.g. mode.ask."
     ),
@@ -136,7 +138,9 @@ def audit_scan(
     until: str | None = typer.Option(
         None, "--until", help="Upper bound on created_at (ISO 8601 prefix match)."
     ),
-    user_id: str | None = typer.Option(None, "--user-id", help="Filter by user id."),
+    user_id: str | None = typer.Option(
+        None, "--user", "--user-id", "-u", help="Filter by user id."
+    ),
     json_out: bool = typer.Option(
         False, "--json", help="Emit one JSON object per rule (machine-readable)."
     ),
@@ -231,6 +235,7 @@ def audit_scan(
 def audit_ocr_overrides(
     user_id: str | None = typer.Option(
         None,
+        "--user",
         "--user-id",
         "-u",
         help="Restrict to one user (default: walk every user under data/users/).",

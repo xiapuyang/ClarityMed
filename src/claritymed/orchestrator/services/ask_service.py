@@ -385,7 +385,10 @@ class AskService:
                     exc_info=True,
                 )
                 continue
-            if isinstance(new_text, str):
+            # Require a non-empty string; an audit-only post_process
+            # hook returning ``""`` would otherwise silently blank the
+            # user-visible reply.
+            if isinstance(new_text, str) and new_text:
                 result["final_text"] = new_text
                 text = new_text
 
@@ -1285,10 +1288,10 @@ class AskService:
                     # to a cloud provider — the regex layer is documented
                     # as the floor, the model layer is the actual
                     # contract.
-                    scrubbed, report = self._guard.scrub_free_text(s)
+                    scrubbed_text, report = self._guard.scrub_free_text(s)
                     if report.model_failed:
                         raise HistoryScrubFailed(s[:40])
-                    return scrubbed
+                    return scrubbed_text
 
                 history_scrub = _history_scrub
             # ``run_stream`` would stop the agent graph at the first model

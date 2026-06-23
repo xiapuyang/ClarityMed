@@ -316,6 +316,43 @@ async def test_ingest_inline_text_runs_through_fake_service(
     # The fake recorded exactly one call with the bundle's part content.
     spy = fake_holder["instance"]
     assert len(spy.calls) == 1
+    # Default ingest is scrub-on-ingest + can_cloud=False — the SPA
+    # must explicitly pass ``public: true`` to opt into the unscrubbed
+    # cloud-queryable path (see ``test_ingest_public_opt_in_propagates``).
+    assert spy.calls[0]["public"] is False
+
+
+async def test_ingest_public_opt_in_propagates(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    monkeypatch,
+):
+    """``public: true`` in the request body reaches ``RagService.run``."""
+    import claritymed.orchestrator.services as services_mod
+
+    fake_holder: dict = {}
+
+    class _FakeRagServiceSpy(_FakeRagService):
+        def __init__(self, store):
+            super().__init__(store)
+            fake_holder["instance"] = self
+
+    monkeypatch.setattr(services_mod, "RagService", _FakeRagServiceSpy)
+
+    import claritymed.stores.user_rag as user_rag_mod
+
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", lambda _uid: object())
+
+    resp = await web_client.post(
+        "/api/v1/library/ingest",
+        json={"text": "x" * 500, "public": True},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200, resp.text
+    spy = fake_holder["instance"]
+    assert len(spy.calls) == 1
     assert spy.calls[0]["public"] is True
 
 

@@ -93,7 +93,7 @@ async def list_sessions(
         SessionMetaResponse(
             session_id=m.session_id,
             preview=m.preview,
-            modified_at=m.modified_at.isoformat(),
+            modified_at=m.modified_at,
         )
         for m in metas
     ]
@@ -177,8 +177,16 @@ async def stream(
     # the factory shape and skip the rendezvous wiring entirely.
     from claritymed.web.channels import build_web_channels
 
-    interactions: dict = getattr(request.app.state, "web_interactions", None) or {}
-    request.app.state.web_interactions = interactions
+    # Lifespan installs the dict; using ``getattr ... or {}`` here would
+    # swap in a fresh dict every time the existing one is empty
+    # (e.g. right after startup or after every interaction resolves),
+    # leaving prior streams' late InteractionRequested events writing
+    # to an orphan dict the POST /interactions handler can no longer
+    # see. Only initialize on truly missing state (headless tests).
+    interactions = getattr(request.app.state, "web_interactions", None)
+    if interactions is None:
+        interactions = {}
+        request.app.state.web_interactions = interactions
     interaction_event_queue: asyncio.Queue[Event] = asyncio.Queue()
     prompt_channel, approval_channel = build_web_channels(
         user_id=account.user_id,
@@ -270,7 +278,11 @@ async def stream(
             try:
                 async for ev in ask_service.run(q, user_id):
                     await merged.put((ASK, ev))
-            except BaseException as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                # Narrow from BaseException so CancelledError /
+                # KeyboardInterrupt propagate up the task tree; the
+                # ``finally`` below still emits DONE on cancellation
+                # so the merged-queue consumer terminates.
                 await merged.put((ERR, exc))
             finally:
                 await merged.put((DONE, None))

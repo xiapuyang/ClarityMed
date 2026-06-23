@@ -45,6 +45,19 @@ logger = logging.getLogger(__name__)
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 
+# qdrant-client's default 5-second per-request timeout is too tight for
+# warmup scrolls and full-collection counts on user libraries with
+# thousands of chunks. 30s matches typical Docker/cloud cold-start
+# behaviour. Override per deployment via ``CLARITYMED_QDRANT_TIMEOUT_S``.
+_QDRANT_DEFAULT_TIMEOUT_S = 30
+
+# Bound on how long we wait for the process-level client cache lock.
+# CLAUDE.md mandates timeout-bounded acquires so a deadlock surfaces as
+# a visible RuntimeError instead of an opaque hang. 5s is generous —
+# the protected section only does a dict lookup or a single
+# AsyncQdrantClient construction.
+_LOCAL_CLIENTS_LOCK_TIMEOUT_S = 5.0
+
 # Process-level cache: one AsyncQdrantClient per resolved directory path.
 # Qdrant local mode writes a .lock file on open; a second open on the same
 # path raises "already accessed by another instance" — even within the same
@@ -74,13 +87,21 @@ def open_local_qdrant_client(user_dir: Path) -> AsyncQdrantClient:
     avoiding the "already accessed" conflict within the same process.
     """
     key = str(user_dir.resolve())
-    with _local_clients_lock:
+    if not _local_clients_lock.acquire(timeout=_LOCAL_CLIENTS_LOCK_TIMEOUT_S):
+        raise RuntimeError(
+            f"qdrant: failed to acquire local-clients lock within "
+            f"{_LOCAL_CLIENTS_LOCK_TIMEOUT_S}s — likely a deadlock; "
+            "send SIGUSR1 for a thread dump (faulthandler)."
+        )
+    try:
         existing = _local_clients.get(key)
         if existing is not None:
             return existing
         client = _open_local_qdrant_client_uncached(user_dir)
         _local_clients[key] = client
         return client
+    finally:
+        _local_clients_lock.release()
 
 
 def _open_local_qdrant_client_uncached(user_dir: Path) -> AsyncQdrantClient:
@@ -175,7 +196,10 @@ def build_qdrant_client(
                 f"qdrant.api_key_env={api_key_env} is set but the env "
                 "var is empty or unset",
             )
-    return AsyncQdrantClient(url=url, api_key=api_key)
+    timeout_s = int(
+        os.environ.get("CLARITYMED_QDRANT_TIMEOUT_S", _QDRANT_DEFAULT_TIMEOUT_S)
+    )
+    return AsyncQdrantClient(url=url, api_key=api_key, timeout=timeout_s)
 
 
 @dataclass(frozen=True)
