@@ -84,7 +84,6 @@ def _meta(name: str, language: str = "en", tier: int = 1) -> CollectionMetadata:
         language=language,
         cross_lingual=True,
         authority_tier=tier,
-        size_chunks=10,
     )
 
 

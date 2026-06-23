@@ -36,7 +36,6 @@ def _meta(
         language=language,
         cross_lingual=cross_lingual,
         authority_tier=tier,
-        size_chunks=1000,
         topics=list(topics),
         disease_codes=list(disease_codes),
     )

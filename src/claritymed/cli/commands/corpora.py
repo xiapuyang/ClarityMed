@@ -37,14 +37,45 @@ corpora_app = typer.Typer(help="Manage system RAG corpora (admin).")
 
 @corpora_app.command("list")
 def corpora_list() -> None:
-    """List system corpora declared in ``configs/retrieval.yaml``."""
+    """List system corpora declared in ``configs/retrieval.yaml``.
+
+    ``size=`` is queried live from Qdrant (``aclient.count(exact=True)``)
+    so it never drifts from on-disk truth -- the yaml carries metadata,
+    not a counter. A missing collection or Qdrant outage renders the
+    cell as ``?`` rather than failing the listing.
+    """
+    from claritymed.core.rag.qdrant_store import build_qdrant_client
     from claritymed.core.rag.schemas import load_retrieval_config
 
     cfg = load_retrieval_config()
-    for c in cfg.system_rag.collections:
+    collections = list(cfg.system_rag.collections)
+
+    async def _live_counts() -> dict[str, int | None]:
+        counts: dict[str, int | None] = {c.name: None for c in collections}
+        if not collections:
+            return counts
+        aclient = build_qdrant_client(
+            url=cfg.qdrant.url, api_key_env=cfg.qdrant.api_key_env
+        )
+        try:
+            for c in collections:
+                try:
+                    if not await aclient.collection_exists(c.name):
+                        continue
+                    info = await aclient.count(c.name, exact=True)
+                    counts[c.name] = int(info.count)
+                except Exception:  # noqa: BLE001 — single-collection failures shouldn't blank the list
+                    counts[c.name] = None
+        finally:
+            await aclient.close()
+        return counts
+
+    counts = run_async(_live_counts())
+    for c in collections:
+        size_repr = "?" if counts.get(c.name) is None else str(counts[c.name])
         console.print(
             f"  [bold]{c.name}[/bold]  lang={c.language}  tier={c.authority_tier}  "
-            f"size={c.size_chunks}  topics={c.topics}"
+            f"size={size_repr}  topics={c.topics}"
         )
 
 

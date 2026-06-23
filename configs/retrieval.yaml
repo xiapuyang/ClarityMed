@@ -186,7 +186,6 @@ system_rag:
       language: en
       cross_lingual: true
       authority_tier: 1
-      size_chunks: 0
       topics:
         - general clinical
         - differential diagnosis
@@ -198,7 +197,6 @@ system_rag:
       language: en
       cross_lingual: true
       authority_tier: 2
-      size_chunks: 0
       topics:
         - anatomy
         - biochemistry
@@ -218,6 +216,17 @@ system_rag:
       disease_codes: []
       source_uri_prefix: null
       license: "MedRAG textbooks (see individual book licenses)"
+    - name: ats_idsa_pneumonia_guidelines_en
+      language: en
+      cross_lingual: true
+      authority_tier: 1
+      topics:
+        - pneumonia
+        - community-acquired pneumonia
+        - respiratory infections
+      disease_codes: []
+      source_uri_prefix: null
+      license: null
 
 # --- translation (query + answer translation) ---------------------------
 # provider: llm   — LLM call via the configured model (default, zero extra

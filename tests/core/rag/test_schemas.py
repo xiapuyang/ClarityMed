@@ -37,7 +37,6 @@ def test_collection_metadata_happy_path():
         language="en",
         cross_lingual=True,
         authority_tier=1,
-        size_chunks=12345,
         topics=["general clinical"],
         disease_codes=["I10"],
     )

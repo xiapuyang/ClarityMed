@@ -14,10 +14,6 @@ The catalog + active-id pattern mirrors ``stores/models.py``:
   ``grader`` to be populated, since CRAG-lite is the only thing that can
   raise the flag in v1.
 
-Optional ``CollectionMetadata.size_chunks`` defaults to 0 so a YAML entry
-can be written before ingest has actually populated the collection;
-ingest code is expected to update the YAML after a successful run, or
-the router treats 0 as "not yet ingested" and may skip it.
 """
 
 from __future__ import annotations
@@ -60,7 +56,6 @@ class CollectionMetadata(BaseModel):
     language: CollectionLanguage
     cross_lingual: bool = False
     authority_tier: int = Field(ge=1, le=3)
-    size_chunks: int = Field(default=0, ge=0)
     topics: list[str] = Field(default_factory=list)
     disease_codes: list[str] = Field(default_factory=list)
     source_uri_prefix: str | None = None
