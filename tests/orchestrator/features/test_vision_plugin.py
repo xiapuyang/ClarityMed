@@ -653,3 +653,83 @@ async def test_ensure_bootstrapped_is_idempotent_after_failure(home):
     second = await feature.ensure_bootstrapped()
     assert first == second
     assert registry.bootstrap.await_count == 1
+
+
+# --- vision.enabled config kill switch + double-guard --------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_bootstrapped_short_circuits_when_config_disabled(
+    home, monkeypatch
+):
+    """``vision.enabled=false`` sets disabled_reason and skips registry.bootstrap.
+
+    A deliberately-off install must not spam the audit log with
+    catalog cross-check failures — the operator already opted out.
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("claritymed.config.vision_enabled", lambda: False)
+
+    cfg = _vision_config()
+    registry = VisionRegistry(cfg)
+    registry.bootstrap = AsyncMock(return_value=None)
+    feature = VisionFeature(config=cfg, registry=registry, get_session_id=lambda: None)
+
+    reason = await feature.ensure_bootstrapped()
+    assert reason is not None
+    assert "vision.enabled=false" in reason
+    assert feature.disabled_reason == reason
+    # The whole point of the config switch: don't even reach the network.
+    assert registry.bootstrap.await_count == 0
+
+
+def test_as_tool_returns_none_when_disabled(home):
+    """Hard kill switch: as_tool() returns None so the agent skips registration.
+
+    Soft hint via the ``<image vision_disabled="…">`` tag is advisory and
+    can be ignored by the model; the tool literally not being in the
+    agent's toolset is the only reliable enforcement.
+    """
+    cfg = _vision_config()
+    registry = VisionRegistry(cfg)
+    feature = VisionFeature(config=cfg, registry=registry, get_session_id=lambda: None)
+    feature.disabled_reason = "disabled by config (app.yaml vision.enabled=false)"
+
+    assert feature.as_tool() is None
+
+
+def test_as_tool_returns_tool_when_enabled(home):
+    """Sanity: a healthy feature still produces a Tool (regression guard)."""
+    cfg = _vision_config()
+    registry = VisionRegistry(cfg)
+    feature = VisionFeature(config=cfg, registry=registry, get_session_id=lambda: None)
+
+    assert feature.disabled_reason is None
+    tool = feature.as_tool()
+    assert tool is not None
+    assert tool.name == TOOL_NAME
+
+
+@pytest.mark.asyncio
+async def test_detect_returns_vision_disabled_when_disabled(home):
+    """Defense-in-depth: if _detect is somehow dispatched (cached tool def
+    from a long-lived session that outlived the toggle), it returns a
+    structured ``vision_disabled`` payload instead of falling into the
+    cascade and crashing on missing attachment state.
+    """
+    cfg = _vision_config()
+    registry = VisionRegistry(cfg)
+    feature = VisionFeature(config=cfg, registry=registry, get_session_id=lambda: None)
+    feature.disabled_reason = "disabled by config (app.yaml vision.enabled=false)"
+
+    with _ctx(_REQUEST_ID, _USER_ID, "en"):
+        result = await feature._detect(
+            ctx=SimpleNamespace(deps=SimpleNamespace(language="en")),
+            disease_id="breast_cancer_ultrasound",
+            image_sha="deadbeef" * 8,
+        )
+
+    assert result["kind"] == "vision_disabled"
+    assert "vision.enabled=false" in result["reason"]
+    assert "without calling this tool" in result["message"]

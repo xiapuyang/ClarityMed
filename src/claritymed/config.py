@@ -40,6 +40,16 @@ DEFAULT_PASTE_MAX_TEXT_CHARS = 100_000
 DEFAULT_PASTE_PLACEHOLDER_MIN_LINES = 6
 DEFAULT_PASTE_PLACEHOLDER_MIN_CHARS = 800
 
+# Vision feature defaults — duplicated from configs/app.yaml so a stripped
+# install (or a test that mocks load_yaml) still gets a usable guard.
+DEFAULT_VISION_ENABLED = True
+DEFAULT_VISION_MAX_BYTES = 20_000_000
+DEFAULT_VISION_MAX_DIMENSION = 4096
+DEFAULT_VISION_MAX_PIXELS = 16_000_000
+DEFAULT_VISION_MIN_BYTES = 10_000
+DEFAULT_VISION_MIN_DIMENSION = 224
+DEFAULT_VISION_MIN_PIXELS = 50_000
+
 # /upload quality gates — see core/upload/bundle.py
 DEFAULT_UPLOAD_MIN_TOTAL_CHARS = 100
 DEFAULT_UPLOAD_MIN_PART_CHARS = 30
@@ -357,6 +367,38 @@ def ask_user_question_max_retries() -> int:
     return int(val)
 
 
+def vision_enabled() -> bool:
+    """Return ``app.yaml`` ``vision.enabled`` (default ``True``).
+
+    Master kill switch consulted by :class:`VisionFeature.ensure_bootstrapped`
+    — when ``False`` the tool is not registered with the agent and the
+    ``<image>`` tag advertises the feature as off.
+    """
+    val = load_yaml("app.yaml").get("vision", {}).get("enabled")
+    if val is None:
+        return DEFAULT_VISION_ENABLED
+    return bool(val)
+
+
+def vision_image_limits() -> "ImageLimits":
+    """Return image guard limits read from ``app.yaml`` ``vision.image_limits``.
+
+    Falls back to ``DEFAULT_VISION_*`` constants for any missing key so
+    a partial YAML still produces a usable :class:`ImageLimits`.
+    """
+    from claritymed.core.vision.image_guard import ImageLimits
+
+    raw = load_yaml("app.yaml").get("vision", {}).get("image_limits", {}) or {}
+    return ImageLimits(
+        max_bytes=int(raw.get("max_bytes", DEFAULT_VISION_MAX_BYTES)),
+        max_dimension=int(raw.get("max_dimension", DEFAULT_VISION_MAX_DIMENSION)),
+        max_pixels=int(raw.get("max_pixels", DEFAULT_VISION_MAX_PIXELS)),
+        min_bytes=int(raw.get("min_bytes", DEFAULT_VISION_MIN_BYTES)),
+        min_dimension=int(raw.get("min_dimension", DEFAULT_VISION_MIN_DIMENSION)),
+        min_pixels=int(raw.get("min_pixels", DEFAULT_VISION_MIN_PIXELS)),
+    )
+
+
 def reload_configs() -> None:
     """Invalidate the YAML cache. Test helper / admin hot-reload entry."""
     load_yaml.cache_clear()
@@ -365,4 +407,5 @@ def reload_configs() -> None:
 if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
     from claritymed.core.schemas.evals import EvalsConfig  # noqa: F401
     from claritymed.core.symptoms.schemas import SymptomsConfig  # noqa: F401
+    from claritymed.core.vision.image_guard import ImageLimits  # noqa: F401
     from claritymed.core.vision.schemas import VisionConfig  # noqa: F401

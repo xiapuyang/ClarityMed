@@ -304,21 +304,37 @@ class VisionFeature:
         string so the caller can branch without a second attribute read.
         Returns ``None`` on success.
 
-        Two callers funnel through here:
+        Three callers funnel through here:
 
+        * Admin-driven config disable — ``app.yaml`` ``vision.enabled:
+          false`` short-circuits before any registry work so the
+          operator can ship the feature off without touching the
+          disease catalog.
         * TUI ``on_mount`` — wants to surface the failure as a startup
           toast + status indicator so the user knows before pasting a
           medical image that the vision tool is offline.
         * :meth:`AskService._bootstrap_vision_once` — legacy first-turn
           deferred path, kept for code that does not run a TUI mount.
 
-        Both pre-existing failure modes (network unreachable, manifest
-        sha drift) collapse into the same ``disabled_reason`` string so
-        downstream surfaces (toast, ``<image vision_disabled="…">`` tag)
-        do not need to branch on exception type.
+        All three failure modes (config disable, network unreachable,
+        manifest sha drift) collapse into the same ``disabled_reason``
+        string so downstream surfaces (toast, ``<image vision_disabled="…">``
+        tag, ``as_tool`` skipping registration) do not need to branch on
+        exception type.
         """
         if self.disabled_reason is not None:
             return self.disabled_reason
+        # Config kill switch — read before bootstrap so a deliberately
+        # disabled install doesn't spam the audit log with registry
+        # cross-check failures from a catalog the operator already
+        # opted out of.
+        from claritymed.config import vision_enabled
+
+        if not vision_enabled():
+            reason = "disabled by config (app.yaml vision.enabled=false)"
+            self.disabled_reason = reason
+            logger.info("vision: %s", reason)
+            return reason
         try:
             await self._registry.bootstrap()
         except Exception as exc:  # noqa: BLE001 — registry raises many shapes
@@ -353,7 +369,21 @@ class VisionFeature:
         return None
 
     def as_tool(self) -> Callable | None:
-        """Return a pydantic-ai Tool wrapping ``_detect``."""
+        """Return a pydantic-ai Tool wrapping ``_detect`` — or ``None``.
+
+        Hard kill switch: when :attr:`disabled_reason` is set (config
+        disable or bootstrap failure) we return ``None`` so the agent
+        wiring layer skips registration and the LLM literally never
+        sees the tool in its toolset. The previous behavior — register
+        the tool but rely on the ``<image vision_disabled="…">`` tag
+        as a soft hint — was advisory; a model that ignored the hint
+        could still hallucinate a call into a tool that was guaranteed
+        to fail. Belt-and-suspenders pairs with the ``_detect``
+        entry-point guard in case a cached tool definition outlives the
+        toggle.
+        """
+        if self.disabled_reason is not None:
+            return None
         from pydantic_ai import Tool
 
         return Tool(
@@ -416,6 +446,29 @@ class VisionFeature:
         translation happens here so the LLM sees a structured result
         for every branch.
         """
+        # Defense-in-depth: ``as_tool`` already returns ``None`` when the
+        # feature is disabled, so a fresh agent build won't even register
+        # the tool — but a long-lived session that cached the tool def
+        # before a config flip could still dispatch here. Short-circuit
+        # with a structured ``vision_disabled`` payload so the LLM gets
+        # a clean signal rather than a crash deeper in the cascade.
+        if self.disabled_reason is not None:
+            audit_event(
+                "vision_disabled_short_circuit",
+                {
+                    "reason": self.disabled_reason,
+                    "disease_id": disease_id,
+                    "image_sha_prefix": image_sha[:8] if image_sha else None,
+                },
+            )
+            return {
+                "kind": "vision_disabled",
+                "reason": self.disabled_reason,
+                "message": (
+                    "vision feature is disabled this session; answer the "
+                    "user's question without calling this tool"
+                ),
+            }
         deps = ctx.deps
         language = getattr(deps, "language", "en") or "en"
         request_id, user_id, _ = get_context_or_raise()

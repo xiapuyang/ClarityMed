@@ -71,16 +71,33 @@ class LLMOcrProvider(OcrProvider):
         """Send *path* to the LLM and return extracted text.
 
         Raises:
-            OcrError: On any failure (file unreadable, model error, or when
-                the LLM reports it could not see the document content).
+            OcrError: On any failure (file unreadable, model error, when
+                the LLM reports it could not see the document content,
+                or when the image trips ``vision.image_limits`` —
+                converted from :class:`ImageTooLargeError` /
+                :class:`ImageTooSmallError` so the OCR chain treats it
+                as a normal provider failure and can fall through to a
+                non-vision provider rather than aborting the whole turn).
         """
         from pydantic_ai import Agent, BinaryContent
 
+        from claritymed.config import vision_image_limits
         from claritymed.core.prompts.registry import get_default_registry
         from claritymed.core.schemas.ocr import OcrExtraction
+        from claritymed.core.vision.image_guard import validate_image
+        from claritymed.errors import ImageTooLargeError, ImageTooSmallError
 
+        # Image guard — runs before we even read the bytes. Bills, latency,
+        # and PII surface area all scale with what we send up to a cloud
+        # vision LLM; rejecting at the boundary keeps a 50MB DICOM from
+        # ever touching the network. File-not-found / permission errors
+        # are coalesced with the BinaryContent path below so callers see
+        # one canonical OcrError shape regardless of which layer noticed.
         try:
+            validate_image(path, vision_image_limits())
             binary = BinaryContent.from_path(path)
+        except (ImageTooLargeError, ImageTooSmallError) as exc:
+            raise OcrError(f"Image guard rejected {path.name}: {exc}") from exc
         except (FileNotFoundError, PermissionError) as exc:
             raise OcrError(f"Cannot read {path}: {exc}") from exc
 

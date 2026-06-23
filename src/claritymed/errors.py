@@ -302,6 +302,27 @@ class ImageHashMismatchError(ValueError):
     """
 
 
+class ImageTooLargeError(ValueError):
+    """Image exceeded the configured ``vision.image_limits`` upper bound.
+
+    Carries the axis that tripped (bytes / dimension / pixels) plus the
+    observed value so the caller can surface a precise message ("3.2 MP
+    exceeds max 16 MP", not "image too large"). Raised at the LLM OCR /
+    vision inference boundary before any cloud round-trip.
+    """
+
+
+class ImageTooSmallError(ValueError):
+    """Image fell below the configured ``vision.image_limits`` lower bound.
+
+    Same shape as :class:`ImageTooLargeError` — separate class so callers
+    can branch (e.g. "ask the user to re-upload a higher-resolution scan"
+    is a different remediation than "downscale and retry"). ViT/CLIP
+    encoders resize to 224 internally; below that we'd be sending
+    upscaled garbage.
+    """
+
+
 class EligibilityStrategyConfigError(RuntimeError):
     """An eligibility strategy was built against an invalid configuration.
 

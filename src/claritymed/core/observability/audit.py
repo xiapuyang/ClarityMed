@@ -225,6 +225,12 @@ AuditKind = Literal[
     # offline eval. Lifecycle marker — actual PHI lands in audit_payloads/.
     #   payload allowlist: disease_id, reason, image_sha_prefix
     "vision_shadow_inference",
+    # vision_disabled_short_circuit — _detect was dispatched after the
+    # feature was disabled (config flip mid-session, cached tool def).
+    # Should be rare since as_tool() returns None when disabled — the
+    # event tells the operator a stale tool def made it to the LLM.
+    #   payload allowlist: reason, disease_id, image_sha_prefix
+    "vision_disabled_short_circuit",
     # vision.specialist_keywords.missing — KTD-V1 audit-only signal. The
     # post_process hook scanned an urgent_specialist / soon_specialist
     # reply and found no phrase from configs/i18n/<lang>/vision.yaml

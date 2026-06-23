@@ -97,6 +97,30 @@ tools:
 medical_clip:
   base_url: http://127.0.0.1:8086
 
+# --- Vision feature toggles + image guard rails -------------------------
+# enabled:       master kill switch for the vision tool. When false the
+#                tool is not registered with the agent (LLM doesn't see
+#                it in its toolset), ensure_bootstrapped sets a clear
+#                disabled_reason, and the <image> tag advertises the
+#                feature as off. Defaults to true.
+# image_limits:  upper + lower bounds enforced at the LLM OCR / vision
+#                inference boundary. Lower bounds reflect what the
+#                encoder can actually use (ViT/CLIP families resize to
+#                224 internally; below that the model upscales garbage).
+#                Upper bounds keep cloud API bills and round-trip
+#                latency bounded. Violations raise
+#                ImageTooLargeError / ImageTooSmallError with the
+#                specific axis that tripped.
+vision:
+  enabled: true
+  image_limits:
+    max_bytes: 20_000_000      # 20 MB — matches paste.max_file_size_mb
+    max_dimension: 4096        # ChestX-Det max is 3,408 → margin
+    max_pixels: 16_000_000     # 16 MP — guards against tall scan strips
+    min_bytes: 10_000          # 10 KB — below this is blank / corrupt
+    min_dimension: 224         # ViT/CLIP encoder input floor
+    min_pixels: 50_000         # ≈ 224×224 — also blocks freak aspect ratios
+
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 tracing:
   enabled: true

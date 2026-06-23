@@ -192,6 +192,79 @@ def _shutdown_dataloaders(*loaders) -> None:
         loader._iterator = None
 
 
+def _fd_breakdown() -> dict[str, int]:
+    """Categorize current-process FDs into pipes/files/sockets/anon_inode/other.
+
+    On Linux reads ``/proc/self/fd`` readlink targets — pinpoint
+    categorization (``pipe:[N]``, ``socket:[N]``, ``anon_inode:[…]``,
+    or a real path). On macOS falls back to ``psutil.Process()``
+    interfaces (``open_files``, ``net_connections``); the remainder
+    of ``num_fds()`` minus what we could attribute lands in ``other``
+    since BSD-style ``proc_pidinfo`` doesn't surface the pipe vs
+    anon_inode split without ``lsof``-equivalent privileges.
+
+    Returns an empty dict when psutil is not importable (e.g. minimal
+    CI image) so the caller can short-circuit without an extra import
+    guard.
+    """
+    import os
+    import sys
+
+    try:
+        import psutil
+    except ImportError:
+        return {}
+
+    out = {
+        "total": 0,
+        "files": 0,
+        "sockets": 0,
+        "pipes": 0,
+        "anon_inode": 0,
+        "other": 0,
+    }
+    if sys.platform.startswith("linux") and os.path.isdir("/proc/self/fd"):
+        for entry in os.listdir("/proc/self/fd"):
+            out["total"] += 1
+            try:
+                tgt = os.readlink(f"/proc/self/fd/{entry}")
+            except OSError:
+                out["other"] += 1
+                continue
+            if tgt.startswith("pipe:"):
+                out["pipes"] += 1
+            elif tgt.startswith("socket:"):
+                out["sockets"] += 1
+            elif tgt.startswith("anon_inode:"):
+                out["anon_inode"] += 1
+            elif tgt.startswith("/"):
+                out["files"] += 1
+            else:
+                out["other"] += 1
+        return out
+
+    proc = psutil.Process()
+    try:
+        out["files"] = len(proc.open_files())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out["sockets"] = len(proc.net_connections(kind="all"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out["total"] = proc.num_fds()
+    except Exception:  # noqa: BLE001
+        out["total"] = out["files"] + out["sockets"]
+    attributed = out["files"] + out["sockets"]
+    if out["total"] > attributed:
+        # macOS collapses pipes + anon_inode + uncategorized into "other"
+        # — direction of growth still distinguishes "system FDs" from
+        # files/sockets, which is enough to pick the next investigation.
+        out["other"] = out["total"] - attributed
+    return out
+
+
 def _run_search_trial(
     spec: ModelSpec,
     params: dict[str, Any],
@@ -205,21 +278,29 @@ def _run_search_trial(
         logger.info("smoke trial: params=%s", params)
         return FEASIBLE_OFFSET + 0.5
 
-    # Per-trial FD-count heartbeat. After switching the search loaders
-    # to ``persistent_workers=False`` (workers die at end of every
-    # epoch and their queue FDs go with them) this number should hold
-    # flat trial-over-trial; any drift left is a non-DataLoader leak
-    # (MLflow nested runs are the next suspect).
+    # Per-trial FD-count heartbeat, categorized. Pure num_fds() only
+    # tells us "something leaks"; the type breakdown points at the
+    # suspect: pipes → DataLoader/multiprocessing, files → MLflow /
+    # tempfile, sockets → httpx / wandb, anon_inode → asyncio
+    # epoll/eventfd/inotify. With persistent_workers=False the pipes
+    # column should hold flat — drift in any other column is a
+    # non-DataLoader leak.
     try:
-        import psutil
-
-        logger.info(
-            "forge.search trial=%d fd_count=%d",
-            trial.number,
-            psutil.Process().num_fds(),
-        )
-    except ImportError:
-        pass
+        fdb = _fd_breakdown()
+        if fdb:
+            logger.info(
+                "forge.search trial=%d fd total=%d files=%d sockets=%d "
+                "pipes=%d anon_inode=%d other=%d",
+                trial.number,
+                fdb["total"],
+                fdb["files"],
+                fdb["sockets"],
+                fdb["pipes"],
+                fdb["anon_inode"],
+                fdb["other"],
+            )
+    except Exception:  # noqa: BLE001 — heartbeat must never break a trial
+        logger.debug("forge.search fd heartbeat failed", exc_info=True)
     # Per-trial Optuna picks — surfaces ``class_weight`` and friends so
     # the operator can correlate per-epoch behaviour with the scheme TPE
     # chose, without digging into the MLflow run.
