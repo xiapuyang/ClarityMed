@@ -1,0 +1,25 @@
+# i18n for the emergency triage gate (English).
+#
+# Phase 1 ships the footer keys: the deterministic suffixes appended
+# to every reply when the effective sensitivity is `off` (the gate
+# was disabled) or `strict` (the gate is running with high recall and
+# may seem aggressive). Phase 2 adds `emergency.action.*` keys for
+# each rule and `emergency.missing_qualifier.*` prompts.
+#
+# Wording rules:
+#   - `gate_disabled` is the un-bypassable safety disclaimer. It must
+#     be unambiguous and short — the user already saw an answer; this
+#     reminds them the answer came without the safety net.
+#   - `strict_mode_active` explains *why* alarms may seem aggressive
+#     so the user does not interpret false-positives as broken logic.
+
+emergency:
+  footer:
+    gate_disabled: |
+      ---
+
+      *Heads up: emergency triage is currently turned off in your settings, so this reply was generated without the usual safety screen for life-threatening symptoms. If you think this may be an emergency, call your local emergency number now (US: 911, UK: 999, CN: 120).*
+    strict_mode_active: |
+      ---
+
+      *Strict-sensitivity mode is on, so I may flag mild symptoms as worth checking out. That is by design — turn it down in your settings if it feels like too much.*

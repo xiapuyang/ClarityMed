@@ -399,6 +399,26 @@ def vision_image_limits() -> "ImageLimits":
     )
 
 
+def emergency_gate_force_on() -> bool:
+    """Return ``True`` when ``CLARITYMED_FORCE_EMERGENCY_GATE`` is on.
+
+    When on, the sensitivity resolver refuses to honor a per-user
+    ``off`` and downgrades to ``lenient`` instead. This is the
+    deploy-time master switch the operator flips in production:
+    individual users may still ask for less noise, but they cannot
+    fully disable the gate behind the operator's back.
+
+    Truth-y values: ``"on"``, ``"1"``, ``"true"`` (case-insensitive).
+    Default is ``True`` — production is the safer default; CI / dev
+    images that need to test the off-path explicitly set the env var
+    to ``"off"``.
+    """
+    raw = os.environ.get("CLARITYMED_FORCE_EMERGENCY_GATE")
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"on", "1", "true", "yes"}
+
+
 def reload_configs() -> None:
     """Invalidate the YAML cache. Test helper / admin hot-reload entry."""
     load_yaml.cache_clear()

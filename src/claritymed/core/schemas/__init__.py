@@ -8,7 +8,12 @@ All result objects are ``frozen=True`` and ``extra="forbid"`` — an LLM that
 hallucinates an extra field gets a ValidationError, not silent acceptance.
 """
 
-from claritymed.core.schemas.account import Account, Role
+from claritymed.core.schemas.account import (
+    Account,
+    EmergencySensitivity,
+    EmergencySettings,
+    Role,
+)
 from claritymed.core.schemas.answer import (
     Citation,
     Disclaimer,
@@ -49,6 +54,8 @@ __all__ = [
     "Citation",
     "Condition",
     "Disclaimer",
+    "EmergencySensitivity",
+    "EmergencySettings",
     "EvalsConfig",
     "GroundedAnswer",
     "LabFlag",

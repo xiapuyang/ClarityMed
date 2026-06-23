@@ -15,10 +15,44 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Role = Literal["admin", "user"]
 Language = Literal["en", "zh"]
+EmergencySensitivity = Literal["strict", "balanced", "lenient", "off"]
+
+
+class EmergencySettings(BaseModel):
+    """Per-user emergency-triage gate preference.
+
+    Nested under ``emergency:`` in ``settings.yaml`` so the gate's
+    knobs cluster together. ``sensitivity=='off'`` requires an explicit
+    ISO-8601 acknowledgement timestamp — a two-step opt-out that
+    survives a YAML hand-edit because the model_validator below rejects
+    the file at load time.
+
+    The app default lives in ``configs/emergency.yaml`` and is resolved
+    by :func:`claritymed.core.emergency.resolve_sensitivity`. Leaving
+    ``sensitivity`` as None here means "use the app default", which is
+    the recommended state for most users.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sensitivity: EmergencySensitivity | None = None
+    off_acknowledged_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _off_requires_acknowledgement(self) -> "EmergencySettings":
+        if self.sensitivity == "off" and self.off_acknowledged_at is None:
+            raise ValueError(
+                "emergency.sensitivity='off' requires "
+                "emergency.off_acknowledged_at (ISO-8601 timestamp). "
+                "Turning off the emergency triage gate is a two-step "
+                "decision and the timestamp is the evidence the user "
+                "made it deliberately."
+            )
+        return self
 
 
 class Account(BaseModel):
@@ -39,5 +73,6 @@ class Account(BaseModel):
             "means no system RAG is consulted during ask retrieval."
         ),
     )
+    emergency: EmergencySettings = Field(default_factory=EmergencySettings)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

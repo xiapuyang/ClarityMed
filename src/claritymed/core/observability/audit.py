@@ -32,6 +32,21 @@ AuditKind = Literal[
     "request_end",
     # safety / phi
     "redflag_trigger",
+    # Emergency triage gate (pre-step before agent loop).
+    #   redflag.gate_disabled — effective sensitivity resolved to "off".
+    #     payload allowlist: requested, effective, reason
+    #     reasons: user_preference, cli_override
+    #   redflag.reply_missing_action — final reply text did not contain
+    #     the suggested-action phrase even after the output_validator
+    #     passed. Audit-only tripwire; does not mutate the reply.
+    #     payload allowlist: rule_id, level, action_i18n_key
+    #   redflag.validator_unrecoverable — pydantic-ai output_validator
+    #     exhausted its retry budget; reply passed through with original
+    #     text. Operators grep this to spot prompt drift.
+    #     payload allowlist: rule_id, level, retries
+    "redflag.gate_disabled",
+    "redflag.reply_missing_action",
+    "redflag.validator_unrecoverable",
     "phi_guard_block",
     "phi_guard_allow",
     # Layer-3 PHI defense (PhiAssertionModel). Fires when a cloud-bound

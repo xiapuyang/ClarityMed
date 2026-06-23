@@ -62,6 +62,17 @@ def ask(
     user: str | None = typer.Option(None, "--user", "-u"),
     language: str | None = typer.Option(None, "--lang", "-l"),
     provider_id: str | None = typer.Option(None, "--provider", "-p"),
+    emergency_sensitivity: str | None = typer.Option(
+        None,
+        "--emergency-sensitivity",
+        help=(
+            "Override the emergency triage gate sensitivity for this call: "
+            "strict | balanced | lenient | off. 'off' is honored for the "
+            "request but still audits and appends the disclaimer footer; the "
+            "CLARITYMED_FORCE_EMERGENCY_GATE env override (default on) can "
+            "still downgrade 'off' to 'lenient'."
+        ),
+    ),
 ) -> None:
     """Stream a grounded answer to ``question``.
 
@@ -91,6 +102,9 @@ def ask(
             from claritymed.core.rag import load_retrieval_config
 
             mode_name = load_retrieval_config().rag.mode
+            user_sensitivity_pref = (
+                account.emergency.sensitivity if account is not None else None
+            )
             service = AskService(
                 model=model,
                 language=lang,
@@ -103,6 +117,8 @@ def ask(
                     model, phi_kind=provider.kind
                 ),
                 rag_mode=mode_name,
+                user_sensitivity_pref=user_sensitivity_pref,
+                emergency_sensitivity_override=emergency_sensitivity,
             )
 
             async for event in service.run(question, user_id=uid):

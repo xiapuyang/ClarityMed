@@ -276,6 +276,7 @@ class ClarityMedApp(App):
         provider_id: str | None = None,
         ask_service_factory=None,
         chat_session: ChatSession | None = None,
+        emergency_sensitivity_override: str | None = None,
     ) -> None:
         super().__init__()
         self._initial_user_id = user_id or DEFAULT_USER_ID
@@ -285,6 +286,11 @@ class ClarityMedApp(App):
         self._current_provider_id: str | None = provider_id
         self._ask_service_factory = ask_service_factory
         self._chat_session: ChatSession | None = chat_session
+        # CLI override for the emergency triage gate sensitivity.
+        # Stays constant for the lifetime of the TUI session; per-user
+        # preference (Account.emergency.sensitivity) is read inside
+        # ``_build_ask_service`` so a /switch-user mid-session picks it up.
+        self._emergency_sensitivity_override = emergency_sensitivity_override
         # Cached per-session RagStrategy when rag.enabled=true. Owns the
         # two AsyncQdrantClient handles inside HybridRetriever; rebuilding
         # per turn would churn the qdrant file lock. The lock serializes
@@ -1322,6 +1328,21 @@ class ClarityMedApp(App):
             self._chat_session = ChatSession.new(self._current_user_id)
 
         language = self.query_one(StatusBar).language
+        # Read the user's persisted preference at build time so a
+        # ``/user <other>`` switch picks up that user's sensitivity. The
+        # CLI override (constructor-bound) is the highest layer above it.
+        user_sensitivity_pref: str | None = None
+        try:
+            from claritymed.stores.account import AccountStore
+
+            user_sensitivity_pref = (
+                AccountStore(self._current_user_id).load().emergency.sensitivity
+            )
+        except Exception:  # noqa: BLE001
+            # Missing settings.yaml / parse error — fall through to the
+            # app default. AskService logs the parse failure on its
+            # own path; we do not want to crash the TUI build.
+            user_sensitivity_pref = None
         service = build_ask_service(
             model=model,
             language=language,
@@ -1330,6 +1351,8 @@ class ClarityMedApp(App):
             prompt_channel=TextualPromptChannel(self),
             tool_approval_channel=TextualToolApprovalChannel(self, language=language),
             strategy=strategy,
+            user_sensitivity_pref=user_sensitivity_pref,
+            emergency_sensitivity_override=self._emergency_sensitivity_override,
         )
         self._cached_ask_service = service
         return service

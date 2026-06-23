@@ -67,6 +67,7 @@ def test_model_dump_has_no_phi_keys():
         "language",
         "provider_id",
         "active_system_rag_collections",
+        "emergency",
         "created_at",
         "updated_at",
     }

@@ -26,6 +26,17 @@ def tui(
     user: str | None = typer.Option(None, "--user", "-u"),
     language: str | None = typer.Option(None, "--lang", "-l"),
     provider_id: str | None = typer.Option(None, "--provider", "-p"),
+    emergency_sensitivity: str | None = typer.Option(
+        None,
+        "--emergency-sensitivity",
+        help=(
+            "Override the emergency triage gate sensitivity for this TUI "
+            "session: strict | balanced | lenient | off. 'off' is honored "
+            "but still audits and appends the disclaimer footer; the "
+            "CLARITYMED_FORCE_EMERGENCY_GATE env override (default on) can "
+            "still downgrade 'off' to 'lenient'."
+        ),
+    ),
 ) -> None:
     """Launch the Textual TUI."""
     from claritymed.cli.entry import _resolve_language, _resolve_user_id
@@ -64,4 +75,5 @@ def tui(
         user_id=resolved_user,
         language=resolved_lang,
         provider_id=provider.id,
+        emergency_sensitivity_override=emergency_sensitivity,
     ).run()

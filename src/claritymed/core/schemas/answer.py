@@ -40,6 +40,13 @@ class RedFlag(BaseModel):
     severity: RedFlagSeverity
     message: str = Field(min_length=1)
     language: Language
+    # i18n key for the rule's suggested action (e.g.
+    # ``emergency.action.call_ems_cardiac``). The pre-step EmergencyTriage
+    # populates this so downstream surfaces can render the action verb
+    # without re-deriving it from ``message``. Optional because legacy
+    # callers (none today) that fill RedFlag from BASD-side severity
+    # heuristics would not have an i18n key handy.
+    suggested_action_i18n_key: str | None = None
 
 
 class Disclaimer(BaseModel):

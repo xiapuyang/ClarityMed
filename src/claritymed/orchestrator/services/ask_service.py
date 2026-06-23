@@ -18,6 +18,12 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Callable
 
+from claritymed.core.emergency import (
+    EmergencyAssessment,
+    EmergencyTriage,
+    resolve_sensitivity,
+)
+from claritymed.core.emergency.config import load_emergency_config
 from claritymed.core.events import (
     Done,
     Error,
@@ -30,6 +36,7 @@ from claritymed.core.events import (
     ToolStarted,
 )
 from claritymed.core.features import TurnContext, build_features
+from claritymed.core.i18n.loader import t as i18n_t
 from claritymed.core.interaction import InteractiveChannelUnavailable
 from claritymed.core.observability.audit import audit_event
 from claritymed.core.observability.latency import LatencyTrace, build_step_records
@@ -268,6 +275,9 @@ class AskService:
         tool_approval_channel: "ToolApprovalChannel | None" = None,
         symptoms_factory: "Callable[[], FeaturePlugin] | None" = None,
         vision_factory: "Callable[[], FeaturePlugin] | None" = None,
+        user_sensitivity_pref: str | None = None,
+        emergency_sensitivity_override: str | None = None,
+        triage_service: "EmergencyTriage | None" = None,
     ) -> None:
         self._model = model
         self._guard = guard or get_default_guard()
@@ -350,6 +360,24 @@ class AskService:
         # bootstrap explicitly before constructing AskService, so the
         # call here is idempotent in those paths.
         self._vision_bootstrap_attempted = False
+
+        # Emergency triage gate. Resolved once at construction so the
+        # entire AskService lifetime (one user session per build path)
+        # uses one effective sensitivity. CLI override and per-user
+        # preference are inputs; app default comes from emergency.yaml.
+        # The env-override downgrade (CLARITYMED_FORCE_EMERGENCY_GATE)
+        # is applied inside ``resolve_sensitivity``.
+        emergency_cfg = load_emergency_config()
+        self._resolved_sensitivity = resolve_sensitivity(
+            cli_override=emergency_sensitivity_override,  # type: ignore[arg-type]
+            user_pref=user_sensitivity_pref,  # type: ignore[arg-type]
+            app_default=emergency_cfg.default_sensitivity,
+        )
+        # Phase 1 ships an empty-rules EmergencyTriage that always
+        # returns ``routine`` (except for the off short-circuit, which
+        # emits the gate_disabled audit event). Phase 2-3 will inject a
+        # service wired with rules + extractor + composer.
+        self._triage_service = triage_service or EmergencyTriage()
 
     @property
     def last_chunks(self) -> list:
@@ -854,6 +882,7 @@ class AskService:
             translation_service=self._translation_service,
             mode=self._feature_modes.get("rag", "tool"),
             prompt_channel=self._prompt_channel,
+            effective_sensitivity=self._resolved_sensitivity.effective,
         )
 
         # User turn first so the JSONL timeline reflects send order.
@@ -940,6 +969,15 @@ class AskService:
                                     "transcript.*"
                                 )
                             )
+                        # Emergency-gate footer: appended deterministically
+                        # (not via LLM prompt) so neither the model nor a
+                        # prompt-injection attempt can suppress it. Lives
+                        # in ``result["final_text"]`` so the persisted
+                        # transcript carries the disclaimer too — a user
+                        # who reopens the session sees the same wording.
+                        footer_text = self._emergency_footer_text()
+                        if footer_text:
+                            result["final_text"] = result["final_text"] + footer_text
                         self._finalize_turn(user_id, result, deps)
                         finalized = True
                     if deps.retrieved_chunks:
@@ -955,6 +993,14 @@ class AskService:
                                     deps.retrieved_chunks
                                 )
                             )
+                    # Stream the footer to the live UI as a TokenChunk —
+                    # the persisted ``final_text`` already carries it
+                    # (above), but the consumer streamed tokens earlier
+                    # and never sees the post-finalize mutation.
+                    if not result["had_error"]:
+                        footer_for_stream = self._emergency_footer_text()
+                        if footer_for_stream:
+                            yield TokenChunk(text=footer_for_stream)
                 yield event
         finally:
             # When the consumer cancels mid-stream (TUI Esc) or the
@@ -1215,6 +1261,27 @@ class AskService:
         scrubbed, turn_ctx = await self._wait_for_ocr_and_expand_placeholders(
             scrubbed, deps, user_id
         )
+
+        # Emergency triage pre-step (KTD-E1: deterministic pre-step,
+        # not a tool). Runs on every clinical turn before pre_invoke /
+        # agent.run so the result can drive: (a) a critical short-
+        # circuit (Phase 3), (b) the dynamic system prompt's [SAFETY
+        # CONTEXT] block, (c) the post-agent disclaimer suffix decision.
+        # Phase 1 stub: ``assess`` returns ``routine_noop`` for non-off
+        # sensitivities; off emits ``redflag.gate_disabled`` and short-
+        # circuits to routine inside the service.
+        try:
+            deps.triage = await self._triage_service.assess(
+                scrubbed,
+                message_history,
+                sensitivity=self._resolved_sensitivity.effective,  # type: ignore[arg-type]
+            )
+        except Exception:  # noqa: BLE001
+            # Fail-open: gate downtime must not block the user. Log
+            # loudly so the operator notices, then continue with a
+            # routine assessment.
+            logger.exception("EmergencyTriage.assess failed; falling open")
+            deps.triage = EmergencyAssessment.routine_noop()
 
         pre_text, pre_error, drained_events = await self._run_deterministic_pre_invoke(
             turn_ctx, deps
@@ -1681,6 +1748,36 @@ class AskService:
                 return
             await asyncio.sleep(OCR_AWAIT_POLL_S)
 
+    def _emergency_footer_text(self) -> str:
+        """Return the localized footer text for the active sensitivity.
+
+        ``off`` → user disabled the gate; append the loud safety
+        disclaimer (``emergency.footer.gate_disabled``). ``strict`` →
+        gate is high-recall; append the "why you may see many alarms"
+        explainer (``emergency.footer.strict_mode_active``). Other
+        levels → empty string (no footer).
+
+        The text is fetched per call so a YAML hot-reload picks up
+        new wording without restarting the service.
+        """
+        sens = self._resolved_sensitivity.effective
+        if sens == "off":
+            key = "emergency.footer.gate_disabled"
+        elif sens == "strict":
+            key = "emergency.footer.strict_mode_active"
+        else:
+            return ""
+        text = i18n_t(key, lang=self._language)
+        # ``i18n_t`` returns the bare key on miss — treat that as "no
+        # footer wired yet" rather than persisting the key itself.
+        if text == key:
+            return ""
+        # Ensure a clean separator from the streamed answer; the YAML
+        # entries already start with ``\n---\n\n`` but doubling the
+        # newlines costs nothing and protects against editors that
+        # strip leading whitespace.
+        return "\n\n" + text.lstrip("\n")
+
     def _finalize_turn(self, user_id: str, result: dict, deps: AskDeps) -> None:
         """Audit + chat-session persistence after the stream closes."""
         latency = result["latency"]
@@ -1699,6 +1796,26 @@ class AskService:
                 logger.exception("failed to append assistant turn to chat session")
 
         self._maybe_audit_announced_but_skipped(user_id, result, deps)
+
+        # Pre-step gate's redflag audit. Fires when the triage produced
+        # at least one matched rule (i.e. level != routine). KTD-E8:
+        # without a downstream consumer this whole pipeline is dead
+        # code; the audit row is the v1 consumer, the v2 surfaces
+        # (web SSE banner, TUI emergency block) layer on top. Skipped
+        # entirely on routine_noop / off-mode (off has its own
+        # ``redflag.gate_disabled`` event).
+        triage = deps.triage
+        if triage is not None and triage.matched_rules:
+            audit_event(
+                "redflag_trigger",
+                payload={
+                    "user_id": user_id,
+                    "level": triage.level,
+                    "rule_ids": [r.rule_id for r in triage.matched_rules],
+                    "suggested_action_i18n_key": triage.suggested_action_i18n_key,
+                    "effective_sensitivity": deps.effective_sensitivity,
+                },
+            )
 
         payload: dict[str, object] = {
             "user_id": user_id,

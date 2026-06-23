@@ -1,0 +1,37 @@
+# Emergency triage gate config.
+#
+# See docs/plans/2026-06-23-001-feat-emergency-triage-gate-plan.md for
+# the full design. Phase 1 ships this file with the four sensitivity
+# profile stubs and the `default_sensitivity` knob; Phase 2 fills in
+# the per-profile `rule_overrides`, `ambiguous_rules_enabled`,
+# qualifier elicitation budgets, and reply-footer keys.
+#
+# `default_sensitivity` is the app-wide fallback when a user has not
+# expressed a preference. It MUST NOT be `off` — the config loader
+# rejects that at startup. `off` is a per-user choice only.
+
+default_sensitivity: balanced
+
+sensitivity_profiles:
+  strict:
+    rule_overrides: {}
+    ambiguous_rules_enabled: true
+    qualifier_elicitation_max_rounds: 3
+    reply_footer_i18n_key: emergency.footer.strict_mode_active
+
+  balanced:
+    rule_overrides: {}
+    ambiguous_rules_enabled: true
+    qualifier_elicitation_max_rounds: 2
+
+  lenient:
+    rule_overrides: {}
+    ambiguous_rules_enabled: false
+    qualifier_elicitation_max_rounds: 1
+
+  # Quoted so PyYAML does not coerce the bareword `off` to boolean
+  # False — that turns the key into Python `False` and breaks the
+  # `SensitivityName` Literal validator.
+  "off":
+    short_circuit_to: routine
+    reply_footer_i18n_key: emergency.footer.gate_disabled

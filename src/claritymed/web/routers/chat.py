@@ -580,4 +580,5 @@ def build_default_ask_service(
         prompt_channel=prompt_channel,
         tool_approval_channel=tool_approval_channel,
         strategy=strategy,
+        user_sensitivity_pref=account.emergency.sensitivity,
     )

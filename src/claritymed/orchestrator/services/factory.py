@@ -49,6 +49,8 @@ def build_ask_service(
     prompt_channel: "PromptChannel | None" = None,
     tool_approval_channel: "ToolApprovalChannel | None" = None,
     strategy: "RagStrategy | None" = None,
+    user_sensitivity_pref: str | None = None,
+    emergency_sensitivity_override: str | None = None,
 ) -> AskService:
     """Build an ``AskService`` with the full host-shared toolset stack.
 
@@ -106,6 +108,8 @@ def build_ask_service(
         tool_approval_channel=tool_approval_channel,
         symptoms_factory=make_symptoms_factory(),
         vision_factory=make_vision_factory(get_session_id=_session_id),
+        user_sensitivity_pref=user_sensitivity_pref,
+        emergency_sensitivity_override=emergency_sensitivity_override,
     )
 
 
