@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from qdrant_client import AsyncQdrantClient
 
 from claritymed.core.rag.chunking.base import Chunker, RawDocument
+from claritymed.core.rag.dedup import filter_near_duplicates
 from claritymed.core.rag.embedding.base import Embedder
 from claritymed.core.rag.parent_store import ParentStore
 from claritymed.core.rag.qdrant_store import RagCollectionStore
@@ -167,25 +168,21 @@ class UserRagStore:
         dense_vecs = await self._embedder.embed_dense(child_texts)
         sparse_vecs = await self._embedder.embed_sparse(child_texts)
 
-        # 4. per-chunk cosine-sim dedupe
-        kept_children = chunked.children
-        kept_dense = dense_vecs
-        kept_sparse = sparse_vecs
-        skipped_chunks = 0
+        # 4. per-chunk cosine-sim dedupe (shared with ingest_corpus)
         from claritymed import config as _cfg
 
-        threshold = _cfg.upload_dedupe_cosine_threshold()
-        if threshold > 0:
-            kept_indices: list[int] = []
-            for i, vec in enumerate(dense_vecs):
-                score = await col_store.search_dense_max_score(vec)
-                if score is not None and score >= threshold:
-                    skipped_chunks += 1
-                    continue
-                kept_indices.append(i)
-            kept_children = [chunked.children[i] for i in kept_indices]
-            kept_dense = [dense_vecs[i] for i in kept_indices]
-            kept_sparse = [sparse_vecs[i] for i in kept_indices]
+        (
+            kept_children,
+            kept_dense,
+            kept_sparse,
+            skipped_chunks,
+        ) = await filter_near_duplicates(
+            children=chunked.children,
+            dense_vectors=dense_vecs,
+            sparse_vectors=sparse_vecs,
+            store=col_store,
+            threshold=_cfg.upload_dedupe_cosine_threshold(),
+        )
 
         if not kept_children:
             # Every chunk was a near-duplicate — skip the parent write
