@@ -557,3 +557,186 @@ def test_stub_composer_satisfies_protocol():
     Protocol signature drifts."""
     stub: Composer = _StubComposer()  # type: ignore[assignment]
     assert hasattr(stub, "compose")
+
+
+# --- _ComposerInput rendering --------------------------------------
+
+
+def test_composer_input_text_renders_all_fields():
+    from claritymed.core.emergency.composer import _ComposerInput
+
+    matched = [
+        MatchedRule(
+            rule_id="acs",
+            level="critical",
+            suggested_action_i18n_key="emergency.action.call_ems_cardiac",
+            citations=["x"],
+            matched_qualifiers=["radiation_left_arm"],
+        ),
+    ]
+    symptoms = ExtractedSymptoms(
+        primary_complaint="chest_pain",
+        qualifiers=["radiation_left_arm"],
+        age=55,
+        sex="M",
+        key_history=["prior_mi"],
+    )
+    text = _ComposerInput(matched, symptoms).to_text()
+    assert "id: acs" in text
+    assert "level: critical" in text
+    assert "primary_complaint: chest_pain" in text
+    assert "age: 55" in text
+    assert "sex: M" in text
+    assert "prior_mi" in text
+
+
+def test_composer_input_text_omits_none_fields():
+    """``age``/``sex``/``key_history`` are skipped when not present."""
+    from claritymed.core.emergency.composer import _ComposerInput
+
+    matched: list[MatchedRule] = []
+    symptoms = ExtractedSymptoms(primary_complaint="chest_pain")
+    text = _ComposerInput(matched, symptoms).to_text()
+    assert "age:" not in text
+    assert "sex:" not in text
+    assert "key_history:" not in text
+
+
+# --- rule_engine demographic gates ---------------------------------
+
+
+def test_match_age_max_gate_blocks():
+    rule = Rule(
+        id="pediatric",
+        triggers=RuleTriggers(primary="fever", age_max=5, min_qualifier_matches=0),
+        level="urgent",
+        action_key="emergency.action.x",
+        citations=["c"],
+    )
+    # Adult excluded by age_max.
+    symptoms = ExtractedSymptoms(primary_complaint="fever", age=30)
+    assert match(symptoms, [rule]) == []
+    # Toddler passes.
+    symptoms2 = ExtractedSymptoms(primary_complaint="fever", age=2)
+    assert len(match(symptoms2, [rule])) == 1
+
+
+def test_match_sex_gate_blocks():
+    rule = Rule(
+        id="ectopic",
+        triggers=RuleTriggers(
+            primary="abdominal_pain", sex="F", min_qualifier_matches=0
+        ),
+        level="critical",
+        action_key="emergency.action.x",
+        citations=["c"],
+    )
+    male = ExtractedSymptoms(primary_complaint="abdominal_pain", sex="M")
+    assert match(male, [rule]) == []
+    female = ExtractedSymptoms(primary_complaint="abdominal_pain", sex="F")
+    assert len(match(female, [rule])) == 1
+
+
+def test_match_key_history_gate_requires_any():
+    rule = Rule(
+        id="anticoag_head_trauma",
+        triggers=RuleTriggers(
+            primary="head_trauma",
+            key_history_any_of=["anticoagulant", "warfarin"],
+            min_qualifier_matches=0,
+        ),
+        level="critical",
+        action_key="emergency.action.x",
+        citations=["c"],
+    )
+    no_hx = ExtractedSymptoms(primary_complaint="head_trauma", key_history=[])
+    assert match(no_hx, [rule]) == []
+    on_warfarin = ExtractedSymptoms(
+        primary_complaint="head_trauma", key_history=["warfarin"]
+    )
+    assert len(match(on_warfarin, [rule])) == 1
+
+
+# --- service: config-driven effective_rules + extractor failure -----
+
+
+@pytest.mark.asyncio
+async def test_triage_uses_config_profiles_for_effective_rules():
+    """When a config is wired, ``assess_from_symptoms`` should apply
+    the profile's overrides (e.g. lenient drops ambiguous rules)."""
+    from claritymed.core.emergency.config import (
+        EmergencyConfig,
+        SensitivityProfile,
+    )
+
+    rules = [_acs_rule(), _ambiguous_chest_pain()]
+    config = EmergencyConfig(
+        default_sensitivity="balanced",
+        sensitivity_profiles={
+            "balanced": SensitivityProfile(),
+            "lenient": SensitivityProfile(ambiguous_rules_enabled=False),
+        },
+    )
+    triage = EmergencyTriage(rules=rules, config=config, composer=_StubComposer())
+    # Bare chest_pain in `balanced` → ambiguous fires (urgent).
+    bare = ExtractedSymptoms(primary_complaint="chest_pain", age=20)
+    out_balanced = await triage.assess_from_symptoms(
+        bare, sensitivity="balanced", language="en"
+    )
+    assert out_balanced.level == "urgent"
+    # Same input in `lenient` → ambiguous filtered out, no match → routine.
+    out_lenient = await triage.assess_from_symptoms(
+        bare, sensitivity="lenient", language="en"
+    )
+    assert out_lenient.level == "routine"
+
+
+@pytest.mark.asyncio
+async def test_triage_assess_extractor_failure_falls_open(caplog):
+    import logging
+
+    class _BoomExtractor:
+        async def extract(self, *_a, **_kw):
+            raise RuntimeError("extractor model down")
+
+    triage = EmergencyTriage(
+        rules=[_acs_rule()], composer=_StubComposer(), extractor=_BoomExtractor()
+    )
+    with caplog.at_level(logging.ERROR):
+        result = await triage.assess(
+            "我胸口剧痛",
+            history=None,
+            sensitivity="balanced",
+            language="zh",
+        )
+    assert result.level == "routine"
+    assert any("extractor failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_triage_assess_routes_through_extractor_on_success():
+    """With a working extractor, ``assess`` delegates to
+    ``assess_from_symptoms`` and yields the matched level."""
+
+    class _FakeExtractor:
+        async def extract(self, query, history):
+            del query, history
+            return ExtractedSymptoms(
+                primary_complaint="chest_pain",
+                qualifiers=["radiation_left_arm"],
+                age=55,
+            )
+
+    triage = EmergencyTriage(
+        rules=[_acs_rule()],
+        composer=_StubComposer(),
+        extractor=_FakeExtractor(),
+    )
+    result = await triage.assess(
+        "I have severe chest pain radiating to my left arm",
+        history=None,
+        sensitivity="balanced",
+        language="en",
+    )
+    assert result.level == "critical"
+    assert result.suggested_action_i18n_key == "emergency.action.call_ems_cardiac"
