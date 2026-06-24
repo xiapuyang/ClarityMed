@@ -119,16 +119,23 @@ function EditableRow({
   current: unknown;
   onSave: (path: string, value: unknown) => Promise<void>;
 }) {
-  const [text, setText] = useState(
-    current === undefined ? "" : String(current),
+  // null + undefined both render as empty (placeholder fields like
+  // ``abstain.threshold: null`` would otherwise show the string "null").
+  const display = (v: unknown) =>
+    v === undefined || v === null ? "" : String(v);
+  const [text, setText] = useState(display(current));
+  const [draftBool, setDraftBool] = useState<boolean>(
+    typeof current === "boolean" ? current : false,
   );
   useEffect(() => {
-    setText(current === undefined ? "" : String(current));
+    setText(display(current));
+    if (typeof current === "boolean") setDraftBool(current);
   }, [current]);
 
-  // Booleans get a Switch; everything else a TextInput where the user
-  // types the raw value. The backend re-validates via the Pydantic
-  // schema for the YAML, so a typo lands as 422.
+  // Booleans get a draft Switch + Save button; everything else a draft
+  // TextInput + Save button. Neither variant auto-saves on change — the
+  // edit only lands once the user clicks Save. The backend re-validates
+  // via the Pydantic schema for the YAML, so a typo lands as 422.
   if (typeof current === "boolean") {
     return (
       <Group gap="sm">
@@ -136,9 +143,16 @@ function EditableRow({
           {path}
         </Text>
         <Switch
-          checked={current}
-          onChange={(e) => onSave(path, e.currentTarget.checked)}
+          checked={draftBool}
+          onChange={(e) => setDraftBool(e.currentTarget.checked)}
         />
+        <Button
+          variant="default"
+          onClick={() => onSave(path, draftBool)}
+          disabled={draftBool === current}
+        >
+          Save
+        </Button>
       </Group>
     );
   }
@@ -156,10 +170,8 @@ function EditableRow({
       />
       <Button
         variant="default"
-        onClick={() =>
-          onSave(path, coerce(text, current))
-        }
-        disabled={text === String(current)}
+        onClick={() => onSave(path, coerce(text, current))}
+        disabled={text === display(current)}
       >
         Save
       </Button>

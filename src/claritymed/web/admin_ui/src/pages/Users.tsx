@@ -10,7 +10,6 @@ import {
   Stack,
   Table,
   Text,
-  TextInput,
   Title,
   Tooltip,
 } from "@mantine/core";
@@ -27,6 +26,10 @@ import {
   type AdminUserSummary,
 } from "../hooks/useAdminUsers";
 
+type Role = "admin" | "user";
+type Lang = "en" | "zh";
+type Draft = { role: Role; language: Lang };
+
 export function Users() {
   const { t } = useTranslation();
   const { data, isLoading, error } = useAdminUsers();
@@ -35,6 +38,8 @@ export function Users() {
   const [resetTarget, setResetTarget] = useState<AdminUserSummary | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [resetOpened, { open: openReset, close: closeReset }] = useDisclosure(false);
+  // Per-user draft edits — applied only when the row's Save button fires.
+  const [drafts, setDrafts] = useState<Record<string, Partial<Draft>>>({});
 
   if (isLoading) return <Loader />;
   if (error)
@@ -42,17 +47,37 @@ export function Users() {
 
   const items = data?.items ?? [];
 
-  const handleRoleChange = async (
-    user: AdminUserSummary,
-    nextRole: "admin" | "user",
-  ) => {
-    if (nextRole === user.role) return;
+  const draftFor = (u: AdminUserSummary): Draft => ({
+    role: (drafts[u.user_id]?.role ?? u.role) as Role,
+    language: (drafts[u.user_id]?.language ?? u.language) as Lang,
+  });
+
+  const isDirty = (u: AdminUserSummary): boolean => {
+    const d = draftFor(u);
+    return d.role !== u.role || d.language !== u.language;
+  };
+
+  const setDraft = (userId: string, patch: Partial<Draft>) => {
+    setDrafts((prev) => ({ ...prev, [userId]: { ...prev[userId], ...patch } }));
+  };
+
+  const saveRow = async (u: AdminUserSummary) => {
+    const d = draftFor(u);
+    const body: Partial<Draft> = {};
+    if (d.role !== u.role) body.role = d.role;
+    if (d.language !== u.language) body.language = d.language;
+    if (Object.keys(body).length === 0) return;
     try {
-      await patch.mutateAsync({ userId: user.user_id, patch: { role: nextRole } });
+      await patch.mutateAsync({ userId: u.user_id, patch: body });
       notifications.show({
         title: t("users.title"),
-        message: `${user.user_id}: ${user.role} → ${nextRole}`,
+        message: `${u.user_id} updated`,
         color: "green",
+      });
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[u.user_id];
+        return next;
       });
     } catch (e) {
       notifications.show({
@@ -94,7 +119,6 @@ export function Users() {
         <Table.Thead>
           <Table.Tr>
             <Table.Th>User ID</Table.Th>
-            <Table.Th>Display name</Table.Th>
             <Table.Th>Role</Table.Th>
             <Table.Th>Language</Table.Th>
             <Table.Th>Provider</Table.Th>
@@ -102,68 +126,67 @@ export function Users() {
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
-          {items.map((u) => (
-            <Table.Tr key={u.user_id}>
-              <Table.Td>
-                <Text ff="monospace">{u.user_id}</Text>
-              </Table.Td>
-              <Table.Td>
-                <TextInput
-                  autoComplete="off"
-                  defaultValue={u.display_name}
-                  onBlur={(e) => {
-                    const v = e.currentTarget.value;
-                    if (v !== u.display_name && v.length > 0) {
-                      patch.mutateAsync({
-                        userId: u.user_id,
-                        patch: { display_name: v },
-                      });
+          {items.map((u) => {
+            const d = draftFor(u);
+            const dirty = isDirty(u);
+            return (
+              <Table.Tr key={u.user_id}>
+                <Table.Td>
+                  <Text ff="monospace">{u.user_id}</Text>
+                </Table.Td>
+                <Table.Td>
+                  <Select
+                    value={d.role}
+                    data={[
+                      { value: "admin", label: "admin" },
+                      { value: "user", label: "user" },
+                    ]}
+                    onChange={(v) =>
+                      setDraft(u.user_id, { role: (v as Role) ?? u.role })
                     }
-                  }}
-                />
-              </Table.Td>
-              <Table.Td>
-                <Select
-                  value={u.role}
-                  data={[
-                    { value: "admin", label: "admin" },
-                    { value: "user", label: "user" },
-                  ]}
-                  onChange={(v) => handleRoleChange(u, (v as "admin" | "user") ?? u.role)}
-                />
-              </Table.Td>
-              <Table.Td>
-                <Select
-                  value={u.language}
-                  data={[
-                    { value: "en", label: t("lang.en") },
-                    { value: "zh", label: t("lang.zh") },
-                  ]}
-                  onChange={(v) =>
-                    patch.mutateAsync({
-                      userId: u.user_id,
-                      patch: { language: (v as "en" | "zh") ?? u.language },
-                    })
-                  }
-                />
-              </Table.Td>
-              <Table.Td>{u.provider_id ?? "—"}</Table.Td>
-              <Table.Td>
-                <Tooltip label="Reset password">
-                  <ActionIcon
-                    variant="subtle"
-                    onClick={() => {
-                      setResetTarget(u);
-                      setNewPassword("");
-                      openReset();
-                    }}
-                  >
-                    <IconKey size={16} />
-                  </ActionIcon>
-                </Tooltip>
-              </Table.Td>
-            </Table.Tr>
-          ))}
+                  />
+                </Table.Td>
+                <Table.Td>
+                  <Select
+                    value={d.language}
+                    data={[
+                      { value: "en", label: t("lang.en") },
+                      { value: "zh", label: t("lang.zh") },
+                    ]}
+                    onChange={(v) =>
+                      setDraft(u.user_id, { language: (v as Lang) ?? u.language })
+                    }
+                  />
+                </Table.Td>
+                <Table.Td>{u.provider_id ?? "—"}</Table.Td>
+                <Table.Td>
+                  <Group gap="xs">
+                    <Button
+                      size="xs"
+                      variant="default"
+                      disabled={!dirty}
+                      loading={patch.isPending}
+                      onClick={() => saveRow(u)}
+                    >
+                      {t("app.save")}
+                    </Button>
+                    <Tooltip label="Reset password">
+                      <ActionIcon
+                        variant="subtle"
+                        onClick={() => {
+                          setResetTarget(u);
+                          setNewPassword("");
+                          openReset();
+                        }}
+                      >
+                        <IconKey size={16} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Group>
+                </Table.Td>
+              </Table.Tr>
+            );
+          })}
         </Table.Tbody>
       </Table>
       <Modal
