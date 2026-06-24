@@ -54,6 +54,7 @@ from claritymed.web.csrf import CsrfMiddleware
 from claritymed.web.deps import require_admin
 from claritymed.web.jwt import validate_secret_or_raise
 from claritymed.web.middleware import WebContextMiddleware
+from claritymed.web.admin.jobs import JobRegistry
 from claritymed.web.routers.admin import router as admin_router
 from claritymed.web.routers.auth import router as auth_router
 from claritymed.web.routers.chat import (
@@ -153,6 +154,12 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
     # builder defined in the chat router.
     if not getattr(app.state, "ask_service_factory", None):
         app.state.ask_service_factory = build_default_ask_service
+    # Admin jobs registry — single instance per app. ``recover_on_startup``
+    # marks any spec stuck in ``running`` as ``crashed`` and emits the
+    # matching audit event. Runners are wired by U7 (rag_*) and U8
+    # (benchmark_run) so a submit before those land returns a clean 400.
+    app.state.jobs = JobRegistry()
+    app.state.jobs.recover_on_startup()
     logger.info(
         "web.app.lifespan ready dev=%s default_lang=%s",
         app.state.dev,

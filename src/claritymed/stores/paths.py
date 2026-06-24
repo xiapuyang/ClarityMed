@@ -295,6 +295,30 @@ def shared_terminology_jsonl() -> Path:
     return shared_terminology_dir() / "concepts.jsonl"
 
 
+# --- admin paths --------------------------------------------------------
+
+
+def jobs_dir() -> Path:
+    """``DATA_DIR / "jobs"`` — on-disk mirror of the admin JobRegistry.
+
+    Each running / finished job has a ``<job_id>.json`` here so the
+    registry survives a process restart. Cleanup keeps the last 100
+    finished jobs plus the rolling 30-day window.
+    """
+    return _cfg.DATA_DIR / "jobs"
+
+
+def job_path(job_id: str) -> Path:
+    """``DATA_DIR / "jobs" / "<job_id>.json"``.
+
+    ``job_id`` is uuid4-shaped so traversal segments cannot reach this
+    function via API input. The guard below is belt-and-suspenders.
+    """
+    if not job_id or "/" in job_id or ".." in job_id:
+        raise ValueError(f"invalid job_id: {job_id!r}")
+    return jobs_dir() / f"{job_id}.json"
+
+
 def shared_vision_models_dir(
     disease: str | None = None, version: str | None = None
 ) -> Path:
