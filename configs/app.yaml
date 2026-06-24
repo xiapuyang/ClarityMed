@@ -121,6 +121,16 @@ vision:
     min_dimension: 224         # ViT/CLIP encoder input floor
     min_pixels: 50_000         # ≈ 224×224 — also blocks freak aspect ratios
 
+# --- Upload / RAG ingest dedupe ----------------------------------------
+# dedupe_cosine_threshold: per-chunk cosine-similarity threshold for the
+# RAG dedupe pass. New chunks whose dense embedding cosines >= this
+# against an existing chunk in the user's collection are dropped as
+# duplicates. Loader: ``claritymed.config.upload_dedupe_cosine_threshold``;
+# in-code default is 0.93 (DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD). Pinned
+# here so the admin Editable-fields panel can show the live value.
+upload:
+  dedupe_cosine_threshold: 0.93
+
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 tracing:
   enabled: true

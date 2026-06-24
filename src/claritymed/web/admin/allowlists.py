@@ -40,23 +40,23 @@ EDITABLE_KEYS_BY_CONFIG: dict[str, tuple[str, ...]] = {
     "app.yaml": (
         "i18n.default_lang",
         "tracing.enabled",
-        "upload.max_text_chars",
+        "paste.max_text_chars",
         "upload.dedupe_cosine_threshold",
     ),
     "retrieval.yaml": (
-        "top_k_default",
-        "rerank.enabled",
+        "user_rag.top_k",
+        "user_rag.rerank_k",
     ),
     "safety.yaml": (
-        "redflag.enabled",
-        "phi_guard.cloud_block_threshold",
+        "phi.privacy_filter.enabled",
+        "phi.on_deny",
     ),
     "ocr.yaml": (
-        "enabled",
-        "provider",
+        "phi_policy",
+        "llm.provider_id",
     ),
-    "uncertainty.yaml": ("decision.threshold",),
-    "evals.yaml": ("judge.model_id",),
+    "uncertainty.yaml": ("abstain.threshold",),
+    "evals.yaml": ("judge_provider_id",),
 }
 
 # Models module (U9) — registered here so the catalog endpoint refuses
