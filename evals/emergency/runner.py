@@ -225,7 +225,7 @@ def main() -> int:
     if not cases:
         print(f"Loaded {len(paths)} files but no cases.")
         return 1
-    tokens = apply_context(request_id="eval-emergency", user_id="eval", language="en")
+    tokens = apply_context(request_id="eval-emergency", user_id="e2e", language="en")
     try:
         preds = asyncio.run(run_all_profiles(cases))
     finally:

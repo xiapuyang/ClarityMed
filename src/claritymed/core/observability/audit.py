@@ -51,6 +51,13 @@ AuditKind = Literal[
     "redflag.reply_missing_action",
     "redflag.validator_unrecoverable",
     "redflag.critical_short_circuit",
+    # redflag.gate_component_timeout — a gate LLM stage (extractor,
+    # composer, or critical_reply) exceeded its per-stage asyncio timeout
+    # and fell through to its fail-open value. Gate continues in degraded
+    # mode rather than blocking the user turn.
+    # payload allowlist: component ("extractor"|"composer"|"critical_reply"),
+    #                    timeout_s (float)
+    "redflag.gate_component_timeout",
     "phi_guard_block",
     "phi_guard_allow",
     # Layer-3 PHI defense (PhiAssertionModel). Fires when a cloud-bound

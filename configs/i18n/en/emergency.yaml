@@ -69,3 +69,18 @@ emergency:
     # detorsion within 6 hours preserves the testis.
     urgent_eval_torsion: |
       **Go to the nearest emergency department now — sudden severe one-sided testicular pain can mean testicular torsion, and the testicle has to be untwisted surgically within about 6 hours to save it.** Do not eat or drink in case surgery is needed. If you cannot get there fast, call your local emergency number (US: 911, UK: 999, CN: 120).
+    # Generic fallback — used when no specific action key is available
+    # but the gate has already determined the situation is critical.
+    generic_emergency: |
+      **If this may be a medical emergency, call your local emergency number now (US: 911, UK: 999, CN: 120).** Do not wait to see if symptoms improve.
+  # Labels for the dynamic [SAFETY CONTEXT] block that the agent's
+  # system prompt receives on urgent/moderate triage turns. These are
+  # scaffolding strings (not prompt-engineering knobs); the LLM
+  # directive that ties them together lives in
+  # core/prompts/store/emergency_triage_context.yaml.
+  triage_context:
+    header: "[SAFETY CONTEXT]"
+    level_prefix: "level:"
+    suggested_action_lead_in: "suggested_action (LEAD with this verbatim):"
+    missing_qualifiers_lead_in: "missing_qualifiers (elicit these from the user this turn BEFORE giving general advice):"
+    reasoning_prefix: "reasoning:"

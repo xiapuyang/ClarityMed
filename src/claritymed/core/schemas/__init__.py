@@ -18,7 +18,6 @@ from claritymed.core.schemas.answer import (
     Citation,
     Disclaimer,
     GroundedAnswer,
-    RedFlag,
 )
 from claritymed.core.schemas.evals import EvalsConfig
 from claritymed.core.schemas.lab import LabFlag, LabPanel, LabValue, ReferenceRange
@@ -72,7 +71,6 @@ __all__ = [
     "ProviderConfig",
     "ProviderKind",
     "Solicitation",
-    "RedFlag",
     "ReferenceRange",
     "RequestContext",
     "Role",

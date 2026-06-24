@@ -276,3 +276,122 @@ def test_tripwire_quiet_when_routine(monkeypatch):
     triage = EmergencyAssessment.routine_noop()
     audit_reply_missing_action_if_needed("whatever", triage, language="en")
     assert calls == []
+
+
+# --- Fix #5: timeout → fail-open tests --------------------------------
+#
+# Each test patches the timeout constant to 0.1s so the test completes
+# fast, then uses a fake Agent that sleeps longer to force the timeout.
+# The timeout path must return the stage's fail-open value.
+
+
+@pytest.mark.asyncio
+async def test_extractor_timeout_returns_empty_symptoms(monkeypatch):
+    """LLMExtractor.extract falls open to ExtractedSymptoms(primary=None) on timeout."""
+    import asyncio
+
+    import claritymed.core.emergency.extractor as ext_mod
+    from claritymed.core.emergency.extractor import LLMExtractor
+    from claritymed.core.emergency.schemas import ExtractedSymptoms
+
+    # Suppress audit_event (no request context in unit tests).
+    monkeypatch.setattr(ext_mod, "audit_event", lambda *a, **kw: None)
+    # Set a tiny timeout so the test is fast.
+    monkeypatch.setattr(ext_mod, "_EXTRACTOR_TIMEOUT_S", 0.1)
+
+    class _SlowModel:
+        """Fake pydantic-ai Model that always times out."""
+
+        async def request(self, *_a, **_kw):
+            await asyncio.sleep(10)
+            raise AssertionError("should not reach here")
+
+    # Build an extractor with a fake model. Bypass the agent by patching
+    # _agent.run directly on the instance.
+    extractor = LLMExtractor.__new__(LLMExtractor)
+    extractor._language = "en"
+
+    class _FakeAgent:
+        async def run(self, *_a, **_kw):
+            await asyncio.sleep(10)
+            raise AssertionError("should not reach here")
+
+    extractor._agent = _FakeAgent()
+
+    result = await extractor.extract("chest pain", None)
+    assert isinstance(result, ExtractedSymptoms)
+    assert result.primary_complaint is None
+
+
+@pytest.mark.asyncio
+async def test_composer_timeout_returns_empty_string(monkeypatch):
+    """LLMComposer.compose falls open to empty string on timeout."""
+    import asyncio
+
+    import claritymed.core.emergency.composer as comp_mod
+    from claritymed.core.emergency.composer import LLMComposer
+    from claritymed.core.emergency.schemas import ExtractedSymptoms, MatchedRule
+
+    monkeypatch.setattr(comp_mod, "audit_event", lambda *a, **kw: None)
+    monkeypatch.setattr(comp_mod, "_COMPOSER_TIMEOUT_S", 0.1)
+
+    composer = LLMComposer.__new__(LLMComposer)
+    composer._model = None
+    composer._registry = None
+
+    class _FakeAgent:
+        async def run(self, *_a, **_kw):
+            await asyncio.sleep(10)
+            raise AssertionError("should not reach here")
+
+    composer._agents = {"en": _FakeAgent()}
+
+    rule = MatchedRule(
+        rule_id="test",
+        level="urgent",
+        suggested_action_i18n_key="emergency.action.urgent_eval_chest_pain",
+        citations=["x"],
+    )
+    symptoms = ExtractedSymptoms(primary_complaint="chest_pain")
+    result = await composer.compose([rule], symptoms, language="en")
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_critical_reply_timeout_returns_empty_result(monkeypatch):
+    """CriticalReplyComposer.compose falls open to empty CriticalReplyResult on timeout."""
+    import asyncio
+
+    import claritymed.core.emergency.critical_reply as cr_mod
+    from claritymed.core.emergency.critical_reply import (
+        CriticalReplyComposer,
+        CriticalReplyResult,
+    )
+    from claritymed.core.emergency.schemas import ExtractedSymptoms, MatchedRule
+
+    monkeypatch.setattr(cr_mod, "audit_event", lambda *a, **kw: None)
+    monkeypatch.setattr(cr_mod, "_CRITICAL_REPLY_TIMEOUT_S", 0.1)
+
+    composer = CriticalReplyComposer.__new__(CriticalReplyComposer)
+    composer._model = None
+    composer._registry = None
+
+    class _FakeAgent:
+        async def run(self, *_a, **_kw):
+            await asyncio.sleep(10)
+            raise AssertionError("should not reach here")
+
+    composer._agents = {"en": _FakeAgent()}
+
+    rule = MatchedRule(
+        rule_id="acs",
+        level="critical",
+        suggested_action_i18n_key="emergency.action.call_ems_cardiac",
+        citations=["AHA 2021"],
+    )
+    symptoms = ExtractedSymptoms(primary_complaint="chest_pain")
+    result = await composer.compose([rule], symptoms, language="en")
+    assert isinstance(result, CriticalReplyResult)
+    assert result.text == ""
+    assert result.messages_json == b""
+    assert result.usage is None

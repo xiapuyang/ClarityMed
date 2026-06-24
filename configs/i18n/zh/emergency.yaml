@@ -59,3 +59,16 @@ emergency:
     # 睾丸扭转。AUA 急性阴囊指南 — 6 小时内外科复位才能保留睾丸。
     urgent_eval_torsion: |
       **立即前往最近的急诊——突发剧烈单侧睾丸疼痛可能是睾丸扭转，需在大约 6 小时内通过手术复位才能保住睾丸。**不要进食或饮水（可能需要手术）。如无法快速到达，请拨打 120 急救电话。
+    # 通用兜底文案 — 在没有更具体的 action key 可用但门控已判定为
+    # critical 时使用。
+    generic_emergency: |
+      **如怀疑是急诊，请立即拨打急救电话（中国：120；美国：911；英国：999）。**不要等待症状是否自行缓解。
+  # 注入到 agent system prompt 的动态 [安全提示] 块所用的标签。
+  # 这些是脚手架字串（不是可调的 prompt engineering），承接它们的
+  # LLM 指令位于 core/prompts/store/emergency_triage_context.yaml。
+  triage_context:
+    header: "[安全提示]"
+    level_prefix: "等级："
+    suggested_action_lead_in: "建议处置（请逐字采用，作为回复的第一句）："
+    missing_qualifiers_lead_in: "需要本轮先问清的关键信息（在给出一般建议前先询问）："
+    reasoning_prefix: "判断依据："

@@ -22,6 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from claritymed.config import CONFIGS_DIR
 
+# Canonical definition lives in claritymed.core.emergency.schemas.SensitivityName.
+# Redefined here because ``from __future__ import annotations`` defers all
+# annotation evaluation, which breaks Pydantic's model-build step when a
+# cross-module Literal type alias is resolved lazily. Both definitions must
+# stay in sync; add new values in schemas.py first, then mirror here.
 SensitivityName = Literal["strict", "balanced", "lenient", "off"]
 
 EMERGENCY_CONFIG_FILENAME = "emergency.yaml"
@@ -59,9 +64,11 @@ class EmergencyConfig(BaseModel):
     # kind=local entry in models.yaml" — adequate for a fresh install
     # but order-dependent, so any deploy with more than one local
     # provider should pin this explicitly. KTD-E1 still applies: the
-    # pinned id must be ``kind: local``; the cross-catalog check lives
-    # in :func:`load_validated_emergency_config` so a typo here fails
-    # the app at startup instead of silently disabling the gate.
+    # pinned id must be ``kind: local``; the cross-catalog check in
+    # :func:`claritymed.core.emergency.rules._check_provider_in_catalog`
+    # (called from :func:`load_validated_emergency_config`) enforces this
+    # at startup — a typo or a cloud id fails loud rather than silently
+    # routing PHI to the cloud or disabling the gate.
     provider_id: str | None = None
     sensitivity_profiles: dict[SensitivityName, SensitivityProfile] = Field(
         default_factory=dict

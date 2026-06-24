@@ -1,8 +1,14 @@
 """Final orchestrator output contract (architecture §3 [4] → §6).
 
 ``GroundedAnswer`` is what the agent must return. Pydantic AI uses it as
-``result_type``; the safety / composition layer reads ``red_flags`` and
-``disclaimer`` to decide post-processing; audit logs serialize ``provenance``.
+``result_type``; the safety / composition layer reads ``disclaimer`` to decide
+post-processing; audit logs serialize ``provenance``.
+
+v1 emergency safety signals are audit-event-only: the pre-step EmergencyTriage
+emits ``redflag_trigger`` audit events in ``_finalize_turn`` rather than
+populating a ``red_flags`` field on the answer. Structured-output downstream
+consumers (web SSE banner, TUI emergency block) are deferred to v2 and will
+be wired on top of the audit layer at that point.
 
 Error convention: callers must **not** let a ``ValidationError`` bubble up to
 the CLI / API. The orchestrator wraps schema failures in a high-epistemic
@@ -19,7 +25,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from claritymed.core.schemas.uncertainty import UncertaintyResult
 
 Language = Literal["en", "zh"]
-RedFlagSeverity = Literal["info", "warn", "emergency"]
 
 
 class Citation(BaseModel):
@@ -31,22 +36,6 @@ class Citation(BaseModel):
     url: str | None = None
     published_at: date | None = None
     quote: str | None = None
-
-
-class RedFlag(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    rule_id: str = Field(min_length=1)
-    severity: RedFlagSeverity
-    message: str = Field(min_length=1)
-    language: Language
-    # i18n key for the rule's suggested action (e.g.
-    # ``emergency.action.call_ems_cardiac``). The pre-step EmergencyTriage
-    # populates this so downstream surfaces can render the action verb
-    # without re-deriving it from ``message``. Optional because legacy
-    # callers (none today) that fill RedFlag from BASD-side severity
-    # heuristics would not have an i18n key handy.
-    suggested_action_i18n_key: str | None = None
 
 
 class Disclaimer(BaseModel):
@@ -67,7 +56,6 @@ class GroundedAnswer(BaseModel):
     text: str = Field(min_length=1)
     citations: list[Citation] = Field(default_factory=list)
     uncertainty: UncertaintyResult
-    red_flags: list[RedFlag] = Field(default_factory=list)
     disclaimer: Disclaimer
     provenance: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

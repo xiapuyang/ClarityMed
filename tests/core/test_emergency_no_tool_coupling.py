@@ -4,7 +4,7 @@ The plan's strictest architectural rule is one-way coupling — the
 emergency gate calls down into the agent loop, but the agent's tools
 (``symptoms_plugin``, ``vision_plugin``, ``ingest_tools_plugin``, and
 every future tool) never reach up to import ``EmergencyTriage`` or
-populate ``GroundedAnswer.red_flags[]``. The reverse direction was
+write safety signals that belong to the gate. The reverse direction was
 explicitly considered and rejected (plan KTD-E5) because every tool
 becoming gate-aware would compound coupling as new tools land.
 
@@ -56,10 +56,10 @@ def test_orchestrator_features_dir_exists():
 def test_no_tool_imports_emergency_gate():
     """Every tool file is free of imports from ``claritymed.core.emergency``.
 
-    Plan KTD-E5: tools may not import gate types or populate
-    ``red_flags[]``. If a tool needs to know the current triage level,
-    add the field to :class:`AskDeps` so the gate stays the sole
-    writer — do not reach across modules.
+    Plan KTD-E5: tools may not import gate types or write safety signals
+    that belong to the gate. If a tool needs to know the current triage
+    level, add the field to :class:`AskDeps` so the gate stays the sole
+    producer — do not reach across modules.
     """
     offenders: list[tuple[Path, str]] = []
     for path in _tool_python_files():

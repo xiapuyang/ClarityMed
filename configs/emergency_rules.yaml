@@ -136,11 +136,17 @@ rules:
   # and ≥4 vignettes in evals/emergency/sources/public_vignettes.yaml.
   # ====================================================================
 
-  # Pulmonary embolism — dyspnea-primary presentation. Wells +
-  # ACEP intermediate-to-high probability rule.
+  # Pulmonary embolism — covers both dyspnea-primary and chest_pain-
+  # primary presentations. Real-world PE patients may present with
+  # pleuritic chest pain as the chief complaint (especially small
+  # peripheral emboli) rather than dyspnea. Using a list for
+  # triggers.primary with OR semantics keeps this as one canonical
+  # rule (one rule id) instead of two identical-id duplicates which
+  # the RulePack validator now rejects. Wells + ACEP intermediate-to-
+  # high probability criteria.
   - id: pulmonary_embolism
     triggers:
-      primary: dyspnea
+      primary: [dyspnea, chest_pain]   # either presentation triggers
       any_of:
         - pleuritic
         - unilateral_leg_swelling
@@ -153,26 +159,6 @@ rules:
     minimum_sensitivity_floor: balanced
     citations:
       - "Wells Criteria (Ann Intern Med 2001;135:98)"
-      - "ACEP Clinical Policy: Suspected PE 2018"
-
-  # PE companion rule — chest_pain-primary presentation. Real-world
-  # PE patients frequently present with pleuritic chest pain as the
-  # chief complaint rather than dyspnea (especially small peripheral
-  # emboli). Same qualifiers + same i18n action; matcher emits both
-  # rule ids when both fire, but the level is critical either way.
-  - id: pulmonary_embolism
-    triggers:
-      primary: chest_pain
-      any_of:
-        - pleuritic
-        - unilateral_leg_swelling
-        - hemoptysis
-      min_qualifier_matches: 1
-    level: critical
-    action_key: emergency.action.urgent_eval_pe
-    minimum_sensitivity_floor: balanced
-    citations:
-      - "Wells Criteria — pleuritic chest pain presentation"
       - "ACEP Clinical Policy: Suspected PE 2018"
 
   # Sepsis (qSOFA). ≥2 of the three qSOFA criteria + infection

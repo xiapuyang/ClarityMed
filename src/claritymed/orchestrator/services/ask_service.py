@@ -161,6 +161,21 @@ def _profile_demographics(user_id: str) -> tuple[int | None, Any]:
     return profile.age, sex_token
 
 
+_TRIAGE_CONTEXT_PROMPT_NAME = "emergency_triage_context"
+
+# Hard-coded English fallback for the closing LLM directive when the
+# PromptRegistry load fails. Labels do not need a Python fallback
+# because ``i18n_t`` already returns the bare key on miss and the
+# missing-key audit covers it; the directive is the only piece that
+# would otherwise leave the LLM with no instruction.
+_TRIAGE_CLOSING_DIRECTIVE_EN_FALLBACK = (
+    "Lead your reply with the suggested_action above (verbatim), "
+    "then elicit any missing_qualifiers, then add your answer to "
+    "the user's question. Do not soften, paraphrase, or move the "
+    "suggested_action below your answer."
+)
+
+
 def _triage_system_prompt(ctx) -> str:  # noqa: ANN001
     """Dynamic system_prompt that injects [SAFETY CONTEXT] from triage.
 
@@ -182,6 +197,17 @@ def _triage_system_prompt(ctx) -> str:  # noqa: ANN001
     * ``urgent`` / ``moderate`` → emit a structured block with the
       localized action wording, the missing-qualifier hints (so the
       agent knows what to elicit on this turn), and the rule reasoning.
+
+    Source split (intentional):
+
+    * Scaffolding labels (``[SAFETY CONTEXT]``, ``level:``, lead-ins,
+      ``reasoning:``) live in
+      ``configs/i18n/{en,zh}/emergency.yaml::emergency.triage_context.*``.
+      They are translation-only — never tuned for prompt quality.
+    * The closing directive (the LLM instruction that ties the block
+      together) lives in
+      ``core/prompts/store/emergency_triage_context.yaml`` so it can
+      be versioned + iterated in Phoenix like other LLM prompts.
     """
     deps = getattr(ctx, "deps", None)
     triage = getattr(deps, "triage", None)
@@ -191,29 +217,45 @@ def _triage_system_prompt(ctx) -> str:  # noqa: ANN001
         return ""
 
     lang = getattr(deps, "language", "en")
+
+    try:
+        from claritymed.core.prompts.registry import get_default_registry
+
+        directive = (
+            get_default_registry()
+            .get(
+                _TRIAGE_CONTEXT_PROMPT_NAME,
+                language=lang,  # type: ignore[arg-type]
+            )
+            .strip()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "emergency_triage_context prompt load failed; falling back to English directive"
+        )
+        directive = _TRIAGE_CLOSING_DIRECTIVE_EN_FALLBACK
+
     lines = [
-        "[SAFETY CONTEXT]",
-        f"level: {triage.level}",
+        i18n_t("emergency.triage_context.header", lang=lang),
+        f"{i18n_t('emergency.triage_context.level_prefix', lang=lang)} {triage.level}",
     ]
     if triage.suggested_action_i18n_key:
         action = i18n_t(triage.suggested_action_i18n_key, lang=lang)
         if action and action != triage.suggested_action_i18n_key:
-            lines.append("suggested_action (LEAD with this verbatim):")
+            lines.append(
+                i18n_t("emergency.triage_context.suggested_action_lead_in", lang=lang)
+            )
             lines.append(action.strip())
     if triage.missing_qualifiers:
         lines.append(
-            "missing_qualifiers (elicit these from the user this turn "
-            "BEFORE giving general advice):"
+            i18n_t("emergency.triage_context.missing_qualifiers_lead_in", lang=lang)
         )
         lines.append(", ".join(triage.missing_qualifiers))
     if triage.reasoning:
-        lines.append(f"reasoning: {triage.reasoning}")
-    lines.append(
-        "Lead your reply with the suggested_action above (verbatim), "
-        "then elicit any missing_qualifiers, then add your answer to "
-        "the user's question. Do not soften, paraphrase, or move the "
-        "suggested_action below your answer."
-    )
+        lines.append(
+            f"{i18n_t('emergency.triage_context.reasoning_prefix', lang=lang)} {triage.reasoning}"
+        )
+    lines.append(directive)
     return "\n".join(lines)
 
 
@@ -1085,17 +1127,24 @@ class AskService:
                                     "transcript.*"
                                 )
                             )
-                        # Emergency-gate footer: appended deterministically
-                        # (not via LLM prompt) so neither the model nor a
-                        # prompt-injection attempt can suppress it. Lives
-                        # in ``result["final_text"]`` so the persisted
-                        # transcript carries the disclaimer too — a user
-                        # who reopens the session sees the same wording.
-                        footer_text = self._emergency_footer_text()
-                        if footer_text:
-                            result["final_text"] = result["final_text"] + footer_text
                         self._finalize_turn(user_id, result, deps)
                         finalized = True
+                    # Emergency-gate footer: appended deterministically to
+                    # result["final_text"] and streamed unconditionally —
+                    # regardless of had_error. The footer is a hard safeguard
+                    # (CLAUDE.md §Off-mode safeguards): "deterministic
+                    # disclaimer footer appended to every reply". If the LLM
+                    # errored and final_text is an error message, the footer
+                    # still appends — a user in off-mode must see the
+                    # disclaimer even when the answer was degraded.
+                    footer_text = self._emergency_footer_text()
+                    if footer_text:
+                        result["final_text"] = result["final_text"] + footer_text
+                        # Stream to the live UI — the persisted final_text
+                        # already carries it (above), but the consumer streamed
+                        # tokens earlier and never sees the post-finalize
+                        # mutation.
+                        yield TokenChunk(text=footer_text)
                     if deps.retrieved_chunks:
                         self._last_chunks = list(deps.retrieved_chunks)
                         yield TokenChunk(
@@ -1109,14 +1158,6 @@ class AskService:
                                     deps.retrieved_chunks
                                 )
                             )
-                    # Stream the footer to the live UI as a TokenChunk —
-                    # the persisted ``final_text`` already carries it
-                    # (above), but the consumer streamed tokens earlier
-                    # and never sees the post-finalize mutation.
-                    if not result["had_error"]:
-                        footer_for_stream = self._emergency_footer_text()
-                        if footer_for_stream:
-                            yield TokenChunk(text=footer_for_stream)
                 yield event
         finally:
             # When the consumer cancels mid-stream (TUI Esc) or the
@@ -1398,7 +1439,9 @@ class AskService:
         # Phase 1 stub: ``assess`` returns ``routine_noop`` for non-off
         # sensitivities; off emits ``redflag.gate_disabled`` and short-
         # circuits to routine inside the service.
-        profile_age, profile_sex = _profile_demographics(user_id)
+        profile_age, profile_sex = await asyncio.to_thread(
+            _profile_demographics, user_id
+        )
         try:
             deps.triage = await self._triage_service.assess(
                 scrubbed,
@@ -1407,6 +1450,7 @@ class AskService:
                 language=self._language,
                 profile_age=profile_age,
                 profile_sex=profile_sex,
+                reason=self._resolved_sensitivity.reason,
             )
         except Exception:  # noqa: BLE001
             # Fail-open: gate downtime must not block the user. Log
@@ -2005,6 +2049,12 @@ class AskService:
             total_ms=total_ms,
         )
         result["steps"] = []
+        yield Done(final=final_text)
+        # Audit AFTER yield Done so the logging write is not on the
+        # user-perceived latency path. The short-circuit saves 3-5 s
+        # vs. the full agent loop; every millisecond in this path
+        # matters. _finalize_turn still runs synchronously after the
+        # generator is exhausted, so timing is still accurate.
         audit_event(
             "redflag.critical_short_circuit",
             payload={
@@ -2015,7 +2065,6 @@ class AskService:
                 "had_composer": self._critical_reply is not None,
             },
         )
-        yield Done(final=final_text)
 
     def _emergency_footer_text(self) -> str:
         """Return the localized footer text for the active sensitivity.
@@ -2072,9 +2121,11 @@ class AskService:
         # code; the audit row is the v1 consumer, the v2 surfaces
         # (web SSE banner, TUI emergency block) layer on top. Skipped
         # entirely on routine_noop / off-mode (off has its own
-        # ``redflag.gate_disabled`` event).
+        # ``redflag.gate_disabled`` event). Also skipped on critical
+        # turns — those already emit ``redflag.critical_short_circuit``
+        # which carries the same rule payload, avoiding a duplicate row.
         triage = deps.triage
-        if triage is not None and triage.matched_rules:
+        if triage is not None and triage.matched_rules and triage.level != "critical":
             audit_event(
                 "redflag_trigger",
                 payload={

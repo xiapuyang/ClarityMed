@@ -14,6 +14,8 @@ and the helper factories that read it from ``EmergencyConfig``.
 
 from __future__ import annotations
 
+import pytest
+
 import claritymed.core.emergency.config as _emcfg_mod
 import claritymed.stores.models as _models_mod
 from claritymed.core.emergency import (
@@ -160,3 +162,100 @@ def test_no_pin_falls_back_to_first_local(monkeypatch):
     assert model is not None
     # First local in YAML order is ollama (:11434).
     assert "11434" in str(model.client.base_url)
+
+
+# --- Fix #8: startup fail-loud cross-catalog check -------------------
+
+
+def _pin_for_validated(
+    monkeypatch, *, provider_id: str | None, catalog: ModelsConfig
+) -> None:
+    """Stub load_emergency_config, load_rules, and load_models for
+    load_validated_emergency_config tests.
+
+    load_emergency_config is imported locally inside the function body,
+    so we patch it at the module where it originates (claritymed.core.emergency.config)
+    AND at the stores.models module for the load_models call inside _check_provider_in_catalog.
+    """
+    import claritymed.core.emergency.config as cfg_mod
+    import claritymed.core.emergency.rules as rules_mod
+    import claritymed.stores.models as models_mod
+
+    ec = EmergencyConfig(provider_id=provider_id)
+
+    monkeypatch.setattr(
+        cfg_mod,
+        "load_emergency_config",
+        lambda *_a, **_kw: ec,
+    )
+    monkeypatch.setattr(models_mod, "load_models", lambda: catalog)
+    # load_rules falls back to empty list when the file path doesn't exist —
+    # stub it to return a minimal valid rule so enforce_floors has something to work with.
+    from claritymed.core.emergency.rules import Rule, RuleTriggers
+
+    minimal_rule = Rule(
+        id="test_rule",
+        triggers=RuleTriggers(any_of=["throat_tightness"], min_qualifier_matches=1),
+        level="critical",
+        action_key="emergency.action.epi_then_ems",
+        citations=["WAO 2020"],
+    )
+    monkeypatch.setattr(rules_mod, "load_rules", lambda *_a, **_kw: [minimal_rule])
+
+
+def test_load_validated_raises_when_provider_id_not_in_catalog(monkeypatch):
+    """emergency.yaml::provider_id pointing at a nonexistent id raises at startup."""
+    from claritymed.core.emergency.rules import load_validated_emergency_config
+
+    _pin_for_validated(
+        monkeypatch, provider_id="nonexistent_id", catalog=_two_local_catalog()
+    )
+    with pytest.raises(ValueError, match="nonexistent_id"):
+        load_validated_emergency_config()
+
+
+def test_load_validated_raises_when_provider_id_is_cloud(monkeypatch):
+    """emergency.yaml::provider_id resolving to kind=cloud raises at startup (KTD-E1)."""
+    import pytest
+
+    from claritymed.core.emergency.rules import load_validated_emergency_config
+    from claritymed.core.schemas import ProviderConfig
+
+    cloud_catalog = ModelsConfig(
+        providers=[
+            ProviderConfig(
+                id="claude",
+                kind="cloud",
+                model="anthropic:claude-sonnet-4-6",
+            ),
+            ProviderConfig(
+                id="ollama",
+                kind="local",
+                model="qwen3:14b",
+                base_url="http://127.0.0.1:11434/v1",
+            ),
+        ],
+        default_provider="claude",
+    )
+    _pin_for_validated(monkeypatch, provider_id="claude", catalog=cloud_catalog)
+    with pytest.raises(ValueError, match="kind='cloud'"):
+        load_validated_emergency_config()
+
+
+def test_load_validated_passes_with_local_provider_id(monkeypatch):
+    """emergency.yaml::provider_id pointing at a valid kind=local entry passes."""
+    from claritymed.core.emergency.rules import load_validated_emergency_config
+
+    _pin_for_validated(monkeypatch, provider_id="omlx", catalog=_two_local_catalog())
+    cfg, rules = load_validated_emergency_config()
+    assert cfg.provider_id == "omlx"
+    assert len(rules) >= 1
+
+
+def test_load_validated_passes_with_no_provider_id(monkeypatch):
+    """Unset provider_id (None) skips the catalog check entirely."""
+    from claritymed.core.emergency.rules import load_validated_emergency_config
+
+    _pin_for_validated(monkeypatch, provider_id=None, catalog=_two_local_catalog())
+    cfg, rules = load_validated_emergency_config()
+    assert cfg.provider_id is None

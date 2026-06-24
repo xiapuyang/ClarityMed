@@ -24,12 +24,14 @@ boilerplate, hard 80-word cap), so it has its own YAML.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from claritymed.core.emergency.composer import _ComposerInput
 from claritymed.core.emergency.schemas import ExtractedSymptoms, MatchedRule
+from claritymed.core.observability.audit import audit_event
 from claritymed.core.prompts.registry import PromptRegistry
 
 if TYPE_CHECKING:
@@ -38,6 +40,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CRITICAL_REPLY_PROMPT_NAME = "emergency_reply"
+# Per-stage asyncio timeout budget. On timeout the critical_reply falls open
+# to an action-text-only reply built from i18n alone (skip supporting
+# sentences). The gate's safety instruction is still delivered; only the
+# additional context paragraph is lost.
+_CRITICAL_REPLY_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -58,9 +65,12 @@ class CriticalReplyResult:
 class CriticalReplyComposer:
     """pydantic-ai-backed composer reading ``emergency_reply.yaml``.
 
-    Mirrors :class:`LLMComposer` shape (cheap construction, Agent built
-    per-call). Returns :class:`CriticalReplyResult` so the caller can
-    persist messages_json without re-running the LLM.
+    Mirrors :class:`LLMComposer` shape but returns :class:`CriticalReplyResult`
+    so the caller can persist messages_json without re-running the LLM.
+
+    Agent instances are cached per language so repeated critical calls
+    for the same language skip agent construction. pydantic-ai Agent
+    instances are stateless w.r.t. user messages, so caching is safe.
     """
 
     def __init__(
@@ -70,6 +80,24 @@ class CriticalReplyComposer:
     ) -> None:
         self._model = model
         self._registry = registry or PromptRegistry()
+        # Dict keyed by language → cached Agent for that language.
+        self._agents: dict[str, Any] = {}
+
+    def _get_agent(self, language: str) -> Any:
+        """Return a cached (or freshly built) Agent for ``language``."""
+        from pydantic_ai import Agent
+
+        if language not in self._agents:
+            system_prompt = self._registry.get(
+                _CRITICAL_REPLY_PROMPT_NAME,
+                language=language,  # type: ignore[arg-type]
+            )
+            self._agents[language] = Agent(
+                self._model,
+                output_type=str,
+                system_prompt=system_prompt,
+            )
+        return self._agents[language]
 
     async def compose(
         self,
@@ -83,25 +111,38 @@ class CriticalReplyComposer:
         The localized action sentence is owned by the caller — this
         method emits ONLY the supporting text. The prompt rules are
         documented in ``emergency_reply.yaml``.
-        """
-        from pydantic_ai import Agent
 
-        system_prompt = self._registry.get(
-            _CRITICAL_REPLY_PROMPT_NAME,
-            language=language,  # type: ignore[arg-type]
-        )
-        agent: Agent[None, str] = Agent(
-            self._model,
-            output_type=str,
-            system_prompt=system_prompt,
-        )
+        On asyncio.TimeoutError falls open to a CriticalReplyResult
+        with empty text — the caller still sends the action text alone,
+        which is a complete actionable reply (KTD-E3 contract).
+        """
+        agent = self._get_agent(language)
         user_text = _ComposerInput(matched_rules, symptoms).to_text()
-        result = await agent.run(user_text)
-        return CriticalReplyResult(
-            text=(result.output or "").strip(),
-            messages_json=result.all_messages_json(),
-            usage=result.usage,
-        )
+        try:
+            result = await asyncio.wait_for(
+                agent.run(user_text), timeout=_CRITICAL_REPLY_TIMEOUT_S
+            )
+            return CriticalReplyResult(
+                text=(result.output or "").strip(),
+                messages_json=result.all_messages_json(),
+                usage=result.usage,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "emergency.critical_reply timed out after %ss, failing open",
+                _CRITICAL_REPLY_TIMEOUT_S,
+            )
+            try:
+                audit_event(
+                    "redflag.gate_component_timeout",
+                    payload={
+                        "component": "critical_reply",
+                        "timeout_s": _CRITICAL_REPLY_TIMEOUT_S,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return CriticalReplyResult(text="", messages_json=b"", usage=None)
 
 
 def build_default_critical_reply(

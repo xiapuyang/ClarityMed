@@ -4,7 +4,10 @@ Public surface:
 
 * :class:`EmergencyAssessment` — the pre-step's structured output;
   consumed by ``AskService`` to decide critical short-circuit vs.
-  context injection, and to populate ``GroundedAnswer.red_flags[]``.
+  context injection. Safety signals are surfaced via audit events
+  (``redflag_trigger`` in ``_finalize_turn``) — R3 v1 is audit-event-only;
+  structured-output downstream consumers (web SSE banner, TUI block)
+  are deferred to v2 and will layer on top of the audit events.
 * :class:`EmergencyTriage` — service facade. Always invoked once per
   clinical ``AskService.handle`` turn before the agent runs.
 * :func:`resolve_sensitivity` — CLI → user-setting → app-default →

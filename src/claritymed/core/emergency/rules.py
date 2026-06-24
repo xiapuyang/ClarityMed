@@ -32,19 +32,6 @@ from claritymed.core.emergency.schemas import EmergencyLevel, SensitivityName
 
 EMERGENCY_RULES_FILENAME = "emergency_rules.yaml"
 
-# Floor rank reserved for Phase 5+ when more nuanced floor levels
-# might land. Phase 2 only distinguishes "lenient floor" (rule cannot
-# be overridden at all) from everything else (any profile may
-# override) — the plan example explicitly shows the lenient profile
-# raising ACS threshold to 2 even though ACS has a ``balanced``
-# floor, which is only consistent with the simpler reading.
-_FLOOR_RANK: dict[SensitivityName, int] = {
-    "lenient": 3,
-    "balanced": 2,
-    "strict": 1,
-    "off": 0,
-}
-
 
 class RuleTriggers(BaseModel):
     """One rule's match criteria.
@@ -58,8 +45,10 @@ class RuleTriggers(BaseModel):
 
     # Required primary complaint. None means "match on qualifiers alone"
     # (e.g. anaphylaxis fires on the throat/lip/urticaria triad without
-    # a single named primary).
-    primary: str | None = None
+    # a single named primary). A list means "any of these primaries matches"
+    # (OR semantics) — used when a rule has multiple valid presentations
+    # (e.g. pulmonary_embolism: dyspnea OR chest_pain).
+    primary: str | list[str] | None = None
     any_of: list[str] = Field(default_factory=list)
     # Default 1; the ambiguous-high-risk catch-all sets this to 0 so
     # any chest_pain (no qualifier required) still triggers urgent.
@@ -109,6 +98,23 @@ class RulePack(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rules: list[Rule] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _no_duplicate_ids(self) -> "RulePack":
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for rule in self.rules:
+            if rule.id in seen and rule.id not in duplicates:
+                duplicates.append(rule.id)
+            seen.add(rule.id)
+        if duplicates:
+            raise ValueError(
+                f"emergency_rules.yaml contains duplicate rule id(s): "
+                f"{duplicates}. Each rule id must be unique — merge "
+                "multi-presentation rules using a list for "
+                "triggers.primary instead."
+            )
+        return self
 
 
 # --- floor enforcement ----------------------------------------------
@@ -195,7 +201,7 @@ def enforce_floors(
 
 
 def apply_profile_to_rules(
-    rules: list[Rule], profile: SensitivityProfile, profile_name: SensitivityName
+    rules: list[Rule], profile: SensitivityProfile
 ) -> list[Rule]:
     """Return the per-turn effective rule list for ``profile``.
 
@@ -229,7 +235,6 @@ def apply_profile_to_rules(
         if "level" in override:
             data["level"] = override["level"]
         out.append(Rule.model_validate(data))
-    _ = profile_name  # reserved for Phase 5+ override semantics
     return out
 
 
@@ -247,18 +252,62 @@ def load_rules(path: Path | None = None) -> list[Rule]:
     return list(pack.rules)
 
 
+def _check_provider_in_catalog(cfg: EmergencyConfig) -> None:
+    """Fail-loud if ``emergency.yaml::provider_id`` is set but unusable.
+
+    Two failure modes:
+    1. The id does not exist in ``models.yaml`` at all — likely a typo.
+    2. The id resolves to ``kind != "local"`` — the gate requires local
+       because its extractor sees raw patient text (PHI; KTD-E1).
+
+    A missing ``provider_id`` (``None``) is valid — the gate falls back
+    to "first kind=local in models.yaml" at runtime.
+
+    Raises ``ValueError`` so the app fails at startup rather than
+    silently disabling the gate (which would be worse — the audit trail
+    would show routine_noop on every turn with no explanation).
+    """
+    if cfg.provider_id is None:
+        return
+    from claritymed.stores.models import load_models
+
+    models = load_models()
+    matching = [p for p in models.providers if p.id == cfg.provider_id]
+    if not matching:
+        available_ids = [p.id for p in models.providers]
+        raise ValueError(
+            f"emergency.yaml::provider_id={cfg.provider_id!r} does not match "
+            f"any provider in models.yaml. "
+            f"Available ids: {available_ids}"
+        )
+    if matching[0].kind != "local":
+        raise ValueError(
+            f"emergency.yaml::provider_id={cfg.provider_id!r} resolves to "
+            f"kind={matching[0].kind!r}; the gate requires kind='local' "
+            "because its extractor sees raw patient text (PHI; KTD-E1). "
+            "Either change provider_id to a local entry or remove it to "
+            "fall back to the first kind=local provider in models.yaml."
+        )
+
+
 def load_validated_emergency_config() -> tuple[EmergencyConfig, list[Rule]]:
     """One-call helper: load both config + rules, then enforce floors.
 
     Returns ``(config, rules)`` ready for the triage service to use.
-    Raises :class:`FloorViolationError` if any profile override
-    violates a rule's ``minimum_sensitivity_floor`` — a config-time
-    failure that an operator can grep for and fix before the gate
-    starts denying user turns at runtime.
+
+    Raises:
+    * :class:`FloorViolationError` if any profile override violates a
+      rule's ``minimum_sensitivity_floor`` — config-time failure so an
+      operator can fix before the gate starts denying user turns.
+    * ``ValueError`` if ``emergency.yaml::provider_id`` is set but
+      does not resolve to a ``kind=local`` entry in ``models.yaml``.
+      The docstring on :attr:`EmergencyConfig.provider_id` promised this
+      check; it is now backed by code rather than a comment.
     """
     from claritymed.core.emergency.config import load_emergency_config
 
     cfg = load_emergency_config()
     rules = load_rules()
     enforce_floors(rules, cfg.sensitivity_profiles)
+    _check_provider_in_catalog(cfg)
     return cfg, rules

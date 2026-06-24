@@ -232,14 +232,14 @@ def test_apply_profile_drops_ambiguous_when_disabled():
         ),
     ]
     profile = SensitivityProfile(ambiguous_rules_enabled=False)
-    effective = apply_profile_to_rules(rules, profile, "lenient")
+    effective = apply_profile_to_rules(rules, profile)
     assert all(not r.ambiguous for r in effective)
 
 
 def test_apply_profile_applies_min_qualifier_override():
     rules = _baseline_rules()
     profile = SensitivityProfile(rule_overrides={"acs": {"min_qualifier_matches": 0}})
-    effective = apply_profile_to_rules(rules, profile, "strict")
+    effective = apply_profile_to_rules(rules, profile)
     acs = next(r for r in effective if r.id == "acs")
     assert acs.triggers.min_qualifier_matches == 0
 
@@ -247,7 +247,7 @@ def test_apply_profile_applies_min_qualifier_override():
 def test_apply_profile_does_not_mutate_input():
     rules = _baseline_rules()
     profile = SensitivityProfile(rule_overrides={"acs": {"min_qualifier_matches": 0}})
-    _ = apply_profile_to_rules(rules, profile, "strict")
+    _ = apply_profile_to_rules(rules, profile)
     acs = next(r for r in rules if r.id == "acs")
     assert acs.triggers.min_qualifier_matches == 1  # original untouched
 
@@ -473,7 +473,11 @@ async def test_triage_assess_from_symptoms_off_short_circuits(monkeypatch):
         symptoms, sensitivity="off", language="en"
     )
     assert result.level == "routine"
-    assert any(c[0] == "redflag.gate_disabled" for c in calls)
+    # ``redflag.gate_disabled`` is emitted by ``assess()``, not by
+    # ``assess_from_symptoms()``. Direct callers (tests, evals) that call
+    # ``assess_from_symptoms`` with sensitivity="off" are not real gate
+    # runs, so no audit event is expected here.
+    assert not any(c[0] == "redflag.gate_disabled" for c in calls)
 
 
 @pytest.mark.asyncio
@@ -777,3 +781,175 @@ async def test_triage_assess_forwards_profile_demographics_to_extractor():
     )
     assert captured["age"] == 32
     assert captured["sex"] == "F"
+
+
+# --- Fix #2: merged PE rule (multi-primary OR) + duplicate id guard ---
+
+
+def _pe_rule() -> Rule:
+    """Merged PE rule with list primary — covers both presentations."""
+    return Rule(
+        id="pulmonary_embolism",
+        triggers=RuleTriggers(
+            primary=["dyspnea", "chest_pain"],
+            any_of=[
+                "pleuritic",
+                "unilateral_leg_swelling",
+                "hemoptysis",
+                "syncope",
+                "tachycardia",
+            ],
+            min_qualifier_matches=1,
+        ),
+        level="critical",
+        action_key="emergency.action.urgent_eval_pe",
+        citations=[
+            "Wells Criteria (Ann Intern Med 2001;135:98)",
+            "ACEP Clinical Policy: Suspected PE 2018",
+        ],
+    )
+
+
+def test_rule_pack_rejects_duplicate_ids():
+    """RulePack.model_validate must raise when two rules share the same id."""
+    rule_data = {
+        "rules": [
+            {
+                "id": "dup_rule",
+                "triggers": {
+                    "any_of": ["throat_tightness"],
+                    "min_qualifier_matches": 1,
+                },
+                "level": "critical",
+                "action_key": "emergency.action.epi_then_ems",
+                "citations": ["WAO 2020"],
+            },
+            {
+                "id": "dup_rule",
+                "triggers": {
+                    "any_of": ["lip_tongue_swelling"],
+                    "min_qualifier_matches": 1,
+                },
+                "level": "critical",
+                "action_key": "emergency.action.epi_then_ems",
+                "citations": ["WAO 2020"],
+            },
+        ]
+    }
+    with pytest.raises(ValidationError) as exc:
+        RulePack.model_validate(rule_data)
+    assert "dup_rule" in str(exc.value)
+
+
+def test_merged_pe_rule_fires_on_dyspnea_with_pleuritic():
+    """Dyspnea-primary presentation: merged PE rule fires."""
+    rule = _pe_rule()
+    symptoms = ExtractedSymptoms(
+        primary_complaint="dyspnea",
+        qualifiers=["pleuritic"],
+    )
+    results = match(symptoms, [rule])
+    assert len(results) == 1
+    assert results[0].rule_id == "pulmonary_embolism"
+    assert results[0].level == "critical"
+
+
+def test_merged_pe_rule_fires_on_chest_pain_with_pleuritic():
+    """Chest-pain-primary presentation: merged PE rule also fires."""
+    rule = _pe_rule()
+    symptoms = ExtractedSymptoms(
+        primary_complaint="chest_pain",
+        qualifiers=["pleuritic"],
+    )
+    results = match(symptoms, [rule])
+    assert len(results) == 1
+    assert results[0].rule_id == "pulmonary_embolism"
+    assert results[0].level == "critical"
+
+
+def test_merged_pe_rule_does_not_fire_on_headache():
+    """Non-PE primary (headache) must not match the PE rule."""
+    rule = _pe_rule()
+    symptoms = ExtractedSymptoms(
+        primary_complaint="headache",
+        qualifiers=["pleuritic"],
+    )
+    results = match(symptoms, [rule])
+    assert results == []
+
+
+def test_load_rules_no_duplicate_pe_ids():
+    """The repo YAML must now have exactly one pulmonary_embolism rule."""
+    rules = load_rules()
+    pe_rules = [r for r in rules if r.id == "pulmonary_embolism"]
+    assert len(pe_rules) == 1, (
+        f"Expected exactly one pulmonary_embolism rule, got {len(pe_rules)}"
+    )
+    # Merged rule's primary must be a list covering both presentations.
+    assert isinstance(pe_rules[0].triggers.primary, list)
+    assert "dyspnea" in pe_rules[0].triggers.primary
+    assert "chest_pain" in pe_rules[0].triggers.primary
+
+
+# --- Fix #3: unknown age/sex blocks demographic-gated rules -----------
+
+
+def test_age_none_blocks_age_gated_acs():
+    """Unknown age blocks ACS (age_min=35); balanced profile fires chest_pain_ambiguous_high_risk at urgent.
+
+    Rationale: ACS (age_min=35) firing on totally unknown demographics
+    would generate too many false positives in non-clinical chitchat.
+    The ambiguous_high_risk catch-all catches these cases at urgent instead.
+    See _gate_demographics docstring for full rationale.
+    """
+    rules = load_rules()
+    # Balanced profile: ambiguous rules are enabled (default).
+    from claritymed.core.emergency.config import SensitivityProfile
+
+    profile = SensitivityProfile(ambiguous_rules_enabled=True)
+    effective_rules = apply_profile_to_rules(rules, profile)
+
+    # Classic ACS symptom pattern but no age known.
+    symptoms = ExtractedSymptoms(
+        primary_complaint="chest_pain",
+        qualifiers=["radiation_left_arm", "diaphoresis"],
+        age=None,
+    )
+    matched = match(symptoms, effective_rules)
+    rule_ids = [m.rule_id for m in matched]
+
+    # ACS must NOT fire (age_min=35 gate blocks when age=None).
+    assert "acs_acute_coronary_syndrome" not in rule_ids, (
+        "ACS fired with age=None — demographic gate is broken"
+    )
+    # The ambiguous catch-all SHOULD fire for balanced profile.
+    assert "chest_pain_ambiguous_high_risk" in rule_ids, (
+        "Expected chest_pain_ambiguous_high_risk to fire as catch-all"
+    )
+    acs_level = next(
+        (m.level for m in matched if m.rule_id == "chest_pain_ambiguous_high_risk"),
+        None,
+    )
+    assert acs_level == "urgent"
+
+
+def test_sex_none_blocks_ectopic():
+    """Unknown sex blocks ectopic_pregnancy_bleed (sex=F gate).
+
+    Rationale: ectopic_pregnancy_bleed (sex=F) firing on totally unknown
+    demographics would generate false positives for male users. The
+    ambiguous_high_risk catch-all is not wired for abdominal pain in v1,
+    so the rule simply doesn't fire.
+    """
+    rules = load_rules()
+    symptoms = ExtractedSymptoms(
+        primary_complaint="abdominal_pain",
+        qualifiers=["vaginal_bleeding", "missed_period"],
+        age=28,
+        sex=None,  # sex unknown
+    )
+    matched = match(symptoms, rules)
+    rule_ids = [m.rule_id for m in matched]
+    assert "ectopic_pregnancy_bleed" not in rule_ids, (
+        "ectopic_pregnancy_bleed fired with sex=None — sex gate is broken"
+    )

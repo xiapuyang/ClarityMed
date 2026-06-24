@@ -15,10 +15,12 @@ the safety net's *own* implementation cannot be the privacy leak.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from claritymed.core.emergency.schemas import ExtractedSymptoms
+from claritymed.core.observability.audit import audit_event
 from claritymed.core.prompts.registry import PromptRegistry
 
 if TYPE_CHECKING:
@@ -27,6 +29,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXTRACTOR_PROMPT_NAME = "emergency_extractor"
+# Per-stage asyncio timeout budget. On timeout the extractor falls open to
+# ExtractedSymptoms(primary_complaint=None) which triggers the existing
+# early-exit path in EmergencyTriage (no primary → routine_noop).
+_EXTRACTOR_TIMEOUT_S = 8.0
 
 
 class Extractor(Protocol):
@@ -77,6 +83,8 @@ class LLMExtractor:
         *,
         language: str = "en",
     ) -> None:
+        from pydantic_ai import Agent
+
         self._model = model
         self._registry = registry or PromptRegistry()
         # The extractor's *system prompt* language is independent of
@@ -86,6 +94,21 @@ class LLMExtractor:
         # of the user's chat language; the prompt itself instructs the
         # LLM to read mixed-language history and emit English tokens.
         self._language = language
+        # Build the Agent once at construction time. pydantic-ai Agent
+        # instances are stateless w.r.t. user messages — only the
+        # system_prompt is baked in, and that's fixed at construction.
+        # ``retries=1`` gives the structured-output path one extra
+        # attempt when small local models produce malformed JSON.
+        system_prompt = self._registry.get(
+            _EXTRACTOR_PROMPT_NAME,
+            language=self._language,  # type: ignore[arg-type]
+        )
+        self._agent: Agent[None, ExtractedSymptoms] = Agent(
+            self._model,
+            output_type=ExtractedSymptoms,
+            system_prompt=system_prompt,
+            retries=1,
+        )
 
     async def extract(
         self,
@@ -101,23 +124,35 @@ class LLMExtractor:
         catches and falls open to ``routine_noop`` so a single
         extractor downtime cannot deny the user their answer (plan
         §"Open Questions" → fail-open default).
-        """
-        from pydantic_ai import Agent
 
-        system_prompt = self._registry.get(
-            _EXTRACTOR_PROMPT_NAME,
-            language=self._language,  # type: ignore[arg-type]
-        )
-        agent: Agent[None, ExtractedSymptoms] = Agent(
-            self._model,
-            output_type=ExtractedSymptoms,
-            system_prompt=system_prompt,
-        )
+        On asyncio.TimeoutError the extractor returns
+        ``ExtractedSymptoms(primary_complaint=None)`` — this triggers
+        the existing early-exit path (no primary → routine_noop).
+        """
         user_text = _format_history_for_extractor(
             query, history, profile_age=age, profile_sex=sex
         )
-        result = await agent.run(user_text)
-        return result.output
+        try:
+            result = await asyncio.wait_for(
+                self._agent.run(user_text), timeout=_EXTRACTOR_TIMEOUT_S
+            )
+            return result.output
+        except asyncio.TimeoutError:
+            logger.warning(
+                "emergency.extractor timed out after %ss, failing open",
+                _EXTRACTOR_TIMEOUT_S,
+            )
+            try:
+                audit_event(
+                    "redflag.gate_component_timeout",
+                    payload={
+                        "component": "extractor",
+                        "timeout_s": _EXTRACTOR_TIMEOUT_S,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return ExtractedSymptoms(primary_complaint=None)
 
 
 def _format_history_for_extractor(
@@ -184,10 +219,11 @@ def _extract_message_text(msg: Any) -> str:
 
 def _extract_message_role(msg: Any) -> str:
     """Map a pydantic-ai message to ``"user"`` / ``"assistant"`` / ``"system"``."""
-    cls_name = type(msg).__name__
-    if cls_name == "ModelRequest":
+    from pydantic_ai.messages import ModelRequest, ModelResponse
+
+    if isinstance(msg, ModelRequest):
         return "user"
-    if cls_name == "ModelResponse":
+    if isinstance(msg, ModelResponse):
         return "assistant"
     return "system"
 

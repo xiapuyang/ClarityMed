@@ -33,33 +33,10 @@ from claritymed.core.i18n.loader import t as i18n_t
 from claritymed.core.schemas import (
     Account,
     EmergencySettings,
-    RedFlag,
 )
 
 
 # --- schema extensions -----------------------------------------------
-
-
-def test_red_flag_carries_suggested_action_key():
-    rf = RedFlag(
-        rule_id="acs_acute_coronary_syndrome",
-        severity="emergency",
-        message="severe chest pain — call 911",
-        language="en",
-        suggested_action_i18n_key="emergency.action.call_ems_cardiac",
-    )
-    assert rf.suggested_action_i18n_key == "emergency.action.call_ems_cardiac"
-
-
-def test_red_flag_suggested_action_key_optional():
-    """Legacy callers that did not set the field still validate."""
-    rf = RedFlag(
-        rule_id="legacy",
-        severity="warn",
-        message="x",
-        language="en",
-    )
-    assert rf.suggested_action_i18n_key is None
 
 
 def test_routine_noop_has_routine_level_and_no_findings():
@@ -244,7 +221,12 @@ async def test_triage_off_short_circuits_and_audits(
     triage = EmergencyTriage()
     result = await triage.assess("x", history=None, sensitivity="off")
     assert result.level == "routine"
-    assert ("redflag.gate_disabled", {"requested": "off", "effective": "off"}) in calls
+    assert any(
+        kind == "redflag.gate_disabled"
+        and payload.get("requested") == "off"
+        and payload.get("effective") == "off"
+        for kind, payload in calls
+    ), f"expected redflag.gate_disabled in {calls}"
 
 
 @pytest.mark.asyncio

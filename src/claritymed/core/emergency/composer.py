@@ -14,15 +14,17 @@ their own composer instance via :class:`EmergencyTriage`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from claritymed.core.emergency.schemas import (
     EmergencyAssessment,
     ExtractedSymptoms,
     MatchedRule,
 )
+from claritymed.core.observability.audit import audit_event
 from claritymed.core.prompts.registry import PromptRegistry
 
 if TYPE_CHECKING:
@@ -31,6 +33,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _COMPOSER_PROMPT_NAME = "emergency_composer"
+# Per-stage asyncio timeout budget. On timeout the composer falls open to
+# EmergencyAssessment.routine_noop() — matched rules are lost but the agent
+# loop is not blocked.
+_COMPOSER_TIMEOUT_S = 6.0
 
 
 class Composer(Protocol):
@@ -89,6 +95,11 @@ class LLMComposer:
     fires inside :meth:`compose`. Operators who want a different model
     pass it via ``model``; tests can either inject this class with a
     stub model or implement :class:`Composer` directly.
+
+    Agent instances are cached per language in ``_agents`` so repeated
+    calls for the same language (the common case) skip agent construction.
+    pydantic-ai Agent instances are stateless w.r.t. user messages, so
+    caching across calls is safe.
     """
 
     def __init__(
@@ -98,6 +109,24 @@ class LLMComposer:
     ) -> None:
         self._model = model
         self._registry = registry or PromptRegistry()
+        # Dict keyed by language → cached Agent for that language.
+        self._agents: dict[str, Any] = {}
+
+    def _get_agent(self, language: str) -> Any:
+        """Return a cached (or freshly built) Agent for ``language``."""
+        from pydantic_ai import Agent
+
+        if language not in self._agents:
+            system_prompt = self._registry.get(
+                _COMPOSER_PROMPT_NAME,
+                language=language,  # type: ignore[arg-type]
+            )
+            self._agents[language] = Agent(
+                self._model,
+                output_type=str,
+                system_prompt=system_prompt,
+            )
+        return self._agents[language]
 
     async def compose(
         self,
@@ -106,20 +135,33 @@ class LLMComposer:
         *,
         language: str,
     ) -> str:
-        from pydantic_ai import Agent
+        """Compose reasoning text for matched rules.
 
-        system_prompt = self._registry.get(
-            _COMPOSER_PROMPT_NAME,
-            language=language,  # type: ignore[arg-type]
-        )
-        agent: Agent[None, str] = Agent(
-            self._model,
-            output_type=str,
-            system_prompt=system_prompt,
-        )
+        On asyncio.TimeoutError falls open to an empty string — the
+        caller (EmergencyTriage.assess) treats an empty reasoning as
+        "no prose from composer" and still assembles the assessment
+        from matched_rules alone.
+        """
+        agent = self._get_agent(language)
         user_text = _ComposerInput(matched_rules, symptoms).to_text()
-        result = await agent.run(user_text)
-        return (result.output or "").strip()
+        try:
+            result = await asyncio.wait_for(
+                agent.run(user_text), timeout=_COMPOSER_TIMEOUT_S
+            )
+            return (result.output or "").strip()
+        except asyncio.TimeoutError:
+            logger.warning(
+                "emergency.composer timed out after %ss, failing open",
+                _COMPOSER_TIMEOUT_S,
+            )
+            try:
+                audit_event(
+                    "redflag.gate_component_timeout",
+                    payload={"component": "composer", "timeout_s": _COMPOSER_TIMEOUT_S},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return ""
 
 
 def build_default_composer(
@@ -132,8 +174,8 @@ def build_default_composer(
     falls back to "first kind=local in models.yaml" when unset.
     Returns ``None`` when no usable local provider is found —
     :class:`EmergencyTriage` then runs the rule engine without prose;
-    matched rules still drive ``red_flags[]`` and the i18n action
-    wording, so the gate stays functional even without a composer.
+    matched rules still drive the ``redflag_trigger`` audit event and
+    the i18n action wording, so the gate stays functional without a composer.
     See the symmetric
     :func:`claritymed.core.emergency.extractor.build_default_extractor`.
     """

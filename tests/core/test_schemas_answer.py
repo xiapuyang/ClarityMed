@@ -11,7 +11,6 @@ from claritymed.core.schemas import (
     Citation,
     Disclaimer,
     GroundedAnswer,
-    RedFlag,
     UncertaintyResult,
 )
 
@@ -48,7 +47,6 @@ def _answer(**overrides) -> GroundedAnswer:
 def test_happy_path():
     a = _answer()
     assert a.language == "en"
-    assert a.red_flags == []
 
 
 def test_round_trip_json():
@@ -83,20 +81,6 @@ def test_request_id_pattern_enforced():
         _answer(request_id="a1b2c3d4")  # old 8-hex form
 
 
-def test_red_flag_emergency_construction():
-    a = _answer(
-        red_flags=[
-            RedFlag(
-                rule_id="chest_pain_with_dyspnea",
-                severity="emergency",
-                message="Call 911 immediately.",
-                language="en",
-            )
-        ]
-    )
-    assert a.red_flags[0].severity == "emergency"
-
-
 def test_grounded_answer_works_as_pydantic_ai_result_type():
     """Foundation contract: GroundedAnswer can be a pydantic-ai Agent output_type.
 
@@ -125,7 +109,6 @@ def test_grounded_answer_works_as_pydantic_ai_result_type():
             "level": "low",
             "reasons": ["context recall thin"],
         },
-        "red_flags": [],
         "disclaimer": {"text": "General guidance only.", "language": "en"},
         "provenance": {},
     }

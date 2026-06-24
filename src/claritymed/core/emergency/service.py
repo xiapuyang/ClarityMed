@@ -73,6 +73,17 @@ class EmergencyTriage:
         # not pull pydantic-ai into Phase 2 test paths that don't need
         # an LLM.
         self._extractor = extractor
+        if self._rules and self._config is None:
+            # Rules are wired but no config, so profiles / overrides /
+            # floor enforcement are all absent. This is intentional for
+            # Phase 2 unit tests that pass rules directly without a full
+            # config, but catch accidental production misconfiguration.
+            logger.warning(
+                "EmergencyTriage: %d rules loaded but config=None; "
+                "profile overrides and floor enforcement are disabled. "
+                "Pass a validated EmergencyConfig for production use.",
+                len(self._rules),
+            )
 
     async def assess(
         self,
@@ -83,6 +94,7 @@ class EmergencyTriage:
         language: str = "en",
         profile_age: int | None = None,
         profile_sex: Literal["F", "M"] | None = None,
+        reason: str | None = None,
     ) -> EmergencyAssessment:
         """Run the gate. Always returns an assessment — never raises.
 
@@ -98,12 +110,21 @@ class EmergencyTriage:
         ectopic_pregnancy on ``sex == "F"``) fire even when the user
         has not re-stated their age/sex this turn. AskService resolves
         them via ``ProfileStore`` before calling.
+
+        ``reason`` is the ``ResolvedSensitivity.reason`` string ("cli_override",
+        "user_preference", etc.) threaded through from AskService so the
+        ``redflag.gate_disabled`` audit payload explains *why* off was
+        the effective sensitivity, not just that it was.
         """
         if sensitivity == "off":
             try:
                 audit_event(
                     "redflag.gate_disabled",
-                    payload={"requested": "off", "effective": "off"},
+                    payload={
+                        "requested": "off",
+                        "effective": "off",
+                        "reason": reason or "user_preference",
+                    },
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("redflag.gate_disabled audit emit failed")
@@ -157,14 +178,12 @@ class EmergencyTriage:
            (or skip + leave empty when no composer is wired — keeps
            the test surface small).
         """
+        # Note: ``sensitivity == "off"`` is handled in :meth:`assess` before
+        # reaching this point. Direct callers (tests, evals) that pass
+        # ``sensitivity="off"`` to ``assess_from_symptoms`` bypass that guard
+        # and get a routine_noop here without an audit event — which is correct
+        # since they are not real gate runs.
         if sensitivity == "off":
-            try:
-                audit_event(
-                    "redflag.gate_disabled",
-                    payload={"requested": "off", "effective": "off"},
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("redflag.gate_disabled audit emit failed")
             return EmergencyAssessment.routine_noop()
 
         if symptoms.primary_complaint is None and not symptoms.qualifiers:
@@ -251,4 +270,4 @@ class EmergencyTriage:
             return list(self._rules)
         from claritymed.core.emergency.rules import apply_profile_to_rules
 
-        return apply_profile_to_rules(self._rules, profile, sensitivity)
+        return apply_profile_to_rules(self._rules, profile)

@@ -9,6 +9,7 @@ console (matching the previous single-file behaviour).
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 
 from rich.console import Console
@@ -17,6 +18,36 @@ from claritymed.bootstrap import (
     bootstrap_once as _shared_bootstrap_once,
     prefetch_models as _shared_prefetch_models,
 )
+
+
+class CLIEmergencySensitivity(str, enum.Enum):
+    """CLI-accepted sensitivity values for ``--emergency-sensitivity``.
+
+    A deliberate subset of the runtime
+    :data:`~claritymed.core.emergency.schemas.SensitivityName` literal:
+    ``"off"`` is **excluded**. The runtime supports four values; the CLI
+    surface only three.
+
+    Why: ``settings.yaml`` requires ``off_acknowledged_at`` alongside
+    ``sensitivity: off`` (CLAUDE.md off-mode safeguard #3 — the
+    "two-step opt-out" timestamp). A CLI flag completely bypasses that
+    validator because the override never round-trips through the YAML
+    file, so allowing ``--emergency-sensitivity off`` would silently
+    void the safeguard.
+
+    Operator escape hatches that *do* preserve observability:
+    1. ``CLARITYMED_FORCE_EMERGENCY_GATE=off`` env var (master switch;
+       downgrades requested ``off`` to ``lenient`` at the runtime
+       layer — note this is *not* identical to ``off``).
+    2. Hand-edit ``data/users/<uid>/settings.yaml`` with both
+       ``sensitivity: "off"`` and ``off_acknowledged_at`` — the
+       Pydantic validator catches the two-step requirement here.
+    """
+
+    strict = "strict"
+    balanced = "balanced"
+    lenient = "lenient"
+
 
 # One Rich console for every subcommand. Module-level singleton matches
 # the pre-split behaviour and keeps colour / theming settings consistent.

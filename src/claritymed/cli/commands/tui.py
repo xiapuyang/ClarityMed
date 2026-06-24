@@ -14,6 +14,7 @@ import typer
 
 from claritymed.cli.commands.corpora import refresh_system_centroids_on_startup
 from claritymed.cli.common import (
+    CLIEmergencySensitivity,
     prefetch_models,
     try_load_account,
 )
@@ -26,15 +27,19 @@ def tui(
     user: str | None = typer.Option(None, "--user", "-u"),
     language: str | None = typer.Option(None, "--lang", "-l"),
     provider_id: str | None = typer.Option(None, "--provider", "-p"),
-    emergency_sensitivity: str | None = typer.Option(
+    emergency_sensitivity: CLIEmergencySensitivity | None = typer.Option(
         None,
         "--emergency-sensitivity",
+        case_sensitive=False,
         help=(
             "Override the emergency triage gate sensitivity for this TUI "
-            "session: strict | balanced | lenient | off. 'off' is honored "
-            "but still audits and appends the disclaimer footer; the "
-            "CLARITYMED_FORCE_EMERGENCY_GATE env override (default on) can "
-            "still downgrade 'off' to 'lenient'."
+            "session: strict | balanced | lenient. To disable the gate "
+            "entirely, set CLARITYMED_FORCE_EMERGENCY_GATE=off (master env "
+            "switch — downgrades to 'lenient' at runtime) or write "
+            "emergency.sensitivity='off' with off_acknowledged_at to "
+            "data/users/<uid>/settings.yaml. 'off' is intentionally not "
+            "accepted here because the CLI flag bypasses the settings.yaml "
+            "two-step acknowledgement safeguard."
         ),
     ),
 ) -> None:
@@ -75,5 +80,7 @@ def tui(
         user_id=resolved_user,
         language=resolved_lang,
         provider_id=provider.id,
-        emergency_sensitivity_override=emergency_sensitivity,
+        emergency_sensitivity_override=(
+            emergency_sensitivity.value if emergency_sensitivity else None
+        ),
     ).run()
