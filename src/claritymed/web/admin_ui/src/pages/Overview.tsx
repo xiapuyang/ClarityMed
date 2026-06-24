@@ -148,14 +148,17 @@ export function Overview() {
             <Stack gap={4}>
               {(data?.audit_tail.items ?? []).slice(0, 10).map((ev, i) => (
                 <Group key={`${ev.request_id}-${i}`} gap="sm" wrap="nowrap">
-                  <Text size="xs" c="dimmed" w={150}>
+                  <Text size="xs" c="dimmed" w={120}>
                     {new Date(ev.created_at).toLocaleTimeString()}
                   </Text>
-                  <Text size="sm" ff="monospace">
+                  <Text size="sm" ff="monospace" w={220}>
                     {ev.kind}
                   </Text>
-                  <Text size="xs" c="dimmed" truncate>
+                  <Text size="xs" c="dimmed" w={100}>
                     {ev.user_id}
+                  </Text>
+                  <Text size="xs" ff="monospace" c="dimmed" truncate>
+                    {ev.request_id}
                   </Text>
                 </Group>
               ))}
