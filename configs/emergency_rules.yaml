@@ -129,3 +129,124 @@ rules:
       - dyspnea
     citations:
       - "ACEP Clinical Policy: Chest Pain 2018"
+
+  # ====================================================================
+  # Stage 3 additions — five more rules per plan §"Phasing" / Phase 5.
+  # Each lands with i18n action wording in configs/i18n/{en,zh}/emergency.yaml
+  # and ≥4 vignettes in evals/emergency/sources/public_vignettes.yaml.
+  # ====================================================================
+
+  # Pulmonary embolism — dyspnea-primary presentation. Wells +
+  # ACEP intermediate-to-high probability rule.
+  - id: pulmonary_embolism
+    triggers:
+      primary: dyspnea
+      any_of:
+        - pleuritic
+        - unilateral_leg_swelling
+        - hemoptysis
+        - syncope
+        - tachycardia
+      min_qualifier_matches: 1
+    level: critical
+    action_key: emergency.action.urgent_eval_pe
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "Wells Criteria (Ann Intern Med 2001;135:98)"
+      - "ACEP Clinical Policy: Suspected PE 2018"
+
+  # PE companion rule — chest_pain-primary presentation. Real-world
+  # PE patients frequently present with pleuritic chest pain as the
+  # chief complaint rather than dyspnea (especially small peripheral
+  # emboli). Same qualifiers + same i18n action; matcher emits both
+  # rule ids when both fire, but the level is critical either way.
+  - id: pulmonary_embolism
+    triggers:
+      primary: chest_pain
+      any_of:
+        - pleuritic
+        - unilateral_leg_swelling
+        - hemoptysis
+      min_qualifier_matches: 1
+    level: critical
+    action_key: emergency.action.urgent_eval_pe
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "Wells Criteria — pleuritic chest pain presentation"
+      - "ACEP Clinical Policy: Suspected PE 2018"
+
+  # Sepsis (qSOFA). ≥2 of the three qSOFA criteria + infection
+  # context flag fires critical. Surviving Sepsis Campaign 2021.
+  - id: sepsis_qsofa_positive
+    triggers:
+      primary: fever
+      any_of:
+        - altered_mental_status
+        - tachypnea
+        - hypotension
+      min_qualifier_matches: 2
+    level: critical
+    action_key: emergency.action.urgent_eval_sepsis
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "Surviving Sepsis Campaign Guidelines 2021"
+      - "qSOFA (JAMA 2016;315:801)"
+
+  # Bacterial meningitis — classic triad (fever + neck stiffness +
+  # altered mental status) or any two with rapid onset. IDSA 2004
+  # is still the standard.
+  - id: meningitis_classic_triad
+    triggers:
+      primary: fever
+      any_of:
+        - neck_stiffness
+        - altered_mental_status
+        - photophobia
+      min_qualifier_matches: 2
+    level: critical
+    action_key: emergency.action.urgent_eval_meningitis
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "IDSA Practice Guidelines for Bacterial Meningitis 2004"
+
+  # Ectopic pregnancy with bleeding — pregnant + abdominal/pelvic
+  # pain + vaginal bleeding. ACOG / NICE both treat this as
+  # "rule-out today" — false negatives end pregnancies. Floor:
+  # lenient (sealed against profile downgrade) per plan KTD-E10.
+  - id: ectopic_pregnancy_bleed
+    triggers:
+      primary: abdominal_pain
+      any_of:
+        - positive_pregnancy_test
+        - vaginal_bleeding
+        - missed_period
+      min_qualifier_matches: 1
+      sex: F
+      age_min: 12
+      age_max: 55
+    level: critical
+    action_key: emergency.action.urgent_eval_ectopic
+    minimum_sensitivity_floor: lenient
+    citations:
+      - "ACOG Practice Bulletin 193 — Tubal Ectopic Pregnancy"
+      - "UK NICE NG126 — Ectopic Pregnancy and Miscarriage"
+
+  # Testicular torsion — surgical emergency with a <6h salvage
+  # window. AUA Guideline on Acute Scrotum. Adolescent and young
+  # adult males are the typical demographic.
+  - id: testicular_torsion_acute
+    triggers:
+      primary: testicular_pain
+      any_of:
+        - acute_scrotum
+        - sudden_onset
+        - nausea_vomiting_with_scrotal_pain
+      min_qualifier_matches: 1
+      sex: M
+      age_max: 40
+    level: critical
+    action_key: emergency.action.urgent_eval_torsion
+    minimum_sensitivity_floor: balanced
+    citations:
+      - "AUA Guideline on Acute Scrotum"
+      - "AAFP Acute Scrotal Pain in Adults"

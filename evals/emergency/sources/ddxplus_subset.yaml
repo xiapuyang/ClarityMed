@@ -1,0 +1,1142 @@
+cases:
+- id: ddxplus_pe_000
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=57 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    age: 57
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_001
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=31 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 31
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_002
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=79 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 79
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_003
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=43 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    - pleuritic
+    age: 43
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_004
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=31 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 31
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_005
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=24 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 24
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_006
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=53 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - syncope
+    - pleuritic
+    age: 53
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_007
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=36 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - syncope
+    - unilateral_leg_swelling
+    age: 36
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_008
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=22 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    - pleuritic
+    age: 22
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_009
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=35 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - syncope
+    - unilateral_leg_swelling
+    age: 35
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_010
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=4 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - unilateral_leg_swelling
+    age: 4
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_011
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=29 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 29
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_012
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=27 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - pleuritic
+    age: 27
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_013
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=13 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 13
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_014
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=33 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 33
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_015
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=35 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    age: 35
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_016
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=19 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    - unilateral_leg_swelling
+    age: 19
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_017
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=9 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    - pleuritic
+    age: 9
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_018
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=38 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 38
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_pe_019
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Pulmonary embolism
+  notes: DDXPlus age=4 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: dyspnea
+    qualifiers:
+    - dyspnea
+    - syncope
+    - pleuritic
+    - unilateral_leg_swelling
+    age: 4
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: pulmonary_embolism
+- id: ddxplus_acs_000
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=83 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - radiation_jaw
+    age: 83
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_001
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=49 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    age: 49
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_002
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=44 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    - dyspnea
+    age: 44
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_003
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=38 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    - dyspnea
+    age: 38
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_004
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=35 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - radiation_jaw
+    age: 35
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_005
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=56 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 56
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_006
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=91 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - radiation_jaw
+    - dyspnea
+    age: 91
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_007
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=71 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    age: 71
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_008
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=43 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    - radiation_jaw
+    age: 43
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_009
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=52 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 52
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_010
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=57 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    - radiation_jaw
+    age: 57
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_011
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=50 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    age: 50
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_012
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=56 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 56
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_013
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=45 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    age: 45
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_014
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=51 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    age: 51
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_015
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=43 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    - radiation_jaw
+    age: 43
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_016
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=59 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - radiation_jaw
+    - dyspnea
+    age: 59
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_017
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=59 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 59
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_018
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=51 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 51
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_019
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=74 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 74
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_020
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=68 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 68
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_021
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=58 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    - dyspnea
+    age: 58
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_022
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=41 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_left_arm
+    - dyspnea
+    age: 41
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_023
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=58 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_jaw
+    - radiation_left_arm
+    - dyspnea
+    age: 58
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_024
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=39 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 39
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_025
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=54 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_jaw
+    - radiation_left_arm
+    age: 54
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_026
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=38 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_jaw
+    - radiation_left_arm
+    - dyspnea
+    age: 38
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_027
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=73 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    - dyspnea
+    age: 73
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_028
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=65 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - diaphoresis
+    - radiation_left_arm
+    age: 65
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_acs_029
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Possible NSTEMI / STEMI
+  notes: DDXPlus age=104 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: chest_pain
+    qualifiers:
+    - radiation_jaw
+    age: 104
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: acs_acute_coronary_syndrome
+- id: ddxplus_anaphylaxis_000
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=30 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 30
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_001
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=60 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    age: 60
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_002
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=21 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    age: 21
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_003
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=0 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 0
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_004
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=66 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers: []
+    age: 66
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_005
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=49 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    age: 49
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_006
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=19 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 19
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_007
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=55 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 55
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_008
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=47 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    age: 47
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_009
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=21 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    age: 21
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_010
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=49 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_hypotension
+    age: 49
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_011
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=21 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers: []
+    age: 21
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_012
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=52 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 52
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_013
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=16 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers: []
+    age: 16
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_014
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=55 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 55
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_015
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=26 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    age: 26
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_016
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=44 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    age: 44
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_017
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=53 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 53
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_018
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=54 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers: []
+    age: 54
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_019
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=17 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    age: 17
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_020
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=68 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 68
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_021
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=5 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_hypotension
+    age: 5
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_022
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=42 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    age: 42
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_023
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=22 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 22
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_024
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=7 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 7
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_025
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=39 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 39
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_026
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=50 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    age: 50
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_027
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=31 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 31
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_028
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=46 sex=M; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_hypotension
+    age: 46
+    sex: M
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis
+- id: ddxplus_anaphylaxis_029
+  source: ddxplus_subset
+  language: en
+  citation: DDXPlus release_test_patients row · pathology=Anaphylaxis
+  notes: DDXPlus age=19 sex=F; auto-translated from evidence codes.
+  symptoms:
+    primary_complaint: allergic_reaction
+    qualifiers:
+    - throat_tightness
+    - urticaria_plus_wheeze
+    - urticaria_plus_hypotension
+    age: 19
+    sex: F
+  ground_truth_level: critical
+  ground_truth_rule_id: anaphylaxis

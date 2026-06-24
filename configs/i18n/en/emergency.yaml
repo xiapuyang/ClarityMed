@@ -47,3 +47,25 @@ emergency:
     # within hours," not "go to the ER right now," but not "wait."
     urgent_eval_chest_pain: |
       **Chest pain needs evaluation today — please go to an urgent-care clinic or ER within the next few hours, even if the pain has eased.** While you wait, note when it started, what it feels like (pressure, sharp, burning), and whether anything makes it better or worse.
+    # PE — Wells/ACEP intermediate-to-high probability. Dyspnea +
+    # leg swelling / pleuritic / hemoptysis / syncope → time-sensitive
+    # CT-PA. Treat as life-threat.
+    urgent_eval_pe: |
+      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — this could be a blood clot in the lung (pulmonary embolism).** Do not walk a long distance or drive yourself. If you have unilateral leg swelling, do not massage or rub the leg. Time-sensitive imaging matters.
+    # Sepsis (qSOFA positive). Surviving Sepsis Campaign: source-
+    # control plus antibiotics within 1 hour of recognition.
+    urgent_eval_sepsis: |
+      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — these signs together can mean sepsis, which is a life-threatening response to infection.** Note your temperature, when symptoms started, and any source of infection (urinary, lung, skin, recent surgery). Antibiotics within the first hour of recognition save lives.
+    # Bacterial meningitis classic triad. IDSA 2004 → empiric
+    # antibiotics + dexamethasone immediately upon clinical suspicion.
+    urgent_eval_meningitis: |
+      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — fever with a stiff neck and confusion can mean bacterial meningitis.** Do not wait for a fever to break. Note the time symptoms started; antibiotics within the first hour matter. If you have a rash that does not blanch when pressed, mention it on the call.
+    # Ectopic pregnancy with bleeding. ACOG Practice Bulletin 193 —
+    # rupture is a surgical emergency; even unruptured is time-
+    # sensitive (methotrexate vs. surgery).
+    urgent_eval_ectopic: |
+      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — abdominal pain with bleeding in early pregnancy can mean an ectopic pregnancy, which is life-threatening if it ruptures.** Do not eat or drink in case surgery is needed. Bring your last menstrual period date and any pregnancy-test result.
+    # Testicular torsion. AUA Acute Scrotum Guideline — surgical
+    # detorsion within 6 hours preserves the testis.
+    urgent_eval_torsion: |
+      **Go to the nearest emergency department now — sudden severe one-sided testicular pain can mean testicular torsion, and the testicle has to be untwisted surgically within about 6 hours to save it.** Do not eat or drink in case surgery is needed. If you cannot get there fast, call your local emergency number (US: 911, UK: 999, CN: 120).

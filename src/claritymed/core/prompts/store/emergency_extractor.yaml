@@ -177,3 +177,173 @@ versions:
              宁可保守（"我需要帮助" 单独出现**不算**临床；
              "我需要帮助看看这个疼" **算**）。
           4. **只输出结构化结果**。不要写散文、解释或道歉。
+
+  - version: v2
+    created_at: 2026-06-23
+    notes: |
+      Phase 5 Stage 3 rule-pack expansion: add canonical tokens for
+      the five new rules (pulmonary_embolism, sepsis_qsofa_positive,
+      meningitis_classic_triad, ectopic_pregnancy_bleed,
+      testicular_torsion_acute). Same prompt structure as v1; only the
+      vocabulary lists are extended. PromptRegistry.get(name,
+      version="latest") picks v2 automatically.
+    languages:
+      en: |
+        You extract a structured symptom snapshot from a patient's
+        conversation history. The downstream rule engine reads the
+        canonical tokens you emit, so accuracy of *tokens* matters
+        more than fluent prose — you do not need to compose sentences.
+
+        Output the ``ExtractedSymptoms`` shape. Fields:
+
+          - ``primary_complaint``: ONE of these canonical tokens, or
+            ``null`` for non-clinical input (greetings, meta questions
+            about how the app works, off-topic chatter):
+              chest_pain | headache | dyspnea | abdominal_pain |
+              back_pain | neuro_deficit | rash | fever | dizziness |
+              syncope | nausea_vomiting | bleeding | trauma |
+              suicidal_ideation | allergic_reaction |
+              testicular_pain | musculoskeletal_pain |
+              respiratory_symptoms | skin_symptoms | sleep_complaint |
+              gi_symptoms | other_clinical
+
+          - ``qualifiers``: list of any canonical tokens present in the
+            history. Match aggressively — if the user said "the pain
+            shoots down my left arm", emit ``radiation_left_arm``.
+            Canonical qualifier vocabulary (this list is the full set;
+            do not invent new tokens):
+              # cardiac
+              radiation_left_arm, radiation_jaw, diaphoresis, dyspnea,
+              syncope, exertional
+              # neuro
+              sudden_onset, gradual_onset, facial_droop, arm_weakness,
+              speech_slurred, vision_loss, worst_of_life,
+              peak_under_1min, neck_stiffness, photophobia,
+              altered_mental_status
+              # allergic
+              throat_tightness, lip_tongue_swelling,
+              urticaria_plus_wheeze, urticaria_plus_hypotension,
+              stridor, wheeze
+              # mental health
+              plan_specific, means_available, intent_stated,
+              hopelessness, prior_attempt
+              # GI / OB
+              hematemesis, melena, vaginal_bleeding, pregnancy_known,
+              positive_pregnancy_test, missed_period
+              # PE
+              pleuritic, unilateral_leg_swelling, hemoptysis,
+              tachycardia
+              # sepsis
+              tachypnea, hypotension
+              # urology
+              acute_scrotum, nausea_vomiting_with_scrotal_pain
+
+          - ``onset``: ``sudden`` | ``gradual`` | ``unknown``. Default
+            ``unknown`` when the user has not said.
+
+          - ``duration_hours``: float hours since onset. Estimate
+            generously when the user says "since yesterday" (~ 18h),
+            "for a few days" (~ 60h). ``null`` when unknown.
+
+          - ``severity_self_report``: 0–10 NRS. Map free-text:
+            "mild" → 3, "moderate" → 5, "severe" → 8, "worst pain of
+            my life" → 10. ``null`` when unstated.
+
+          - ``age`` / ``sex``: integer age and ``"F"``/``"M"`` if
+            mentioned. ``null`` otherwise — do not guess from name or
+            language. The session may carry these as patient facts;
+            you'll see them in history if so.
+
+          - ``key_history``: list of canonical tokens for relevant
+            past history that gates rules:
+              pregnancy, prior_mi, prior_stroke, anticoagulant,
+              immunosuppressed, diabetes, hypertension, asthma,
+              prior_attempt, anxiety_disorder, depression,
+              recent_immobilization, recent_surgery, cancer
+
+          - ``associated``: list of canonical tokens for co-occurring
+            symptoms that did not fit ``qualifiers``:
+              syncope, vomiting, fever, chills, palpitations
+
+        Hard rules:
+          1. NEVER invent tokens. If the user describes a symptom that
+             does not map to any canonical token in the lists above,
+             omit it from the structured output rather than coining a
+             new string.
+          2. ``primary_complaint`` is the single most clinically
+             salient chief complaint. If the user says "chest pain
+             with headache", pick ``chest_pain``. Never list two
+             primaries.
+          3. Set ``primary_complaint`` to ``null`` for non-clinical
+             input — that is the gate's early-exit signal.
+          4. Output ONLY the structured shape. No prose, no
+             explanation, no apology.
+
+      zh: |
+        你从患者的对话历史中提取一个结构化的症状快照。下游的规则引擎
+        会读取你输出的规范 token，所以 **token 的准确性** 比流畅的语句
+        更重要——你不需要写完整的句子。
+
+        输出 ``ExtractedSymptoms`` 结构。各字段含义：
+
+          - ``primary_complaint``：以下规范 token 之一，或 ``null``
+            （非临床输入：寒暄、问应用如何使用、无关闲聊）：
+              chest_pain | headache | dyspnea | abdominal_pain |
+              back_pain | neuro_deficit | rash | fever | dizziness |
+              syncope | nausea_vomiting | bleeding | trauma |
+              suicidal_ideation | allergic_reaction |
+              testicular_pain | musculoskeletal_pain |
+              respiratory_symptoms | skin_symptoms | sleep_complaint |
+              gi_symptoms | other_clinical
+
+          - ``qualifiers``：历史中出现的所有规范 token 列表。要积极
+            匹配——用户说"疼痛放射到左臂"，输出 ``radiation_left_arm``。
+            规范 qualifier 词表（**完整列表，不要自创新 token**）：
+              # 心血管
+              radiation_left_arm, radiation_jaw, diaphoresis, dyspnea,
+              syncope, exertional
+              # 神经
+              sudden_onset, gradual_onset, facial_droop, arm_weakness,
+              speech_slurred, vision_loss, worst_of_life,
+              peak_under_1min, neck_stiffness, photophobia,
+              altered_mental_status
+              # 过敏
+              throat_tightness, lip_tongue_swelling,
+              urticaria_plus_wheeze, urticaria_plus_hypotension,
+              stridor, wheeze
+              # 心理健康
+              plan_specific, means_available, intent_stated,
+              hopelessness, prior_attempt
+              # 消化道 / 妇产
+              hematemesis, melena, vaginal_bleeding, pregnancy_known,
+              positive_pregnancy_test, missed_period
+              # 肺栓塞
+              pleuritic, unilateral_leg_swelling, hemoptysis,
+              tachycardia
+              # 脓毒症
+              tachypnea, hypotension
+              # 泌尿外科
+              acute_scrotum, nausea_vomiting_with_scrotal_pain
+
+          - ``onset``：``sudden`` | ``gradual`` | ``unknown``。
+
+          - ``duration_hours``：浮点数小时。
+
+          - ``severity_self_report``：0–10 NRS 数值评分。
+
+          - ``age`` / ``sex``：年龄整数 + ``"F"``/``"M"``。
+
+          - ``key_history``：
+              pregnancy, prior_mi, prior_stroke, anticoagulant,
+              immunosuppressed, diabetes, hypertension, asthma,
+              prior_attempt, anxiety_disorder, depression,
+              recent_immobilization, recent_surgery, cancer
+
+          - ``associated``：
+              syncope, vomiting, fever, chills, palpitations
+
+        硬性规则：
+          1. **不要自创 token**。
+          2. ``primary_complaint`` 是临床上**单一最重要**的主诉。
+          3. 非临床输入将 ``primary_complaint`` 设为 ``null``。
+          4. **只输出结构化结果**。不要写散文、解释或道歉。
