@@ -156,6 +156,7 @@ def test_build_default_extractor_returns_none_when_no_local(monkeypatch):
 
 def test_build_default_extractor_returns_instance_when_local(monkeypatch):
     """A ``kind: local`` provider without ``api_key_env`` → factory wires it."""
+    from claritymed.core.emergency.config import EmergencyConfig
     from claritymed.core.schemas import ModelsConfig, ProviderConfig
 
     def fake_load_models():
@@ -171,9 +172,15 @@ def test_build_default_extractor_returns_instance_when_local(monkeypatch):
             default_provider="ollama",
         )
 
+    import claritymed.core.emergency.config as emcfg_mod
     import claritymed.stores.models as models_mod
 
     monkeypatch.setattr(models_mod, "load_models", fake_load_models)
+    # The real emergency.yaml pins provider_id=omlx; this test mocks
+    # the catalog to ``ollama`` only, so we must also stub the cfg
+    # loader to drop the pin and exercise the "first kind=local"
+    # fallback path that this test was originally written to cover.
+    monkeypatch.setattr(emcfg_mod, "load_emergency_config", lambda: EmergencyConfig())
     extractor = build_default_extractor()
     composer = build_default_composer()
     critical = build_default_critical_reply()

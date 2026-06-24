@@ -53,6 +53,16 @@ class EmergencyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default_sensitivity: SensitivityName = "balanced"
+    # Pin the gate's extractor / composer / critical_reply LLMs to one
+    # specific ``ProviderConfig.id`` from ``configs/models.yaml``. When
+    # unset, ``_provider.build_local_gate_model`` falls back to "first
+    # kind=local entry in models.yaml" — adequate for a fresh install
+    # but order-dependent, so any deploy with more than one local
+    # provider should pin this explicitly. KTD-E1 still applies: the
+    # pinned id must be ``kind: local``; the cross-catalog check lives
+    # in :func:`load_validated_emergency_config` so a typo here fails
+    # the app at startup instead of silently disabling the gate.
+    provider_id: str | None = None
     sensitivity_profiles: dict[SensitivityName, SensitivityProfile] = Field(
         default_factory=dict
     )

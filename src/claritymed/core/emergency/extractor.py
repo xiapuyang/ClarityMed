@@ -162,15 +162,20 @@ def build_default_extractor(
     registry: PromptRegistry | None = None,
     language: str = "en",
 ) -> LLMExtractor | None:
-    """Construct an :class:`LLMExtractor` against the first local provider.
+    """Construct an :class:`LLMExtractor` against the configured local provider.
 
-    Returns ``None`` when no local provider is configured or its
-    credentials are unavailable — :class:`EmergencyTriage` then stays
-    in noop mode and the host can wire a custom extractor explicitly.
+    Reads ``configs/emergency.yaml::provider_id`` to decide which
+    local provider to bind. When that field is unset, falls back to
+    "first kind=local entry in models.yaml" (today's default). Returns
+    ``None`` when no usable local provider is found — :class:`EmergencyTriage`
+    then stays in noop mode and the host can wire a custom extractor
+    explicitly.
     """
     from claritymed.core.emergency._provider import build_local_gate_model
+    from claritymed.core.emergency.config import load_emergency_config
 
-    model = build_local_gate_model("extractor")
+    cfg = load_emergency_config()
+    model = build_local_gate_model("extractor", prefer_id=cfg.provider_id)
     if model is None:
         return None
     return LLMExtractor(model, registry=registry, language=language)

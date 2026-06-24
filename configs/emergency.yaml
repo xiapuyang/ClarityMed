@@ -12,6 +12,16 @@
 
 default_sensitivity: balanced
 
+# Pin the gate's extractor / composer / critical_reply LLMs to one
+# specific provider from `configs/models.yaml`. KTD-E1 requires
+# `kind: local` — `_provider.build_local_gate_model` refuses anything
+# else. When unset (commented out), the gate binds to the first
+# kind=local entry in YAML order, which is order-brittle on hosts
+# running more than one local server. Pinning omlx explicitly here
+# avoids "binds to ollama, ollama is down, gate falls open every
+# turn" failure mode.
+provider_id: omlx
+
 sensitivity_profiles:
   # High recall, tolerates false alarms. Drops chest-pain qualifier
   # threshold to zero so any chest_pain fires the ACS rule; longer

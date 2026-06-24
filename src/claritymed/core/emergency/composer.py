@@ -126,18 +126,22 @@ def build_default_composer(
     *,
     registry: PromptRegistry | None = None,
 ) -> LLMComposer | None:
-    """Construct an :class:`LLMComposer` against the first local provider.
+    """Construct an :class:`LLMComposer` against the configured local provider.
 
-    Returns ``None`` when no local provider is configured or its
-    credentials are unavailable — :class:`EmergencyTriage` then runs
-    the rule engine without prose; matched rules still drive
-    ``red_flags[]`` and the i18n action wording, so the gate stays
-    functional even without a composer. See the symmetric
+    Reads ``configs/emergency.yaml::provider_id`` to pin selection;
+    falls back to "first kind=local in models.yaml" when unset.
+    Returns ``None`` when no usable local provider is found —
+    :class:`EmergencyTriage` then runs the rule engine without prose;
+    matched rules still drive ``red_flags[]`` and the i18n action
+    wording, so the gate stays functional even without a composer.
+    See the symmetric
     :func:`claritymed.core.emergency.extractor.build_default_extractor`.
     """
     from claritymed.core.emergency._provider import build_local_gate_model
+    from claritymed.core.emergency.config import load_emergency_config
 
-    model = build_local_gate_model("composer")
+    cfg = load_emergency_config()
+    model = build_local_gate_model("composer", prefer_id=cfg.provider_id)
     if model is None:
         return None
     return LLMComposer(model, registry=registry)

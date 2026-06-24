@@ -108,15 +108,19 @@ def build_default_critical_reply(
     *,
     registry: PromptRegistry | None = None,
 ) -> CriticalReplyComposer | None:
-    """Construct a :class:`CriticalReplyComposer` against the first local provider.
+    """Construct a :class:`CriticalReplyComposer` against the configured local provider.
 
-    Returns ``None`` when no local provider is configured / available —
+    Reads ``configs/emergency.yaml::provider_id`` to pin selection;
+    falls back to "first kind=local in models.yaml" when unset.
+    Returns ``None`` when no usable local provider is found —
     AskService then sends the localized action text alone, which is
     still a complete actionable reply.
     """
     from claritymed.core.emergency._provider import build_local_gate_model
+    from claritymed.core.emergency.config import load_emergency_config
 
-    model = build_local_gate_model("critical_reply")
+    cfg = load_emergency_config()
+    model = build_local_gate_model("critical_reply", prefer_id=cfg.provider_id)
     if model is None:
         return None
     return CriticalReplyComposer(model, registry=registry)

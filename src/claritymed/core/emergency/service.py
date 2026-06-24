@@ -33,7 +33,9 @@ from claritymed.core.emergency.composer import build_assessment
 from claritymed.core.emergency.rule_engine import match as match_rules
 from claritymed.core.emergency.schemas import (
     EmergencyAssessment,
+    EmergencyLevel,
     ExtractedSymptoms,
+    MatchedRule,
     SensitivityName,
 )
 from claritymed.core.observability.audit import audit_event
@@ -156,11 +158,17 @@ class EmergencyTriage:
             return EmergencyAssessment.routine_noop()
 
         if symptoms.primary_complaint is None and not symptoms.qualifiers:
+            self._log_decision(
+                symptoms, [], "routine", sensitivity, reason="non_clinical_input"
+            )
             return EmergencyAssessment.routine_noop()
 
         effective_rules = self._effective_rules_for(sensitivity)
         matched = match_rules(symptoms, effective_rules)
         if not matched:
+            self._log_decision(
+                symptoms, [], "routine", sensitivity, reason="no_rules_matched"
+            )
             return EmergencyAssessment.routine_noop()
 
         reasoning = ""
@@ -176,9 +184,47 @@ class EmergencyTriage:
                 # and continue with empty prose.
                 logger.exception("emergency composer failed; emitting empty reasoning")
 
-        return build_assessment(matched, symptoms, reasoning)
+        assessment = build_assessment(matched, symptoms, reasoning)
+        self._log_decision(symptoms, matched, assessment.level, sensitivity)
+        return assessment
 
     # --- helpers ----------------------------------------------------
+
+    def _log_decision(
+        self,
+        symptoms: ExtractedSymptoms,
+        matched: list[MatchedRule],
+        level: EmergencyLevel,
+        sensitivity: SensitivityName,
+        *,
+        reason: str = "",
+    ) -> None:
+        """One INFO line per gate decision so request_id grep surfaces it.
+
+        Without this, a successful gate run leaves no log trail at all
+        — only failure paths (extractor/composer crash, off-mode audit,
+        critical short-circuit audit) emit anything. An operator
+        debugging "why didn't the gate fire on this clearly-critical
+        prose" had no way to see what the extractor produced or which
+        rules ran. This closes that gap with one structured line per
+        ``assess_from_symptoms`` exit, covering routine_noop early-exits
+        and real assessments alike.
+
+        Off-mode short-circuit (returns at top of assess_from_symptoms)
+        and extractor-failure (``assess`` exception branch) log via
+        their own paths and are intentionally NOT covered here — they
+        already emit something operators can grep.
+        """
+        suffix = f" reason={reason}" if reason else ""
+        logger.info(
+            "emergency gate: pc=%s qualifiers=%s matched=%s level=%s sensitivity=%s%s",
+            symptoms.primary_complaint,
+            list(symptoms.qualifiers),
+            [m.rule_id for m in matched],
+            level,
+            sensitivity,
+            suffix,
+        )
 
     def _effective_rules_for(self, sensitivity: SensitivityName) -> list["Rule"]:
         """Apply the profile's overrides + ambiguous-filter to ``self._rules``.
