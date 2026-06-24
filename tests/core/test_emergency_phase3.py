@@ -76,6 +76,29 @@ def test_format_history_no_history():
     assert text == "user: 我头疼"
 
 
+def test_format_history_prepends_profile_facts_when_given():
+    """Profile age/sex hints render as a synthetic ``patient facts`` line.
+
+    The extractor prompt already documents this shape ("session may
+    carry these as patient facts; you'll see them in history if so"),
+    so AskService passes ``profile_age`` / ``profile_sex`` through and
+    the LLM sees them as session-carried context — driving
+    demographic-gated rules without making the user re-state basics.
+    """
+    text = _format_history_for_extractor(
+        "I have lower abdominal pain", None, profile_age=32, profile_sex="F"
+    )
+    assert text.startswith("patient facts (from profile): age=32, sex=F\n")
+    assert text.endswith("user: I have lower abdominal pain")
+
+
+def test_format_history_omits_facts_line_when_no_profile():
+    """No profile demographics → no synthetic prefix (zero-token overhead)."""
+    text = _format_history_for_extractor("hello", None)
+    assert "patient facts" not in text
+    assert text == "user: hello"
+
+
 def test_format_history_with_prior_turns():
     """Verify both helpers handle real ModelRequest/ModelResponse shapes."""
     from pydantic_ai.messages import (
@@ -378,6 +401,67 @@ def test_triage_system_prompt_skips_missing_action_key():
     out = _triage_system_prompt(_FakeCtx(deps=_FakeDeps(triage=triage)))
     assert "[SAFETY CONTEXT]" in out
     assert "level: urgent" in out
+
+
+# --- _profile_demographics → ProfileStore mapping ---------------------
+
+
+def test_profile_demographics_returns_none_when_no_profile():
+    """No ProfileStore row → ``(None, None)`` so gate runs without hints."""
+    from claritymed.orchestrator.services.ask_service import _profile_demographics
+
+    age, sex = _profile_demographics("test")
+    assert age is None
+    assert sex is None
+
+
+def test_profile_demographics_maps_female_to_F():
+    """``Profile.sex == "female"`` → emergency token ``"F"`` + age from birth_date."""
+    from datetime import date
+
+    from claritymed.core.schemas import Profile
+    from claritymed.orchestrator.services.ask_service import _profile_demographics
+    from claritymed.stores.profile import ProfileStore
+
+    ProfileStore("test").upsert_profile(
+        Profile(sex="female", birth_date=date(1990, 1, 1)),
+        owner_user_id="test",
+    )
+    age, sex = _profile_demographics("test")
+    assert sex == "F"
+    assert age is not None and age >= 30
+
+
+def test_profile_demographics_maps_male_to_M():
+    from datetime import date
+
+    from claritymed.core.schemas import Profile
+    from claritymed.orchestrator.services.ask_service import _profile_demographics
+    from claritymed.stores.profile import ProfileStore
+
+    ProfileStore("test").upsert_profile(
+        Profile(sex="male", birth_date=date(1985, 6, 15)),
+        owner_user_id="test",
+    )
+    age, sex = _profile_demographics("test")
+    assert sex == "M"
+    assert age is not None
+
+
+def test_profile_demographics_maps_non_binary_to_none():
+    """``intersex`` / ``unknown`` fall through to ``None`` rather than
+    being forced into F/M — corrupting rule semantics would be worse
+    than the gate missing a demographic hint."""
+    from claritymed.core.schemas import Profile
+    from claritymed.orchestrator.services.ask_service import _profile_demographics
+    from claritymed.stores.profile import ProfileStore
+
+    ProfileStore("test").upsert_profile(
+        Profile(sex="intersex"),
+        owner_user_id="test",
+    )
+    _, sex = _profile_demographics("test")
+    assert sex is None
 
 
 # --- AskService._stream_critical_short_circuit -----------------------

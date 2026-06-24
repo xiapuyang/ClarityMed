@@ -27,7 +27,7 @@ tests + the Phase 3 extractor).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from claritymed.core.emergency.composer import build_assessment
 from claritymed.core.emergency.rule_engine import match as match_rules
@@ -81,6 +81,8 @@ class EmergencyTriage:
         *,
         sensitivity: SensitivityName,
         language: str = "en",
+        profile_age: int | None = None,
+        profile_sex: Literal["F", "M"] | None = None,
     ) -> EmergencyAssessment:
         """Run the gate. Always returns an assessment — never raises.
 
@@ -90,6 +92,12 @@ class EmergencyTriage:
         produce :class:`ExtractedSymptoms`; when no extractor is wired
         (Phase 2 default), the call is a no-op routine — preserving
         the Phase 1 contract while Phase 3 wires the real extractor.
+
+        ``profile_age`` / ``profile_sex`` are profile-derived hints
+        forwarded to the extractor so demographic-gated rules (e.g.
+        ectopic_pregnancy on ``sex == "F"``) fire even when the user
+        has not re-stated their age/sex this turn. AskService resolves
+        them via ``ProfileStore`` before calling.
         """
         if sensitivity == "off":
             try:
@@ -109,7 +117,9 @@ class EmergencyTriage:
             return EmergencyAssessment.routine_noop()
 
         try:
-            symptoms: ExtractedSymptoms = await self._extractor.extract(query, history)
+            symptoms: ExtractedSymptoms = await self._extractor.extract(
+                query, history, age=profile_age, sex=profile_sex
+            )
         except Exception:  # noqa: BLE001
             logger.exception("emergency extractor failed; falling open")
             return EmergencyAssessment.routine_noop()

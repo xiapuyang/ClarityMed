@@ -16,7 +16,7 @@ the safety net's *own* implementation cannot be the privacy leak.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from claritymed.core.emergency.schemas import ExtractedSymptoms
 from claritymed.core.prompts.registry import PromptRegistry
@@ -40,8 +40,19 @@ class Extractor(Protocol):
         self,
         query: str,
         history: list[Any] | None,
+        *,
+        age: int | None = None,
+        sex: Literal["F", "M"] | None = None,
     ) -> ExtractedSymptoms:
-        """Return a structured symptom snapshot for the latest turn."""
+        """Return a structured symptom snapshot for the latest turn.
+
+        ``age`` / ``sex`` are profile-derived hints. The extractor prompt
+        already tells the LLM "the session may carry these as patient
+        facts; you'll see them in history if so" — implementations
+        surface them by prepending a synthetic ``patient facts: …`` line
+        to the model input so the LLM treats them as session-carried
+        history, not as a new instruction.
+        """
         ...
 
 
@@ -80,6 +91,9 @@ class LLMExtractor:
         self,
         query: str,
         history: list[Any] | None,
+        *,
+        age: int | None = None,
+        sex: Literal["F", "M"] | None = None,
     ) -> ExtractedSymptoms:
         """Run the extractor over ``query`` + ``history``.
 
@@ -99,7 +113,9 @@ class LLMExtractor:
             output_type=ExtractedSymptoms,
             system_prompt=system_prompt,
         )
-        user_text = _format_history_for_extractor(query, history)
+        user_text = _format_history_for_extractor(
+            query, history, profile_age=age, profile_sex=sex
+        )
         result = await agent.run(user_text)
         return result.output
 
@@ -107,6 +123,9 @@ class LLMExtractor:
 def _format_history_for_extractor(
     query: str,
     history: list[Any] | None,
+    *,
+    profile_age: int | None = None,
+    profile_sex: Literal["F", "M"] | None = None,
 ) -> str:
     """Render ``history`` + ``query`` into the extractor's user message.
 
@@ -116,8 +135,24 @@ def _format_history_for_extractor(
     extractor's narrow task. Flatten to plain text instead so the
     prompt stays small and the same shape works whether the host has
     a chat session wired or not.
+
+    When ``profile_age`` / ``profile_sex`` are provided, a synthetic
+    ``patient facts (from profile): …`` line is prepended. The extractor
+    prompt already anticipates this shape ("session may carry these as
+    patient facts; you'll see them in history if so"), so the LLM
+    treats it as a known fact, not a new instruction — and the
+    rule engine's profile-aware rules (e.g. ectopic_pregnancy gating
+    on ``sex == "F"``) fire even when the user has not re-stated their
+    demographics this turn.
     """
     lines: list[str] = []
+    fact_bits: list[str] = []
+    if profile_age is not None:
+        fact_bits.append(f"age={profile_age}")
+    if profile_sex is not None:
+        fact_bits.append(f"sex={profile_sex}")
+    if fact_bits:
+        lines.append(f"patient facts (from profile): {', '.join(fact_bits)}")
     if history:
         for msg in history:
             text = _extract_message_text(msg)

@@ -123,6 +123,44 @@ def _strip_evidence_block(text: str) -> str:
     return _EVIDENCE_BLOCK_RE.sub("", text, count=1)
 
 
+def _profile_demographics(user_id: str) -> tuple[int | None, Any]:
+    """Read ``age`` + emergency-token ``sex`` from the user's ProfileStore.
+
+    Both fields feed :meth:`EmergencyTriage.assess` so demographic-gated
+    rules (e.g. ``ectopic_pregnancy`` requiring ``sex == "F"``) can fire
+    without the user re-stating their basics every turn.
+
+    ``Profile.sex`` is ``"female" | "male" | "intersex" | "unknown"``;
+    the triage gate's token vocabulary is ``"F" | "M"`` only. The mapping
+    is intentionally narrow — non-binary mappings to F/M would corrupt
+    rule semantics, so they fall through to ``None`` and the LLM
+    extractor can re-derive from history if the user volunteers it.
+
+    Fail-open by design: any store failure returns ``(None, None)`` so
+    the gate still runs (degraded to "no profile hints"), consistent
+    with the gate's broader fail-open contract.
+    """
+    from claritymed.stores.profile import ProfileStore
+
+    try:
+        profile = ProfileStore(user_id).get_profile()
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "ProfileStore.get_profile failed; gate runs without demographics"
+        )
+        return None, None
+    if profile is None:
+        return None, None
+    sex_token: Any
+    if profile.sex == "female":
+        sex_token = "F"
+    elif profile.sex == "male":
+        sex_token = "M"
+    else:
+        sex_token = None
+    return profile.age, sex_token
+
+
 def _triage_system_prompt(ctx) -> str:  # noqa: ANN001
     """Dynamic system_prompt that injects [SAFETY CONTEXT] from triage.
 
@@ -1360,12 +1398,15 @@ class AskService:
         # Phase 1 stub: ``assess`` returns ``routine_noop`` for non-off
         # sensitivities; off emits ``redflag.gate_disabled`` and short-
         # circuits to routine inside the service.
+        profile_age, profile_sex = _profile_demographics(user_id)
         try:
             deps.triage = await self._triage_service.assess(
                 scrubbed,
                 message_history,
                 sensitivity=self._resolved_sensitivity.effective,  # type: ignore[arg-type]
                 language=self._language,
+                profile_age=profile_age,
+                profile_sex=profile_sex,
             )
         except Exception:  # noqa: BLE001
             # Fail-open: gate downtime must not block the user. Log

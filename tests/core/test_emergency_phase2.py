@@ -7,6 +7,8 @@ respect each rule's ``minimum_sensitivity_floor`` at config-load.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -719,8 +721,8 @@ async def test_triage_assess_routes_through_extractor_on_success():
     ``assess_from_symptoms`` and yields the matched level."""
 
     class _FakeExtractor:
-        async def extract(self, query, history):
-            del query, history
+        async def extract(self, query, history, *, age=None, sex=None):
+            del query, history, age, sex
             return ExtractedSymptoms(
                 primary_complaint="chest_pain",
                 qualifiers=["radiation_left_arm"],
@@ -740,3 +742,38 @@ async def test_triage_assess_routes_through_extractor_on_success():
     )
     assert result.level == "critical"
     assert result.suggested_action_i18n_key == "emergency.action.call_ems_cardiac"
+
+
+@pytest.mark.asyncio
+async def test_triage_assess_forwards_profile_demographics_to_extractor():
+    """``assess`` threads ``profile_age`` / ``profile_sex`` into ``extract``.
+
+    AskService reads these from ``ProfileStore`` so demographic-gated
+    rules fire even when the user has not re-stated their basics this
+    turn. Lock the wiring with a capturing fake extractor.
+    """
+    captured: dict[str, Any] = {}
+
+    class _CapturingExtractor:
+        async def extract(self, query, history, *, age=None, sex=None):
+            captured["query"] = query
+            captured["history"] = history
+            captured["age"] = age
+            captured["sex"] = sex
+            return ExtractedSymptoms(primary_complaint=None)
+
+    triage = EmergencyTriage(
+        rules=[_acs_rule()],
+        composer=_StubComposer(),
+        extractor=_CapturingExtractor(),
+    )
+    await triage.assess(
+        "abdominal pain",
+        history=None,
+        sensitivity="balanced",
+        language="en",
+        profile_age=32,
+        profile_sex="F",
+    )
+    assert captured["age"] == 32
+    assert captured["sex"] == "F"
