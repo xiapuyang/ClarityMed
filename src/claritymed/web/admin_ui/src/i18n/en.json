@@ -1,0 +1,79 @@
+{
+  "app": {
+    "title": "ClarityMed Admin",
+    "loading": "Loading…",
+    "error": "Something went wrong.",
+    "retry": "Retry",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "confirm": "Confirm",
+    "restart_required": "Restart the backend to apply changes."
+  },
+  "nav": {
+    "overview": "Overview",
+    "rag": "RAG Corpus",
+    "benchmark": "Benchmark",
+    "models": "Models",
+    "servers": "Servers",
+    "users": "Users",
+    "config": "System Config",
+    "i18n": "Localization",
+    "audit": "Audit Log",
+    "jobs": "Jobs"
+  },
+  "forbidden": {
+    "title": "Admin only",
+    "body": "Your account does not have admin access. Sign in as an admin or return to the chat home."
+  },
+  "lang": {
+    "en": "English",
+    "zh": "中文"
+  },
+  "overview": {
+    "title": "Overview",
+    "placeholder": "Composition dashboard ships in Unit 6."
+  },
+  "rag": {
+    "title": "RAG Corpus",
+    "placeholder": "List, ingest, and bootstrap system corpora — ships in Unit 7."
+  },
+  "benchmark": {
+    "title": "Benchmark",
+    "placeholder": "Past runs and new-run trigger — ships in Unit 8."
+  },
+  "models": {
+    "title": "Models",
+    "placeholder": "Catalog edits, Versions & Flow, and secrets — ships in Unit 9.",
+    "tabs": {
+      "catalogs": "Catalogs",
+      "versions": "Versions & Flow",
+      "secrets": "Secrets"
+    }
+  },
+  "servers": {
+    "title": "Servers",
+    "placeholder": "Dependency graph and health — ships in Unit 10."
+  },
+  "users": {
+    "title": "Users",
+    "placeholder": "Account list, role edit, password reset — ships in Unit 4."
+  },
+  "config": {
+    "title": "System Config",
+    "placeholder": "Read + allowlisted-key edit of system YAMLs — ships in Unit 5."
+  },
+  "i18nPage": {
+    "title": "Localization",
+    "placeholder": "Backend and admin UI string editing — ships in Unit 11."
+  },
+  "audit": {
+    "title": "Audit Log",
+    "placeholder": "Filterable audit viewer — ships in Unit 3."
+  },
+  "jobs": {
+    "title": "Jobs",
+    "placeholder": "Background job status — ships in Unit 2."
+  }
+}

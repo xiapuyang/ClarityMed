@@ -62,6 +62,11 @@ Thumbs.db
 .context/
 .playwright-mcp/
 
+# Admin SPA build output — produced by `make admin-ui`, never committed
+src/claritymed/web/admin_ui/node_modules/
+src/claritymed/web/admin_ui/dist/
+src/claritymed/web/admin_ui/coverage/
+
 # Project-specific
 # Runtime state lives in ~/.claritymed/ by default; these are tripwires
 # in case CLARITYMED_*_DIR points back into the repo during local debugging.

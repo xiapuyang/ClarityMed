@@ -1,0 +1,79 @@
+{
+  "app": {
+    "title": "ClarityMed 管理",
+    "loading": "加载中…",
+    "error": "出错了。",
+    "retry": "重试",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "confirm": "确认",
+    "restart_required": "重启后端以应用更改。"
+  },
+  "nav": {
+    "overview": "概览",
+    "rag": "RAG 语料",
+    "benchmark": "基准测试",
+    "models": "模型",
+    "servers": "服务",
+    "users": "用户",
+    "config": "系统配置",
+    "i18n": "多语言",
+    "audit": "审计日志",
+    "jobs": "任务"
+  },
+  "forbidden": {
+    "title": "仅管理员",
+    "body": "当前账号没有管理员权限。请使用管理员账号登录，或返回聊天首页。"
+  },
+  "lang": {
+    "en": "English",
+    "zh": "中文"
+  },
+  "overview": {
+    "title": "概览",
+    "placeholder": "看板将在 Unit 6 上线。"
+  },
+  "rag": {
+    "title": "RAG 语料",
+    "placeholder": "系统语料的浏览、入库、初始化将在 Unit 7 上线。"
+  },
+  "benchmark": {
+    "title": "基准测试",
+    "placeholder": "历史结果与发起新任务将在 Unit 8 上线。"
+  },
+  "models": {
+    "title": "模型",
+    "placeholder": "模型目录、版本流程、密钥编辑将在 Unit 9 上线。",
+    "tabs": {
+      "catalogs": "目录",
+      "versions": "版本与流程",
+      "secrets": "密钥"
+    }
+  },
+  "servers": {
+    "title": "服务",
+    "placeholder": "依赖关系图与健康状态将在 Unit 10 上线。"
+  },
+  "users": {
+    "title": "用户",
+    "placeholder": "账号列表、角色与密码重置将在 Unit 4 上线。"
+  },
+  "config": {
+    "title": "系统配置",
+    "placeholder": "白名单字段编辑将在 Unit 5 上线。"
+  },
+  "i18nPage": {
+    "title": "多语言",
+    "placeholder": "后端与管理 UI 字符串编辑将在 Unit 11 上线。"
+  },
+  "audit": {
+    "title": "审计日志",
+    "placeholder": "可筛选的审计列表将在 Unit 3 上线。"
+  },
+  "jobs": {
+    "title": "任务",
+    "placeholder": "后台任务状态将在 Unit 2 上线。"
+  }
+}

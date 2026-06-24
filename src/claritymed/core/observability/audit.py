@@ -345,6 +345,28 @@ AuditKind = Literal[
     #     succeeded. Payload carries the user_id only; the plaintext is
     #     never logged or echoed.
     "cli.user.password_set",
+    # Admin web surface (`/api/v1/admin/*`). Every admin write emits one
+    # of these so the audit log is a complete record of operator actions.
+    # PHI never appears in admin payloads — admin endpoints work over
+    # config, catalogs, and account metadata, none of which touch chat
+    # content.
+    "admin.config.read",
+    "admin.config.write",
+    "admin.user.update",
+    "admin.user.reset_password",
+    "admin.models.write",
+    "admin.models.secrets.write",
+    "admin.rag.collection.delete",
+    "admin.rag.collection.read",
+    "admin.rag.bootstrap",
+    "admin.benchmark.read",
+    "admin.i18n.write",
+    "admin.job.triggered",
+    "admin.job.cancelled",
+    "admin.job.completed",
+    "admin.job.failed",
+    "admin.job.crashed_on_restart",
+    "admin.servers.healthcheck",
 ]
 
 

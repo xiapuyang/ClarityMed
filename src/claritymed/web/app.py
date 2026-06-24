@@ -54,6 +54,7 @@ from claritymed.web.csrf import CsrfMiddleware
 from claritymed.web.deps import require_admin
 from claritymed.web.jwt import validate_secret_or_raise
 from claritymed.web.middleware import WebContextMiddleware
+from claritymed.web.routers.admin import router as admin_router
 from claritymed.web.routers.auth import router as auth_router
 from claritymed.web.routers.chat import (
     build_default_ask_service,
@@ -224,8 +225,40 @@ def create_app() -> FastAPI:
     app.include_router(attachments_router)
     app.include_router(library_router)
     app.include_router(chat_router)
+    app.include_router(admin_router)
+
+    _mount_admin_ui(app)
 
     return app
+
+
+def _mount_admin_ui(app: FastAPI) -> None:
+    """Mount the admin SPA at ``/admin/*`` if its build is on disk.
+
+    The Vite build target is ``src/claritymed/web/admin_ui/dist/``. When
+    the directory is missing we log a warning at startup — the API at
+    ``/api/v1/admin/*`` still works (so curl/automation can drive admin
+    without the SPA), but operators visiting ``/admin/`` get a 404. The
+    one-time fix is ``make admin-ui``.
+
+    ``html=True`` tells StaticFiles to serve ``index.html`` for any path
+    that doesn't resolve to a file, which is exactly the client-side
+    routing behaviour React-Router needs (``/admin/users``, etc., all
+    fall back to the SPA bundle).
+    """
+    from pathlib import Path
+
+    from fastapi.staticfiles import StaticFiles
+
+    dist_dir = Path(__file__).parent / "admin_ui" / "dist"
+    if not dist_dir.exists():
+        logger.warning(
+            "admin_ui dist missing at %s — run `make admin-ui` to enable the "
+            "admin SPA; the /api/v1/admin/* API still works.",
+            dist_dir,
+        )
+        return
+    app.mount("/admin", StaticFiles(directory=dist_dir, html=True), name="admin_ui")
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
