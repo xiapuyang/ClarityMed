@@ -32,20 +32,16 @@
     "zh": "中文"
   },
   "overview": {
-    "title": "Overview",
-    "placeholder": "Composition dashboard ships in Unit 6."
+    "title": "Overview"
   },
   "rag": {
-    "title": "RAG Corpus",
-    "placeholder": "List, ingest, and bootstrap system corpora — ships in Unit 7."
+    "title": "RAG Corpus"
   },
   "benchmark": {
-    "title": "Benchmark",
-    "placeholder": "Past runs and new-run trigger — ships in Unit 8."
+    "title": "Benchmark"
   },
   "models": {
     "title": "Models",
-    "placeholder": "Catalog edits, Versions & Flow, and secrets — ships in Unit 9.",
     "tabs": {
       "catalogs": "Catalogs",
       "versions": "Versions & Flow",
@@ -53,27 +49,21 @@
     }
   },
   "servers": {
-    "title": "Servers",
-    "placeholder": "Dependency graph and health — ships in Unit 10."
+    "title": "Servers"
   },
   "users": {
-    "title": "Users",
-    "placeholder": "Account list, role edit, password reset — ships in Unit 4."
+    "title": "Users"
   },
   "config": {
-    "title": "System Config",
-    "placeholder": "Read + allowlisted-key edit of system YAMLs — ships in Unit 5."
+    "title": "System Config"
   },
   "i18nPage": {
-    "title": "Localization",
-    "placeholder": "Backend and admin UI string editing — ships in Unit 11."
+    "title": "Localization"
   },
   "audit": {
-    "title": "Audit Log",
-    "placeholder": "Filterable audit viewer — ships in Unit 3."
+    "title": "Audit Log"
   },
   "jobs": {
-    "title": "Jobs",
-    "placeholder": "Background job status — ships in Unit 2."
+    "title": "Jobs"
   }
 }

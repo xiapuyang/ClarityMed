@@ -32,20 +32,16 @@
     "zh": "中文"
   },
   "overview": {
-    "title": "概览",
-    "placeholder": "看板将在 Unit 6 上线。"
+    "title": "概览"
   },
   "rag": {
-    "title": "RAG 语料",
-    "placeholder": "系统语料的浏览、入库、初始化将在 Unit 7 上线。"
+    "title": "RAG 语料"
   },
   "benchmark": {
-    "title": "基准测试",
-    "placeholder": "历史结果与发起新任务将在 Unit 8 上线。"
+    "title": "基准测试"
   },
   "models": {
     "title": "模型",
-    "placeholder": "模型目录、版本流程、密钥编辑将在 Unit 9 上线。",
     "tabs": {
       "catalogs": "目录",
       "versions": "版本与流程",
@@ -53,27 +49,21 @@
     }
   },
   "servers": {
-    "title": "服务",
-    "placeholder": "依赖关系图与健康状态将在 Unit 10 上线。"
+    "title": "服务"
   },
   "users": {
-    "title": "用户",
-    "placeholder": "账号列表、角色与密码重置将在 Unit 4 上线。"
+    "title": "用户"
   },
   "config": {
-    "title": "系统配置",
-    "placeholder": "白名单字段编辑将在 Unit 5 上线。"
+    "title": "系统配置"
   },
   "i18nPage": {
-    "title": "多语言",
-    "placeholder": "后端与管理 UI 字符串编辑将在 Unit 11 上线。"
+    "title": "多语言"
   },
   "audit": {
-    "title": "审计日志",
-    "placeholder": "可筛选的审计列表将在 Unit 3 上线。"
+    "title": "审计日志"
   },
   "jobs": {
-    "title": "任务",
-    "placeholder": "后台任务状态将在 Unit 2 上线。"
+    "title": "任务"
   }
 }
