@@ -9,12 +9,7 @@ mermaid.initialize({ startOnLoad: false, theme: "default", securityLevel: "loose
 function buildSource(nodes: ServerNodeData[], edges: ServerEdge[]): string {
   const lines: string[] = ["graph LR"];
   for (const n of nodes) {
-    const meta =
-      n.pid !== undefined && n.port !== undefined
-        ? `<br/>port ${n.port} · pid ${n.pid}`
-        : n.port !== undefined
-          ? `<br/>port ${n.port}`
-          : "";
+    const meta = n.port != null ? `<br/>port ${n.port}` : "";
     const cls =
       n.status === "up"
         ? ":::up"

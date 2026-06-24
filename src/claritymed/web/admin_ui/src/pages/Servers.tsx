@@ -48,7 +48,7 @@ export function Servers() {
                 <Text size="xs" c="dimmed">
                   port {n.port ?? "—"} · pid {n.pid ?? "—"}
                 </Text>
-                {n.uptime_s !== undefined ? (
+                {n.uptime_s != null ? (
                   <Text size="xs" c="dimmed">
                     uptime {n.uptime_s.toFixed(0)}s
                   </Text>

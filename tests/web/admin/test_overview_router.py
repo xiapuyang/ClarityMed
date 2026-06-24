@@ -26,7 +26,12 @@ async def test_overview_empty_defaults(web_client, admin_cookies):
     assert "audit_tail" in body
     assert "servers" in body
     assert body["recent_jobs"]["active"] is False
-    assert body["servers"]["ready"] is False
+    # Servers card is now wired up — endpoint always probes. Subprocess
+    # servers aren't running under the test harness, so nodes report
+    # down/timeout, but ``ready`` reflects that the probe ran.
+    assert body["servers"]["ready"] is True
+    assert isinstance(body["servers"]["nodes"], list)
+    assert len(body["servers"]["nodes"]) > 0
 
 
 @pytest.mark.asyncio

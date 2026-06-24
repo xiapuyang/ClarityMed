@@ -77,6 +77,16 @@ NODES_PROCESS: tuple[ServerNode, ...] = (
         port=8086,
         port_env="CLARITYMED_MEDICAL_CLIP_PORT",
     ),
+    # Local MLX LLM server (OpenAI-compatible). Powers the chat agent
+    # plus OCR vision-LLM and emergency-triage composer. Port matches
+    # the ``omlx`` entry in configs/models.yaml.
+    ServerNode(
+        id="omlx",
+        kind="process",
+        label="omlx",
+        port=8000,
+        port_env="CLARITYMED_OMLX_PORT",
+    ),
 )
 
 # Logical pseudo-nodes — operators see "what breaks if X dies".
@@ -91,7 +101,17 @@ NODES_LOGICAL: tuple[ServerNode, ...] = (
         id="chat",
         kind="logical",
         label="Chat",
-        depends_on=("rag",),
+        # Chat agent loop dispatches to RAG retrieval, the LLM backend
+        # (omlx), and to each tool. Listing them here puts a Chat → X
+        # edge in the graph so operators see what fans out when chat
+        # is broken.
+        depends_on=(
+            "rag",
+            "omlx",
+            "symptoms_tool",
+            "vision_tool",
+            "clip_tool",
+        ),
     ),
     ServerNode(
         id="vision_tool",

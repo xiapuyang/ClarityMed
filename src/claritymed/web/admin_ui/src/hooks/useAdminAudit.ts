@@ -18,6 +18,7 @@ export interface AuditPage {
   total_count: number;
   offset: number;
   limit: number;
+  distinct_actors: string[];
 }
 
 export interface AuditQuery {
@@ -25,6 +26,7 @@ export interface AuditQuery {
   limit?: number;
   kinds?: string[];
   actor?: string;
+  request_id?: string;
   since?: string;
   until?: string;
 }
@@ -35,6 +37,7 @@ function buildQuery(q: AuditQuery): string {
   if (q.limit !== undefined) params.set("limit", String(q.limit));
   if (q.kinds?.length) params.set("kind", q.kinds.join(","));
   if (q.actor) params.set("actor", q.actor);
+  if (q.request_id) params.set("request_id", q.request_id);
   if (q.since) params.set("since", q.since);
   if (q.until) params.set("until", q.until);
   return params.toString();

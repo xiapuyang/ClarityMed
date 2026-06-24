@@ -157,3 +157,61 @@ async def test_list_audit_offset_beyond_total(
     body = response.json()
     assert body["total_count"] == 1
     assert body["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_audit_filter_by_request_id(
+    web_client, admin_cookies, audit_log_path
+):
+    target_rid = "20260607213555TARGETRID"
+    events = [
+        _make_event("mode.ask", request_id="20260607213555OTHERRID"),
+        _make_event("mode.ask", request_id=target_rid),
+        _make_event("request_end", request_id=target_rid),
+    ]
+    _write_audit_log(audit_log_path, events)
+    response = await web_client.get(
+        f"/api/v1/admin/audit?request_id={target_rid}", cookies=admin_cookies
+    )
+    body = response.json()
+    assert body["total_count"] == 2
+    assert all(ev["request_id"] == target_rid for ev in body["items"])
+
+
+@pytest.mark.asyncio
+async def test_list_audit_returns_distinct_actors(
+    web_client, admin_cookies, audit_log_path
+):
+    events = [
+        _make_event("mode.ask", user_id="alice"),
+        _make_event("mode.ask", user_id="bob"),
+        _make_event("mode.ask", user_id="alice"),
+    ]
+    _write_audit_log(audit_log_path, events)
+    response = await web_client.get("/api/v1/admin/audit", cookies=admin_cookies)
+    body = response.json()
+    # Distinct + sorted; covers the whole log, not just the current page.
+    assert body["distinct_actors"] == ["alice", "bob"]
+
+
+@pytest.mark.asyncio
+async def test_list_audit_parses_logging_prefixed_lines(
+    web_client, admin_cookies, audit_log_path
+):
+    """The on-disk audit.log carries the stdlib logging preamble
+    (see ``AUDIT_FMT`` in core/observability/logging.py); the parser
+    must strip it before json.loads. Regression test for the
+    silently-empty admin viewer.
+    """
+    event = _make_event("admin.config.read", user_id="alice")
+    prefixed = (
+        "2026-06-07 17:35:55,386 "
+        f"[{event['request_id']}][{event['user_id']}] [en] " + json.dumps(event)
+    )
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_log_path.write_text(prefixed + "\n", encoding="utf-8")
+    response = await web_client.get("/api/v1/admin/audit", cookies=admin_cookies)
+    body = response.json()
+    assert body["total_count"] == 1
+    assert body["items"][0]["kind"] == "admin.config.read"
+    assert body["items"][0]["user_id"] == "alice"

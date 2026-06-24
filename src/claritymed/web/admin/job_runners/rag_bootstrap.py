@@ -46,29 +46,34 @@ async def run(spec: "JobSpec", registry: "JobRegistry") -> None:
         registry.update(spec.id, progress="no system_rag.collections configured")
         return
 
-    try:
-        from claritymed.stores.knowledge import RagCollectionStore
-    except ImportError:
-        # Defensive — if the store moves we'd rather see this than a
-        # crash mid-bootstrap.
-        registry.update(
-            spec.id,
-            progress="RagCollectionStore unavailable; skipping",
-        )
-        return
+    from claritymed.core.rag.embedding.factory import build_embedder
+    from claritymed.core.rag.qdrant_store import RagCollectionStore, build_qdrant_client
+    from claritymed.core.rag.schemas import load_retrieval_config
 
-    total = len(entries)
-    for i, entry in enumerate(entries):
-        name = entry.get("name") if isinstance(entry, dict) else None
-        if not name:
-            continue
-        registry.update(spec.id, progress=f"{i + 1}/{total}: {name}")
-        try:
-            store = RagCollectionStore(name)
-            store.ensure_collection()
-            registry.append_stdout(spec.id, f"ensured: {name}")
-        except Exception as exc:  # noqa: BLE001
-            registry.append_stdout(spec.id, f"failed to ensure {name}: {exc!r}")
-            logger.warning("rag bootstrap: %s failed: %s", name, exc)
+    cfg = load_retrieval_config()
+    embedder = build_embedder()
+    aclient = build_qdrant_client(
+        url=cfg.qdrant.url, api_key_env=cfg.qdrant.api_key_env
+    )
+    try:
+        total = len(entries)
+        for i, entry in enumerate(entries):
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if not name:
+                continue
+            registry.update(spec.id, progress=f"{i + 1}/{total}: {name}")
+            try:
+                store = RagCollectionStore(
+                    aclient=aclient,
+                    collection_name=name,
+                    dense_dim=embedder.dimension,
+                )
+                await store.ensure_collection()
+                registry.append_stdout(spec.id, f"ensured: {name}")
+            except Exception as exc:  # noqa: BLE001
+                registry.append_stdout(spec.id, f"failed to ensure {name}: {exc!r}")
+                logger.warning("rag bootstrap: %s failed: %s", name, exc)
+    finally:
+        await aclient.close()
 
     registry.update(spec.id, progress=f"done ({total} collections)")

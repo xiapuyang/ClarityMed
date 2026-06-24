@@ -36,7 +36,7 @@ async def test_servers_returns_valid_payload(web_client, admin_cookies):
 
 
 @pytest.mark.asyncio
-async def test_servers_graph_includes_5_process_nodes(web_client, admin_cookies):
+async def test_servers_graph_includes_process_nodes(web_client, admin_cookies):
     response = await web_client.get("/api/v1/admin/servers", cookies=admin_cookies)
     body = response.json()
     process_ids = {n["id"] for n in body["nodes"] if n["kind"] == "process"}
@@ -46,6 +46,7 @@ async def test_servers_graph_includes_5_process_nodes(web_client, admin_cookies)
         "symptoms",
         "vision",
         "medical_clip",
+        "omlx",
     }
     logical_ids = {n["id"] for n in body["nodes"] if n["kind"] == "logical"}
     assert "rag" in logical_ids

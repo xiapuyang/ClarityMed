@@ -10,10 +10,12 @@ paint.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Request
 
 from claritymed import config as _cfg
@@ -21,6 +23,8 @@ from claritymed.stores.account import AccountStore
 from claritymed.stores.models import load_models
 from claritymed.stores.paths import list_user_ids
 from claritymed.web.admin.jobs import JobRegistry
+from claritymed.web.admin.servers_graph import NODES_PROCESS
+from claritymed.web.routers.admin.servers import probe_node
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,7 @@ async def overview(request: Request) -> dict[str, Any]:
         "users": _users_card(),
         "recent_jobs": _recent_jobs_card(request.app.state.jobs),
         "audit_tail": _audit_tail(),
-        "servers": _servers_placeholder(),
+        "servers": await _servers_card(),
     }
 
 
@@ -81,12 +85,19 @@ def _audit_tail(n: int = AUDIT_TAIL_DEFAULT) -> dict[str, Any]:
     except OSError:
         return {"items": []}
     items: list[dict[str, Any]] = []
+    # Each line carries the stdlib logging preamble before the JSON
+    # payload (see ``AUDIT_FMT`` in core/observability/logging.py);
+    # slice from the first ``{`` before json.loads. Same trick the
+    # admin audit viewer uses.
     for raw in reversed(lines):
         line = raw.strip()
         if not line:
             continue
+        brace = line.find("{")
+        if brace < 0:
+            continue
         try:
-            items.append(json.loads(line))
+            items.append(json.loads(line[brace:]))
         except json.JSONDecodeError:
             continue
         if len(items) >= n:
@@ -94,6 +105,16 @@ def _audit_tail(n: int = AUDIT_TAIL_DEFAULT) -> dict[str, Any]:
     return {"items": items}
 
 
-def _servers_placeholder() -> dict[str, Any]:
-    # Filled by U10; the SPA renders an "—" badge when this is empty.
-    return {"nodes": [], "edges": [], "ready": False}
+async def _servers_card() -> dict[str, Any]:
+    """Probe each process node's ``/health`` and return a compact summary.
+
+    Reuses the same ``probe_node`` helper as ``/admin/servers`` so both
+    surfaces agree on what ``up`` means. We drop ``edges`` here — the
+    overview card only renders the per-node status pills, not the
+    topology graph.
+    """
+    async with httpx.AsyncClient() as client:
+        nodes = await asyncio.gather(
+            *(probe_node(client, node) for node in NODES_PROCESS)
+        )
+    return {"ready": True, "nodes": list(nodes)}

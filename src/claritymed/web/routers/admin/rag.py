@@ -23,8 +23,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
+from qdrant_client import AsyncQdrantClient
+
 from claritymed import config as _cfg
 from claritymed.core.observability.audit import audit_event
+from claritymed.core.rag.qdrant_store import build_qdrant_client
 
 logger = logging.getLogger(__name__)
 
@@ -53,35 +56,68 @@ def _load_system_entries() -> list[dict[str, Any]]:
     return list((raw.get("system_rag") or {}).get("collections") or [])
 
 
-def _chunk_count(name: str) -> int | None:
-    """Best-effort chunk count via ``RagCollectionStore``. ``None`` on error."""
-    try:
-        from claritymed.stores.knowledge import RagCollectionStore
+def _open_qdrant_aclient() -> AsyncQdrantClient | None:
+    """Open an async Qdrant client from raw yaml ``qdrant.*`` fields.
 
-        store = RagCollectionStore(name)
-        return store.count_chunks()
-    except Exception:  # noqa: BLE001
+    Bypasses :func:`load_retrieval_config` so admin endpoints stay
+    operable even when unrelated retrieval sub-sections are malformed
+    (e.g. a stripped-down test fixture). Honors the
+    ``CLARITYMED_QDRANT_URL`` env override that
+    :func:`load_retrieval_config` would otherwise apply. Returns
+    ``None`` when ``qdrant.url`` is unconfigured so the caller can
+    still render metadata with chunk_count=None instead of 500-ing.
+    """
+    import os
+
+    raw = _cfg.load_yaml("retrieval.yaml")
+    qcfg = raw.get("qdrant") or {}
+    url = os.environ.get("CLARITYMED_QDRANT_URL") or qcfg.get("url")
+    if not url:
+        return None
+    return build_qdrant_client(url=url, api_key_env=qcfg.get("api_key_env"))
+
+
+async def _chunk_count(aclient: AsyncQdrantClient, name: str) -> int | None:
+    """Live chunk count for one collection. ``None`` when probe fails.
+
+    Cheap path: skip the count call entirely when the collection isn't
+    declared in Qdrant yet (fresh install pre-bootstrap), so the SPA can
+    distinguish "not created" (``—``) from "created but empty" (``0``).
+    """
+    try:
+        if not await aclient.collection_exists(name):
+            return None
+        info = await aclient.count(name, exact=True)
+        return int(info.count)
+    except Exception:  # noqa: BLE001 — single-collection failures shouldn't blank the list
         return None
 
 
 @router.get("/collections")
 async def list_collections() -> dict[str, Any]:
     entries = _load_system_entries()
-    items: list[dict[str, Any]] = []
-    for entry in entries:
-        name = entry.get("name")
-        if not name:
-            continue
-        items.append(
-            {
-                "name": name,
-                "language": entry.get("language", "en"),
-                "authority_tier": int(entry.get("authority_tier", 3)),
-                "topics": list(entry.get("topics") or []),
-                "license": entry.get("license"),
-                "chunk_count": _chunk_count(name),
-            }
-        )
+    aclient = _open_qdrant_aclient()
+    try:
+        items: list[dict[str, Any]] = []
+        for entry in entries:
+            name = entry.get("name")
+            if not name:
+                continue
+            items.append(
+                {
+                    "name": name,
+                    "language": entry.get("language", "en"),
+                    "authority_tier": int(entry.get("authority_tier", 3)),
+                    "topics": list(entry.get("topics") or []),
+                    "license": entry.get("license"),
+                    "chunk_count": (
+                        await _chunk_count(aclient, name) if aclient else None
+                    ),
+                }
+            )
+    finally:
+        if aclient is not None:
+            await aclient.close()
     return {"items": items, "total_count": len(items)}
 
 
@@ -93,11 +129,17 @@ async def inspect_collection(name: str) -> dict[str, Any]:
     )
     if entry is None:
         raise HTTPException(status_code=404, detail=f"collection {name!r} not declared")
+    aclient = _open_qdrant_aclient()
+    try:
+        count = await _chunk_count(aclient, name) if aclient else None
+    finally:
+        if aclient is not None:
+            await aclient.close()
     audit_event("admin.rag.collection.read", payload={"name": name})
     return {
         "name": name,
         "metadata": entry,
-        "chunk_count": _chunk_count(name),
+        "chunk_count": count,
     }
 
 

@@ -53,7 +53,15 @@ def _parse_iso(value: str | None, field: str) -> datetime | None:
 
 
 def _load_events() -> list[dict[str, Any]]:
-    """Return parsed events in chronological order. Empty when log missing."""
+    """Return parsed events in chronological order. Empty when log missing.
+
+    Each line carries the stdlib ``logging`` formatter preamble before
+    the JSON payload (``AUDIT_FMT`` in
+    ``core/observability/logging.py`` puts ``%(message)s`` last). The
+    JSON event always starts with the first ``{`` on the line — slice
+    from there and parse the rest. A line without ``{`` is preamble
+    only (e.g. a partially-rotated rollover marker) and is skipped.
+    """
     path = _audit_log_path()
     if not path.exists():
         return []
@@ -62,13 +70,15 @@ def _load_events() -> list[dict[str, Any]]:
         line = raw.strip()
         if not line:
             continue
+        brace = line.find("{")
+        if brace < 0:
+            continue
         try:
-            out.append(json.loads(line))
+            out.append(json.loads(line[brace:]))
         except json.JSONDecodeError:
-            # The audit logger writes only JSON, but a partial write
-            # mid-rotation could leave a half-line. Skip silently —
-            # surfacing the malformed event would be more confusing
-            # than dropping one byte.
+            # Partial write mid-rotation can leave a half-line. Skip
+            # silently — surfacing the malformed event would be more
+            # confusing than dropping one byte.
             continue
     return out
 
@@ -78,6 +88,8 @@ def _match(event: dict[str, Any], filters: dict[str, Any]) -> bool:
         if event.get("kind") not in filters["kinds"]:
             return False
     if filters["actor"] and event.get("user_id") != filters["actor"]:
+        return False
+    if filters["request_id"] and event.get("request_id") != filters["request_id"]:
         return False
     if filters["since"] or filters["until"]:
         raw_ts = event.get("created_at")
@@ -101,6 +113,7 @@ async def list_audit(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     kind: str | None = Query(default=None, description="comma-separated kinds"),
     actor: str | None = Query(default=None),
+    request_id: str | None = Query(default=None, description="exact request_id"),
     since: str | None = Query(default=None, description="ISO-8601 timestamp"),
     until: str | None = Query(default=None, description="ISO-8601 timestamp"),
 ) -> dict[str, Any]:
@@ -109,15 +122,21 @@ async def list_audit(
     Filtering is applied before pagination so ``total_count`` reflects
     the post-filter set (matching the SPA's expectation that the
     pagination controls are sized by what the user is filtering on).
+
+    ``distinct_actors`` lists every ``user_id`` seen across the whole
+    log (not just the current page) so the SPA can render a stable
+    dropdown without paging back through history.
     """
     kinds = {k.strip() for k in kind.split(",") if k.strip()} if kind else set()
     filters = {
         "kinds": kinds,
         "actor": actor,
+        "request_id": request_id,
         "since": _parse_iso(since, "since"),
         "until": _parse_iso(until, "until"),
     }
     events = _load_events()
+    actors_seen = {e["user_id"] for e in events if isinstance(e.get("user_id"), str)}
     matched = [e for e in events if _match(e, filters)]
     # Newest first.
     matched.reverse()
@@ -129,4 +148,5 @@ async def list_audit(
         "total_count": total,
         "offset": offset,
         "limit": limit,
+        "distinct_actors": sorted(actors_seen),
     }

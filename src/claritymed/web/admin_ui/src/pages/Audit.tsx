@@ -6,6 +6,7 @@ import {
   Group,
   Loader,
   Pagination,
+  Select,
   Stack,
   Table,
   Text,
@@ -13,18 +14,20 @@ import {
   Title,
 } from "@mantine/core";
 import { IconRefresh } from "@tabler/icons-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useAdminAudit } from "../hooks/useAdminAudit";
 
 const PAGE_SIZE = 50;
+const DEFAULT_ACTOR = "default";
 
 export function Audit() {
   const { t } = useTranslation();
   const [page, setPage] = useState(1);
   const [kindFilter, setKindFilter] = useState("");
-  const [actorFilter, setActorFilter] = useState("");
+  const [actorFilter, setActorFilter] = useState<string | null>(DEFAULT_ACTOR);
+  const [requestIdFilter, setRequestIdFilter] = useState("");
   const offset = (page - 1) * PAGE_SIZE;
 
   const { data, isLoading, error, refetch, isFetching } = useAdminAudit({
@@ -37,7 +40,17 @@ export function Audit() {
           .filter(Boolean)
       : undefined,
     actor: actorFilter || undefined,
+    request_id: requestIdFilter.trim() || undefined,
   });
+
+  // Carry forward known actors so the Select keeps its options
+  // populated across loading states (react-query returns `undefined`
+  // while a refetch is in flight).
+  const actorOptions = useMemo(() => {
+    const seen = new Set<string>(data?.distinct_actors ?? []);
+    if (actorFilter) seen.add(actorFilter);
+    return Array.from(seen).sort();
+  }, [data?.distinct_actors, actorFilter]);
 
   const totalPages = data ? Math.ceil(Math.max(data.total_count, 1) / PAGE_SIZE) : 1;
 
@@ -45,6 +58,30 @@ export function Audit() {
     <Stack gap="md">
       <Title order={2}>{t("audit.title")}</Title>
       <Group gap="sm" align="end">
+        <Select
+          label="user"
+          value={actorFilter}
+          onChange={(value) => {
+            setActorFilter(value);
+            setPage(1);
+          }}
+          data={actorOptions}
+          searchable
+          clearable
+          nothingFoundMessage="no actors yet"
+          w={200}
+        />
+        <TextInput
+          autoComplete="off"
+          label="request_id"
+          value={requestIdFilter}
+          onChange={(e) => {
+            setRequestIdFilter(e.currentTarget.value);
+            setPage(1);
+          }}
+          placeholder="20260607213555D327D87D"
+          w={260}
+        />
         <TextInput
           autoComplete="off"
           label="kind (comma-sep)"
@@ -55,16 +92,6 @@ export function Audit() {
           }}
           placeholder="admin.config.write,admin.job.completed"
           flex={1}
-        />
-        <TextInput
-          autoComplete="off"
-          label="actor (user_id)"
-          value={actorFilter}
-          onChange={(e) => {
-            setActorFilter(e.currentTarget.value);
-            setPage(1);
-          }}
-          w={200}
         />
         <ActionIcon
           variant="default"
@@ -86,8 +113,9 @@ export function Audit() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>When</Table.Th>
+                <Table.Th>User</Table.Th>
+                <Table.Th>request_id</Table.Th>
                 <Table.Th>Kind</Table.Th>
-                <Table.Th>Actor</Table.Th>
                 <Table.Th>Payload</Table.Th>
               </Table.Tr>
             </Table.Thead>
@@ -99,12 +127,17 @@ export function Audit() {
                       {new Date(ev.created_at).toLocaleString()}
                     </Text>
                   </Table.Td>
+                  <Table.Td>{ev.user_id}</Table.Td>
+                  <Table.Td>
+                    <Text size="xs" ff="monospace" c="dimmed">
+                      {ev.request_id}
+                    </Text>
+                  </Table.Td>
                   <Table.Td>
                     <Text size="sm" ff="monospace">
                       {ev.kind}
                     </Text>
                   </Table.Td>
-                  <Table.Td>{ev.user_id}</Table.Td>
                   <Table.Td>
                     <Code block style={{ maxWidth: 500, overflow: "auto" }}>
                       {JSON.stringify(ev.payload)}
@@ -130,7 +163,8 @@ export function Audit() {
               variant="subtle"
               onClick={() => {
                 setKindFilter("");
-                setActorFilter("");
+                setActorFilter(null);
+                setRequestIdFilter("");
                 setPage(1);
               }}
             >

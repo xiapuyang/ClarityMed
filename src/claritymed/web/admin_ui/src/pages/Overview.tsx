@@ -99,12 +99,34 @@ export function Overview() {
               <Text size="xs" c="dimmed">
                 Servers
               </Text>
-              <Title order={2}>
-                {data?.servers.ready ? data.servers.nodes.length : "—"}
-              </Title>
-              <Text size="sm" c="dimmed">
-                Health graph ships in Unit 10.
-              </Text>
+              {data?.servers.ready ? (
+                (() => {
+                  const total = data.servers.nodes.length;
+                  const up = data.servers.nodes.filter(
+                    (n) => n.status === "up",
+                  ).length;
+                  const allUp = up === total && total > 0;
+                  return (
+                    <>
+                      <Title order={2} c={allUp ? undefined : "red"}>
+                        {up}/{total} up
+                      </Title>
+                      <Text size="sm" c="dimmed">
+                        {allUp
+                          ? "all servers reachable"
+                          : `${total - up} not reachable`}
+                      </Text>
+                    </>
+                  );
+                })()
+              ) : (
+                <>
+                  <Title order={2}>—</Title>
+                  <Text size="sm" c="dimmed">
+                    Probing…
+                  </Text>
+                </>
+              )}
               <Anchor component={Link} to="/servers" size="xs">
                 Servers →
               </Anchor>
