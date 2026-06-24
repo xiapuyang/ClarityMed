@@ -159,6 +159,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001 — FastAPI signature
     # matching audit event. Runners are wired by U7 (rag_*) and U8
     # (benchmark_run) so a submit before those land returns a clean 400.
     app.state.jobs = JobRegistry()
+    _register_job_runners(app.state.jobs)
     app.state.jobs.recover_on_startup()
     logger.info(
         "web.app.lifespan ready dev=%s default_lang=%s",
@@ -237,6 +238,20 @@ def create_app() -> FastAPI:
     _mount_admin_ui(app)
 
     return app
+
+
+def _register_job_runners(registry: JobRegistry) -> None:
+    """Wire admin job kinds to their runner callables.
+
+    U7 supplies rag_ingest + rag_bootstrap; U8 supplies benchmark_run.
+    Importing the runners lazily avoids forcing the runner modules to
+    load at every web import — useful when running tests that don't
+    touch RAG or benchmarks.
+    """
+    from claritymed.web.admin.job_runners import rag_bootstrap, rag_ingest
+
+    registry.register_runner("rag_ingest", rag_ingest.run)
+    registry.register_runner("rag_bootstrap", rag_bootstrap.run)
 
 
 def _mount_admin_ui(app: FastAPI) -> None:
