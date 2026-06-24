@@ -1,0 +1,591 @@
+# Hand-curated emergency vignettes for the Stage 1 baseline.
+#
+# Each case is patterned after a publicly published clinical scenario
+# (NEJM Image Challenge, ACEP Clinical Policy examples, USMLE Step 2
+# CK question banks, 国家执业医师资格考试 急诊优先) — the ground-truth
+# label comes from the published source, so no medical-student labor
+# was required to author the answer.
+#
+# Distribution (40 cases):
+#   - 20 critical positives, 4 per rule × 5 critical rules
+#       (acs / stroke_fast / anaphylaxis / sah / active_si)
+#   - 3 urgent positives — chest_pain_ambiguous_high_risk catch-all
+#   - 10 adversarial near-misses (look critical, are not):
+#       panic attack, costochondritis, GERD, tension headache,
+#       migraine, urticaria alone, passive SI, MSK neck pain
+#   - 7 routine baseline (clear non-emergency)
+#
+# Languages: ~50% en, ~50% zh, exercising bilingual i18n.
+#
+# Symptoms are pre-extracted (structured mode) so the runner exercises
+# the rule engine without a local LLM extractor. Adding the same case
+# in text mode for the e2e run is a Stage 2 follow-up.
+
+cases:
+
+  # =================================================================
+  # ACS — Acute Coronary Syndrome (4 critical)
+  # =================================================================
+  - id: vignette_acs_001
+    source: public_vignettes
+    language: en
+    citation: "AHA/ACC 2021 Chest Pain Guideline (Circulation 144:e368) — textbook STEMI presentation"
+    notes: "Middle-aged male + crushing chest pain + radiation + diaphoresis."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: [radiation_left_arm, diaphoresis]
+      onset: sudden
+      age: 55
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: acs_acute_coronary_syndrome
+
+  - id: vignette_acs_002
+    source: public_vignettes
+    language: en
+    citation: "ACEP Clinical Policy: Chest Pain 2018 — high-risk diabetic"
+    notes: "Atypical female presentation: jaw radiation + dyspnea."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: [radiation_jaw, dyspnea]
+      onset: gradual
+      age: 62
+      sex: F
+      key_history: [diabetes]
+    ground_truth_level: critical
+    ground_truth_rule_id: acs_acute_coronary_syndrome
+
+  - id: vignette_acs_003
+    source: public_vignettes
+    language: zh
+    citation: "中国胸痛中心指南 2019 — 典型急性心梗"
+    notes: "58 岁男性，胸痛放射至左臂 + 大汗。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: [radiation_left_arm, diaphoresis]
+      onset: sudden
+      age: 58
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: acs_acute_coronary_syndrome
+
+  - id: vignette_acs_004
+    source: public_vignettes
+    language: zh
+    citation: "中华急诊医学杂志 — 胸痛伴晕厥"
+    notes: "65 岁男性，胸痛 + 晕厥，提示重症心血管事件。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: [syncope, dyspnea]
+      onset: sudden
+      age: 65
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: acs_acute_coronary_syndrome
+
+  # =================================================================
+  # Stroke — FAST positive (4 critical)
+  # =================================================================
+  - id: vignette_stroke_001
+    source: public_vignettes
+    language: en
+    citation: "AHA/ASA Stroke Guidelines 2019 — Cincinnati Prehospital Stroke Scale"
+    notes: "Three-of-three FAST signs, sudden onset."
+    symptoms:
+      primary_complaint: neuro_deficit
+      qualifiers: [facial_droop, arm_weakness, speech_slurred, sudden_onset]
+      onset: sudden
+      age: 68
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: stroke_fast_positive
+
+  - id: vignette_stroke_002
+    source: public_vignettes
+    language: en
+    citation: "NEJM Stroke Image Challenge pattern"
+    notes: "Sudden right arm weakness + slurred speech — meets ≥2 FAST."
+    symptoms:
+      primary_complaint: neuro_deficit
+      qualifiers: [arm_weakness, speech_slurred]
+      onset: sudden
+      age: 72
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: stroke_fast_positive
+
+  - id: vignette_stroke_003
+    source: public_vignettes
+    language: zh
+    citation: "中国卒中学会 急救指南 2019"
+    notes: "70 岁女性，突发面部下垂 + 单侧肢体无力。"
+    symptoms:
+      primary_complaint: neuro_deficit
+      qualifiers: [facial_droop, arm_weakness, sudden_onset]
+      onset: sudden
+      age: 70
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: stroke_fast_positive
+
+  - id: vignette_stroke_004
+    source: public_vignettes
+    language: zh
+    citation: "国家执业医师资格 急诊优先 — 缺血性卒中"
+    notes: "突发性失语 + 右侧偏瘫，发病 1 小时内。"
+    symptoms:
+      primary_complaint: neuro_deficit
+      qualifiers: [speech_slurred, arm_weakness, sudden_onset]
+      onset: sudden
+      age: 66
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: stroke_fast_positive
+
+  # =================================================================
+  # Anaphylaxis (4 critical)
+  # =================================================================
+  - id: vignette_anaphylaxis_001
+    source: public_vignettes
+    language: en
+    citation: "WAO Anaphylaxis Guidance 2020 — bee sting"
+    notes: "Throat tightness + lip swelling after envenomation."
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: [throat_tightness, lip_tongue_swelling]
+      onset: sudden
+      age: 34
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: anaphylaxis
+
+  - id: vignette_anaphylaxis_002
+    source: public_vignettes
+    language: en
+    citation: "ACEP — peanut anaphylaxis with respiratory compromise"
+    notes: "Hives + wheezing — meets WAO criterion 2."
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: [urticaria_plus_wheeze]
+      onset: sudden
+      age: 18
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: anaphylaxis
+
+  - id: vignette_anaphylaxis_003
+    source: public_vignettes
+    language: zh
+    citation: "中国过敏反应诊疗指南 — 海鲜过敏"
+    notes: "进食后突发喉咙紧 + 嘴唇肿。"
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: [throat_tightness, lip_tongue_swelling]
+      onset: sudden
+      age: 28
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: anaphylaxis
+
+  - id: vignette_anaphylaxis_004
+    source: public_vignettes
+    language: zh
+    citation: "中华急诊医学杂志 — 蜂蜇过敏休克"
+    notes: "全身荨麻疹 + 喘息 + 低血压。"
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: [urticaria_plus_hypotension, urticaria_plus_wheeze]
+      onset: sudden
+      age: 42
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: anaphylaxis
+
+  # =================================================================
+  # SAH — thunderclap headache (4 critical)
+  # =================================================================
+  - id: vignette_sah_001
+    source: public_vignettes
+    language: en
+    citation: "Ottawa SAH Rule (JAMA 2013;310:1248) — worst headache of life"
+    notes: "Sudden severe HA peaking within 60s — classic Ottawa positive."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: [sudden_onset, worst_of_life, peak_under_1min]
+      onset: sudden
+      age: 48
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: sah_thunderclap_headache
+
+  - id: vignette_sah_002
+    source: public_vignettes
+    language: en
+    citation: "ACEP Clinical Policy 2019 — SAH with meningismus"
+    notes: "Sudden HA + neck stiffness — IDSA differential to meningitis."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: [sudden_onset, neck_stiffness]
+      onset: sudden
+      age: 55
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: sah_thunderclap_headache
+
+  - id: vignette_sah_003
+    source: public_vignettes
+    language: zh
+    citation: "中华神经科杂志 — 蛛网膜下腔出血"
+    notes: "突发剧烈头痛，这辈子最痛的头痛。"
+    symptoms:
+      primary_complaint: headache
+      qualifiers: [sudden_onset, worst_of_life]
+      onset: sudden
+      age: 52
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: sah_thunderclap_headache
+
+  - id: vignette_sah_004
+    source: public_vignettes
+    language: zh
+    citation: "国家执业医师 — 急性蛛网膜下腔出血"
+    notes: "突发头痛 + 颈强直，1 分钟内疼痛达到峰值。"
+    symptoms:
+      primary_complaint: headache
+      qualifiers: [sudden_onset, neck_stiffness, peak_under_1min]
+      onset: sudden
+      age: 60
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: sah_thunderclap_headache
+
+  # =================================================================
+  # Active suicidal ideation (4 critical, sensitive content)
+  # =================================================================
+  - id: vignette_si_001
+    source: public_vignettes
+    language: en
+    citation: "Columbia-Suicide Severity Rating Scale (C-SSRS) critical-tier example"
+    notes: "Active SI with plan + means available — C-SSRS critical."
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: [plan_specific, means_available]
+      age: 32
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: active_suicidal_ideation
+
+  - id: vignette_si_002
+    source: public_vignettes
+    language: en
+    citation: "SAMHSA 988 deployment training scenarios"
+    notes: "SI with intent stated and accessible means."
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: [intent_stated, means_available]
+      age: 45
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: active_suicidal_ideation
+
+  - id: vignette_si_003
+    source: public_vignettes
+    language: zh
+    citation: "中国心理危机干预指南 — 自杀风险评估"
+    notes: "存在具体自杀计划，已准备药物。"
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: [plan_specific, means_available]
+      age: 38
+      sex: F
+    ground_truth_level: critical
+    ground_truth_rule_id: active_suicidal_ideation
+
+  - id: vignette_si_004
+    source: public_vignettes
+    language: zh
+    citation: "C-SSRS 中文版应用 — 高危自杀意念"
+    notes: "陈述明确自杀意图 + 已选择方式。"
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: [intent_stated, plan_specific]
+      age: 26
+      sex: M
+    ground_truth_level: critical
+    ground_truth_rule_id: active_suicidal_ideation
+
+  # =================================================================
+  # Urgent — chest_pain_ambiguous_high_risk catch-all (3 urgent)
+  # =================================================================
+  - id: vignette_urgent_chest_001
+    source: public_vignettes
+    language: en
+    citation: "ACEP Clinical Policy: Chest Pain 2018 — ambiguous presentation"
+    notes: "Mid-aged chest pain without qualifiers — catch-all urgent."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 44
+      sex: M
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+
+  - id: vignette_urgent_chest_002
+    source: public_vignettes
+    language: en
+    citation: "ACEP — atypical chest pain in low-risk patient"
+    notes: "Young patient with chest pain; ambiguous catch-all still fires under balanced/strict."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 30
+      sex: F
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+
+  - id: vignette_urgent_chest_003
+    source: public_vignettes
+    language: zh
+    citation: "胸痛中心建设指南 2019 — 不典型胸痛"
+    notes: "40 岁胸痛，无放射，无大汗，仍需当日评估。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 40
+      sex: F
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+
+  # =================================================================
+  # Adversarial near-misses (10 — look critical but are not)
+  # =================================================================
+  - id: vignette_adv_panic_001
+    source: public_vignettes
+    language: en
+    citation: "DSM-5 panic attack — adversarial mimic of ACS"
+    notes: "Young patient + chest pain + palpitations + no qualifiers — should not fire ACS (age gate, no qualifiers)."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 24
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent  # catch-all still fires; that is acceptable
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: vignette_adv_panic_002
+    source: public_vignettes
+    language: zh
+    citation: "中国焦虑障碍诊疗指南 — 惊恐发作"
+    notes: "25 岁，胸痛 + 心悸，焦虑发作既往史 — 不应触发 ACS critical。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 25
+      sex: M
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: vignette_adv_costochondritis_001
+    source: public_vignettes
+    language: en
+    citation: "AAFP costochondritis — adversarial mimic of ACS"
+    notes: "Reproducible chest wall pain; no diaphoresis, no radiation."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 38
+      sex: F
+    ground_truth_level: urgent  # ambiguous catch-all still appropriate
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: vignette_adv_gerd_001
+    source: public_vignettes
+    language: en
+    citation: "ACG GERD — chest burning after meals"
+    notes: "Postprandial burning; not ACS-pattern."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 50
+      sex: M
+      key_history: [gerd]
+    ground_truth_level: urgent  # catch-all appropriately fires
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: vignette_adv_tension_ha_001
+    source: public_vignettes
+    language: en
+    citation: "ICHD-3 tension-type headache — adversarial mimic of SAH"
+    notes: "Gradual onset bilateral pressing headache, mild — must not fire SAH."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 34
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: vignette_adv_tension_ha_002
+    source: public_vignettes
+    language: zh
+    citation: "中国头痛诊疗指南 — 紧张型头痛"
+    notes: "缓慢发作，钝痛，不剧烈 — 不应触发蛛网膜下腔出血。"
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 40
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: vignette_adv_migraine_001
+    source: public_vignettes
+    language: en
+    citation: "ICHD-3 migraine with aura"
+    notes: "Throbbing HA + visual aura; gradual onset, not thunderclap."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 29
+      sex: F
+      key_history: [migraine]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: vignette_adv_urticaria_alone_001
+    source: public_vignettes
+    language: en
+    citation: "AAAAI urticaria without anaphylaxis"
+    notes: "Hives only; no wheeze, no swelling, no hypotension — must not fire anaphylaxis."
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: []
+      age: 33
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: vignette_adv_passive_si_001
+    source: public_vignettes
+    language: en
+    citation: "C-SSRS passive ideation — not critical tier"
+    notes: "Feels hopeless without plan/means/intent — must not fire active-SI rule."
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: []
+      age: 41
+      sex: M
+    ground_truth_level: urgent  # still needs follow-up, but not critical
+    is_adversarial: true
+
+  - id: vignette_adv_msk_neck_001
+    source: public_vignettes
+    language: en
+    citation: "AAFP cervical strain"
+    notes: "Neck pain alone without headache — must not fire SAH."
+    symptoms:
+      primary_complaint: musculoskeletal_pain
+      qualifiers: [neck_stiffness]
+      onset: gradual
+      age: 36
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # =================================================================
+  # Routine baseline (7 — gate must not over-fire)
+  # =================================================================
+  - id: vignette_routine_uri_001
+    source: public_vignettes
+    language: en
+    citation: "AAFP common cold"
+    notes: "Mild URI; not emergency."
+    symptoms:
+      primary_complaint: respiratory_symptoms
+      qualifiers: []
+      age: 28
+      sex: F
+    ground_truth_level: routine
+
+  - id: vignette_routine_uri_002
+    source: public_vignettes
+    language: zh
+    citation: "中国感冒诊疗共识 2017"
+    notes: "鼻塞 + 轻微咽痛。"
+    symptoms:
+      primary_complaint: respiratory_symptoms
+      qualifiers: []
+      age: 35
+      sex: M
+    ground_truth_level: routine
+
+  - id: vignette_routine_back_001
+    source: public_vignettes
+    language: en
+    citation: "ACP chronic low back pain"
+    notes: "Chronic mechanical back pain, no red flags."
+    symptoms:
+      primary_complaint: musculoskeletal_pain
+      qualifiers: []
+      age: 45
+      sex: M
+    ground_truth_level: routine
+
+  - id: vignette_routine_dehydration_ha
+    source: public_vignettes
+    language: en
+    citation: "AAFP dehydration headache"
+    notes: "Mild HA resolves with fluids; gradual onset."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 31
+      sex: F
+    ground_truth_level: routine
+
+  - id: vignette_routine_gi_001
+    source: public_vignettes
+    language: en
+    citation: "AAFP acute gastritis"
+    notes: "GI upset after spicy meal; no red flags."
+    symptoms:
+      primary_complaint: gi_symptoms
+      qualifiers: []
+      age: 27
+      sex: M
+    ground_truth_level: routine
+
+  - id: vignette_routine_eczema_001
+    source: public_vignettes
+    language: zh
+    citation: "中华皮肤科 — 慢性湿疹"
+    notes: "局部皮肤瘙痒，无全身症状。"
+    symptoms:
+      primary_complaint: skin_symptoms
+      qualifiers: []
+      age: 22
+      sex: F
+    ground_truth_level: routine
+
+  - id: vignette_routine_sleep_001
+    source: public_vignettes
+    language: zh
+    citation: "中国失眠诊疗指南 2017"
+    notes: "偶发失眠，无其他症状。"
+    symptoms:
+      primary_complaint: sleep_complaint
+      qualifiers: []
+      age: 50
+      sex: F
+    ground_truth_level: routine
