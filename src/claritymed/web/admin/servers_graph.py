@@ -87,6 +87,44 @@ NODES_PROCESS: tuple[ServerNode, ...] = (
         port=8000,
         port_env="CLARITYMED_OMLX_PORT",
     ),
+    # FastAPI backend (this very process when launched via
+    # ``claritymed-web``). Has a real ``/health`` route.
+    ServerNode(
+        id="claritymed_web",
+        kind="process",
+        label="claritymed-web",
+        port=8120,
+        port_env="CLARITYMED_WEB_PORT",
+    ),
+    # User-facing Vite dev server (chat SPA). No ``/health`` route —
+    # Vite's SPA fallback answers ``/`` with index.html, which is good
+    # enough for liveness. In a baked deployment where the SPA is
+    # served as static files behind a CDN, port 5173 is unused and
+    # this node will read as down; that's a known limitation.
+    ServerNode(
+        id="claritymed_ui",
+        kind="process",
+        label="claritymed-ui",
+        port=5173,
+        port_env="CLARITYMED_UI_PORT",
+        health_path="/",
+        depends_on=("claritymed_web",),
+    ),
+    # Admin SPA Vite dev server. Same fallback caveat: in production
+    # this is bundled into ``claritymed-web``'s ``/admin/*`` static mount
+    # and port 5174 isn't listening — node will read as down.
+    # Probe ``/admin/`` directly: vite is configured with
+    # ``base: "/admin/"`` so a bare ``/`` returns 302, which our
+    # 200-only probe would misread as down.
+    ServerNode(
+        id="admin_ui",
+        kind="process",
+        label="admin_ui",
+        port=5174,
+        port_env="CLARITYMED_ADMIN_UI_PORT",
+        health_path="/admin/",
+        depends_on=("claritymed_web",),
+    ),
 )
 
 # Logical pseudo-nodes — operators see "what breaks if X dies".
