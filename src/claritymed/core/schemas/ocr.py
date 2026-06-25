@@ -153,6 +153,39 @@ _DEFAULT_TEXT_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+class ModalityFallbackConfig(BaseModel):
+    """LLM provider used when BiomedCLIP is unavailable and no LLM-OCR ran.
+
+    Shares the same shape as ``LLMOcrConfig`` — either reference a
+    ``models.yaml`` entry via ``provider_id``, or supply inline connection
+    details via ``model`` (+ optional ``base_url`` / ``api_key_env``).
+    The referenced provider must have ``supports_vision: true``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_id: str | None = Field(default=None, min_length=1, max_length=64)
+    model: str | None = Field(default=None, min_length=1)
+    base_url: str | None = Field(default=None, min_length=1)
+    api_key_env: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def _check_source(self) -> "ModalityFallbackConfig":
+        has_id = self.provider_id is not None
+        has_model = self.model is not None
+        if has_id and has_model:
+            raise ValueError(
+                "Set either provider_id or model in "
+                "ocr.yaml modality_fallback section, not both."
+            )
+        if not has_id and not has_model:
+            raise ValueError(
+                "ocr.yaml modality_fallback section requires either "
+                "provider_id or model."
+            )
+        return self
+
+
 class OcrConfig(BaseModel):
     """Parsed ``configs/ocr.yaml`` — chain-only."""
 
@@ -169,6 +202,10 @@ class OcrConfig(BaseModel):
     )
     mineru: MineRUOcrConfig | None = None
     llm: LLMOcrConfig | None = None
+    # Optional LLM fallback for modality classification. Called when
+    # BiomedCLIP is unavailable AND the OCR chain had no LLM provider
+    # (so result.modality is None). The provider must support vision.
+    modality_fallback: ModalityFallbackConfig | None = None
 
     @model_validator(mode="after")
     def _require_at_least_one_chain(self) -> "OcrConfig":

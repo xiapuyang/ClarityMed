@@ -54,12 +54,17 @@ def build_ocr_worker(
             DEFAULT_BASE_URL as MEDICAL_CLIP_DEFAULT_BASE_URL,
             MedicalClipClient,
         )
-        from claritymed.core.ocr.factory import make_ocr_provider
+        from claritymed.core.ocr.factory import (
+            make_modality_fallback_provider,
+            make_ocr_provider,
+        )
+        from claritymed.core.schemas.ocr import load_ocr_config
         from claritymed.core.vision.ocr_report_detector import (
             load_ocr_report_config,
         )
         from claritymed.orchestrator.services.ocr_worker import OcrWorker
 
+        ocr_cfg = load_ocr_config()
         provider = make_ocr_provider()
         # Medical-clip client construction is unconditional; the server
         # may not be running, but ``classify_modality`` raises
@@ -73,11 +78,13 @@ def build_ocr_worker(
         )
         medical_clip_client = MedicalClipClient(base_url=medical_clip_base_url)
         ocr_report_config = load_ocr_report_config(CONFIGS_DIR / "vision.yaml")
+        llm_modality_provider = make_modality_fallback_provider(ocr_cfg)
         worker = OcrWorker(
             provider,
             listener=listener,
             medical_clip_client=medical_clip_client,
             ocr_report_config=ocr_report_config,
+            llm_modality_provider=llm_modality_provider,
         )
         if start:
             worker.start()

@@ -228,10 +228,17 @@ class RoutingOcrProvider(OcrProvider):
             )
             # Rewrite chain_tried to reflect what *we* walked (failed
             # leaves + winner), not just what the winning leaf returned.
+            # Forward modality/is_medical from the winning provider so
+            # _compute_vision_tags can use LLM-OCR's classification even
+            # when text extraction succeeded (previously these were dropped
+            # here, making the llm-ocr override in _compute_vision_tags
+            # unreachable on the success path).
             return ExtractResult(
                 text=result.text,
                 provider_used=label,
                 chain_tried=list(tried_labels),
+                modality=result.modality,
+                is_medical=result.is_medical,
             )
 
         duration_ms = int((time.perf_counter() - t0) * 1000)

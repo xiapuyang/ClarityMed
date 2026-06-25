@@ -84,3 +84,12 @@ mineru:
 #   api_key_env: ENV_VAR_NAME   # only honored when base_url is set
 llm:
   provider_id: omlx
+
+# Optional LLM fallback for modality classification.
+# Called only when BiomedCLIP is unavailable AND the OCR chain's LLM provider
+# did not run (e.g. rapidocr handled the image, leaving result.modality=None).
+# Same shape as the top-level llm: block; referenced provider must support vision.
+# Omit (default) to leave modality as "unknown" in those cases.
+#
+modality_fallback:
+  provider_id: omlx

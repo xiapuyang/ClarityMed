@@ -88,6 +88,33 @@ def chain_supported_extensions(cfg) -> frozenset[str] | None:
     return frozenset(accepted)
 
 
+def make_modality_fallback_provider(cfg) -> "OcrProvider | None":
+    """Build the optional LLM provider for modality classification fallback.
+
+    Returns ``None`` when ``cfg.modality_fallback`` is not set, or when the
+    referenced provider fails to build (missing optional dep, bad config).
+    The caller (OcrWorkerFactory) injects the result into OcrWorker; the
+    worker's ``_compute_vision_tags`` only calls it when BiomedCLIP is
+    unavailable and the OCR chain yielded no modality signal.
+    """
+    if cfg.modality_fallback is None:
+        return None
+    try:
+        provider = _make_llm_provider(cfg, chain_entry=cfg.modality_fallback)
+        logger.info(
+            "ocr: modality fallback provider built (provider_id=%s model=%s)",
+            cfg.modality_fallback.provider_id,
+            cfg.modality_fallback.model,
+        )
+        return provider
+    except Exception:
+        logger.exception(
+            "ocr: modality fallback provider build failed — "
+            "modality will fall back to 'unknown' when BiomedCLIP unavailable"
+        )
+        return None
+
+
 def make_ocr_provider() -> OcrProvider:
     """Build a ``RoutingOcrProvider`` from ``configs/ocr.yaml``.
 
@@ -225,6 +252,14 @@ def _model_from_catalog(provider_id: str):
     from claritymed.stores.models import resolve_provider
 
     provider = resolve_provider(override=provider_id)
+    if not provider.supports_vision:
+        raise ValueError(
+            f"OCR LLM provider {provider_id!r} (model={provider.model!r}) does "
+            "not support vision inputs. Set supports_vision: true in models.yaml "
+            "only for multimodal models (e.g. gpt-4o, claude-*, gemini-*, "
+            "Qwen-VL). Pure-text models like DeepSeek-V4 will reject "
+            "BinaryContent at inference time."
+        )
     return build_model(provider)
 
 

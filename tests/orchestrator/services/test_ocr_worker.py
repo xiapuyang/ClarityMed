@@ -612,8 +612,7 @@ async def test_compute_vision_tags_llm_override_when_clip_unknown(tmp_path):
 
     assert tags["modality"] == "ct"
     assert tags["is_medical"] is True
-    assert "modality_from_llm_ocr" in tags.get("vision_warnings", [])
-    assert "is_medical_from_llm_ocr" in tags.get("vision_warnings", [])
+    assert "modality_from_llm_ocr_fallback" in tags.get("vision_warnings", [])
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,12 @@ class ProviderConfig(BaseModel):
     base_url: str | None = Field(default=None, min_length=1)
     api_key_env: str | None = Field(default=None, min_length=1, max_length=64)
     thinking: bool | ThinkingLevel | None = Field(default=None)
+    # Marks whether this provider accepts image/binary inputs (BinaryContent).
+    # Only set true for multimodal models: GPT-4o, Claude, Gemini, Qwen-VL, etc.
+    # DeepSeek-V4, pure-text local models, and text-only APIs must stay false.
+    # The OCR factory reads this field at startup and raises if a non-vision
+    # provider is wired into the LLM-OCR chain.
+    supports_vision: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _check_model_shape(self) -> "ProviderConfig":

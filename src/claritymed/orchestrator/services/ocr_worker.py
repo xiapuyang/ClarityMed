@@ -84,6 +84,30 @@ _LLM_MEDICAL_MODALITIES: frozenset[str] = frozenset(
 )
 
 
+def _apply_llm_ocr_modality_fallback(
+    tags: dict, result: "ExtractResult", warnings: list[str]
+) -> None:
+    """Fill modality/is_medical from LLM-OCR when BiomedCLIP is unavailable.
+
+    Called from the MedicalClipUnreachableError and general exception handlers
+    in _compute_vision_tags. Using the LLM-OCR signal directly (rather than
+    setting "unknown" and relying on the override block) ensures:
+    - is_medical=False from the LLM is respected, not silently dropped.
+    - The override block below stays focused on its actual purpose: the
+      histopath safety net (BiomedCLIP confident but wrong label).
+    """
+    llm_modality = result.modality
+    if llm_modality and llm_modality != "unknown":
+        tags["modality"] = llm_modality
+        if result.is_medical is not None:
+            tags["is_medical"] = result.is_medical
+        warnings.append("modality_from_llm_ocr_fallback")
+    else:
+        # No useful LLM-OCR signal; leave is_medical absent so the
+        # sentinel records "no opinion" rather than a stale False.
+        tags["modality"] = "unknown"
+
+
 def _has_vision_payload(blob_dir: Path, blob_path: Path) -> bool:
     """True iff this blob has bytes the vision pipeline can decode.
 
@@ -197,10 +221,17 @@ class OcrWorker:
         listener: CompletionListener | None = None,
         medical_clip_client: MedicalClipClient | None = None,
         ocr_report_config: dict | None = None,
+        llm_modality_provider: OcrProvider | None = None,
     ) -> None:
         self._provider = provider
         self._listener = listener
         self._medical_clip = medical_clip_client
+        # Explicit LLM fallback for modality classification. Called when
+        # BiomedCLIP is unavailable AND the OCR chain's LLM provider did
+        # not run (result.modality is None). ``None`` means no fallback —
+        # modality stays "unknown" in that gap. Built by OcrWorkerFactory
+        # from the ``modality_fallback:`` section of ocr.yaml.
+        self._llm_modality_provider = llm_modality_provider
         # ``ocr_report_config`` shape: ``{"min_chars": int, "markers": dict[str, list[str]]}``
         # (the return value of :func:`load_ocr_report_config`). ``None``
         # disables the report heuristic entirely — every blob gets
@@ -573,21 +604,13 @@ class OcrWorker:
                 tags["modality_confidence"] = float(response.confidence)
                 tags["is_medical"] = bool(response.is_medical)
             except MedicalClipUnreachableError as exc:
-                # KTD-V8 graceful: server down → keep OCR moving. The
-                # vision plugin treats missing/unknown modality the
-                # same as classifier-low-confidence (asks the user).
-                # ``is_medical`` deliberately omitted — write_ocr_result
-                # drops None-valued kwargs from the payload, and field
-                # absence is the LLM-side signal "no opinion" (a stale
-                # False would falsely claim "the classifier saw this
-                # and decided it isn't medical").
                 logger.warning(
-                    "medical-clip unreachable for %s: %s; tagging modality=unknown",
+                    "medical-clip unreachable for %s: %s; falling back to LLM-OCR modality",
                     job.sha256[:8],
                     exc,
                 )
-                tags["modality"] = "unknown"
                 warnings.append(f"medical_clip_unreachable: {exc!s}")
+                _apply_llm_ocr_modality_fallback(tags, result, warnings)
             except Exception as exc:  # noqa: BLE001
                 # 4xx (image_decode_failed, image_hash_mismatch) and any
                 # other unexpected shape land here. Same posture as the
@@ -597,8 +620,8 @@ class OcrWorker:
                     job.sha256[:8],
                     exc,
                 )
-                tags["modality"] = "unknown"
                 warnings.append(f"modality_classification_failed: {exc!s}")
+                _apply_llm_ocr_modality_fallback(tags, result, warnings)
 
         # LLM-OCR override: the vision LLM saw both the pixels and the
         # surrounding text, so it can recover signal medical-clip lost.
@@ -638,6 +661,38 @@ class OcrWorker:
         if not tags.get("is_medical") and llm_is_medical is True:
             tags["is_medical"] = True
             warnings.append("is_medical_from_llm_ocr")
+
+        # Explicit LLM modality fallback: when BiomedCLIP is unavailable
+        # and no LLM-OCR ran in the chain (result.modality is None), make
+        # one explicit call to the configured modality fallback provider.
+        # Only fires when we still have no real modality signal (None or
+        # "unknown") — avoids a redundant call when either BiomedCLIP or
+        # the chain LLM already gave us an answer.
+        if (
+            tags.get("modality") in (None, "unknown")
+            and self._llm_modality_provider is not None
+        ):
+            vision_path = (
+                vision_sidecar_path(blob_dir)
+                if has_vision_sidecar(blob_dir)
+                else job.blob_path
+            )
+            try:
+                fallback_result = await self._llm_modality_provider.extract_text(
+                    vision_path
+                )
+                if fallback_result.modality and fallback_result.modality != "unknown":
+                    tags["modality"] = fallback_result.modality
+                    if fallback_result.is_medical is not None:
+                        tags["is_medical"] = fallback_result.is_medical
+                    warnings.append("modality_from_llm_fallback_provider")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "llm modality fallback failed for %s: %s",
+                    job.sha256[:8],
+                    exc,
+                )
+                warnings.append(f"llm_modality_fallback_failed: {exc!s}")
 
         # Report-override heuristic. Cheap; always run when configured,
         # regardless of whether modality classification succeeded —
