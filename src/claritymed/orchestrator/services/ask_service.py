@@ -2011,10 +2011,15 @@ class AskService:
                 lang=self._language,
             )
             if action_text == "emergency.action.generic_emergency":
-                action_text = (
-                    "If this may be a medical emergency, please call your "
-                    "local emergency number now (US: 911, UK: 999, CN: 120)."
-                )
+                if self._language == "zh":
+                    action_text = (
+                        "如怀疑是医疗紧急情况，请立即拨打急救电话（中国：120）。"
+                    )
+                else:
+                    action_text = (
+                        "If this may be a medical emergency, please call your "
+                        "local emergency number now (Canada: 911)."
+                    )
 
         final_text = (
             f"{action_text}\n\n{supporting_text}".strip()

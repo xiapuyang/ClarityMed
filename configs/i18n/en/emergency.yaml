@@ -18,7 +18,7 @@ emergency:
     gate_disabled: |
       ---
 
-      *Heads up: emergency triage is currently turned off in your settings, so this reply was generated without the usual safety screen for life-threatening symptoms. If you think this may be an emergency, call your local emergency number now (US: 911, UK: 999, CN: 120).*
+      *Heads up: emergency triage is currently turned off in your settings, so this reply was generated without the usual safety screen for life-threatening symptoms. If you think this may be an emergency, call your local emergency number now (Canada: 911).*
     strict_mode_active: |
       ---
 
@@ -27,22 +27,22 @@ emergency:
     # ACS — STEMI / unstable angina pattern. AHA/ACC Chest Pain
     # Guideline → "Call 911 (or local EMS). Do not drive yourself."
     call_ems_cardiac: |
-      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — this could be a heart attack.** Do not drive yourself; chew an aspirin if you are not allergic and have it available; stay seated or lying down until help arrives.
+      **Call your local emergency number now (Canada: 911) — this could be a heart attack.** Do not drive yourself; chew an aspirin if you are not allergic and have it available; stay seated or lying down until help arrives.
     # Stroke FAST. "Time is brain" — every minute of delay costs
     # ~1.9M neurons; the 4.5h thrombolysis window is hard.
     call_ems_stroke: |
-      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — these signs suggest a stroke.** Note the exact time the symptoms started (the treatment window matters). Do not eat or drink. Do not drive yourself.
+      **Call your local emergency number now (Canada: 911) — these signs suggest a stroke.** Note the exact time the symptoms started (the treatment window matters). Do not eat or drink. Do not drive yourself.
     # Anaphylaxis. WAO 2020 → epinephrine first, then EMS.
     epi_then_ems: |
-      **Use your epinephrine auto-injector now if you have one, then call your local emergency number (US: 911, UK: 999, CN: 120).** Lie flat with legs raised. A second dose may be needed in 5–15 minutes if symptoms persist. Even if symptoms improve, go to the ER — biphasic reactions can recur hours later.
+      **Use your epinephrine auto-injector now if you have one, then call your local emergency number (Canada: 911).** Lie flat with legs raised. A second dose may be needed in 5–15 minutes if symptoms persist. Even if symptoms improve, go to the ER — biphasic reactions can recur hours later.
     # SAH thunderclap. Ottawa SAH Rule → "worst headache of life" /
     # sudden onset peaking < 1 min → CT head urgently.
     call_ems_sah: |
-      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — a sudden, very severe headache can be a brain bleed (subarachnoid hemorrhage).** Do not wait to see if it improves. Time-sensitive imaging matters.
+      **Call your local emergency number now (Canada: 911) — a sudden, very severe headache can be a brain bleed (subarachnoid hemorrhage).** Do not wait to see if it improves. Time-sensitive imaging matters.
     # Active suicidal ideation with plan/means/intent. C-SSRS critical
     # tier → immediate hotline + safety planning.
     crisis_hotline_988: |
-      **You are not alone, and help is available right now. In the US call or text 988 (Suicide and Crisis Lifeline). In China, call 400-161-9995. In the UK, call Samaritans at 116 123.** If you have means in front of you, please move away from them and ask someone to stay with you until you can reach help.
+      **You are not alone, and help is available right now. In Canada, call or text 988 (Suicide Crisis Helpline).** If you have means in front of you, please move away from them and ask someone to stay with you until you can reach help.
     # Ambiguous chest pain (catch-all). ACEP 2018 → "needs evaluation
     # within hours," not "go to the ER right now," but not "wait."
     urgent_eval_chest_pain: |
@@ -51,28 +51,28 @@ emergency:
     # leg swelling / pleuritic / hemoptysis / syncope → time-sensitive
     # CT-PA. Treat as life-threat.
     urgent_eval_pe: |
-      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — this could be a blood clot in the lung (pulmonary embolism).** Do not walk a long distance or drive yourself. If you have unilateral leg swelling, do not massage or rub the leg. Time-sensitive imaging matters.
+      **Call your local emergency number now (Canada: 911) — this could be a blood clot in the lung (pulmonary embolism).** Do not walk a long distance or drive yourself. If you have unilateral leg swelling, do not massage or rub the leg. Time-sensitive imaging matters.
     # Sepsis (qSOFA positive). Surviving Sepsis Campaign: source-
     # control plus antibiotics within 1 hour of recognition.
     urgent_eval_sepsis: |
-      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — these signs together can mean sepsis, which is a life-threatening response to infection.** Note your temperature, when symptoms started, and any source of infection (urinary, lung, skin, recent surgery). Antibiotics within the first hour of recognition save lives.
+      **Call your local emergency number now (Canada: 911) — these signs together can mean sepsis, which is a life-threatening response to infection.** Note your temperature, when symptoms started, and any source of infection (urinary, lung, skin, recent surgery). Antibiotics within the first hour of recognition save lives.
     # Bacterial meningitis classic triad. IDSA 2004 → empiric
     # antibiotics + dexamethasone immediately upon clinical suspicion.
     urgent_eval_meningitis: |
-      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — fever with a stiff neck and confusion can mean bacterial meningitis.** Do not wait for a fever to break. Note the time symptoms started; antibiotics within the first hour matter. If you have a rash that does not blanch when pressed, mention it on the call.
+      **Call your local emergency number now (Canada: 911) — fever with a stiff neck and confusion can mean bacterial meningitis.** Do not wait for a fever to break. Note the time symptoms started; antibiotics within the first hour matter. If you have a rash that does not blanch when pressed, mention it on the call.
     # Ectopic pregnancy with bleeding. ACOG Practice Bulletin 193 —
     # rupture is a surgical emergency; even unruptured is time-
     # sensitive (methotrexate vs. surgery).
     urgent_eval_ectopic: |
-      **Call your local emergency number now (US: 911, UK: 999, CN: 120) — abdominal pain with bleeding in early pregnancy can mean an ectopic pregnancy, which is life-threatening if it ruptures.** Do not eat or drink in case surgery is needed. Bring your last menstrual period date and any pregnancy-test result.
+      **Call your local emergency number now (Canada: 911) — abdominal pain with bleeding in early pregnancy can mean an ectopic pregnancy, which is life-threatening if it ruptures.** Do not eat or drink in case surgery is needed. Bring your last menstrual period date and any pregnancy-test result.
     # Testicular torsion. AUA Acute Scrotum Guideline — surgical
     # detorsion within 6 hours preserves the testis.
     urgent_eval_torsion: |
-      **Go to the nearest emergency department now — sudden severe one-sided testicular pain can mean testicular torsion, and the testicle has to be untwisted surgically within about 6 hours to save it.** Do not eat or drink in case surgery is needed. If you cannot get there fast, call your local emergency number (US: 911, UK: 999, CN: 120).
+      **Go to the nearest emergency department now — sudden severe one-sided testicular pain can mean testicular torsion, and the testicle has to be untwisted surgically within about 6 hours to save it.** Do not eat or drink in case surgery is needed. If you cannot get there fast, call your local emergency number (Canada: 911).
     # Generic fallback — used when no specific action key is available
     # but the gate has already determined the situation is critical.
     generic_emergency: |
-      **If this may be a medical emergency, call your local emergency number now (US: 911, UK: 999, CN: 120).** Do not wait to see if symptoms improve.
+      **If this may be a medical emergency, call your local emergency number now (Canada: 911).** Do not wait to see if symptoms improve.
   # Labels for the dynamic [SAFETY CONTEXT] block that the agent's
   # system prompt receives on urgent/moderate triage turns. These are
   # scaffolding strings (not prompt-engineering knobs); the LLM
