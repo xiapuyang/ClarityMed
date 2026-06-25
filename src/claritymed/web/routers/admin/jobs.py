@@ -1,8 +1,8 @@
 """Admin jobs router — list, get, cancel.
 
 POST endpoints to *create* jobs live with their respective kinds
-(``/admin/rag/ingest``, ``/admin/rag/bootstrap``, ``/admin/benchmark/runs``)
-so authentication, validation, and request bodies stay close to the
+(``/admin/rag/collections/upsert``, ``/admin/benchmark/runs``) so
+authentication, validation, and request bodies stay close to the
 domain. This router is read + cancel only.
 """
 
@@ -29,7 +29,7 @@ async def list_jobs(
     """Return jobs sorted by newest first.
 
     Filter by ``state`` (queued/running/done/failed/cancelled/crashed)
-    or ``kind`` (rag_ingest/rag_bootstrap/benchmark_run). Both are
+    or ``kind`` (rag_ingest/benchmark_run). Both are
     optional; the SPA polls with ``state=running`` while any are visible.
     """
     registry = request.app.state.jobs

@@ -66,3 +66,40 @@ export async function adminFetch<T = unknown>(
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
+
+// Multipart upload variant. Same auth/CSRF/redirect posture as adminFetch
+// but lets the browser set the multipart Content-Type with the right
+// boundary (you can't set it by hand — fetch needs to compute it).
+export async function adminFetchMultipart<T = unknown>(
+  path: string,
+  formData: FormData,
+): Promise<T> {
+  const headers = new Headers();
+  const csrf = readCsrfToken();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+  const res = await fetch(path, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: formData,
+  });
+  if (res.status === 401) {
+    window.location.assign("/");
+    throw new AdminApiError(401, null, "not_authenticated");
+  }
+  if (res.status === 403) {
+    window.location.assign("/admin/forbidden");
+    throw new AdminApiError(403, null, "forbidden");
+  }
+  if (!res.ok) {
+    let detail: unknown = null;
+    try {
+      detail = await res.json();
+    } catch {
+      detail = await res.text();
+    }
+    throw new AdminApiError(res.status, detail);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}

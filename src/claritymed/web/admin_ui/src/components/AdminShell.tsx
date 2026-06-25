@@ -59,7 +59,7 @@ export function AdminShell() {
               <Skeleton height={20} width={120} />
             ) : me.data ? (
               <Text size="sm" c="dimmed">
-                {me.data.display_name} · {me.data.role}
+                {me.data.display_name}
               </Text>
             ) : null}
             <SegmentedControl

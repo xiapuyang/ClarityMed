@@ -243,19 +243,14 @@ def create_app() -> FastAPI:
 def _register_job_runners(registry: JobRegistry) -> None:
     """Wire admin job kinds to their runner callables.
 
-    U7 supplies rag_ingest + rag_bootstrap; U8 supplies benchmark_run.
-    Importing the runners lazily avoids forcing the runner modules to
-    load at every web import — useful when running tests that don't
-    touch RAG or benchmarks.
+    U7 supplies rag_ingest; U8 supplies benchmark_run. Importing the
+    runners lazily avoids forcing the runner modules to load at every
+    web import — useful when running tests that don't touch RAG or
+    benchmarks.
     """
-    from claritymed.web.admin.job_runners import (
-        benchmark_run,
-        rag_bootstrap,
-        rag_ingest,
-    )
+    from claritymed.web.admin.job_runners import benchmark_run, rag_ingest
 
     registry.register_runner("rag_ingest", rag_ingest.run)
-    registry.register_runner("rag_bootstrap", rag_bootstrap.run)
     registry.register_runner("benchmark_run", benchmark_run.run)
 
 

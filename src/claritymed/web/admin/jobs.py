@@ -1,9 +1,9 @@
 """Cheap-path background job registry for the admin module.
 
-Three job kinds ship with the admin surface:
+Two job kinds ship with the admin surface:
 
-* ``rag_ingest`` — ingest one document into a system RAG collection
-* ``rag_bootstrap`` — recreate / seed all system corpora
+* ``rag_ingest`` — ingest one or more documents into a system RAG
+  collection (also creates the collection on first ingest if needed)
 * ``benchmark_run`` — kick off an eval runner subprocess
 
 Each job is dispatched as an ``asyncio.Task`` running a runner callable.
@@ -52,7 +52,7 @@ KEEP_FINISHED_COUNT = 100
 KEEP_FINISHED_WINDOW_S = 30 * 24 * 60 * 60
 STDOUT_TAIL_MAX = 200
 
-JobKind = Literal["rag_ingest", "rag_bootstrap", "benchmark_run"]
+JobKind = Literal["rag_ingest", "benchmark_run"]
 JobState = Literal["queued", "running", "done", "failed", "cancelled", "crashed"]
 TERMINAL_STATES: frozenset[JobState] = frozenset(
     ["done", "failed", "cancelled", "crashed"]
@@ -187,6 +187,12 @@ class JobRegistry:
         The decision between ``queued`` and ``running`` is taken under
         ``_lock`` so two concurrent submits don't both think they're
         under the cap.
+
+        Returns the *current* spec from the registry rather than the
+        captured pre-dispatch snapshot — :meth:`_maybe_dispatch_locked`
+        transitions the spec to ``running`` and sets ``started_at``
+        before this call returns, so callers (and the HTTP response)
+        see the post-dispatch state.
         """
         if kind not in self._runners:
             raise ValueError(f"no runner registered for kind {kind!r}")
@@ -204,7 +210,7 @@ class JobRegistry:
                 payload={"job_id": spec.id, "kind": kind},
             )
             self._maybe_dispatch_locked()
-        return spec
+        return self._jobs[spec.id]
 
     async def cancel(self, job_id: str) -> JobSpec | None:
         """Cancel a queued or running job. Returns the spec on success."""

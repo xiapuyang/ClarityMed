@@ -10,7 +10,7 @@ export type JobState =
   | "cancelled"
   | "crashed";
 
-export type JobKind = "rag_ingest" | "rag_bootstrap" | "benchmark_run";
+export type JobKind = "rag_ingest" | "benchmark_run";
 
 export interface JobSpec {
   id: string;
@@ -51,4 +51,30 @@ export function useAdminJobs() {
 
 export async function cancelAdminJob(jobId: string): Promise<JobSpec> {
   return adminFetch<JobSpec>(`/api/v1/admin/jobs/${jobId}`, { method: "DELETE" });
+}
+
+const TERMINAL_STATES: ReadonlySet<JobState> = new Set([
+  "done",
+  "failed",
+  "cancelled",
+  "crashed",
+]);
+
+// Poll a single job until it reaches a terminal state. Used by the RAG
+// upsert and bootstrap notifications so the operator gets a real
+// outcome message instead of just "queued.". Caps the wait so a hung
+// runner doesn't pin the notification open forever.
+export async function pollJobUntilTerminal(
+  jobId: string,
+  { timeoutMs = 600_000, intervalMs = 1500 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<JobSpec> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const spec = await adminFetch<JobSpec>(`/api/v1/admin/jobs/${jobId}`);
+    if (TERMINAL_STATES.has(spec.state)) return spec;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  // Timed out — return the last-seen spec so the caller can still
+  // render whatever progress was reported.
+  return adminFetch<JobSpec>(`/api/v1/admin/jobs/${jobId}`);
 }

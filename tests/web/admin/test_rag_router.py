@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import yaml
 
@@ -83,25 +85,66 @@ async def test_inspect_declared_collection(web_client, admin_cookies, tmp_retrie
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_creates_job(web_client, admin_cookies, tmp_retrieval):
+async def test_upsert_rejects_invalid_name(web_client, admin_cookies, tmp_retrieval):
+    """``name`` must match the [a-z][a-z0-9_]+ Qdrant collection convention."""
     response = await web_client.post(
-        "/api/v1/admin/rag/bootstrap",
+        "/api/v1/admin/rag/collections/upsert",
         cookies=admin_cookies,
         headers={"X-CSRF-Token": "csrf-test-token"},
-        json={"skip_existing": True},
+        data={"metadata": json.dumps({"name": "BadName"})},
+        files={"files": ("note.txt", b"hello", "text/plain")},
     )
-    assert response.status_code == 200
-    spec = response.json()
-    assert spec["kind"] == "rag_bootstrap"
-    assert spec["state"] in ("queued", "running", "done", "failed")
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_ingest_validates_required_fields(web_client, admin_cookies):
+async def test_upsert_rejects_empty_files(web_client, admin_cookies, tmp_retrieval):
+    """Multipart with no file parts -> 422 from FastAPI's parser."""
     response = await web_client.post(
-        "/api/v1/admin/rag/ingest",
+        "/api/v1/admin/rag/collections/upsert",
         cookies=admin_cookies,
         headers={"X-CSRF-Token": "csrf-test-token"},
-        json={},
+        data={"metadata": json.dumps({"name": "good_name"})},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_empty_file_body(web_client, admin_cookies, tmp_retrieval):
+    """A file part with zero bytes is rejected at the boundary."""
+    response = await web_client.post(
+        "/api/v1/admin/rag/collections/upsert",
+        cookies=admin_cookies,
+        headers={"X-CSRF-Token": "csrf-test-token"},
+        data={"metadata": json.dumps({"name": "good_name"})},
+        files={"files": ("empty.txt", b"", "text/plain")},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_upsert_rejects_invalid_metadata_json(
+    web_client, admin_cookies, tmp_retrieval
+):
+    """Malformed JSON in the metadata field surfaces a 422 with a clear hint."""
+    response = await web_client.post(
+        "/api/v1/admin/rag/collections/upsert",
+        cookies=admin_cookies,
+        headers={"X-CSRF-Token": "csrf-test-token"},
+        data={"metadata": "{not-json"},
+        files={"files": ("note.txt", b"x", "text/plain")},
+    )
+    assert response.status_code == 422
+    assert "json" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_upsert_requires_admin(web_client, non_admin_cookies, tmp_retrieval):
+    response = await web_client.post(
+        "/api/v1/admin/rag/collections/upsert",
+        cookies=non_admin_cookies,
+        headers={"X-CSRF-Token": "csrf-test-token"},
+        data={"metadata": json.dumps({"name": "good_name"})},
+        files={"files": ("note.txt", b"x", "text/plain")},
+    )
+    assert response.status_code == 403

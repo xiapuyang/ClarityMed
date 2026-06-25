@@ -14,14 +14,19 @@ import {
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
-import { IconRefresh, IconRocket, IconTrash } from "@tabler/icons-react";
+import {
+  IconPlus,
+  IconRefresh,
+  IconTrash,
+  IconUpload,
+} from "@tabler/icons-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { RagUpsertModal } from "../components/RagUpsertModal";
 import {
   useAdminRagCollections,
   useDeleteRagCollection,
-  useTriggerRagBootstrap,
   type RagCollection,
 } from "../hooks/useAdminRag";
 
@@ -29,30 +34,15 @@ export function RagCorpus() {
   const { t } = useTranslation();
   const { data, isLoading, error, refetch, isFetching } = useAdminRagCollections();
   const del = useDeleteRagCollection();
-  const bootstrap = useTriggerRagBootstrap();
   const [confirm, setConfirm] = useState<RagCollection | null>(null);
   const [modalOpened, { open: openModal, close: closeModal }] = useDisclosure(false);
+  const [upsertTarget, setUpsertTarget] = useState<RagCollection | null>(null);
+  const [upsertOpened, { open: openUpsert, close: closeUpsert }] =
+    useDisclosure(false);
 
   if (isLoading) return <Loader />;
   if (error)
     return <Alert color="red">{(error as Error).message ?? t("app.error")}</Alert>;
-
-  const handleBootstrap = async () => {
-    try {
-      const spec = await bootstrap.mutateAsync();
-      notifications.show({
-        title: t("rag.title"),
-        message: `Bootstrap job ${spec.id.slice(0, 8)} queued.`,
-        color: "blue",
-      });
-    } catch (e) {
-      notifications.show({
-        title: t("app.error"),
-        message: (e as Error).message,
-        color: "red",
-      });
-    }
-  };
 
   const handleDelete = async () => {
     if (!confirm) return;
@@ -74,6 +64,16 @@ export function RagCorpus() {
     }
   };
 
+  const handleAppendClick = (c: RagCollection) => {
+    setUpsertTarget(c);
+    openUpsert();
+  };
+
+  const handleCreateClick = () => {
+    setUpsertTarget(null);
+    openUpsert();
+  };
+
   return (
     <Stack gap="md">
       <Group justify="space-between">
@@ -87,12 +87,8 @@ export function RagCorpus() {
           >
             <IconRefresh size={18} />
           </ActionIcon>
-          <Button
-            leftSection={<IconRocket size={16} />}
-            onClick={handleBootstrap}
-            loading={bootstrap.isPending}
-          >
-            Bootstrap system RAG
+          <Button leftSection={<IconPlus size={16} />} onClick={handleCreateClick}>
+            Create collection
           </Button>
         </Group>
       </Group>
@@ -126,18 +122,28 @@ export function RagCorpus() {
                 </Text>
               </Table.Td>
               <Table.Td>
-                <Tooltip label={t("app.delete")}>
-                  <ActionIcon
-                    variant="subtle"
-                    color="red"
-                    onClick={() => {
-                      setConfirm(c);
-                      openModal();
-                    }}
-                  >
-                    <IconTrash size={16} />
-                  </ActionIcon>
-                </Tooltip>
+                <Group gap={4} justify="flex-end" wrap="nowrap">
+                  <Tooltip label="Append files">
+                    <ActionIcon
+                      variant="subtle"
+                      onClick={() => handleAppendClick(c)}
+                    >
+                      <IconUpload size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <Tooltip label={t("app.delete")}>
+                    <ActionIcon
+                      variant="subtle"
+                      color="red"
+                      onClick={() => {
+                        setConfirm(c);
+                        openModal();
+                      }}
+                    >
+                      <IconTrash size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                </Group>
               </Table.Td>
             </Table.Tr>
           ))}
@@ -163,6 +169,11 @@ export function RagCorpus() {
           </Group>
         </Stack>
       </Modal>
+      <RagUpsertModal
+        opened={upsertOpened}
+        onClose={closeUpsert}
+        target={upsertTarget}
+      />
     </Stack>
   );
 }

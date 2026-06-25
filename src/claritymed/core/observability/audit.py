@@ -358,7 +358,7 @@ AuditKind = Literal[
     "admin.models.secrets.write",
     "admin.rag.collection.delete",
     "admin.rag.collection.read",
-    "admin.rag.bootstrap",
+    "admin.rag.upsert",
     "admin.benchmark.read",
     "admin.i18n.write",
     "admin.job.triggered",
