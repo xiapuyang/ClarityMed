@@ -210,3 +210,112 @@ def test_match_returns_none_when_encoder_unavailable() -> None:
     em = _make_embedder(None)
     r = em.match("fever", cat)
     assert r.evidence_idx is None
+
+
+# --- property accessors --------------------------------------------------
+
+
+def test_embedder_property_accessors() -> None:
+    em = InitMatcherEmbedder(model_id="my-model", device="cpu", default_threshold=0.75)
+    assert em.model_id == "my-model"
+    assert em.device == "cpu"
+    assert em.default_threshold == 0.75
+
+
+# --- _resolved_device ----------------------------------------------------
+
+
+def test_resolved_device_cpu_when_explicit() -> None:
+    em = InitMatcherEmbedder(model_id="stub", device="cpu")
+    assert em._resolved_device() == "cpu"
+
+
+def test_resolved_device_auto_returns_valid_device() -> None:
+    em = InitMatcherEmbedder(model_id="stub", device="auto")
+    device = em._resolved_device()
+    assert device in ("cpu", "cuda", "mps")
+
+
+# --- _ensure_loaded paths ------------------------------------------------
+
+
+def test_ensure_loaded_sentence_transformers_missing() -> None:
+    """When sentence_transformers is not importable → load_failed=True, returns False."""
+    from unittest.mock import patch
+
+    em = InitMatcherEmbedder(model_id="stub-not-real", device="cpu")
+    with patch.dict("sys.modules", {"sentence_transformers": None}):
+        result = em._ensure_loaded()
+    assert result is False
+    assert em._load_failed is True
+
+
+def test_ensure_loaded_model_load_exception() -> None:
+    """If SentenceTransformer(...) raises → load_failed=True, returns False."""
+    from unittest.mock import MagicMock, patch
+
+    em = InitMatcherEmbedder(model_id="stub-not-real", device="cpu")
+    mock_cls = MagicMock(side_effect=RuntimeError("no checkpoint"))
+    with patch("sentence_transformers.SentenceTransformer", mock_cls):
+        result = em._ensure_loaded()
+    assert result is False
+    assert em._load_failed is True
+
+
+# --- encode exception path -----------------------------------------------
+
+
+def test_encode_model_raises_returns_none() -> None:
+    """If _model.encode raises, encode() returns None."""
+
+    class _BrokenModel:
+        def encode(self, texts, **kwargs):
+            raise RuntimeError("GPU OOM")
+
+    em = InitMatcherEmbedder(model_id="stub", device="cpu")
+    em._model = _BrokenModel()
+    em._load_failed = False
+    result = em.encode(["text here"])
+    assert result is None
+
+
+# --- zero-norm match path ------------------------------------------------
+
+
+def test_match_zero_norm_vector_returns_no_idx() -> None:
+    """If encode returns all-zero vector, norm < eps → evidence_idx=None."""
+
+    class _ZeroModel:
+        def encode(self, texts, **kwargs):
+            return np.zeros((len(texts), 4), dtype=np.float32)
+
+    em = InitMatcherEmbedder(model_id="stub", device="cpu")
+    em._model = _ZeroModel()
+    em._load_failed = False
+
+    matrix = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+    catalog = InitSymptomCatalog(candidate_idx=[0], matrix=matrix, threshold=0.5)
+    r = em.match("any complaint", catalog)
+    assert r.evidence_idx is None
+    assert r.score == 0.0
+
+
+# --- build_catalog wrong matrix shape ------------------------------------
+
+
+def test_build_catalog_shape_mismatch_returns_none() -> None:
+    """If encoder returns wrong number of rows → build_catalog returns None."""
+
+    class _WrongShapeModel:
+        def encode(self, texts, **kwargs):
+            # Return one extra row
+            return np.random.rand(len(texts) + 1, 4).astype(np.float32)
+
+    em = InitMatcherEmbedder(model_id="stub", device="cpu")
+    em._model = _WrongShapeModel()
+    em._load_failed = False
+
+    evs = [_ev(0, question="fever")]
+    spec = InitSymptomFilter()
+    cat = build_catalog(evs, spec, em, threshold=0.5)
+    assert cat is None

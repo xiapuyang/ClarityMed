@@ -364,3 +364,309 @@ async def test_ingest_requires_csrf(web_client, test_user, auth_cookies):  # noq
         cookies=auth_cookies,
     )
     assert resp.status_code == 403
+
+
+async def test_ingest_store_build_failure_returns_503(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    monkeypatch,
+):
+    """When make_user_rag_store raises, the endpoint returns 503."""
+    import claritymed.stores.user_rag as user_rag_mod
+
+    def _explode(_uid):
+        raise RuntimeError("qdrant client init failed")
+
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", _explode)
+
+    resp = await web_client.post(
+        "/api/v1/library/ingest",
+        json={"text": "x" * 500},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 503
+    assert "unavailable" in resp.json()["detail"].lower()
+
+
+async def test_ingest_error_event_from_service_marks_part_failed(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    monkeypatch,
+):
+    """When RagService.run yields an Error event, the part status is 'failed'."""
+    from claritymed.core.events import Error
+
+    import claritymed.orchestrator.services as services_mod
+    import claritymed.stores.user_rag as user_rag_mod
+
+    class ErrorService:
+        def __init__(self, store):  # noqa: ARG002
+            pass
+
+        async def run(self, *_a, **_kw):
+            yield Error(
+                error_type="retrieval_failed",
+                message="index unavailable",
+                retryable=False,
+            )
+
+    monkeypatch.setattr(services_mod, "RagService", ErrorService)
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", lambda _uid: object())
+
+    resp = await web_client.post(
+        "/api/v1/library/ingest",
+        json={"text": "x" * 500},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["failed_parts"] == 1
+    assert body["added_parts"] == 0
+    assert body["parts"][0]["status"] == "failed"
+
+
+async def test_ingest_all_chunks_deduped_marks_part_skipped(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    monkeypatch,
+):
+    """Done event with chunk_count=0 and skipped_chunk_count>0 → part 'skipped'."""
+    import claritymed.orchestrator.services as services_mod
+    import claritymed.stores.user_rag as user_rag_mod
+
+    class DedupeService:
+        def __init__(self, store):  # noqa: ARG002
+            pass
+
+        async def run(self, *_a, **_kw):
+            yield Done(
+                final=IngestionReceipt(
+                    doc_id="doc-dup",
+                    chunk_count=0,
+                    skipped_chunk_count=5,  # all chunks deduped
+                    embedding_status="ok",
+                    public=False,
+                )
+            )
+
+    monkeypatch.setattr(services_mod, "RagService", DedupeService)
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", lambda _uid: object())
+
+    resp = await web_client.post(
+        "/api/v1/library/ingest",
+        json={"text": "x" * 500},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["skipped_parts"] == 1
+    assert body["added_parts"] == 0
+    assert body["parts"][0]["status"] == "skipped"
+
+
+async def test_ingest_part_exception_marks_part_failed(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    monkeypatch,
+):
+    """Exception raised by RagService.run is caught; part status is 'failed'."""
+    import claritymed.orchestrator.services as services_mod
+    import claritymed.stores.user_rag as user_rag_mod
+
+    class ExceptionService:
+        def __init__(self, store):  # noqa: ARG002
+            pass
+
+        async def run(self, *_a, **_kw):
+            raise RuntimeError("embedding server down")
+            yield  # make it an async generator
+
+    monkeypatch.setattr(services_mod, "RagService", ExceptionService)
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", lambda _uid: object())
+
+    resp = await web_client.post(
+        "/api/v1/library/ingest",
+        json={"text": "x" * 500},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["failed_parts"] == 1
+    assert body["parts"][0]["status"] == "failed"
+    assert "embedding server down" in body["parts"][0]["error"]
+
+
+async def test_ingest_no_terminal_event_marks_part_failed(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    monkeypatch,
+):
+    """Generator that yields only ToolCompleted events (no Done/Error) → 'failed'."""
+    import claritymed.orchestrator.services as services_mod
+    import claritymed.stores.user_rag as user_rag_mod
+
+    class NoTerminalService:
+        def __init__(self, store):  # noqa: ARG002
+            pass
+
+        async def run(self, *_a, **_kw):
+            yield ToolCompleted(
+                tool_name="embed_and_store", duration_ms=1, summary="done"
+            )
+            # generator ends without a Done or Error event
+
+    monkeypatch.setattr(services_mod, "RagService", NoTerminalService)
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", lambda _uid: object())
+
+    resp = await web_client.post(
+        "/api/v1/library/ingest",
+        json={"text": "x" * 500},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["failed_parts"] == 1
+    assert body["parts"][0]["status"] == "failed"
+    assert "no terminal event" in body["parts"][0]["error"]
+
+
+async def test_ingest_duplicate_document_marks_part_skipped(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    monkeypatch,
+):
+    """DuplicateDocumentError raised by RagService → part status 'skipped'."""
+    from claritymed.errors import DuplicateDocumentError
+
+    import claritymed.orchestrator.services as services_mod
+    import claritymed.stores.user_rag as user_rag_mod
+
+    class DuplicateService:
+        def __init__(self, store):  # noqa: ARG002
+            pass
+
+        async def run(self, *_a, **_kw):
+            raise DuplicateDocumentError("sha:aabbcc", "doc-old-id")
+            yield  # make it an async generator
+
+    monkeypatch.setattr(services_mod, "RagService", DuplicateService)
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", lambda _uid: object())
+
+    resp = await web_client.post(
+        "/api/v1/library/ingest",
+        json={"text": "x" * 500},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["skipped_parts"] == 1
+    assert body["added_parts"] == 0
+    assert body["parts"][0]["status"] == "skipped"
+
+
+async def test_list_library_skips_collection_entries_without_name(
+    web_client,
+    test_user,  # noqa: ARG001
+    auth_cookies,
+    rag_disabled,
+    monkeypatch,
+):
+    """Collection entries with no 'name' key are silently skipped."""
+    import claritymed.web.routers.library as lib_mod
+
+    monkeypatch.setattr(
+        lib_mod,
+        "_load_system_rag_collections",
+        lambda: [{"language": "en"}, {"name": "valid_col", "language": "en"}],
+    )
+
+    resp = await web_client.get("/api/v1/library", cookies=auth_cookies)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The nameless entry is skipped; only valid_col appears.
+    assert len(body["system_collections"]) == 1
+    assert body["system_collections"][0]["name"] == "valid_col"
+
+
+# --- _one_line helper -------------------------------------------------
+
+
+def test_one_line_truncation():
+    """Text longer than the limit gets '…' appended."""
+    from claritymed.web.routers.library import _one_line
+
+    long_text = "word " * 100  # 500 chars
+    result = _one_line(long_text, limit=40)
+    assert result.endswith("…")
+    assert len(result) == 41  # 40 chars + '…'
+
+
+def test_one_line_short_passes_through():
+    from claritymed.web.routers.library import _one_line
+
+    result = _one_line("short text", limit=100)
+    assert result == "short text"
+
+
+def test_one_line_none_returns_empty():
+    from claritymed.web.routers.library import _one_line
+
+    assert _one_line(None, limit=100) == ""
+
+
+def test_one_line_collapses_newlines():
+    from claritymed.web.routers.library import _one_line
+
+    result = _one_line("line one\nline two\nline three", limit=100)
+    assert "\n" not in result
+    assert "line one" in result
+
+
+# --- _count_user_rag_chunks unit tests -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_user_rag_chunks_exception_returns_none(monkeypatch):
+    """If make_user_rag_store or list_documents raises, returns None."""
+    import claritymed.stores.user_rag as user_rag_mod
+
+    monkeypatch.setattr(
+        user_rag_mod,
+        "make_user_rag_store",
+        lambda _uid: (_ for _ in ()).throw(RuntimeError("qdrant down")),
+    )
+    from claritymed.web.routers.library import _count_user_rag_chunks
+
+    result = await _count_user_rag_chunks("test-user")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_count_user_rag_chunks_sums_chunk_counts(monkeypatch):
+    """With docs in the store, returns the sum of chunk_count fields."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import claritymed.stores.user_rag as user_rag_mod
+
+    fake_store = MagicMock()
+    fake_store.list_documents = AsyncMock(
+        return_value=[{"chunk_count": 5}, {"chunk_count": 3}, {"chunk_count": 0}]
+    )
+    monkeypatch.setattr(user_rag_mod, "make_user_rag_store", lambda _uid: fake_store)
+
+    from claritymed.web.routers.library import _count_user_rag_chunks
+
+    result = await _count_user_rag_chunks("test-user")
+    assert result == 8

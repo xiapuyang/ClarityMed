@@ -733,3 +733,99 @@ async def test_detect_returns_vision_disabled_when_disabled(home):
     assert result["kind"] == "vision_disabled"
     assert "vision.enabled=false" in result["reason"]
     assert "without calling this tool" in result["message"]
+
+
+# --- make_vision_factory -------------------------------------------------
+
+
+def test_make_vision_factory_returns_none_when_config_load_fails(monkeypatch):
+    """A malformed ``vision.yaml`` must silently disable the feature."""
+    from claritymed.orchestrator.features import vision_plugin as plg
+    from claritymed import config as _cfg
+
+    def _boom():
+        raise RuntimeError("yaml broken")
+
+    monkeypatch.setattr(_cfg, "load_vision_config", _boom)
+    assert plg.make_vision_factory(get_session_id=lambda: None) is None
+
+
+def test_make_vision_factory_returns_none_when_all_diseases_disabled(monkeypatch):
+    """Every disease has ``enabled=False`` → feature disabled (kill switch)."""
+    from claritymed.orchestrator.features import vision_plugin as plg
+    from claritymed import config as _cfg
+
+    monkeypatch.setattr(
+        _cfg, "load_vision_config", lambda: _vision_config(enabled=False)
+    )
+    assert plg.make_vision_factory(get_session_id=lambda: None) is None
+
+
+def test_make_vision_factory_returns_none_when_bootstrap_raises_non_loop_error(
+    monkeypatch,
+):
+    """Any unexpected bootstrap exception → feature disabled (no crash)."""
+    from claritymed.orchestrator.features import vision_plugin as plg
+    from claritymed import config as _cfg
+    from claritymed.core.vision import registry as _reg
+
+    monkeypatch.setattr(_cfg, "load_vision_config", lambda: _vision_config())
+
+    async def _bad_bootstrap(self):
+        raise RuntimeError("vision-server unreachable")
+
+    monkeypatch.setattr(_reg.VisionRegistry, "bootstrap", _bad_bootstrap)
+    assert plg.make_vision_factory(get_session_id=lambda: None) is None
+
+
+def test_make_vision_factory_defers_bootstrap_when_loop_already_running(
+    monkeypatch,
+):
+    """asyncio.run-inside-running-loop is not a failure — bootstrap is deferred."""
+    from claritymed.orchestrator.features import vision_plugin as plg
+    from claritymed import config as _cfg
+    from claritymed.core.vision import registry as _reg
+
+    monkeypatch.setattr(_cfg, "load_vision_config", lambda: _vision_config())
+
+    async def _noop(self):
+        return None
+
+    monkeypatch.setattr(_reg.VisionRegistry, "bootstrap", _noop)
+
+    # Patch ``asyncio.run`` inside the module to raise the diagnostic error
+    # that the factory's branch keys off of. Using monkeypatch on the
+    # module-local ``asyncio`` rebinding (imported lazily) is the cleanest
+    # seam — we can't actually be inside a running loop in a sync test.
+    import asyncio as _asyncio
+
+    def _fake_run(coro):
+        coro.close()  # avoid coroutine-never-awaited warning
+        raise RuntimeError("asyncio.run() cannot be called from a running event loop")
+
+    monkeypatch.setattr(_asyncio, "run", _fake_run)
+
+    factory = plg.make_vision_factory(get_session_id=lambda: None)
+    # Bootstrap deferred — factory remains live and produces a VisionFeature.
+    assert factory is not None
+    feature = factory()
+    assert isinstance(feature, plg.VisionFeature)
+
+
+def test_make_vision_factory_happy_path_returns_callable(monkeypatch):
+    """Config + bootstrap both succeed → callable factory."""
+    from claritymed.orchestrator.features import vision_plugin as plg
+    from claritymed import config as _cfg
+    from claritymed.core.vision import registry as _reg
+
+    monkeypatch.setattr(_cfg, "load_vision_config", lambda: _vision_config())
+
+    async def _noop(self):
+        return None
+
+    monkeypatch.setattr(_reg.VisionRegistry, "bootstrap", _noop)
+
+    factory = plg.make_vision_factory(get_session_id=lambda: "sess-1")
+    assert factory is not None
+    feature = factory()
+    assert isinstance(feature, plg.VisionFeature)

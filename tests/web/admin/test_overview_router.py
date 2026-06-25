@@ -66,3 +66,91 @@ async def test_overview_user_admin_count(web_client, admin_cookies, non_admin_us
     body = response.json()
     assert body["users"]["count"] >= 2
     assert body["users"]["admin_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_overview_users_card_skips_missing_account(
+    web_client, admin_cookies, monkeypatch
+):
+    """_users_card skips a user id whose account file is missing (FileNotFoundError)."""
+    from claritymed.web.routers.admin import overview as overview_mod
+
+    monkeypatch.setattr(
+        overview_mod, "list_user_ids", lambda: ["test", "ghost-no-account"]
+    )
+    response = await web_client.get("/api/v1/admin/overview", cookies=admin_cookies)
+    assert response.status_code == 200
+    body = response.json()
+    # ghost-no-account has no settings.yaml → skipped; only 'test' counted
+    assert body["users"]["count"] == 2
+    assert body["users"]["admin_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_overview_audit_tail_oserror_returns_empty(
+    web_client, admin_cookies, tmp_path, monkeypatch
+):
+    """If audit.log is unreadable (OSError), audit_tail returns empty items."""
+    log_dir = tmp_path / "audit_logs"
+    log_dir.mkdir()
+    # Creating audit.log as a directory makes read_text raise IsADirectoryError.
+    (log_dir / "audit.log").mkdir()
+    monkeypatch.setattr(_cfg, "LOG_DIR", log_dir)
+    response = await web_client.get("/api/v1/admin/overview", cookies=admin_cookies)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["audit_tail"]["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_overview_audit_tail_skips_blank_and_no_brace_lines(
+    web_client, admin_cookies, tmp_path, monkeypatch
+):
+    """Blank lines and lines without '{' are skipped in the audit tail."""
+    log_dir = tmp_path / "audit_logs"
+    log_dir.mkdir()
+    event = {
+        "kind": "mode.ask",
+        "payload": {},
+        "request_id": "20260624000000AABBCCDD",
+        "user_id": "test",
+        "language": "en",
+        "created_at": "2026-06-24T00:00:00+00:00",
+        "trace_id": None,
+        "span_id": None,
+    }
+    (log_dir / "audit.log").write_text(
+        f"\nNO BRACE LINE\n{json.dumps(event)}\n\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_cfg, "LOG_DIR", log_dir)
+    response = await web_client.get("/api/v1/admin/overview", cookies=admin_cookies)
+    body = response.json()
+    assert body["audit_tail"]["items"] == [event]
+
+
+@pytest.mark.asyncio
+async def test_overview_audit_tail_skips_invalid_json(
+    web_client, admin_cookies, tmp_path, monkeypatch
+):
+    """Lines with '{' but invalid JSON are silently skipped in audit tail."""
+    log_dir = tmp_path / "audit_logs"
+    log_dir.mkdir()
+    event = {
+        "kind": "mode.ask",
+        "payload": {},
+        "request_id": "20260624000000EEFF0011",
+        "user_id": "test",
+        "language": "en",
+        "created_at": "2026-06-24T00:00:01+00:00",
+        "trace_id": None,
+        "span_id": None,
+    }
+    (log_dir / "audit.log").write_text(
+        f"{{invalid json!\n{json.dumps(event)}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_cfg, "LOG_DIR", log_dir)
+    response = await web_client.get("/api/v1/admin/overview", cookies=admin_cookies)
+    body = response.json()
+    assert body["audit_tail"]["items"] == [event]

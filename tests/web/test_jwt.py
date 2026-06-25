@@ -119,3 +119,16 @@ def test_hmac_ip_deterministic(jwt_secret):  # noqa: ARG001
 
 def test_hmac_ip_different_inputs_differ(jwt_secret):  # noqa: ARG001
     assert hmac_ip("1.2.3.4") != hmac_ip("5.6.7.8")
+
+
+def test_decode_token_catches_unexpected_exception(jwt_secret, monkeypatch):
+    """A non-JOSE exception in decode → Invalid with decode_error reason."""
+    from jose import jwt as _jose_jwt_mod
+
+    def _raise(*args, **kwargs):
+        raise ValueError("corrupt header bytes")
+
+    monkeypatch.setattr(_jose_jwt_mod, "decode", _raise)
+    result = decode_token(create_token("user-1", "en"))
+    assert isinstance(result, Invalid)
+    assert "decode_error" in result.reason

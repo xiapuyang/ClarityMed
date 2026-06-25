@@ -161,6 +161,128 @@ async def test_submit_without_runner_raises(tmp_jobs_dir):
         await registry.submit("rag_ingest", {})
 
 
+def test_list_filter_by_state(tmp_jobs_dir):
+    """list(state=...) returns only jobs matching that state."""
+    registry = JobRegistry()
+    now = time.time()
+    for sid, st in [("a1", "done"), ("a2", "failed"), ("a3", "done")]:
+        spec = JobSpec(id=sid, kind="rag_ingest", state=st, params={}, finished_at=now)
+        registry._jobs[sid] = spec
+    done = registry.list(state="done")
+    assert len(done) == 2
+    assert all(j.state == "done" for j in done)
+
+
+def test_list_filter_by_kind(tmp_jobs_dir):
+    """list(kind=...) returns only jobs of that kind."""
+    registry = JobRegistry()
+    now = time.time()
+    for sid, kind in [
+        ("b1", "rag_ingest"),
+        ("b2", "benchmark_run"),
+        ("b3", "rag_ingest"),
+    ]:
+        spec = JobSpec(id=sid, kind=kind, state="done", params={}, finished_at=now)
+        registry._jobs[sid] = spec
+    ingest = registry.list(kind="rag_ingest")
+    assert len(ingest) == 2
+    assert all(j.kind == "rag_ingest" for j in ingest)
+
+
+async def test_cancel_terminal_job_returns_spec(tmp_jobs_dir):
+    """cancel() on a terminal job returns the spec unchanged."""
+    registry = JobRegistry()
+    registry.register_runner("rag_ingest", _dummy_runner({}))
+    spec = await registry.submit("rag_ingest", {})
+    # Wait for it to finish.
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if registry.get(spec.id).state == "done":
+            break
+    result = await registry.cancel(spec.id)
+    assert result is not None
+    assert result.state == "done"
+
+
+async def test_cancel_non_cancellable_job_returns_spec(tmp_jobs_dir):
+    """cancel() on a non-cancellable job returns the spec without cancelling."""
+    from claritymed.web.admin.jobs import JobSpec as JS
+
+    registry = JobRegistry()
+    spec = JS(
+        id="nc-001", kind="rag_ingest", state="running", params={}, cancellable=False
+    )
+    registry._jobs[spec.id] = spec
+    result = await registry.cancel(spec.id)
+    assert result is not None
+    assert result.state == "running"
+
+
+def test_append_stdout_trims_on_overflow(tmp_jobs_dir):
+    """append_stdout keeps only STDOUT_TAIL_MAX lines when the tail overflows."""
+    from claritymed.web.admin.jobs import STDOUT_TAIL_MAX
+
+    registry = JobRegistry()
+    spec = JobSpec(id="stdout-001", kind="rag_ingest", state="running", params={})
+    registry._jobs[spec.id] = spec
+    registry._persist(spec)
+    for i in range(STDOUT_TAIL_MAX + 5):
+        registry.append_stdout(spec.id, f"line {i}")
+    tail = registry.get(spec.id).stdout_tail
+    assert len(tail) <= STDOUT_TAIL_MAX
+
+
+def test_drop_from_disk_handles_missing_file(tmp_jobs_dir):
+    """_drop_from_disk does not raise when the file has already been deleted."""
+    registry = JobRegistry()
+    # Call with a non-existent job id — the file doesn't exist but should not raise.
+    registry._drop_from_disk("nonexistent-job-id-xyz")
+
+
+def test_recover_on_startup_skips_malformed_json(tmp_jobs_dir):
+    """A corrupt JSON file in the jobs dir is skipped, not crashing recovery."""
+    from claritymed.stores.paths import job_path
+
+    bad_path = job_path("bad-json-job-id")
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_path.write_text("{not-json", encoding="utf-8")
+    registry = JobRegistry()
+    registry.recover_on_startup()
+    assert registry.get("bad-json-job-id") is None
+
+
+def test_recover_on_startup_skips_malformed_spec(tmp_jobs_dir):
+    """A JSON file with missing required fields is skipped (KeyError path)."""
+    from claritymed.stores.paths import job_path
+
+    bad_path = job_path("bad-spec-job-id")
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_path.write_text('{"some": "garbage"}', encoding="utf-8")
+    registry = JobRegistry()
+    registry.recover_on_startup()
+    assert registry.get("bad-spec-job-id") is None
+
+
+def test_recover_on_startup_restores_finished_job(tmp_jobs_dir):
+    """A 'done' job on disk is loaded back into the registry."""
+    from claritymed.stores.paths import job_path
+
+    spec = JobSpec(
+        id="done-restore-001",
+        kind="rag_ingest",
+        state="done",
+        params={},
+        finished_at=time.time(),
+    )
+    job_path(spec.id).parent.mkdir(parents=True, exist_ok=True)
+    job_path(spec.id).write_text(json.dumps(spec.to_json()), encoding="utf-8")
+    registry = JobRegistry()
+    registry.recover_on_startup()
+    restored = registry.get(spec.id)
+    assert restored is not None
+    assert restored.state == "done"
+
+
 def test_cleanup_keeps_recent_window(tmp_jobs_dir):
     registry = JobRegistry()
     # Seed 150 finished specs all inside the 30-day window.

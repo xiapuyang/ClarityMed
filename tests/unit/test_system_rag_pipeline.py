@@ -12,6 +12,7 @@ depends on a live Qdrant + embedder.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -349,3 +350,352 @@ async def test_ocr_files_calls_on_progress(tmp_path, monkeypatch) -> None:
     )
     assert any("extract: ok.pdf" in line for line in lines)
     assert any("skip (missing): nope.pdf" in line for line in lines)
+
+
+# --- validate_name + _NoOpEmbedder -------------------------------------
+
+
+def test_validate_name_accepts_canonical_name() -> None:
+    """Normal name passes — no exception."""
+    _make_req(name="cap_en").validate_name()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "CAP",  # uppercase
+        "1cap",  # starts with digit
+        "_cap",  # starts with underscore
+        "cap-en",  # hyphen not allowed
+        "cap.en",  # dot not allowed
+        "a" * 65,  # exceeds 64-char limit
+    ],
+)
+def test_validate_name_rejects_invalid_names(bad: str) -> None:
+    with pytest.raises(ValueError) as ei:
+        _make_req(name=bad).validate_name()
+    # Pattern is surfaced in the error so the operator sees the rule
+    # they violated, not just "rejected".
+    assert "name must match" in str(ei.value)
+
+
+def test_noop_embedder_advertises_fallback_dimension() -> None:
+    """Dry-run stand-in carries the fallback dimension constant."""
+    embedder = mod._NoOpEmbedder()
+    assert embedder.dimension == mod._DENSE_DIM_FALLBACK
+
+
+async def test_noop_embedder_returns_zero_vectors_and_empty_sparse() -> None:
+    embedder = mod._NoOpEmbedder()
+    dense = await embedder.embed_dense(["a", "b", "c"])
+    sparse = await embedder.embed_sparse(["a", "b", "c"])
+    assert len(dense) == 3
+    assert all(len(v) == embedder.dimension for v in dense)
+    assert all(all(x == 0.0 for x in v) for v in dense)
+    assert sparse == [{}, {}, {}]
+
+
+# --- ocr_files extraction-failure path ----------------------------------
+
+
+class _RaisingOcrProvider:
+    """Provider that raises on every extract — exercises the batch-survives path."""
+
+    async def extract_text(self, path):  # noqa: ANN001
+        raise RuntimeError(f"ocr broke on {path.name}")
+
+
+async def test_ocr_files_skips_files_whose_extraction_raises(
+    tmp_path, monkeypatch
+) -> None:
+    """One bad PDF must not kill the whole batch — failure path is logged + skipped."""
+    a = tmp_path / "broken.pdf"
+    a.write_bytes(b"\x25PDF garbage")
+    monkeypatch.setattr(mod, "make_ocr_provider", lambda: _RaisingOcrProvider())
+    monkeypatch.setattr(
+        mod,
+        "load_ocr_config",
+        lambda: argparse.Namespace(text_extensions=[".txt", ".md"]),
+    )
+
+    lines: list[str] = []
+    docs = await ocr_files(
+        [a], collection_name="cap_en", language="en", on_progress=lines.append
+    )
+    assert docs == []
+    # The exception message is surfaced verbatim so the operator can
+    # pivot from the run log straight to the broken file.
+    assert any("skip (ocr broke" in line and "broken.pdf" in line for line in lines)
+
+
+# --- _refresh_centroid --------------------------------------------------
+
+
+class _FakeAClient:
+    """Stand-in async qdrant client — close() is the only method the pipeline
+    actually calls in the cleanup path."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_refresh_centroid_happy_path(monkeypatch) -> None:
+    """``maybe_refresh`` succeeds → returns True and emits a progress line."""
+
+    async def _ok(aclient, name, store, force):  # noqa: ANN001
+        assert force is True
+        assert name == "cap_en"
+
+    monkeypatch.setattr(mod, "maybe_refresh", _ok)
+
+    lines: list[str] = []
+    ok = await mod._refresh_centroid(_FakeAClient(), "cap_en", on_progress=lines.append)
+    assert ok is True
+    assert any("centroid refreshed: cap_en" in line for line in lines)
+
+
+async def test_refresh_centroid_swallows_exception_returns_false(monkeypatch) -> None:
+    """``maybe_refresh`` raises → returns False, error visible in progress."""
+
+    async def _bad(aclient, name, store, force):  # noqa: ANN001
+        raise RuntimeError("qdrant unreachable")
+
+    monkeypatch.setattr(mod, "maybe_refresh", _bad)
+
+    lines: list[str] = []
+    ok = await mod._refresh_centroid(_FakeAClient(), "cap_en", on_progress=lines.append)
+    assert ok is False
+    assert any("centroid refresh failed" in line for line in lines)
+
+
+# --- ingest_system_rag end-to-end ---------------------------------------
+
+
+def _wire_pipeline(monkeypatch, *, stats, refresh_returns=True) -> _FakeAClient:
+    """Mock every heavy IO dep ``ingest_system_rag`` depends on.
+
+    Returns the fake aclient so the test can assert close() ran.
+    """
+    aclient = _FakeAClient()
+
+    # Empty existing collections — req hits the "new collection" branch.
+    monkeypatch.setattr(
+        mod,
+        "load_retrieval_config",
+        lambda: argparse.Namespace(
+            system_rag=argparse.Namespace(collections=[]),
+            qdrant=argparse.Namespace(url="http://fake", api_key_env=None),
+        ),
+    )
+    monkeypatch.setattr(mod, "build_qdrant_client", lambda url, api_key_env: aclient)
+
+    class _FakeChunker:
+        pass
+
+    class _FakeEmbedder:
+        dimension = 64
+
+    monkeypatch.setattr(mod, "build_chunker", lambda: _FakeChunker())
+    monkeypatch.setattr(mod, "build_embedder", lambda: _FakeEmbedder())
+
+    class _FakeRagStore:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            self.kwargs = kwargs
+
+    class _FakeParentStore:
+        def __init__(self, path) -> None:  # noqa: ANN001
+            self.path = path
+
+    monkeypatch.setattr(mod, "RagCollectionStore", _FakeRagStore)
+    monkeypatch.setattr(mod, "ParentStore", _FakeParentStore)
+    monkeypatch.setattr(mod, "shared_parent_docstore_path", lambda: "/tmp/parents.json")
+
+    async def _ingest_corpus(*args, **kwargs):  # noqa: ANN002, ANN003
+        return stats
+
+    monkeypatch.setattr(mod, "ingest_corpus", _ingest_corpus)
+
+    async def _refresh(aclient, name, on_progress=None):  # noqa: ANN001
+        if on_progress:
+            on_progress(
+                f"centroid refreshed: {name}"
+                if refresh_returns
+                else "centroid refresh failed (forced)"
+            )
+        return refresh_returns
+
+    monkeypatch.setattr(mod, "_refresh_centroid", _refresh)
+    return aclient
+
+
+def _make_pdf(tmp_path, name: str, content: bytes = b"%PDF-1.4 stub") -> Path:
+    p = tmp_path / name
+    p.write_bytes(content)
+    return p
+
+
+async def test_ingest_system_rag_raises_when_no_docs_survive_ocr(
+    tmp_path, monkeypatch
+) -> None:
+    """All inputs missing → RuntimeError before chunk/embed/upsert wiring runs."""
+    monkeypatch.setattr(
+        mod,
+        "load_retrieval_config",
+        lambda: argparse.Namespace(
+            system_rag=argparse.Namespace(collections=[]),
+            qdrant=argparse.Namespace(url="http://x", api_key_env=None),
+        ),
+    )
+
+    class _EmptyOcr:
+        async def extract_text(self, path):  # noqa: ANN001
+            return _StubExtractResult("")
+
+    monkeypatch.setattr(mod, "make_ocr_provider", lambda: _EmptyOcr())
+    monkeypatch.setattr(
+        mod,
+        "load_ocr_config",
+        lambda: argparse.Namespace(text_extensions=[".txt", ".md"]),
+    )
+
+    req = SystemRagIngestRequest(
+        name="cap_en", files=[_make_pdf(tmp_path, "empty.pdf")]
+    )
+    with pytest.raises(RuntimeError) as ei:
+        await mod.ingest_system_rag(req)
+    assert "no documents to ingest" in str(ei.value)
+
+
+async def test_ingest_system_rag_dry_run_skips_centroid_refresh(
+    tmp_path, monkeypatch
+) -> None:
+    """Dry-run path: pipeline runs through, centroid step is short-circuited."""
+    from claritymed.ingest.corpus.base import IngestStats
+
+    stats = IngestStats(
+        source="cap_en",
+        docs_processed=1,
+        parents_written=1,
+        children_written=5,
+        docs_skipped=0,
+    )
+    aclient = _wire_pipeline(monkeypatch, stats=stats, refresh_returns=True)
+
+    pdf = _make_pdf(tmp_path, "a.pdf")
+    stub = _StubOcrProvider({"a.pdf": "body"})
+    monkeypatch.setattr(mod, "make_ocr_provider", lambda: stub)
+    monkeypatch.setattr(
+        mod,
+        "load_ocr_config",
+        lambda: argparse.Namespace(text_extensions=[".txt", ".md"]),
+    )
+
+    req = SystemRagIngestRequest(name="cap_en", files=[pdf], dry_run=True)
+    lines: list[str] = []
+    result = await mod.ingest_system_rag(req, on_progress=lines.append)
+
+    assert result.stats == stats
+    assert result.is_new_collection is True
+    # Dry run → centroid_refreshed must be False (we never even called it).
+    assert result.centroid_refreshed is False
+    assert aclient.closed is True  # ``finally`` always closes the qdrant aclient
+    assert any("ingest: chunk + embed + upsert" in line for line in lines)
+    assert "ingested: 1 docs" in "\n".join(lines)
+
+
+async def test_ingest_system_rag_refreshes_centroid_when_children_written(
+    tmp_path, monkeypatch
+) -> None:
+    """Real run with children_written > 0 → centroid refresh fires."""
+    from claritymed.ingest.corpus.base import IngestStats
+
+    stats = IngestStats(
+        source="cap_en",
+        docs_processed=1,
+        parents_written=1,
+        children_written=3,
+        docs_skipped=0,
+    )
+    aclient = _wire_pipeline(monkeypatch, stats=stats, refresh_returns=True)
+
+    pdf = _make_pdf(tmp_path, "doc.pdf")
+    stub = _StubOcrProvider({"doc.pdf": "body"})
+    monkeypatch.setattr(mod, "make_ocr_provider", lambda: stub)
+    monkeypatch.setattr(
+        mod,
+        "load_ocr_config",
+        lambda: argparse.Namespace(text_extensions=[".txt", ".md"]),
+    )
+
+    req = SystemRagIngestRequest(name="cap_en", files=[pdf])
+    result = await mod.ingest_system_rag(req)
+
+    assert result.centroid_refreshed is True
+    assert aclient.closed is True
+
+
+async def test_ingest_system_rag_skips_centroid_when_no_children_written(
+    tmp_path, monkeypatch
+) -> None:
+    """children_written == 0 → no centroid refresh (skipped via the guard)."""
+    from claritymed.ingest.corpus.base import IngestStats
+
+    stats = IngestStats(
+        source="cap_en",
+        docs_processed=1,
+        parents_written=1,
+        children_written=0,
+        docs_skipped=0,
+    )
+    aclient = _wire_pipeline(monkeypatch, stats=stats, refresh_returns=True)
+
+    pdf = _make_pdf(tmp_path, "doc.pdf")
+    stub = _StubOcrProvider({"doc.pdf": "body"})
+    monkeypatch.setattr(mod, "make_ocr_provider", lambda: stub)
+    monkeypatch.setattr(
+        mod,
+        "load_ocr_config",
+        lambda: argparse.Namespace(text_extensions=[".txt", ".md"]),
+    )
+
+    req = SystemRagIngestRequest(name="cap_en", files=[pdf])
+    result = await mod.ingest_system_rag(req)
+
+    # No children → router stays on rule-based; centroid_refreshed stays False.
+    assert result.centroid_refreshed is False
+    assert aclient.closed is True
+
+
+async def test_ingest_system_rag_honours_limit(tmp_path, monkeypatch) -> None:
+    """``limit`` truncates the file list before OCR."""
+    from claritymed.ingest.corpus.base import IngestStats
+
+    stats = IngestStats(
+        source="cap_en",
+        docs_processed=1,
+        parents_written=1,
+        children_written=2,
+        docs_skipped=0,
+    )
+    aclient = _wire_pipeline(monkeypatch, stats=stats, refresh_returns=True)
+
+    a = _make_pdf(tmp_path, "a.pdf")
+    b = _make_pdf(tmp_path, "b.pdf")
+    c = _make_pdf(tmp_path, "c.pdf")
+    stub = _StubOcrProvider({"a.pdf": "body-a", "b.pdf": "body-b", "c.pdf": "body-c"})
+    monkeypatch.setattr(mod, "make_ocr_provider", lambda: stub)
+    monkeypatch.setattr(
+        mod,
+        "load_ocr_config",
+        lambda: argparse.Namespace(text_extensions=[".txt", ".md"]),
+    )
+
+    req = SystemRagIngestRequest(name="cap_en", files=[a, b, c], limit=2, dry_run=True)
+    await mod.ingest_system_rag(req)
+
+    # Only the first two paths should reach the OCR step.
+    assert stub.calls == ["a.pdf", "b.pdf"]
+    assert aclient.closed is True

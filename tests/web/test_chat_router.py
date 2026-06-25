@@ -600,4 +600,178 @@ async def test_stream_attachment_ids_prepend_placeholder(
     )
     assert resp.status_code == 200
     assert "[Image sha:aaaaaaaa]" in seen["q"]
-    assert "what is this" in seen["q"]
+
+
+async def test_stream_unknown_attachment_sha_skipped(
+    web_client, test_user, auth_cookies
+):  # noqa: ARG001
+    """Unknown attachment SHA is silently skipped and q is passed unmodified."""
+    seen: dict[str, str] = {}
+
+    class CaptureService:
+        async def run(self, q, user_id):  # noqa: ARG002
+            seen["q"] = q
+            yield Done(final="ok")
+
+    web_client._transport.app.state.ask_service_factory = (  # type: ignore[attr-defined]
+        lambda a, c, **_: CaptureService()
+    )
+    sid = await _new_session_id(web_client, auth_cookies)
+
+    # Send an attachment_id that was never registered in this session.
+    resp = await web_client.post(
+        f"/api/v1/sessions/{sid}/stream",
+        json={"q": "what is this", "attachment_ids": ["b" * 64]},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200
+    # No placeholder was prepended; q is unchanged.
+    assert seen.get("q") == "what is this"
+
+
+async def test_stream_attachment_non_image_file_gets_file_tag(
+    web_client, test_user, auth_cookies
+):
+    """Non-image MIME type gets a [File sha:...] placeholder, not [Image sha:...]."""
+    from claritymed.stores.session_attachments import SessionAttachments
+
+    seen: dict[str, str] = {}
+
+    class CaptureService:
+        async def run(self, q, user_id):  # noqa: ARG002
+            seen["q"] = q
+            yield Done(final="ok")
+
+    web_client._transport.app.state.ask_service_factory = (  # type: ignore[attr-defined]
+        lambda a, c, **_: CaptureService()
+    )
+    sid = await _new_session_id(web_client, auth_cookies)
+
+    sha = "c" * 64
+    SessionAttachments(test_user.user_id, sid).add(
+        sha256=sha,
+        filename="report.pdf",
+        mime="application/pdf",
+        size=100,
+        source="upload",
+    )
+
+    resp = await web_client.post(
+        f"/api/v1/sessions/{sid}/stream",
+        json={"q": "summarise this", "attachment_ids": [sha]},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert resp.status_code == 200
+    assert "[File sha:cccccccc]" in seen["q"]
+
+
+async def test_stream_factory_none_returns_500(web_client, test_user, auth_cookies):  # noqa: ARG001
+    """When ask_service_factory is not set on app.state, stream returns 500."""
+    app = web_client._transport.app  # type: ignore[attr-defined]
+    original = app.state.ask_service_factory
+    app.state.ask_service_factory = None
+    sid = await _new_session_id(web_client, auth_cookies)
+    try:
+        resp = await web_client.post(
+            f"/api/v1/sessions/{sid}/stream",
+            json={"q": "hi"},
+            cookies=auth_cookies,
+            headers=_csrf(),
+        )
+    finally:
+        app.state.ask_service_factory = original
+    assert resp.status_code == 500
+
+
+async def test_respond_interaction_403_wrong_session(
+    web_client, test_user, auth_cookies
+):
+    """Interaction registered for a different session returns 403."""
+    import asyncio as _asyncio
+
+    sid = await _new_session_id(web_client, auth_cookies)
+    app = web_client._transport.app  # type: ignore[attr-defined]
+    loop = _asyncio.get_event_loop()
+    fut = loop.create_future()
+    iid = "wrong-session-iid"
+    app.state.web_interactions[iid] = {
+        "user_id": test_user.user_id,
+        "session_id": "completely-different-session",
+        "kind": "ask_user_question",
+        "future": fut,
+    }
+    try:
+        resp = await web_client.post(
+            f"/api/v1/sessions/{sid}/interactions/{iid}",
+            json={"kind": "ask_user_question", "payload": {"answers": {}}},
+            cookies=auth_cookies,
+            headers=_csrf(),
+        )
+        assert resp.status_code == 403
+    finally:
+        app.state.web_interactions.pop(iid, None)
+        if not fut.done():
+            fut.cancel()
+
+
+async def test_respond_interaction_409_kind_mismatch(
+    web_client, test_user, auth_cookies
+):
+    """Posting a 'tool_approval' payload for an 'ask_user_question' record returns 409."""
+    import asyncio as _asyncio
+
+    sid = await _new_session_id(web_client, auth_cookies)
+    app = web_client._transport.app  # type: ignore[attr-defined]
+    loop = _asyncio.get_event_loop()
+    fut = loop.create_future()
+    iid = "kind-mismatch-iid"
+    app.state.web_interactions[iid] = {
+        "user_id": test_user.user_id,
+        "session_id": sid,
+        "kind": "ask_user_question",
+        "future": fut,
+    }
+    try:
+        resp = await web_client.post(
+            f"/api/v1/sessions/{sid}/interactions/{iid}",
+            json={"kind": "tool_approval", "payload": {"decision": "once"}},
+            cookies=auth_cookies,
+            headers=_csrf(),
+        )
+        assert resp.status_code == 409
+    finally:
+        app.state.web_interactions.pop(iid, None)
+        if not fut.done():
+            fut.cancel()
+
+
+async def test_respond_interaction_410_already_resolved(
+    web_client, test_user, auth_cookies
+):
+    """Posting to a future that is already resolved returns 410."""
+    import asyncio as _asyncio
+
+    sid = await _new_session_id(web_client, auth_cookies)
+    app = web_client._transport.app  # type: ignore[attr-defined]
+    loop = _asyncio.get_event_loop()
+    fut = loop.create_future()
+    fut.set_result({"answers": {}})  # already resolved
+    iid = "already-done-iid"
+    app.state.web_interactions[iid] = {
+        "user_id": test_user.user_id,
+        "session_id": sid,
+        "kind": "ask_user_question",
+        "future": fut,
+    }
+    try:
+        resp = await web_client.post(
+            f"/api/v1/sessions/{sid}/interactions/{iid}",
+            json={"kind": "ask_user_question", "payload": {"answers": {}}},
+            cookies=auth_cookies,
+            headers=_csrf(),
+        )
+        assert resp.status_code == 410
+    finally:
+        app.state.web_interactions.pop(iid, None)

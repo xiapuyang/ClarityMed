@@ -994,3 +994,162 @@ def test_validate_safety_keywords_raises_on_blank_entry(
             _validate_safety_keywords()
     finally:
         i18n_loader._reset_for_tests()
+
+
+# --- ddxplus vocab + sidecar loaders ------------------------------------
+
+
+def test_load_ddxplus_vocab_returns_empty_when_file_missing(tmp_path) -> None:
+    from claritymed.orchestrator.features.symptoms_plugin import _load_ddxplus_vocab
+
+    # No release_evidences.json in the dir → empty dict, no exception.
+    assert _load_ddxplus_vocab(str(tmp_path)) == {}
+
+
+def test_load_ddxplus_vocab_extracts_question_and_value_meanings(tmp_path) -> None:
+    """Vocab map contains the EN question + all EN value meanings per evidence."""
+    import json as _json
+    from claritymed.orchestrator.features.symptoms_plugin import _load_ddxplus_vocab
+
+    payload = {
+        "E_001": {
+            "question_en": "Do you have a fever?",
+            "value_meaning": {
+                "1": {"en": "yes"},
+                "2": {"en": "no"},
+            },
+        },
+        # Evidence with no phrases at all → filtered out of the map.
+        "E_999": {"value_meaning": {"1": "garbage-not-dict"}},
+    }
+    (tmp_path / "release_evidences.json").write_text(
+        _json.dumps(payload), encoding="utf-8"
+    )
+
+    vocab = _load_ddxplus_vocab(str(tmp_path))
+    assert "E_001" in vocab
+    assert vocab["E_001"] == frozenset({"Do you have a fever?", "yes", "no"})
+    # Evidence without phrases is silently dropped.
+    assert "E_999" not in vocab
+
+
+def test_load_ddxplus_sidecar_returns_empty_when_missing(tmp_path) -> None:
+    from claritymed.orchestrator.features.symptoms_plugin import _load_ddxplus_sidecar
+
+    assert _load_ddxplus_sidecar(str(tmp_path)) == {}
+
+
+def test_load_ddxplus_sidecar_normalizes_keys_and_values_to_str(tmp_path) -> None:
+    """The sidecar may contain non-string ids (legacy); always coerce."""
+    import json as _json
+    from claritymed.orchestrator.features.symptoms_plugin import _load_ddxplus_sidecar
+
+    (tmp_path / "evidence_concepts.json").write_text(
+        _json.dumps({"E_001": "C123", 7: 42}),
+        encoding="utf-8",
+    )
+    sidecar = _load_ddxplus_sidecar(str(tmp_path))
+    assert sidecar == {"E_001": "C123", "7": "42"}
+
+
+def test_load_ddxplus_sidecar_returns_empty_when_payload_is_list(tmp_path) -> None:
+    """Non-dict payload (e.g. accidental list) → fall through to empty."""
+    import json as _json
+    from claritymed.orchestrator.features.symptoms_plugin import _load_ddxplus_sidecar
+
+    (tmp_path / "evidence_concepts.json").write_text(
+        _json.dumps(["not", "a", "dict"]), encoding="utf-8"
+    )
+    assert _load_ddxplus_sidecar(str(tmp_path)) == {}
+
+
+# --- make_symptoms_factory ----------------------------------------------
+
+
+def test_make_symptoms_factory_returns_none_when_config_load_fails(monkeypatch):
+    """A malformed ``symptoms.yaml`` must silently disable the feature."""
+    from claritymed.orchestrator.features import symptoms_plugin as plg
+    from claritymed import config as _cfg
+
+    def _boom():
+        raise RuntimeError("yaml is invalid")
+
+    monkeypatch.setattr(_cfg, "load_symptoms_config", _boom)
+    assert plg.make_symptoms_factory() is None
+
+
+def test_make_symptoms_factory_returns_none_when_no_datasets_enabled(monkeypatch):
+    """Every dataset has ``enabled=False`` → feature disabled."""
+    from claritymed.orchestrator.features import symptoms_plugin as plg
+    from claritymed import config as _cfg
+
+    disabled_spec = _dataset_spec()
+    disabled_cfg = _symptoms_config()
+    disabled_cfg = disabled_cfg.model_copy(
+        update={"datasets": [disabled_spec.model_copy(update={"enabled": False})]}
+    )
+
+    monkeypatch.setattr(_cfg, "load_symptoms_config", lambda: disabled_cfg)
+    assert plg.make_symptoms_factory() is None
+
+
+def test_make_symptoms_factory_returns_none_on_eligibility_config_error(monkeypatch):
+    """A misconfigured eligibility strategy is treated as feature-disabled, not crash."""
+    from claritymed.orchestrator.features import symptoms_plugin as plg
+    from claritymed.core.symptoms.eligibility import factory as _ef
+    from claritymed import config as _cfg
+    from claritymed.errors import EligibilityStrategyConfigError
+
+    monkeypatch.setattr(_cfg, "load_symptoms_config", lambda: _symptoms_config())
+
+    def _bad(*args, **kwargs):
+        raise EligibilityStrategyConfigError("active strategy missing dep")
+
+    monkeypatch.setattr(_ef, "build_eligibility_strategy", _bad)
+    assert plg.make_symptoms_factory() is None
+
+
+def test_make_symptoms_factory_returns_none_on_unknown_eligibility_error(monkeypatch):
+    """An unexpected exception in eligibility build → feature disabled (no crash)."""
+    from claritymed.orchestrator.features import symptoms_plugin as plg
+    from claritymed.core.symptoms.eligibility import factory as _ef
+    from claritymed import config as _cfg
+
+    monkeypatch.setattr(_cfg, "load_symptoms_config", lambda: _symptoms_config())
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("unexpected lib failure")
+
+    monkeypatch.setattr(_ef, "build_eligibility_strategy", _boom)
+    assert plg.make_symptoms_factory() is None
+
+
+def test_make_symptoms_factory_happy_path_returns_callable(monkeypatch, tmp_path):
+    """Config loads + eligibility builds → factory callable returns a SymptomsFeature."""
+    from claritymed.orchestrator.features import symptoms_plugin as plg
+    from claritymed.core.symptoms.eligibility import factory as _ef
+    from claritymed import config as _cfg
+
+    monkeypatch.setattr(_cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(_cfg, "load_symptoms_config", lambda: _symptoms_config())
+
+    sentinel_eligibility = _StubEligibility(
+        EligibilityResult(eligible=True, reason="in_scope")
+    )
+
+    def _ok(eligibility_cfg, *, vocabs, sidecars, term_service_factory):
+        # The factory passes the loaded vocab/sidecar maps through — assert
+        # both are dicts (possibly empty when on-disk data is absent).
+        assert isinstance(vocabs, dict)
+        assert isinstance(sidecars, dict)
+        return sentinel_eligibility
+
+    monkeypatch.setattr(_ef, "build_eligibility_strategy", _ok)
+
+    factory = plg.make_symptoms_factory(base_url="http://stub.local")
+    assert factory is not None
+    feature = factory()
+    assert isinstance(feature, plg.SymptomsFeature)
+    # The eligibility stub is wired through (private attr — feature does
+    # not expose it on the surface).
+    assert feature._eligibility is sentinel_eligibility

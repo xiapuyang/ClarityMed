@@ -74,3 +74,59 @@ async def test_cancel_job_via_delete(web_app, web_client, admin_cookies):
         if spec_now.state == "cancelled":
             break
     assert registry.get(spec.id).state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_get_job_by_id_returns_spec(web_app, web_client, admin_cookies):
+    """GET /admin/jobs/{id} returns the spec for an existing job."""
+    registry: JobRegistry = web_app.state.jobs
+    registry.register_runner("rag_ingest", _slow_runner(2.0))
+    spec = await registry.submit("rag_ingest", {"k": "v"})
+    try:
+        response = await web_client.get(
+            f"/api/v1/admin/jobs/{spec.id}", cookies=admin_cookies
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["id"] == spec.id
+        assert body["kind"] == "rag_ingest"
+    finally:
+        await registry.cancel(spec.id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_404_for_unknown(web_client, admin_cookies):
+    """DELETE /admin/jobs/{id} for a job that doesn't exist → 404."""
+    response = await web_client.delete(
+        "/api/v1/admin/jobs/no-such-job-id",
+        cookies=admin_cookies,
+        headers={"X-CSRF-Token": "csrf-test-token"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cancel_non_cancellable_job_returns_400(
+    web_app, web_client, admin_cookies
+):
+    """DELETE /admin/jobs/{id} for a job with cancellable=False → 400."""
+    from claritymed.web.admin.jobs import JobSpec
+
+    registry: JobRegistry = web_app.state.jobs
+    spec = JobSpec(
+        id="nc-router-001",
+        kind="rag_ingest",
+        state="running",
+        params={},
+        cancellable=False,
+    )
+    registry._jobs[spec.id] = spec
+    try:
+        response = await web_client.delete(
+            f"/api/v1/admin/jobs/{spec.id}",
+            cookies=admin_cookies,
+            headers={"X-CSRF-Token": "csrf-test-token"},
+        )
+        assert response.status_code == 400
+    finally:
+        registry._jobs.pop(spec.id, None)

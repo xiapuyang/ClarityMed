@@ -44,6 +44,7 @@ router = APIRouter(prefix="/rag", tags=["admin", "rag"])
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _MAX_UPLOAD_FILES = 100
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_READ_CHUNK = 256 * 1024  # 256 KiB read window for incremental size checking
 
 
 class RagUpsertMetadata(BaseModel):
@@ -205,30 +206,33 @@ def _parse_metadata(raw: str) -> RagUpsertMetadata:
 def _save_uploads(files: list[UploadFile], target_dir: Path) -> list[Path]:
     """Persist each upload under ``target_dir`` and return their paths.
 
-    Bytes are buffered in memory because FastAPI's UploadFile is a
-    SpooledTemporaryFile under the hood — by the time the runner picks
-    up the job, the request has already returned, so we must commit to
-    a stable on-disk path before then. Per-file cap enforces an upper
-    bound on that buffer.
+    Reads in _READ_CHUNK increments so the per-file size cap is enforced
+    before the full body lands in memory. With 100 files × 25 MiB the
+    naive read()-then-check approach could hold 2.5 GiB before the first
+    rejection; the chunked read caps RSS at one chunk per file at a time.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     out: list[Path] = []
     for upload in files:
         if not upload.filename:
             raise HTTPException(status_code=422, detail="file part missing filename")
-        data = upload.file.read()
-        if not data:
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := upload.file.read(_READ_CHUNK):
+            total += len(chunk)
+            if total > _MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"{upload.filename!r} exceeds the {_MAX_UPLOAD_BYTES}-byte cap"
+                    ),
+                )
+            chunks.append(chunk)
+        if not chunks:
             raise HTTPException(
                 status_code=422, detail=f"empty file: {upload.filename!r}"
             )
-        if len(data) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"{upload.filename!r} is {len(data)} bytes; cap is "
-                    f"{_MAX_UPLOAD_BYTES} bytes"
-                ),
-            )
+        data = b"".join(chunks)
         # Strip directory components from the upload-supplied name —
         # multipart filenames are attacker-controlled.
         safe_name = Path(upload.filename).name or "upload.bin"

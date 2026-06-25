@@ -215,3 +215,97 @@ async def test_list_audit_parses_logging_prefixed_lines(
     assert body["total_count"] == 1
     assert body["items"][0]["kind"] == "admin.config.read"
     assert body["items"][0]["user_id"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_load_events_skips_blank_lines(web_client, admin_cookies, audit_log_path):
+    """Blank lines in audit.log are skipped without error."""
+    good = json.dumps(_make_event("mode.ask"))
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_log_path.write_text(f"\n{good}\n\n", encoding="utf-8")
+    response = await web_client.get("/api/v1/admin/audit", cookies=admin_cookies)
+    body = response.json()
+    assert body["total_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_load_events_skips_no_brace_lines(
+    web_client, admin_cookies, audit_log_path
+):
+    """Lines with no '{' character (e.g. rotation markers) are silently skipped."""
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+    good = json.dumps(_make_event("mode.ask"))
+    audit_log_path.write_text(f"LOG ROTATION MARKER\n{good}\n", encoding="utf-8")
+    response = await web_client.get("/api/v1/admin/audit", cookies=admin_cookies)
+    body = response.json()
+    assert body["total_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_load_events_skips_invalid_json(
+    web_client, admin_cookies, audit_log_path
+):
+    """Lines with '{' but unparseable JSON are silently skipped."""
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+    good = json.dumps(_make_event("mode.ask"))
+    audit_log_path.write_text(f"{{invalid json here\n{good}\n", encoding="utf-8")
+    response = await web_client.get("/api/v1/admin/audit", cookies=admin_cookies)
+    body = response.json()
+    assert body["total_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_match_skips_event_without_created_at_on_time_filter(
+    web_client, admin_cookies, audit_log_path
+):
+    """Events missing created_at are excluded when a time filter is active."""
+    event = _make_event("mode.ask")
+    del event["created_at"]
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_log_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    response = await web_client.get(
+        "/api/v1/admin/audit",
+        params={"since": "2020-01-01T00:00:00+00:00"},
+        cookies=admin_cookies,
+    )
+    body = response.json()
+    assert body["total_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_match_skips_event_with_invalid_created_at(
+    web_client, admin_cookies, audit_log_path
+):
+    """Events with a non-ISO created_at are excluded under a time filter."""
+    event = _make_event("mode.ask")
+    event["created_at"] = "not-a-date"
+    audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_log_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    response = await web_client.get(
+        "/api/v1/admin/audit",
+        params={"since": "2020-01-01T00:00:00+00:00"},
+        cookies=admin_cookies,
+    )
+    body = response.json()
+    assert body["total_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_match_filters_by_until_excludes_later_events(
+    web_client, admin_cookies, audit_log_path
+):
+    """Events after 'until' are excluded; events before it are kept."""
+    now = datetime.now(timezone.utc)
+    events = [
+        _make_event("mode.ask", created_at=now - timedelta(hours=2)),  # before until
+        _make_event("mode.ask", created_at=now),  # after until
+    ]
+    _write_audit_log(audit_log_path, events)
+    until = (now - timedelta(hours=1)).isoformat()
+    response = await web_client.get(
+        "/api/v1/admin/audit",
+        params={"until": until},
+        cookies=admin_cookies,
+    )
+    body = response.json()
+    assert body["total_count"] == 1

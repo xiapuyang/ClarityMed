@@ -115,3 +115,80 @@ async def test_patch_boolean_value(web_client, admin_cookies, tmp_configs_dir):
     assert response.status_code == 200
     body = response.json()
     assert body["data"]["tracing"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_config_missing_file_returns_404(
+    web_client, admin_cookies, tmp_configs_dir, monkeypatch
+):
+    """When load_yaml raises FileNotFoundError the router returns 404."""
+
+    def _raise(name):
+        raise FileNotFoundError(f"{name} not found")
+
+    _raise.cache_clear = lambda: None  # satisfy teardown's cache_clear call
+    monkeypatch.setattr(_cfg, "load_yaml", _raise)
+    response = await web_client.get(
+        "/api/v1/admin/configs/safety.yaml", cookies=admin_cookies
+    )
+    assert response.status_code == 404
+    assert "safety.yaml" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_config_missing_file_returns_404(
+    web_client, admin_cookies, tmp_configs_dir, monkeypatch
+):
+    """When load_yaml raises FileNotFoundError on PATCH the router returns 404."""
+
+    def _raise(name):
+        raise FileNotFoundError(f"{name} not found")
+
+    _raise.cache_clear = lambda: None
+    monkeypatch.setattr(_cfg, "load_yaml", _raise)
+    response = await web_client.patch(
+        "/api/v1/admin/configs/safety.yaml",
+        cookies=admin_cookies,
+        headers={"X-CSRF-Token": "csrf-test-token"},
+        json={"path": "phi.privacy_filter.enabled", "value": True},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_patch_nested_key_creates_intermediate_dict(
+    web_client, admin_cookies, tmp_configs_dir
+):
+    """Patching a key whose parent dict doesn't exist creates it on write."""
+    response = await web_client.patch(
+        "/api/v1/admin/configs/app.yaml",
+        cookies=admin_cookies,
+        headers={"X-CSRF-Token": "csrf-test-token"},
+        json={"path": "paste.max_text_chars", "value": 2000},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["paste"]["max_text_chars"] == 2000
+    on_disk = yaml.safe_load((tmp_configs_dir / "app.yaml").read_text())
+    assert on_disk["paste"]["max_text_chars"] == 2000
+
+
+@pytest.mark.asyncio
+async def test_patch_config_save_yaml_error_returns_400(
+    web_client, admin_cookies, tmp_configs_dir, monkeypatch
+):
+    """When save_yaml raises ValueError the router surfaces it as a 400."""
+    from claritymed.web.routers.admin import configs as configs_router
+
+    def _raise(*_a, **_kw):
+        raise ValueError("disk allowlist")
+
+    monkeypatch.setattr(configs_router, "save_yaml", _raise)
+    response = await web_client.patch(
+        "/api/v1/admin/configs/app.yaml",
+        cookies=admin_cookies,
+        headers={"X-CSRF-Token": "csrf-test-token"},
+        json={"path": "i18n.default_lang", "value": "zh"},
+    )
+    assert response.status_code == 400
+    assert "disk allowlist" in response.json()["detail"]

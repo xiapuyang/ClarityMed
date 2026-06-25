@@ -217,3 +217,16 @@ async def test_two_logins_issue_different_csrf_tokens(web_client, password_user)
     c2 = r2.cookies.get(COOKIE_CSRF_TOKEN)
     assert c1 is not None and c2 is not None
     assert c1 != c2
+
+
+async def test_login_orphan_account_returns_401(web_client):
+    """verify_password passes but no settings.yaml → 401 (internal inconsistency)."""
+    from claritymed.stores.auth import PasswordStore
+
+    PasswordStore.set_password("orphan-user", "secret-pass-123")
+    resp = await web_client.post(
+        LOGIN_URL,
+        json={"user_id": "orphan-user", "password": "secret-pass-123"},
+    )
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Invalid credentials"}

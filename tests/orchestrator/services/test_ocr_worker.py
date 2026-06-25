@@ -724,3 +724,180 @@ async def test_compute_vision_tags_no_override_when_clip_document_llm_also_non_m
 
     assert tags["modality"] == "document"
     assert "modality_from_llm_ocr" not in tags.get("vision_warnings", [])
+
+
+# --- error paths --------------------------------------------------------
+
+
+class _RuntimeErrorProvider(OcrProvider):
+    """Provider that raises a non-OCR exception — exercises the worker
+    catch-all branch in ``_loop``.
+
+    ``OcrError`` is handled inside ``_extract`` (already covered by
+    ``test_provider_failure_marks_failed``); the base ``Exception``
+    branch in ``_loop`` is what we're targeting here.
+    """
+
+    is_local = True
+    label = "broken"
+
+    async def extract_text(self, path: Path) -> ExtractResult:
+        raise RuntimeError("provider exploded outside the OcrError hierarchy")
+
+
+async def test_loop_unhandled_exception_marks_failed_with_worker_error_prefix(_ctx):
+    """A bare RuntimeError must hit the ``_loop`` catch-all → failed sentinel."""
+    bs = BlobStore("test")
+    sha = bs.store(b"some bytes", "pdf")
+    sa = SessionAttachments("test", "sess-1")
+    sa.add(sha256=sha, filename="r.pdf", mime="application/pdf", size=10)
+
+    completions: list[OcrCompleted] = []
+    worker = OcrWorker(
+        _RuntimeErrorProvider(),
+        listener=lambda c: completions.append(c),
+    )
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha,
+            blob_path=bs.path(sha, "pdf"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    sentinel = json.loads(bs.ocr_meta_path(sha).read_text(encoding="utf-8"))
+    assert sentinel["status"] == "failed"
+    # Reason carries the repr of the original exception so the operator
+    # can reach the root cause from the audit row alone.
+    assert "worker error:" in sentinel["reason"]
+    assert "RuntimeError" in sentinel["reason"]
+    assert completions and completions[0].status == "failed"
+
+
+async def test_listener_exception_does_not_kill_subsequent_jobs(_ctx):
+    """A listener raising must be swallowed so the queue keeps draining."""
+    bs = BlobStore("test")
+    sha_a = bs.store(b"job-a-bytes", "pdf")
+    sha_b = bs.store(b"job-b-bytes", "pdf")
+    sa = SessionAttachments("test", "sess-1")
+    sa.add(sha256=sha_a, filename="a.pdf", mime="application/pdf", size=11)
+    sa.add(sha256=sha_b, filename="b.pdf", mime="application/pdf", size=11)
+
+    seen: list[str] = []
+
+    async def _explode(c: OcrCompleted) -> None:
+        seen.append(c.sha256)
+        # First callback raises; second must still fire because ``_loop``
+        # wraps ``_emit`` in its own try/except.
+        if len(seen) == 1:
+            raise RuntimeError("listener fault on first call")
+
+    worker = OcrWorker(_StubProvider(text="ok"), listener=_explode)
+    worker.start()
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha_a,
+            blob_path=bs.path(sha_a, "pdf"),
+        )
+    )
+    worker.enqueue(
+        OcrJob(
+            user_id="test",
+            session_id="sess-1",
+            sha256=sha_b,
+            blob_path=bs.path(sha_b, "pdf"),
+        )
+    )
+    await worker._queue.join()
+    await worker.stop()
+
+    # Both callbacks fired in order — listener fault did not poison the
+    # worker. Verified by the second sentinel landing on disk.
+    assert seen == [sha_a, sha_b]
+    assert bs.ocr_done(sha_b)
+
+
+async def test_read_cached_sentinel_returns_none_on_corrupt_json(_ctx):
+    """A garbled ``ocr.json`` is treated as a cache miss, not a worker crash."""
+    bs = BlobStore("test")
+    sha = bs.store(b"some bytes", "pdf")
+    # Force ocr_done(sha) → True by writing the sentinel file directly,
+    # then poison it with non-JSON bytes so the worker's parser raises.
+    sentinel_path = bs.ocr_meta_path(sha)
+    sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+    sentinel_path.write_text("{this is not json,", encoding="utf-8")
+    assert bs.ocr_done(sha) is True  # precondition: writer reports "done"
+
+    worker = OcrWorker(_StubProvider())
+    cached = worker._read_cached_sentinel(bs, sha)
+    assert cached is None
+
+
+async def test_compute_vision_tags_llm_modality_fallback_recovers_unknown(tmp_path):
+    """When clip+LLM-OCR both say ``unknown``, the explicit fallback provider
+    gets one chance to supply a real modality.
+    """
+    from claritymed.core.ocr.base import ExtractResult
+
+    img = tmp_path / "scan.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    class _FallbackProvider(OcrProvider):
+        is_local = True
+        label = "fallback"
+
+        async def extract_text(self, path):  # noqa: ANN001
+            return ExtractResult(
+                text="",
+                provider_used=self.label,
+                chain_tried=[self.label],
+                modality="ct",
+                is_medical=True,
+            )
+
+    worker = OcrWorker(
+        _StubProvider(text=""),
+        llm_modality_provider=_FallbackProvider(),
+    )
+    job = OcrJob(user_id="test", session_id="s", sha256="ab" * 32, blob_path=img)
+    # Result with no modality info — triggers the fallback branch.
+    result = ExtractResult(text="", provider_used="stub", chain_tried=["stub"])
+    tags = await worker._compute_vision_tags(job, result)
+
+    assert tags["modality"] == "ct"
+    assert tags["is_medical"] is True
+    assert "modality_from_llm_fallback_provider" in tags.get("vision_warnings", [])
+
+
+async def test_compute_vision_tags_llm_modality_fallback_failure_is_noted(tmp_path):
+    """If the explicit fallback provider raises, the failure is captured as
+    a warning rather than crashing the worker.
+    """
+    from claritymed.core.ocr.base import ExtractResult
+
+    img = tmp_path / "scan.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    class _BrokenFallback(OcrProvider):
+        is_local = True
+        label = "broken_fallback"
+
+        async def extract_text(self, path):  # noqa: ANN001
+            raise RuntimeError("fallback exploded")
+
+    worker = OcrWorker(
+        _StubProvider(text=""),
+        llm_modality_provider=_BrokenFallback(),
+    )
+    job = OcrJob(user_id="test", session_id="s", sha256="cd" * 32, blob_path=img)
+    result = ExtractResult(text="", provider_used="stub", chain_tried=["stub"])
+    tags = await worker._compute_vision_tags(job, result)
+
+    warnings = tags.get("vision_warnings", [])
+    assert any("llm_modality_fallback_failed" in w for w in warnings)
