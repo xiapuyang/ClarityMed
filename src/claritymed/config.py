@@ -55,6 +55,12 @@ DEFAULT_UPLOAD_MIN_TOTAL_CHARS = 100
 DEFAULT_UPLOAD_MIN_PART_CHARS = 30
 DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD = 0.93
 
+# /record import — chunk-dedup threshold for PHI-side add_record
+# (see core/rag/dedup.py + ingest/records/case_writer.py). Higher than
+# upload because personal records have less legitimate near-duplication
+# than published library content.
+DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD = 0.95
+
 
 def ensure_runtime_dirs() -> None:
     """Create ``data/``, ``shared/``, and ``logs/`` under the runtime root.
@@ -182,6 +188,20 @@ def upload_dedupe_cosine_threshold() -> float:
     n = load_yaml("app.yaml").get("upload", {}).get("dedupe_cosine_threshold")
     if n is None:
         n = DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD
+    return float(n)
+
+
+def record_dedupe_cosine_threshold() -> float:
+    """Cosine-similarity threshold for per-chunk PHI-record dedupe.
+
+    Used by ``UserPhiRagStore.add_record`` when applying records imported
+    via ``claritymed record import-from-template``. Read from ``app.yaml``
+    ``record.dedupe_cosine_threshold``; falls back to
+    ``DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD`` when missing.
+    """
+    n = load_yaml("app.yaml").get("record", {}).get("dedupe_cosine_threshold")
+    if n is None:
+        n = DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD
     return float(n)
 
 

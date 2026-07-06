@@ -7,6 +7,8 @@ shape of the assertions is comparable. The key invariants:
 * every chunk's payload carries ``is_phi=True`` and ``can_cloud=False``.
 * no ``public`` kwarg is exposed (PHI is PHI by construction).
 * ``delete_by_doc_id`` cascade removes every chunk for a record_path.
+* per-chunk cosine-similarity dedup mirrors the library path so a
+  re-fed record doesn't duplicate in Qdrant (R11a).
 """
 
 from __future__ import annotations
@@ -78,6 +80,18 @@ def store() -> UserPhiRagStore:
     )
 
 
+@pytest.fixture(autouse=True)
+def _disable_cosine_dedupe(monkeypatch):
+    """Default cosine-sim dedupe to OFF for these tests.
+
+    The ``StubEmbedder`` is deterministic SHA-256 → identical text is a
+    100% cosine match. Tests that don't opt into the dedupe path would
+    spuriously drop legitimate inserts. Tests that exercise dedupe set
+    the threshold explicitly via monkeypatch or the kwarg.
+    """
+    monkeypatch.setattr("claritymed.config.record_dedupe_cosine_threshold", lambda: 0.0)
+
+
 def test_collection_name_uses_user_phi_prefix():
     assert collection_name("alice") == "user_phi_alice"
     assert collection_name("alice") != "user_rag_alice"
@@ -132,3 +146,123 @@ async def test_record_path_propagates_to_payload(store: UserPhiRagStore):
     # Sanity check: collection_store is constructed lazily; nothing to
     # introspect further without leaking Qdrant internals. The behavior
     # is exercised end-to-end in Unit 12's tests.
+
+
+# --- chunk-level dedupe (R11a) ------------------------------------------
+
+
+async def test_add_record_dedupes_identical_text_with_default_threshold(
+    store: UserPhiRagStore, monkeypatch
+):
+    """Re-feeding identical OCR text drops the duplicate chunk under the
+    default 0.95 threshold. Catches "user imports the same Notion page
+    twice in two sessions" without needing any caller-side guard."""
+    monkeypatch.setattr(
+        "claritymed.config.record_dedupe_cosine_threshold", lambda: 0.95
+    )
+    first = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-aaaaaaaa",
+        ocr_text="hemoglobin 105 g/L, glucose 5.6 mmol/L",
+    )
+    assert first == 1
+    second = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-bbbbbbbb",
+        ocr_text="hemoglobin 105 g/L, glucose 5.6 mmol/L",
+    )
+    assert second == 0
+
+
+async def test_add_record_threshold_kwarg_overrides_config(store: UserPhiRagStore):
+    """Caller can pin a strict threshold to force a no-op even when the
+    config defaults to 0 (autouse fixture). Tests the bypass path Unit 8
+    uses when an operator wants to override at the CLI."""
+    first = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-cccccccc",
+        ocr_text="dose 500mg metformin twice daily",
+    )
+    assert first == 1
+    second = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-dddddddd",
+        ocr_text="dose 500mg metformin twice daily",
+        dedupe_threshold=0.95,
+    )
+    assert second == 0
+
+
+async def test_add_record_threshold_zero_disables_dedupe(
+    store: UserPhiRagStore, monkeypatch
+):
+    """Threshold ``<= 0`` is the documented kill-switch (matches the
+    library path). Even with identical text, a 0 threshold writes both
+    chunks. Single source of truth: ``filter_near_duplicates``."""
+    monkeypatch.setattr(
+        "claritymed.config.record_dedupe_cosine_threshold", lambda: 0.95
+    )
+    first = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-eeeeeeee",
+        ocr_text="penicillin allergy",
+    )
+    second = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-ffffffff",
+        ocr_text="penicillin allergy",
+        dedupe_threshold=0.0,
+    )
+    assert first == 1
+    assert second == 1
+
+
+async def test_add_record_skipped_chunks_skip_parent_write(
+    store: UserPhiRagStore, monkeypatch, tmp_path
+):
+    """When every child chunk is a near-duplicate the parent JSON write
+    is skipped — no orphan ParentStore entries. Mirrors the library
+    path's invariant (user_rag.py:187-190)."""
+    monkeypatch.setattr(
+        "claritymed.config.record_dedupe_cosine_threshold", lambda: 0.95
+    )
+
+    await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-11111111",
+        ocr_text="thyroid panel within reference range",
+    )
+
+    from claritymed.stores.paths import user_parent_docstore_phi_path
+
+    parent_path = user_parent_docstore_phi_path("alice")
+    snapshot_first = (
+        parent_path.read_text(encoding="utf-8") if parent_path.exists() else ""
+    )
+
+    n = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-22222222",
+        ocr_text="thyroid panel within reference range",
+    )
+    assert n == 0
+
+    snapshot_second = (
+        parent_path.read_text(encoding="utf-8") if parent_path.exists() else ""
+    )
+    assert snapshot_first == snapshot_second
+
+
+async def test_add_record_empty_text_skips_embed(store: UserPhiRagStore):
+    """Whitespace-only OCR text returns 0 without calling embed —
+    regression guard against a future refactor that would needlessly
+    invoke the embedder on the worker's ``ocr_status='empty'`` path.
+
+    The autouse fixture sets threshold to 0 (no dedup), so this test
+    pins the pre-existing short-circuit behavior is preserved."""
+    n = await store.add_record(
+        user_id="alice",
+        record_path="exam-reports/2026-06-11-99999999",
+        ocr_text="   ",
+    )
+    assert n == 0

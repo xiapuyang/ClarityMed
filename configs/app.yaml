@@ -131,6 +131,17 @@ vision:
 upload:
   dedupe_cosine_threshold: 0.93
 
+# --- Record import dedupe ----------------------------------------------
+# dedupe_cosine_threshold: per-chunk cosine-similarity threshold for the
+# PHI-side dedupe pass on records imported via
+# ``claritymed record import-from-template``. Higher than upload's
+# threshold (0.93) because personal records have less legitimate
+# near-duplication than published library content. Loader:
+# ``claritymed.config.record_dedupe_cosine_threshold``; in-code default
+# is 0.95 (DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD).
+record:
+  dedupe_cosine_threshold: 0.95
+
 # --- OpenTelemetry / Phoenix tracing ------------------------------------
 tracing:
   enabled: true

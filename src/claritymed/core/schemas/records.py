@@ -100,6 +100,13 @@ class Manifest(BaseModel):
     attachments: list[Attachment] = Field(default_factory=list)
     extracted_labs: list[ExtractedLab] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    # ``body`` carries the case's primary content (potentially 2000+ words
+    # from a clinical note). Imported cases populate this from the
+    # template's ``body_md`` field. ``notes`` is reserved for one-line
+    # tooling annotations appended after the title — they're not
+    # interchangeable. Existing manifests without ``body`` round-trip
+    # cleanly (additive, optional, default None).
+    body: str | None = None
     notes: str | None = None
     # Library-only metadata. Records leave these unset.
     authors: list[str] = Field(default_factory=list)

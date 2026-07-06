@@ -1,0 +1,5 @@
+cases:
+  - case_id: orphan-1
+    event_date: "2024-01-15"
+    title: Should not be here
+    kind: exam-report

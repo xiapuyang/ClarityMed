@@ -34,6 +34,7 @@ import logging
 from qdrant_client import AsyncQdrantClient
 
 from claritymed.core.rag.chunking.base import Chunker, RawDocument
+from claritymed.core.rag.dedup import filter_near_duplicates
 from claritymed.core.rag.embedding.base import Embedder
 from claritymed.core.rag.parent_store import ParentStore
 from claritymed.core.rag.qdrant_store import RagCollectionStore
@@ -86,6 +87,7 @@ class UserPhiRagStore:
         ocr_text: str,
         *,
         metadata: dict | None = None,
+        dedupe_threshold: float | None = None,
     ) -> int:
         """Embed raw OCR text into the PHI collection. Returns chunk count.
 
@@ -96,6 +98,12 @@ class UserPhiRagStore:
 
         Empty / whitespace-only OCR text writes nothing and returns 0
         (e.g. the worker's ``ocr_status="empty"`` outcome).
+
+        ``dedupe_threshold`` is the third dedup layer (record-level via
+        manifest slug + attachment-level via BlobStore CAS are the first
+        two). ``None`` reads ``record_dedupe_cosine_threshold()`` from
+        config; ``<= 0`` disables dedup entirely (same kill-switch as
+        the library path).
         """
         if not ocr_text or not ocr_text.strip():
             return 0
@@ -111,19 +119,57 @@ class UserPhiRagStore:
         if not chunked.children:
             return 0
 
-        parent_store = self._parent_store(user_id)
-        parent_store.bulk_put(chunked.parents)
-        parent_store.persist()
-
+        # Embed BEFORE the parent write so a dedupe pass that drops every
+        # child can also skip the parent persist — no orphan ParentStore
+        # entries (mirrors user_rag.py:164-198).
         child_texts = [c.text for c in chunked.children]
         dense_vecs = await self._embedder.embed_dense(child_texts)
         sparse_vecs = await self._embedder.embed_sparse(child_texts)
 
         col_store = self._collection_store(user_id)
-        return await col_store.upsert(
+
+        from claritymed import config as _cfg
+
+        threshold = (
+            dedupe_threshold
+            if dedupe_threshold is not None
+            else _cfg.record_dedupe_cosine_threshold()
+        )
+
+        (
+            kept_children,
+            kept_dense,
+            kept_sparse,
+            skipped_chunks,
+        ) = await filter_near_duplicates(
             children=chunked.children,
             dense_vectors=dense_vecs,
             sparse_vectors=sparse_vecs,
+            store=col_store,
+            threshold=threshold,
+        )
+
+        if skipped_chunks:
+            logger.debug(
+                "user_phi_rag: dropped %d/%d chunks as near-duplicates "
+                "(record_path=%s, threshold=%.3f)",
+                skipped_chunks,
+                len(chunked.children),
+                record_path,
+                threshold,
+            )
+
+        if not kept_children:
+            return 0
+
+        parent_store = self._parent_store(user_id)
+        parent_store.bulk_put(chunked.parents)
+        parent_store.persist()
+
+        return await col_store.upsert(
+            children=kept_children,
+            dense_vectors=kept_dense,
+            sparse_vectors=kept_sparse,
             is_phi=True,
             can_cloud=False,
         )

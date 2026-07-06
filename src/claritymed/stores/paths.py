@@ -319,6 +319,64 @@ def job_path(job_id: str) -> Path:
     return jobs_dir() / f"{job_id}.json"
 
 
+# --- record import state paths ----------------------------------------
+
+# 12-char lowercase hex import_id (matches template_loader's hash prefix).
+IMPORT_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+
+
+def _validate_import_id(import_id: str) -> str:
+    if not isinstance(import_id, str) or not IMPORT_ID_RE.match(import_id):
+        raise ValueError(f"invalid import_id: {import_id!r}")
+    return import_id
+
+
+def imports_root() -> Path:
+    """``DATA_DIR / "_imports"`` — root for ephemeral record-import state.
+
+    Created with mode 0700 on first use (template PHI lives under it
+    until import completes). Mirrors ``jobs_dir`` shape but with a
+    leading underscore to flag it as a private internal namespace
+    distinct from per-user ``users/<id>/`` data.
+    """
+    return _cfg.DATA_DIR / "_imports"
+
+
+def import_dir(import_id: str) -> Path:
+    """``DATA_DIR / "_imports" / "<import_id>"``."""
+    return imports_root() / _validate_import_id(import_id)
+
+
+def import_template_dir(import_id: str) -> Path:
+    """``data/_imports/<id>/template/`` — copied from the skill's temp dir.
+
+    PHI lives here only until the importer reaches terminal state on
+    every row. The case writer reads attachment bytes from this tree;
+    the loader rejects a ``template/.cleanup_failed`` marker (see
+    ``template_loader.CLEANUP_FAILED_MARKER``).
+    """
+    return import_dir(import_id) / "template"
+
+
+def import_rows_jsonl(import_id: str) -> Path:
+    """``data/_imports/<id>/rows.jsonl`` — append-only state transitions.
+
+    Single source of truth for resume + final summary; outlives
+    ``template/`` (it's PHI-free by construction) so the audit trail
+    survives cleanup.
+    """
+    return import_dir(import_id) / "rows.jsonl"
+
+
+def import_session_yaml(import_id: str) -> Path:
+    """``data/_imports/<id>/session.yaml`` — derived snapshot cache.
+
+    Rewritten atomically on successful completion. ``rows.jsonl`` is
+    authoritative if the two disagree (e.g. mid-flight crash).
+    """
+    return import_dir(import_id) / "session.yaml"
+
+
 def shared_vision_models_dir(
     disease: str | None = None, version: str | None = None
 ) -> Path:

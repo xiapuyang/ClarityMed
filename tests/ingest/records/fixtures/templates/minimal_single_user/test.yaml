@@ -1,0 +1,15 @@
+cases:
+  - case_id: notion-abcdef12
+    event_date: "2024-01-15"
+    title: Annual checkup
+    kind: exam-report
+    body_md: "BP 120/80, HR 65, no complaints."
+    tags:
+      - routine
+facts:
+  profile:
+    sex: female
+  allergies:
+    - substance: penicillin
+      severity: severe
+      source: clinical_record

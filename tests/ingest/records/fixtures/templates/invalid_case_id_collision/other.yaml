@@ -1,0 +1,5 @@
+cases:
+  - case_id: shared-id
+    event_date: "2024-01-20"
+    title: Second copy
+    kind: exam-report

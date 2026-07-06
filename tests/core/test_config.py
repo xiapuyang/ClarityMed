@@ -66,6 +66,30 @@ def test_ask_user_question_max_retries_falls_back_when_missing():
     assert cfg._DEFAULT_ASK_USER_QUESTION_MAX_RETRIES == 3
 
 
+def test_record_dedupe_cosine_threshold_reads_app_yaml():
+    """Default app.yaml ships ``record.dedupe_cosine_threshold: 0.95``.
+    Higher than ``upload`` (0.93) because personal records have less
+    legitimate near-duplication than library content."""
+    cfg = _reload_config()
+    assert cfg.record_dedupe_cosine_threshold() == 0.95
+
+
+def test_record_dedupe_cosine_threshold_constant_default():
+    """In-code default is 0.95 — pin so an admin/config rename can't
+    silently regress to ``0`` (which would disable PHI-side chunk dedup)."""
+    from claritymed import config as cfg
+
+    assert cfg.DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD == 0.95
+
+
+def test_record_dedupe_cosine_threshold_returns_float_type():
+    """Helper coerces to ``float`` so callers can do arithmetic without
+    surprises if a future YAML edit ships an ``int`` like ``1``."""
+    cfg = _reload_config()
+    value = cfg.record_dedupe_cosine_threshold()
+    assert isinstance(value, float)
+
+
 def test_load_yaml_missing_returns_empty(monkeypatch):
     cfg = _reload_config()
     assert cfg.load_yaml("does_not_exist.yaml") == {}

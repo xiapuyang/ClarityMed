@@ -342,3 +342,15 @@ class EligibilityStrategyUnavailableError(RuntimeError):
     strategy non-functional. Caller may fall through to the next
     strategy or to free-text answering.
     """
+
+
+class TemplateValidationError(ValueError):
+    """A template directory failed validation during ``load_template``.
+
+    Raised for shape problems (unknown extra file, missing per-user
+    file, case_id collision across files, attachment path doesn't
+    exist, symlink in template tree, ``.cleanup_failed`` marker
+    present). The CLI catches this, emits a ``{"event":"fatal"}`` JSON
+    line, and exits non-zero — the import never touches ``data/_imports/``
+    or any store.
+    """
