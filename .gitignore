@@ -77,3 +77,4 @@ demo/
 .claritymed/
 .deepeval/
 hparam.db
+src/claritymed/web/admin_ui/.vite/
