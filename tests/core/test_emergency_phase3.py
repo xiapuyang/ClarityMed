@@ -688,12 +688,18 @@ def _make_service_with_sensitivity(effective: str):
     return svc
 
 
-def test_emergency_footer_text_returned_for_off_mode():
-    """_emergency_footer_text returns non-empty string for effective='off'."""
+def test_emergency_footer_text_empty_for_off_mode():
+    """``off`` returns empty on purpose — see ``configs/i18n/en/emergency.yaml``.
+
+    The operator cleared ``emergency.footer.gate_disabled`` while
+    ``default_sensitivity=off`` ships as the app-wide default. The
+    lookup path in ``_emergency_footer_text`` is preserved so restoring
+    the disclaimer later needs only a YAML edit (i18n is mtime-cached),
+    but the current shipped value is intentionally the empty string
+    and the ``if footer_text:`` guard in ``_run_scoped`` drops it.
+    """
     svc = _make_service_with_sensitivity("off")
-    footer = svc._emergency_footer_text()
-    assert footer, "expected non-empty footer for effective=off"
-    assert "emergency" in footer.lower() or "triage" in footer.lower()
+    assert svc._emergency_footer_text() == ""
 
 
 def test_emergency_footer_text_returned_for_strict_mode():
@@ -710,41 +716,21 @@ def test_emergency_footer_text_empty_for_balanced():
 
 
 @pytest.mark.asyncio
-async def test_off_mode_footer_appended_when_had_error(monkeypatch):
-    """Footer must appear in result['final_text'] even when had_error=True.
+async def test_off_mode_footer_lookup_still_wired(monkeypatch):
+    """The footer i18n lookup for ``off`` must still resolve to a string.
 
-    CLAUDE.md §Off-mode safeguards: "deterministic disclaimer footer
-    appended to every reply". The footer is a hard safeguard — if the
-    LLM errored and final_text is an error message, the footer still
-    appends so the user in off-mode always sees the disclaimer.
+    Even though the current value ships empty (operator request), the
+    resolution path in ``_emergency_footer_text`` must keep returning a
+    ``str`` — not raise a KeyError — so restoring the disclaimer later
+    is a one-line YAML edit with no code change. Regression guard for
+    the config path, not the visible copy.
     """
-
-    from claritymed.core.events import Done, Error
     from claritymed.orchestrator.services import ask_service as svc_mod
 
     # Stub audit_event to avoid MissingContextError.
     monkeypatch.setattr(svc_mod, "audit_event", lambda *a, **kw: None)
 
-    # Build a service in off-mode.
     svc = _make_service_with_sensitivity("off")
-    svc._chat_session = None  # no session persistence
-    svc._last_chunks = []
-
-    # Simulate a stream that produces had_error=True.
-    async def _erroring_stream(*_a, **_kw):
-        result = _kw.get("result") or _a[3]
-        result["had_error"] = True
-        result["final_text"] = "An error occurred."
-        yield Error(message="model failed")
-        yield Done()
-
-    # Patch _stream_turn on the instance.
-    svc._stream_turn = _erroring_stream  # type: ignore[method-assign]
-
-    # We need to call _run_scoped but that's too heavy; test _emergency_footer_text
-    # + the inline append logic that the fix introduced. We verify by calling the
-    # footer method directly (the logic is now unconditional in _run_scoped).
     footer = svc._emergency_footer_text()
-    assert footer, "off-mode must produce a footer text"
-    # Confirm the footer contains the safety disclaimer keyword.
-    assert "triage" in footer.lower() or "emergency" in footer.lower()
+    assert isinstance(footer, str)
+    assert footer == ""

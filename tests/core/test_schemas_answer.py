@@ -81,6 +81,34 @@ def test_request_id_pattern_enforced():
         _answer(request_id="a1b2c3d4")  # old 8-hex form
 
 
+def test_citation_authority_tier_defaults_to_general():
+    """Existing citations that omit authority_tier stay schema-valid."""
+    c = Citation(source_id="med-1", title="Tension headache guide", language="en")
+    assert c.authority_tier == 3
+
+
+def test_citation_authority_tier_accepts_all_three_levels():
+    for tier in (1, 2, 3):
+        c = Citation(
+            source_id=f"src-{tier}",
+            title="ref",
+            language="en",
+            authority_tier=tier,
+        )
+        assert c.authority_tier == tier
+
+
+def test_citation_authority_tier_rejects_out_of_range():
+    for bad in (0, 4, -1):
+        with pytest.raises(ValidationError):
+            Citation(
+                source_id="src",
+                title="ref",
+                language="en",
+                authority_tier=bad,
+            )
+
+
 def test_grounded_answer_works_as_pydantic_ai_result_type():
     """Foundation contract: GroundedAnswer can be a pydantic-ai Agent output_type.
 

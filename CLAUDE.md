@@ -128,13 +128,19 @@ Prompts 以 `core/prompts/store/*.yaml` 为**运行时唯一真相**。Phoenix �
   是 canonical 的"漏报代价无限大"案例。`load_validated_emergency_config`
   在启动期 fail-loud 拒绝违反 floor 的 profile override；新增规则时把
   floor 想清楚再写。
-- **`off` 灵敏度有六条 hard safeguard**（Phase 1 全部上线，不能少其中
-  任何一条就让用户进 off）：env override (`CLARITYMED_FORCE_EMERGENCY_GATE`)
-  默认 on 会把用户 off 降级到 lenient；deterministic disclaimer footer
-  追加在每条回复末尾；写入 `settings.yaml` 需要 `off_acknowledged_at`；
-  off-path 每次都发 `redflag.gate_disabled` 审计；`default_sensitivity:
-  off` 在 `emergency.yaml` 加载时拒收；CLI `--emergency-sensitivity off`
-  也走完同样的 safeguard 链。
+- **`off` 灵敏度剩四条 safeguard**（原有 `default_sensitivity: off` 加载期
+  拒收已按 operator 请求下线；`gate_disabled` footer 也按 operator 请求
+  置空，i18n 查找路径保留但当前跑出来是空串——见 `configs/i18n/*/emergency.yaml`
+  注释）：env override (`CLARITYMED_FORCE_EMERGENCY_GATE`) 默认 on 会把
+  用户 off 降级到 lenient；写入 per-user `settings.yaml` 仍需要
+  `off_acknowledged_at`（app-wide default 走 `emergency.yaml`，不受这条
+  约束）；off-path 每次都发 `redflag.gate_disabled` 审计；CLI
+  `--emergency-sensitivity off` 也走完同样的 safeguard 链。运营者如果
+  想让 `default_sensitivity: off` 真正生效，需要同时把
+  `CLARITYMED_FORCE_EMERGENCY_GATE` 设为 `0/false`——env override 默认
+  on，会自动把 off 升回 lenient。想恢复"每条回复末尾都有免责声明"这条
+  可见 safeguard，只需在 `emergency.yaml` 里把 `gate_disabled` 填回文案，
+  `_emergency_footer_text` 下一次请求自动读到（i18n 走 mtime 缓存）。
 
 ## Use pydantic-ai's built-ins before writing your own
 

@@ -36,6 +36,13 @@ class Citation(BaseModel):
     url: str | None = None
     published_at: date | None = None
     quote: str | None = None
+    # Semantics identical to core/rag/schemas.py:CollectionMetadata.authority_tier
+    # (1=highest authority, 3=general reference). Default 3 mirrors the
+    # existing fallback in web/routers/library.py and admin/rag.py so
+    # LLM-produced citations that omit the field remain schema-valid.
+    # RAG-path callers should copy CollectionMetadata.authority_tier
+    # straight through when constructing citations from retrieved chunks.
+    authority_tier: int = Field(ge=1, le=3, default=3)
 
 
 class Disclaimer(BaseModel):

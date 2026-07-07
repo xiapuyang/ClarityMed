@@ -22,10 +22,13 @@
 
 emergency:
   footer:
-    gate_disabled: |
-      ---
-
-      *Heads up: emergency triage is currently turned off in your settings, so this reply was generated without the usual safety screen for life-threatening symptoms. If you think this may be an emergency, call your local emergency number now (Canada: 911).*
+    # Intentionally empty on operator request — the visible disclaimer
+    # was removed while default_sensitivity=off ships as the app-wide
+    # default. To restore the safety-net reminder later, put the text
+    # back in either literal form and ask_service.py:_emergency_footer_text
+    # will pick it up on the next request (no restart needed since
+    # i18n is mtime-cached, but a restart is harmless).
+    gate_disabled: ""
     strict_mode_active: |
       ---
 

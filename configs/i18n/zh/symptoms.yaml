@@ -24,6 +24,47 @@ symptoms:
     female_description: "生理性别为女。"
     male_label: "男"
     male_description: "生理性别为男。"
+  # 多卡片渲染器（symptoms_plugin/_card_builder.py）会读取以下子树，
+  # 用于分桶置信度、生成方向性标题、选取卡片上方 banner，以及给
+  # 单卡引用打权威度徽章。阈值浮点数放在 i18n 里是刻意的（按
+  # feat-symptoms-multi-card-render spec）——运营人员可以在同一文件
+  # 里一起调标签措辞和阈值；如果 zh 缺失，i18n loader 会回落到 en，
+  # 故仅在 en 下维护也安全。
+  confidence:
+    thresholds:
+      very_high: 0.75    # 概率 ≥ 0.75 → very_high 档
+      high: 0.55         # 0.55-0.75 → high
+      moderate: 0.30     # 0.30-0.55 → moderate；更低 → low
+    labels:
+      very_high: "非常确定"
+      high: "较为确定"
+      moderate: "中等确定"
+      low: "不太确定"
+
+  # 方向性标题模板。``{condition}`` 会被替换为 symptoms_conditions.yaml
+  # 中对应语言的 display_name。
+  headline:
+    top:
+      likely: "很可能是{condition}"          # rank 1、概率 ≥ 0.60
+      probably: "可能是{condition}"          # rank 1、0.40-0.60
+      consider: "{condition}"                 # rank 1、< 0.40
+    also:
+      standard: "另需考虑{condition}"                     # rank 2+
+      unlikely_but_rule_out: "{condition}（但需排查）"
+
+  card:
+    # 卡片上方 banner。banner_key 由服务端根据 DifferentialSessionMeta
+    # 中若干标志位组合计算得出；``None`` 表示无 banner。
+    banner:
+      hit_cap: "已达追问上限——下方卡片基于目前已收集到的答案。"
+      severity_override: "模型尚未收敛，但症状模式已指向可能较严重的病因——请**不要**拖延就诊。"
+      cancelled_early_meaningful: "您已提前结束追问——下方卡片基于部分答案。"
+      cancelled_no_result: "追问在模型收敛前已结束，暂无可靠的鉴别诊断可展示——如果可以，多回答几个问题再试一次。"
+      session_expired: "追问会话已超时，暂无可靠的鉴别诊断可展示——请再试一次。"
+    # 卡片本身只渲染 headline + report。次日汇总的下一步建议和
+    # 权威引用由 LLM 依 symptoms_final_reply 提示写成的摘要段落
+    # 承担，而不是逐卡展示（避免噪音 + 保留 LLM 组织语言的能力）。
+
   # 审计用关键词白名单。**不是**安全提示原话——LLM 按
   # symptoms_final_reply.yaml 自己组织措辞；post_process 钩子扫
   # 描回复里是否出现下列任意关键词。Critical / Urgent 档缺失会

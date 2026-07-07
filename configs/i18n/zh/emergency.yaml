@@ -17,10 +17,12 @@
 
 emergency:
   footer:
-    gate_disabled: |
-      ---
-
-      *提示：您当前已关闭急救分诊筛查，本条回复没有经过紧急症状的安全检查。如怀疑紧急情况，请立即拨打当地急救电话（中国：120）。*
+    # 按 operator 请求置空——同步 configs/i18n/en/emergency.yaml；
+    # default_sensitivity=off 作为 app-wide default 上线时，去掉了
+    # 每条回复末尾的可见免责声明。想恢复时把文案填回原位，
+    # ask_service.py:_emergency_footer_text 下一次请求会自动读取
+    # （i18n 走 mtime 缓存，不必重启后端）。
+    gate_disabled: ""
     strict_mode_active: |
       ---
 

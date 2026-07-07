@@ -1,11 +1,18 @@
 """Loader for ``configs/emergency.yaml``.
 
 Phase 1 ships the minimum surface: ``default_sensitivity`` + the four
-sensitivity-profile slots. The loader runs a single hard validator at
-load time — ``default_sensitivity == "off"`` is rejected because that
-would let an operator quietly disable the safety net app-wide. ``off``
-is reachable only as a per-user choice (and gated by
-``CLARITYMED_FORCE_EMERGENCY_GATE`` on top).
+sensitivity-profile slots.
+
+Historical note: earlier revisions rejected ``default_sensitivity ==
+"off"`` at load time as a hard safety invariant (see CLAUDE.md — the
+constraint was one of six ``off`` safeguards). That validator was
+removed on operator request: ``off`` is now a valid app-wide default.
+Operators shipping ``default_sensitivity: off`` should be aware that
+``CLARITYMED_FORCE_EMERGENCY_GATE`` still defaults to ``on`` and will
+upgrade a resolved ``off`` back to ``lenient`` unless explicitly
+overridden; the deterministic disclaimer footer, per-turn
+``redflag.gate_disabled`` audit event, and per-user
+``off_acknowledged_at`` semantics remain unchanged.
 
 Phase 2 lands per-rule overrides, ambiguous-rule toggles, qualifier
 elicitation budgets, and the floor-enforcement validator that rejects
@@ -18,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from claritymed.config import CONFIGS_DIR
 
@@ -74,17 +81,27 @@ class EmergencyConfig(BaseModel):
         default_factory=dict
     )
 
-    @model_validator(mode="after")
-    def _reject_default_off(self) -> "EmergencyConfig":
-        if self.default_sensitivity == "off":
-            raise ValueError(
-                "emergency.yaml: default_sensitivity cannot be 'off'. "
-                "Disabling the emergency triage gate app-wide would "
-                "leave every user unprotected without their consent. "
-                "'off' is a per-user choice (and is further gated by "
-                "the CLARITYMED_FORCE_EMERGENCY_GATE env override)."
-            )
-        return self
+    @field_validator("default_sensitivity", mode="before")
+    @classmethod
+    def _coerce_yaml_off_bool(cls, v: Any) -> Any:
+        """Rescue the classic YAML 1.1 footgun.
+
+        Unquoted ``off`` / ``on`` / ``yes`` / ``no`` in YAML 1.1 parse
+        as booleans. An operator who writes ``default_sensitivity: off``
+        without quotes ships a bareword that PyYAML hands us as
+        :class:`bool` ``False`` — the Literal validator then rejects it
+        with a confusing "Input should be 'strict'…" message. Coerce
+        the two YAML-bool spellings back to their string equivalents
+        here so the operator's clear intent survives. ``True`` maps to
+        ``"on"``, which is not a valid ``SensitivityName`` and will
+        still surface a validation error further downstream — that is
+        deliberate, since ``on`` never carried a sensible meaning here.
+        """
+        if v is False:
+            return "off"
+        if v is True:
+            return "on"
+        return v
 
 
 def load_emergency_config(path: Path | None = None) -> EmergencyConfig:

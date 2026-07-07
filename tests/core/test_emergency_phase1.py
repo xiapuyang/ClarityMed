@@ -86,10 +86,14 @@ def test_account_emergency_field_unknown_value_rejected():
 # --- EmergencyConfig loader -----------------------------------------
 
 
-def test_emergency_config_default_off_rejected():
-    with pytest.raises(ValidationError) as excinfo:
-        EmergencyConfig(default_sensitivity="off")
-    assert "default_sensitivity" in str(excinfo.value)
+def test_emergency_config_default_off_accepted():
+    """``default_sensitivity: off`` is now valid — the loader used to
+    reject it, but that safeguard was removed on operator request. The
+    upstream ``CLARITYMED_FORCE_EMERGENCY_GATE`` env override (default
+    ``on``) still upgrades a resolved ``off`` back to ``lenient``
+    unless disabled explicitly."""
+    cfg = EmergencyConfig(default_sensitivity="off")
+    assert cfg.default_sensitivity == "off"
 
 
 def test_emergency_config_default_balanced_ok():
@@ -100,19 +104,42 @@ def test_emergency_config_default_balanced_ok():
 def test_load_emergency_config_uses_repo_yaml():
     """The repo's ``configs/emergency.yaml`` must parse + validate."""
     cfg = load_emergency_config()
-    assert cfg.default_sensitivity in {"strict", "balanced", "lenient"}
+    assert cfg.default_sensitivity in {"strict", "balanced", "lenient", "off"}
     assert "off" in cfg.sensitivity_profiles
     off_profile = cfg.sensitivity_profiles["off"]
     assert off_profile.reply_footer_i18n_key == "emergency.footer.gate_disabled"
 
 
-def test_load_emergency_config_rejects_yaml_with_default_off(tmp_path):
-    bad = tmp_path / "emergency.yaml"
-    bad.write_text(
+def test_load_emergency_config_accepts_yaml_with_default_off(tmp_path):
+    """Round-trip: an operator-authored ``default_sensitivity: off``
+    YAML is accepted end-to-end (no loader rejection)."""
+    good = tmp_path / "emergency.yaml"
+    good.write_text(
         yaml.safe_dump({"default_sensitivity": "off", "sensitivity_profiles": {}})
     )
-    with pytest.raises(ValidationError):
-        load_emergency_config(bad)
+    cfg = load_emergency_config(good)
+    assert cfg.default_sensitivity == "off"
+
+
+def test_emergency_config_coerces_yaml_off_bool_to_string():
+    """Defense against the YAML 1.1 bareword footgun.
+
+    Unquoted ``default_sensitivity: off`` in YAML parses as boolean
+    ``False``, which the Literal validator would then reject with a
+    confusing "Input should be 'strict'…" message. The field validator
+    coerces the two YAML-bool spellings back to their string
+    equivalents so the operator's intent survives."""
+    cfg = EmergencyConfig.model_validate({"default_sensitivity": False})
+    assert cfg.default_sensitivity == "off"
+
+
+def test_emergency_config_unquoted_off_in_yaml_round_trips(tmp_path):
+    """End-to-end: an operator who writes literal `default_sensitivity: off`
+    without quotes in emergency.yaml still gets `off` at runtime."""
+    bad_ish = tmp_path / "emergency.yaml"
+    bad_ish.write_text("default_sensitivity: off\n")  # UNQUOTED — the footgun
+    cfg = load_emergency_config(bad_ish)
+    assert cfg.default_sensitivity == "off"
 
 
 # --- Sensitivity resolver -------------------------------------------

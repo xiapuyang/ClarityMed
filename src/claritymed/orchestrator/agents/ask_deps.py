@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from claritymed.core.emergency import EmergencyAssessment
+    from claritymed.core.events import DifferentialReady
     from claritymed.core.interaction.prompt_channel import PromptChannel
     from claritymed.core.rag.strategies.base import RagStrategy
     from claritymed.core.schemas import ProviderConfig
@@ -58,3 +59,11 @@ class AskDeps:
     # default resolution AND env-override downgrade). Drives the
     # disclaimer-suffix decision in AskService._finalize_turn.
     effective_sensitivity: str = "balanced"
+    # Sidecar payload emitted by SymptomsFeature after a usable
+    # differential. Set alongside the queue-emitted event so
+    # AskService._finalize_turn can persist it on the assistant turn
+    # (cards survive a page refresh instead of vanishing with the
+    # in-memory stream state). ``None`` for every non-symptoms turn
+    # and for the fall-through branches (user_declined / eligible=false
+    # / server_error).
+    differential_ready: "DifferentialReady | None" = None

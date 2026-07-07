@@ -52,6 +52,7 @@ from claritymed.orchestrator.services import (
     ChatTurn,
     Done,
     Error,
+    DifferentialReady,
     LlmCallStarted,
     LlmFirstToken,
     RetrievalCompleted,
@@ -1092,6 +1093,11 @@ class ClarityMedApp(App):
                         llm_step = steps.push_complete(
                             "llm", event.ttft_ms, "streaming…"
                         )
+                    elif isinstance(event, DifferentialReady):
+                        # Cards render before the LLM's summary bubble
+                        # appears — the visual order (banner → cards →
+                        # summary) matches the streaming order.
+                        conv.add_differential_cards(event)
                     elif isinstance(event, TokenChunk):
                         conv.append_to_active(event.text)
                         final_text_parts.append(event.text)

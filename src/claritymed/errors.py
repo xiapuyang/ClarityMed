@@ -246,6 +246,21 @@ class SymptomsServerUnreachableError(RuntimeError):
     """
 
 
+class SymptomsCatalogValidationError(RuntimeError):
+    """A ``configs/i18n/<lang>/symptoms_conditions.yaml`` load or coverage
+    check failed at plugin build time.
+
+    Raised by the multi-card renderer's startup validator (mirrors
+    ``_validate_symptoms_prompts``): every ``condition_id`` in every
+    enabled dataset must have a matching catalog entry in both ``en``
+    and ``zh``, and every catalog entry must have non-empty
+    ``display_name`` / ``report`` / ``suggestion`` plus valid citations.
+    Fail-loud at construct time — a missing entry silently degrading
+    to a bare condition name during a real user turn is the wrong
+    posture for medical content.
+    """
+
+
 class MedicalClipUnreachableError(RuntimeError):
     """Medical-clip server (BiomedCLIP) returned non-2xx, timed out, or sent a bad shape.
 

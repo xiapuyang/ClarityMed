@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
+from claritymed.core.events import DifferentialReady
 from claritymed.core.observability.latency import (
     LatencyTrace,
     build_step_records,
@@ -63,6 +64,12 @@ class ChatTurn(BaseModel):
 
     The TUI / webui render these; they're a thin view over the persisted
     events with no parts walking required at render time.
+
+    ``differential`` carries the multi-card renderer's sidecar payload
+    when the assistant turn produced one (symptoms plugin runs). It's
+    persisted alongside the summary text so cards survive a page
+    refresh / session resume — the alternative (only text persisted)
+    let cards flash and disappear.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -70,6 +77,7 @@ class ChatTurn(BaseModel):
     role: Literal["user", "assistant", "system"]
     text: str
     cancelled: bool = False
+    differential: DifferentialReady | None = None
 
 
 class SessionMeta(BaseModel):
@@ -190,11 +198,13 @@ class ChatSession:
             if kind == "user":
                 turns.append(ChatTurn(role="user", text=event.get("text", "")))
             elif kind == "assistant":
+                differential = _rehydrate_differential(event.get("differential"))
                 turns.append(
                     ChatTurn(
                         role="assistant",
                         text=event.get("text", ""),
                         cancelled=bool(event.get("cancelled", False)),
+                        differential=differential,
                     )
                 )
             elif kind == "system":
@@ -248,6 +258,7 @@ class ChatSession:
         latency: "LatencyTrace | None" = None,
         steps: list[dict] | None = None,
         cancelled: bool = False,
+        differential: DifferentialReady | None = None,
     ) -> str:
         """Persist an assistant turn and refresh in-memory history.
 
@@ -282,6 +293,12 @@ class ChatSession:
             payload["usage"] = _usage_dict(usage)
         if steps:
             payload["steps"] = steps
+        if differential is not None:
+            # Serialize via model_dump so the entire sidecar payload
+            # (cards, session meta, banner_key, per-card citations)
+            # round-trips through ``model_validate`` on resume without
+            # a bespoke schema mirror.
+            payload["differential"] = differential.model_dump(mode="json")
         return self._append(payload)
 
     def append_system(self, text: str, kind: SystemEventKind = "info") -> str:
@@ -347,6 +364,29 @@ def _decode_messages(
         conv_id = getattr(first, "conversation_id", None)
         run_id = getattr(first, "run_id", None)
     return messages_obj, message_objs, conv_id, run_id
+
+
+def _rehydrate_differential(raw: object) -> DifferentialReady | None:
+    """Re-validate a persisted ``differential`` dict into the sidecar model.
+
+    Persisted events pre-date the multi-card renderer or drift in
+    schema (older builds omitted required fields) — treat any
+    validation error as "no cards for this turn" rather than failing
+    the whole session load. The turn's summary text still renders.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return DifferentialReady.model_validate(raw)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "session load: persisted differential payload failed validation; "
+            "dropping cards for this turn",
+            exc_info=True,
+        )
+        return None
 
 
 def _first_user_preview(path: Path, max_chars: int = 80) -> str:

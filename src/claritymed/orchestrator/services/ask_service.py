@@ -1090,6 +1090,20 @@ class AskService:
                     # runs before the consumer closes us on Done.  Moving this
                     # after `yield event` would make it dead code because the TUI
                     # returns immediately when it receives Done.
+                    #
+                    # Every mutation of ``result["final_text"]`` (citation
+                    # clamp, emergency footer, Sources, Debug) happens
+                    # BEFORE :meth:`_finalize_turn` so the persisted
+                    # assistant event carries the exact text the live
+                    # stream showed. Reversing the order silently drops
+                    # trailing blocks from the JSONL transcript, and the
+                    # SPA loses them on refresh (the load_turns projection
+                    # of the persisted text is what the bubble re-renders).
+                    offending_note_text: str | None = None
+                    footer_text: str | None = None
+                    sources_text: str | None = None
+                    debug_text: str | None = None
+
                     if not result["had_error"]:
                         # Clamp before persist so future turns' history
                         # never carries out-of-range markers forward.
@@ -1111,24 +1125,23 @@ class AskService:
                                 },
                             )
                             result["final_text"] = cleaned
-                            # The user already saw the bad markers in the
-                            # streamed text. Emit a TokenChunk that lists
-                            # the dropped indices so the UI can render a
-                            # short correction line under the answer,
-                            # before the Sources block. Keep the message
-                            # ASCII so it round-trips in any locale.
+                            # Live-only note: the user already saw the bad
+                            # markers stream past, so we tell them we
+                            # stripped them from the transcript. Not
+                            # appended to final_text — after refresh the
+                            # bad markers are gone from the persisted text
+                            # and a dangling "we removed [N]" line reads
+                            # as noise. Keep the message ASCII so it
+                            # round-trips in any locale.
                             offending_str = ", ".join(f"[{n}]" for n in offending)
-                            yield TokenChunk(
-                                text=(
-                                    "\n\n*Note: the markers "
-                                    f"{offending_str} above point to sources "
-                                    f"beyond the {valid_max} listed below "
-                                    "and have been removed from the saved "
-                                    "transcript.*"
-                                )
+                            offending_note_text = (
+                                "\n\n*Note: the markers "
+                                f"{offending_str} above point to sources "
+                                f"beyond the {valid_max} listed below "
+                                "and have been removed from the saved "
+                                "transcript.*"
                             )
-                        self._finalize_turn(user_id, result, deps)
-                        finalized = True
+
                     # Emergency-gate footer: appended deterministically to
                     # result["final_text"] and streamed unconditionally —
                     # regardless of had_error. The footer is a hard safeguard
@@ -1137,27 +1150,54 @@ class AskService:
                     # errored and final_text is an error message, the footer
                     # still appends — a user in off-mode must see the
                     # disclaimer even when the answer was degraded.
-                    footer_text = self._emergency_footer_text()
+                    footer_text = self._emergency_footer_text() or None
                     if footer_text:
                         result["final_text"] = result["final_text"] + footer_text
-                        # Stream to the live UI — the persisted final_text
-                        # already carries it (above), but the consumer streamed
-                        # tokens earlier and never sees the post-finalize
-                        # mutation.
-                        yield TokenChunk(text=footer_text)
+
                     if deps.retrieved_chunks:
                         self._last_chunks = list(deps.retrieved_chunks)
-                        yield TokenChunk(
-                            text=self._format_sources(
-                                deps.retrieved_chunks, lang=self._language
-                            )
+                        sources_text = self._format_sources(
+                            deps.retrieved_chunks, lang=self._language
                         )
+                        result["final_text"] = result["final_text"] + sources_text
                         if os.environ.get("CLARITYMED_DEBUG"):
-                            yield TokenChunk(
-                                text=self._format_debug_collections(
-                                    deps.retrieved_chunks
-                                )
+                            # Grab context vars here so the debug block
+                            # carries the same request_id the audit log
+                            # and access log use — makes a screenshot
+                            # bug report directly correlatable.
+                            from claritymed.context import request_id_ctx
+
+                            debug_text = self._format_debug_collections(
+                                deps.retrieved_chunks,
+                                request_id=request_id_ctx.get(),
+                                user_id=deps.user_id,
+                                provider_id=self._provider_id,
+                                model_name=self._model_name,
+                                language=self._language,
+                                sensitivity=(
+                                    self._resolved_sensitivity.effective
+                                    if self._resolved_sensitivity is not None
+                                    else None
+                                ),
                             )
+                            result["final_text"] = result["final_text"] + debug_text
+
+                    if not result["had_error"]:
+                        self._finalize_turn(user_id, result, deps)
+                        finalized = True
+
+                    # Stream extras to the live UI in the same order they
+                    # appear in the persisted text. The offending-citations
+                    # note interleaves here to preserve its historical
+                    # position (right before the Sources block).
+                    if offending_note_text:
+                        yield TokenChunk(text=offending_note_text)
+                    if footer_text:
+                        yield TokenChunk(text=footer_text)
+                    if sources_text:
+                        yield TokenChunk(text=sources_text)
+                    if debug_text:
+                        yield TokenChunk(text=debug_text)
                 yield event
         finally:
             # When the consumer cancels mid-stream (TUI Esc) or the
@@ -2093,7 +2133,11 @@ class AskService:
         text = i18n_t(key, lang=self._language)
         # ``i18n_t`` returns the bare key on miss — treat that as "no
         # footer wired yet" rather than persisting the key itself.
-        if text == key:
+        # An explicitly-empty i18n value (operator opts out of the
+        # footer for a given sensitivity, e.g. gate_disabled cleared
+        # while shipping default_sensitivity=off) is likewise treated
+        # as "no footer" so we don't append stray newlines.
+        if text == key or not text.strip():
             return ""
         # Ensure a clean separator from the streamed answer; the YAML
         # entries already start with ``\n---\n\n`` but doubling the
@@ -2114,6 +2158,11 @@ class AskService:
                     usage=result["usage"],
                     latency=latency,
                     steps=result["steps"],
+                    # Persist the multi-card renderer's sidecar payload
+                    # on the assistant event so ChatSession.load_turns
+                    # can rehydrate it on session resume / page refresh.
+                    # Set by SymptomsFeature._maybe_emit_differential_ready.
+                    differential=getattr(deps, "differential_ready", None),
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("failed to append assistant turn to chat session")
@@ -2288,9 +2337,15 @@ class AskService:
         资料库`` automatically and new corpora can be added without
         editing Python.
 
-        This block is appended *after* ``_finalize_turn`` has persisted
-        ``result["final_text"]``, so the corpus label never enters chat
-        history and the LLM cannot mimic it on the next turn.
+        The caller concatenates this block onto ``result["final_text"]``
+        *before* ``_finalize_turn`` so the persisted transcript carries
+        the Sources markdown — the SPA rehydrates the assistant bubble
+        from that persisted text on refresh, and dropping the block
+        there previously erased citations after every reload. Safety
+        against the LLM mimicking the corpus label next turn is
+        preserved by ``_decode_messages``: the message-history feed
+        comes from pydantic-ai's ``messages_json`` (the raw LLM
+        output), not from the mutated ``text`` field.
         """
         if not chunks:
             return ""
@@ -2300,14 +2355,55 @@ class AskService:
         lines = ["\n\n**Sources:**"]
         for i, c in enumerate(unique, start=1):
             doc_title = c.doc_title.replace("_", " ") if c.doc_title else None
-            title = c.source_uri or doc_title
+            title = AskService._display_source_uri(c.source_uri, doc_title)
             corpus = AskService._collection_label(c, lang)
             display = f"{title} · {corpus}" if title else corpus
             lines.append(f"- [{i}] {display}")
         return "\n".join(lines)
 
     @staticmethod
-    def _format_debug_collections(chunks: "list[RetrievedChunk]") -> str:
+    def _display_source_uri(uri: str | None, doc_title: str | None) -> str | None:
+        """Reduce a ``source_uri`` to a display-safe string.
+
+        Real URLs (http/https/s3/gs/data) are kept as-is — those are
+        useful clickable references. Local filesystem paths would
+        otherwise leak the developer's home directory into every
+        user-facing Sources block (e.g. ``/Users/<name>/projects/…``
+        for disk-ingested PDFs), so:
+
+        * When ``source_uri`` looks like a filesystem path AND
+          ``doc_title`` exists, we show the curated title.
+        * When only the path is available, we fall back to the
+          basename so the reader still sees the document identity
+          without the parent tree.
+
+        Empty / ``None`` uri simply returns ``doc_title``.
+        """
+        if not uri:
+            return doc_title
+        # Real URLs — including custom schemes like s3://, gs://, and
+        # data: — carry through unchanged.
+        if "://" in uri or uri.startswith("data:"):
+            return uri
+        # Anything else is a local filesystem path (absolute or
+        # relative). Never leak the parent directory.
+        if doc_title:
+            return doc_title
+        from pathlib import PurePath
+
+        return PurePath(uri).name or uri
+
+    @staticmethod
+    def _format_debug_collections(
+        chunks: "list[RetrievedChunk]",
+        *,
+        request_id: str | None = None,
+        user_id: str | None = None,
+        provider_id: str | None = None,
+        model_name: str | None = None,
+        language: str | None = None,
+        sensitivity: str | None = None,
+    ) -> str:
         """Markdown block listing the RAG-collection backing each Sources entry.
 
         Only emitted when ``CLARITYMED_DEBUG=1``. Indices match the
@@ -2317,8 +2413,39 @@ class AskService:
         retrieval, the line reports the best score and a chunk count
         rather than spawning a second row — that information lives in
         the ``rag.retrieval`` audit row already.
+
+        Turn context (``request_id`` / ``user_id`` / ``provider_id`` /
+        ``model_name`` / ``language`` / ``sensitivity``) is rendered as
+        a compact preamble above the collections list so a bug report
+        pasted from the UI carries the same identifiers ``audit.log``
+        and ``web.log`` used to correlate the turn. All keyword args
+        are optional — passing ``None`` (or omitting) simply skips
+        that line, so the historical two-arg call shape still works.
         """
-        lines = ["\n\n---\n**Debug — RAG Collections:**"]
+        lines = ["\n\n---\n**Debug**"]
+        # Turn-context preamble. Rendered as ``key: `value``` markdown
+        # so newlines separate cleanly and copy-paste from the UI
+        # preserves the exact strings a bug reporter needs.
+        preamble: list[tuple[str, str]] = []
+        if request_id:
+            preamble.append(("request_id", request_id))
+        if user_id:
+            preamble.append(("user_id", user_id))
+        if provider_id or model_name:
+            provider_str = provider_id or ""
+            if model_name and model_name != provider_id:
+                provider_str = (
+                    f"{provider_str} ({model_name})" if provider_str else model_name
+                )
+            preamble.append(("provider", provider_str))
+        if language:
+            preamble.append(("language", language))
+        if sensitivity:
+            preamble.append(("sensitivity", sensitivity))
+        for key, value in preamble:
+            lines.append(f"- {key}: `{value}`")
+        if preamble:
+            lines.append("")  # blank line between preamble and collection list
         groups: dict[str, list] = {}
         order: list[str] = []
         for c in chunks:

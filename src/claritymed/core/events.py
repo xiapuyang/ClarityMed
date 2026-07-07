@@ -10,7 +10,16 @@ from __future__ import annotations
 
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from claritymed.core.schemas.answer import Language
+from claritymed.core.symptoms.schemas import SeverityTier
+
+# Confidence bucket for the multi-card renderer. Kept as a Literal so
+# the schema stays typed; the display label + threshold floats live in
+# ``configs/i18n/<lang>/symptoms.yaml`` under
+# ``symptoms.confidence.labels.*`` / ``symptoms.confidence.thresholds.*``.
+ConfidenceBucket = Literal["low", "moderate", "high", "very_high"]
 
 ErrorType = Literal[
     "retrieval_failed",
@@ -159,6 +168,69 @@ class TokensUsed(_EventBase):
     context_window: int = 0
 
 
+class DifferentialSessionMeta(BaseModel):
+    """Session flags relevant to the multi-card renderer above-cards banner.
+
+    Server-computed ``banner_key`` is an i18n lookup key the frontend
+    consumes with one dict lookup — no branching logic. ``None`` means
+    "no banner" (normal completion). See
+    ``symptoms_plugin/_card_builder.py:build_session_meta`` for the
+    flag → key mapping.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cancelled: bool = False
+    hit_cap: bool = False
+    meets_confidence_threshold: bool = True
+    severity_override: bool = False
+    max_low_severity_seen: int | None = None
+    banner_key: str | None = None
+
+
+class DifferentialCard(BaseModel):
+    """One card in the differential-diagnosis card list.
+
+    Everything a card needs to render is on this payload — the frontend
+    does no lookups. Confidence bucketing + directional headline +
+    curated report are all server-hydrated so the client stays
+    presentation-only. Per-condition ``suggestion`` / ``citations`` are
+    intentionally not on the card — the LLM composes the aggregate
+    summary paragraph (via ``symptoms_final_reply``) that renders
+    around the card list and carries the actionable guidance.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # From tool payload (DifferentialRow) — canonical/authoritative:
+    condition_id: str = Field(min_length=1)
+    condition_name: str = Field(min_length=1)
+    probability: float = Field(ge=0.0, le=1.0)
+    severity_tier: SeverityTier
+
+    # Derived / curated:
+    confidence_bucket: ConfidenceBucket
+    confidence_label: str = Field(min_length=1)
+    headline: str = Field(min_length=1)
+    report: str = Field(min_length=1)
+
+
+class DifferentialReady(_EventBase):
+    """Sidecar event emitted once by symptoms_plugin after ``_run_sub_session``
+    returns a usable differential.
+
+    Fully hydrated payload — frontend renders directly. Not emitted on
+    ``user_declined`` / ``eligible=False`` / ``server_error`` /
+    ``session_expired`` branches (those fall through to a normal
+    free-text reply and never build cards).
+    """
+
+    type: Literal["differential_ready"] = "differential_ready"
+    cards: list[DifferentialCard]
+    session: DifferentialSessionMeta
+    language: Language
+
+
 class InteractionRequested(_EventBase):
     """A tool wants the user to answer something or approve a write.
 
@@ -196,4 +268,5 @@ Event = Union[
     Error,
     TokensUsed,
     InteractionRequested,
+    DifferentialReady,
 ]

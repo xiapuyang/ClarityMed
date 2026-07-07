@@ -252,6 +252,42 @@ def test_format_debug_collections_lists_collection_and_score():
     assert "score" in block
 
 
+def test_format_debug_collections_renders_turn_context_preamble():
+    """When turn-context kwargs are supplied the debug block prepends
+    a ``key: `value``` preamble above the collection list. Pasting a
+    UI screenshot into a bug report should carry the same request_id
+    that audit.log / access.log use."""
+    chunk = _chunk(text="body")
+    block = AskService._format_debug_collections(
+        [chunk],
+        request_id="20260706185349E47C5447",
+        user_id="alice",
+        provider_id="omlx",
+        model_name="mlx-community/Llama-3.2-3B",
+        language="en",
+        sensitivity="off",
+    )
+    assert "request_id" in block and "20260706185349E47C5447" in block
+    assert "user_id" in block and "alice" in block
+    assert "omlx" in block and "Llama-3.2-3B" in block
+    assert "language" in block and "en" in block
+    assert "sensitivity" in block and "off" in block
+    # Collections list still rendered below the preamble.
+    assert "statpearls_en" in block
+    assert "[1]" in block
+
+
+def test_format_debug_collections_omits_missing_context_lines():
+    """Historical two-arg call (no kwargs) still works — no preamble
+    section renders when nothing was passed."""
+    chunk = _chunk(text="body")
+    block = AskService._format_debug_collections([chunk])
+    assert "request_id" not in block
+    assert "provider" not in block
+    assert "sensitivity" not in block
+    assert "statpearls_en" in block
+
+
 def test_compose_prompt_appends_evidence_with_question_label():
     out = AskService._compose_prompt("what is X?", "EVIDENCE_BLOCK")
     assert "EVIDENCE_BLOCK" in out
@@ -288,6 +324,81 @@ def test_format_sources_uses_source_uri_when_available():
 
 def test_format_sources_empty_returns_empty():
     assert AskService._format_sources([]) == ""
+
+
+def test_format_sources_never_leaks_local_filesystem_paths():
+    """Regression: ``source_uri`` set to a local path (typical for
+    disk-ingested PDFs) must not surface the developer's home
+    directory to end users. When ``doc_title`` is available we prefer
+    it; otherwise we fall back to the basename."""
+    with_title = RetrievedChunk(
+        text="body",
+        source="system_rag",
+        score=0.9,
+        doc_id="d1",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="ats_idsa_pneumonia_guidelines_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.9,
+        source_uri="/Users/sharp/projects/ClarityMed/data/download/ATS-IDSA CAP Guidelines.pdf",
+        doc_title="ATS IDSA CAP Guidelines",
+    )
+    without_title = RetrievedChunk(
+        text="body",
+        source="system_rag",
+        score=0.9,
+        doc_id="d2",
+        chunk_index=0,
+        is_phi=False,
+        can_cloud=True,
+        collection_name="ats_idsa_pneumonia_guidelines_en",
+        parent_id=None,
+        parent_text=None,
+        rerank_score=0.9,
+        source_uri="/Users/sharp/projects/ClarityMed/data/download/Some Study.pdf",
+        doc_title=None,
+    )
+    block = AskService._format_sources([with_title, without_title])
+    assert "/Users/sharp" not in block, (
+        f"local path leaked into Sources block:\n{block}"
+    )
+    assert "/data/download/" not in block
+    assert "ATS IDSA CAP Guidelines" in block
+    # Basename fallback for the no-title chunk.
+    assert "Some Study.pdf" in block
+
+
+def test_display_source_uri_keeps_real_urls():
+    assert (
+        AskService._display_source_uri(
+            "https://www.cdc.gov/pneumonia/", "CDC Pneumonia"
+        )
+        == "https://www.cdc.gov/pneumonia/"
+    )
+    assert (
+        AskService._display_source_uri("s3://bucket/paper.pdf", "Paper")
+        == "s3://bucket/paper.pdf"
+    )
+
+
+def test_display_source_uri_prefers_doc_title_over_absolute_path():
+    assert (
+        AskService._display_source_uri("/Users/sharp/foo/bar.pdf", "Nice Title")
+        == "Nice Title"
+    )
+
+
+def test_display_source_uri_falls_back_to_basename_when_no_title():
+    assert AskService._display_source_uri("/Users/sharp/foo/bar.pdf", None) == "bar.pdf"
+
+
+def test_display_source_uri_none_returns_doc_title():
+    assert AskService._display_source_uri(None, "Only Title") == "Only Title"
+    assert AskService._display_source_uri("", "Only Title") == "Only Title"
+    assert AskService._display_source_uri(None, None) is None
 
 
 def test_format_sources_uses_i18n_display_label_for_system_rag():
@@ -687,6 +798,71 @@ async def test_debug_mode_off_no_collections_block(monkeypatch):
     events = [ev async for ev in service.run("q", user_id="alice")]
     token_texts = [e.text for e in events if isinstance(e, TokenChunk)]
     assert not any("Debug" in t for t in token_texts)
+
+
+async def test_sources_block_persisted_to_jsonl_transcript():
+    """Sources markdown must be in the persisted assistant text.
+
+    The live stream shows a Sources block as trailing TokenChunks, but the
+    persisted assistant event feeds the SPA on refresh (via load_turns).
+    If the block is only streamed and never merged into ``final_text``
+    before finalize, refresh drops the citations — the bug the screenshot
+    at CLM-<n> reported.
+    """
+    from claritymed.orchestrator.services import ChatSession
+
+    session = ChatSession.new("alice")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=StubStrategy(bundle),
+        provider_config=_provider("local"),
+        chat_session=session,
+    )
+    async for _ in service.run("q", user_id="alice"):
+        pass
+
+    turns = ChatSession.resume("alice", session.session_id).load_turns()
+    assistant_turns = [t for t in turns if t.role == "assistant"]
+    assert assistant_turns, "assistant turn missing from persisted transcript"
+    assert "**Sources:**" in assistant_turns[-1].text, (
+        "Sources block was streamed live but never persisted — refresh will "
+        "render an assistant bubble without citations."
+    )
+
+
+async def test_debug_block_persisted_when_env_flag_set(monkeypatch):
+    """CLARITYMED_DEBUG=1 must persist the Debug preamble to the transcript.
+
+    Same reason as Sources: the on-refresh render reads persisted text, so
+    a Debug block emitted only as a TokenChunk vanishes on refresh even
+    though the developer explicitly opted in via the env var.
+    """
+    from claritymed.orchestrator.services import ChatSession
+
+    monkeypatch.setenv("CLARITYMED_DEBUG", "1")
+    session = ChatSession.new("alice")
+    bundle = EvidenceBundle(
+        chunks=[_chunk(text="x")], trace=RetrievalTrace(strategy="naive_hybrid")
+    )
+    service = AskService(
+        model=TestModel(custom_output_text="answer"),
+        strategy=StubStrategy(bundle),
+        provider_config=_provider("local"),
+        chat_session=session,
+    )
+    async for _ in service.run("q", user_id="alice"):
+        pass
+
+    turns = ChatSession.resume("alice", session.session_id).load_turns()
+    assistant_turns = [t for t in turns if t.role == "assistant"]
+    assert assistant_turns, "assistant turn missing from persisted transcript"
+    assert "**Debug**" in assistant_turns[-1].text, (
+        "Debug block was streamed live but never persisted — refresh drops "
+        "the request_id / provider preamble the developer needs to correlate."
+    )
 
 
 # --- retrieval failure ----------------------------------------------

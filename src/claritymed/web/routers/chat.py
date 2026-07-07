@@ -129,7 +129,20 @@ async def list_turns(
     session = ChatSession.resume(account.user_id, session_id)
     turns = session.load_turns()
     return [
-        TurnResponse(role=t.role, text=t.text, cancelled=t.cancelled) for t in turns
+        TurnResponse(
+            role=t.role,
+            text=t.text,
+            cancelled=t.cancelled,
+            # Serialize back to a dict so the SPA (which hand-mirrors
+            # events.ts) reconstitutes DifferentialReady on its side
+            # without pulling the Python model onto the wire schema.
+            differential=(
+                t.differential.model_dump(mode="json")
+                if t.differential is not None
+                else None
+            ),
+        )
+        for t in turns
     ]
 
 
@@ -248,6 +261,24 @@ async def stream(
         raise HTTPException(
             status_code=status_code, detail="Unknown provider"
         ) from None
+    except Exception:
+        # Safety net: any other failure inside factory(...) — e.g. a
+        # stale ``claritymed.errors`` module cache after adding a new
+        # error class that the lazily-loaded symptoms plugin needs, or
+        # a misconfigured provider that raises something not derived
+        # from UnknownProviderError — would otherwise orphan
+        # ``busy_sessions`` and lock the session behind a permanent
+        # 409 until the next backend restart. ``set.discard`` is
+        # idempotent so a double-call from a specific handler + this
+        # net is harmless. See
+        # test_factory_raising_generic_exception_clears_busy_sessions.
+        busy.discard(session_id)
+        logger.exception(
+            "stream factory raised unhandled exception for session=%s; "
+            "cleaned busy_sessions before re-raising",
+            session_id,
+        )
+        raise
 
     user_id = account.user_id
     q = _prepend_attachment_placeholders(user_id, session_id, req.attachment_ids, req.q)

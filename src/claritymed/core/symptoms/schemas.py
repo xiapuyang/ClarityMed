@@ -404,6 +404,20 @@ class EligibilityCatalogConfig(BaseModel):
 # --- top-level symptoms config --------------------------------------------
 
 
+class CardRendererConfig(BaseModel):
+    """Multi-card renderer settings (feat-symptoms-multi-card-render).
+
+    Currently just the top-N cap, but broken out as a section so future
+    knobs (streaming vs atomic emit, per-language banner overrides,
+    optional per-card RAG citation stitching) land here without
+    reshaping the top-level YAML.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    top_n_cap: int = Field(default=3, ge=1, le=10)
+
+
 class SymptomsConfig(BaseModel):
     """Root of ``configs/symptoms.yaml``.
 
@@ -418,6 +432,7 @@ class SymptomsConfig(BaseModel):
     models: list[ModelSpec] = Field(min_length=1)
     eligibility: EligibilityCatalogConfig
     init_matcher: InitMatcherConfig = Field(default_factory=lambda: InitMatcherConfig())
+    card_renderer: CardRendererConfig = Field(default_factory=CardRendererConfig)
 
     @model_validator(mode="after")
     def _model_refs_resolve(self) -> "SymptomsConfig":

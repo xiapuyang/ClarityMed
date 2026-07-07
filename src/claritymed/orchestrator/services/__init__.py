@@ -20,6 +20,7 @@ from claritymed.orchestrator.services.factory import (
 )
 from claritymed.core.events import (
     Cancelled,
+    DifferentialReady,
     Done,
     Error,
     Event,
@@ -40,6 +41,7 @@ __all__ = [
     "Cancelled",
     "ChatSession",
     "ChatTurn",
+    "DifferentialReady",
     "Done",
     "Error",
     "Event",

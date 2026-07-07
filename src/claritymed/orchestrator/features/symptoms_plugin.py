@@ -45,6 +45,11 @@ from claritymed.core.observability.audit_payloads import write_payload
 from claritymed.core.prompts.registry import PromptRegistry
 from claritymed.core.schemas.patient import Profile
 from claritymed.core.symptoms.client import SymptomsServerClient
+from claritymed.core.symptoms.conditions_catalog import (
+    SymptomsConditionsCatalog,
+    enumerate_dataset_condition_ids,
+    validate_conditions_catalog,
+)
 from claritymed.core.symptoms.eligibility.base import (
     EligibilityResult,
     EligibilityStrategy,
@@ -128,6 +133,25 @@ def _validate_safety_keywords() -> None:
             + ". Define them in configs/i18n/<lang>/symptoms.yaml under "
             "symptoms.safety_keywords.<tier>."
         )
+
+
+def _validate_symptoms_conditions_catalog(
+    catalog: SymptomsConditionsCatalog, registry: DatasetRegistry
+) -> None:
+    """Fail-loud check: every enabled dataset's conditions are catalogued.
+
+    Runs at plugin construct after prompts and safety-keyword checks.
+    Enumerates ``condition_id`` slugs from each enabled dataset's own
+    i18n YAML (the operator-owned source of truth for name → slug
+    mapping) and calls :func:`validate_conditions_catalog` to assert
+    both languages carry curated content. Empty registry (no datasets
+    enabled) short-circuits to no-op — the plugin is effectively off
+    in that case and the card renderer is unreachable.
+    """
+    condition_ids: set[str] = set()
+    for dataset in registry.list_enabled():
+        condition_ids.update(enumerate_dataset_condition_ids(dataset))
+    validate_conditions_catalog(catalog, condition_ids)
 
 
 def _validate_symptoms_prompts(registry: PromptRegistry) -> None:
@@ -363,6 +387,7 @@ class SymptomsFeature:
         eligibility: EligibilityStrategy,
         prompt_registry: PromptRegistry | None = None,
         profile_loader: Callable[[str], Profile] | None = None,
+        conditions_catalog: SymptomsConditionsCatalog | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
@@ -370,8 +395,10 @@ class SymptomsFeature:
         self._eligibility = eligibility
         self._prompt_registry = prompt_registry or PromptRegistry()
         self._profile_loader = profile_loader or _default_profile_loader
+        self._conditions_catalog = conditions_catalog or SymptomsConditionsCatalog()
         _validate_symptoms_prompts(self._prompt_registry)
         _validate_safety_keywords()
+        _validate_symptoms_conditions_catalog(self._conditions_catalog, self._registry)
         # Per-request post_process state — keyed by request_id. Cleared
         # after post_process consumes it.
         self._stash: dict[str, dict[str, Any]] = {}
@@ -546,6 +573,12 @@ class SymptomsFeature:
             request_id=request_id,
             user_id=user_id,
         )
+        # Emit the sidecar DifferentialReady event before the LLM starts
+        # composing the summary above the cards. Cards render as soon as
+        # the event hits the SSE stream; subsequent token_chunk events
+        # populate the summary paragraph above them. See PR-C of the
+        # feat-symptoms-multi-card-render spec.
+        await self._maybe_emit_differential_ready(deps, result, language)
         # Inject the composing-guide into deps so the dynamic system_prompt
         # fn (registered by make_ask_agent) can surface it on the second
         # LLM call (reply composition). Only set when there's a usable
@@ -560,6 +593,50 @@ class SymptomsFeature:
             except Exception:  # noqa: BLE001
                 pass
         return result
+
+    async def _maybe_emit_differential_ready(
+        self, deps: "TurnState", result: dict[str, Any], language: str
+    ) -> None:
+        """Hydrate and emit the ``DifferentialReady`` sidecar event.
+
+        No-op on branches the card renderer intentionally skips
+        (``user_declined`` / ``eligible=False`` / ``server_error``, plus
+        any tool-side error where the raw row stash was not populated).
+        Failure to emit is logged and swallowed — a broken event must
+        not break the user's turn.
+        """
+        try:
+            from claritymed.orchestrator.features.symptoms_card_builder import (
+                build_differential_ready,
+            )
+
+            event = build_differential_ready(
+                result,
+                catalog=self._conditions_catalog,
+                language=language,  # type: ignore[arg-type]
+                top_n_cap=self._config.card_renderer.top_n_cap,
+            )
+            if event is None:
+                return
+            eq = getattr(deps, "event_queue", None)
+            if eq is None:
+                return
+            await eq.put(event)
+            # Stash on deps too so ``AskService._finalize_turn`` can
+            # persist the payload on the assistant turn's JSONL event.
+            # Without this the cards live only in the SSE stream and
+            # vanish on page refresh — see ChatTurn.differential + the
+            # session_resume regression test in tests/orchestrator/
+            # services/test_chat_session.py.
+            try:
+                deps.differential_ready = event  # type: ignore[union-attr]
+            except AttributeError:
+                # ``deps`` is a Protocol; concrete stubs in tests may
+                # not carry the slot. Safe to skip — persistence is
+                # a nice-to-have, not the emit contract.
+                pass
+        except Exception:  # noqa: BLE001
+            logger.warning("symptoms: failed to emit DifferentialReady", exc_info=True)
 
     # --- helpers ------------------------------------------------------------
 
@@ -923,6 +1000,12 @@ class SymptomsFeature:
             "eligible": True,
             "differential": _format_differential(turn_resp.differential),
             "turns_used": turn_resp.turn_count,
+            # Raw rows retained for the card builder — carries the
+            # canonical condition_id slug the plugin's LLM-facing
+            # _format_differential drops. Not sent to the LLM (the
+            # underscore prefix keeps pydantic-ai's tool-result summary
+            # readable) but used by _maybe_emit_differential_ready.
+            "_raw_differential": list(turn_resp.differential),
         }
 
     def _handle_cap(
@@ -958,6 +1041,7 @@ class SymptomsFeature:
             ),
             "turns_used": turn_resp.turn_count,
             "partial_confidence": turn_resp.partial_confidence,
+            "_raw_partial_differential": list(turn_resp.partial_differential),
         }
 
     async def _handle_cancel(
@@ -1026,6 +1110,9 @@ class SymptomsFeature:
             "meets_confidence_threshold": cancel.meets_confidence_threshold,
             "severity_override": cancel.severity_override,
             "max_low_severity_seen": cancel.max_low_severity_seen,
+            "_raw_partial_differential": (
+                list(cancel.partial_differential) if show_partial else []
+            ),
         }
 
     # --- post_process (PostProcessHook) -------------------------------------

@@ -200,6 +200,29 @@ class Conversation(VerticalScroll):
         self.scroll_end(animate=False)
         return bubble
 
+    def add_differential_cards(self, event) -> None:  # noqa: ANN001
+        """Mount the multi-card renderer for a ``differential_ready`` event.
+
+        Cards render immediately from the sidecar event; the assistant's
+        summary paragraph streams into a subsequent bubble via the
+        normal ``token_chunk`` path. Cards are mounted above the summary
+        by inserting them BEFORE the (about-to-be-created) assistant
+        bubble — but since the assistant bubble is created lazily on the
+        first ``TokenChunk`` after the event, we simply mount at the
+        current tail here. Any later assistant bubble naturally lands
+        after the cards.
+        """
+        # Deferred import so this widget's dependency graph doesn't
+        # pull differential_cards → events → schemas when the pane is
+        # unused (headless tests, ingest-only sessions).
+        from claritymed.cli.tui.widgets.differential_cards import (
+            render_differential_ready,
+        )
+
+        widget = render_differential_ready(event)
+        self.mount(widget)
+        self.scroll_end(animate=False)
+
     def append_to_active(self, chunk: str) -> None:
         if self._active_assistant is None:
             self.start_assistant_turn()

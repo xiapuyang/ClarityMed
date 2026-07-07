@@ -251,6 +251,102 @@ def test_invalid_session_id_rejected():
         ChatSession(user_id="alice", session_id=".hidden").path
 
 
+def test_append_assistant_persists_differential_and_load_rehydrates():
+    """The multi-card renderer's sidecar payload is stored alongside
+    the summary text and round-trips through ``load_turns`` — cards
+    survive a page refresh / session resume instead of vanishing with
+    the in-memory stream state."""
+    from claritymed.core.events import (
+        DifferentialCard,
+        DifferentialReady,
+        DifferentialSessionMeta,
+    )
+
+    card = DifferentialCard(
+        condition_id="pneumonia",
+        condition_name="Pneumonia",
+        probability=0.72,
+        severity_tier="Urgent",
+        confidence_bucket="high",
+        confidence_label="Confident",
+        headline="Likely Pneumonia",
+        report="Infection of the lung tissue.",
+    )
+    payload = DifferentialReady(
+        cards=[card],
+        session=DifferentialSessionMeta(),
+        language="en",
+    )
+    session = ChatSession.new("alice")
+    session.append_user("fever + chest pain")
+    messages_json, usage, _ = _run_one_turn("hi")
+    session.append_assistant(
+        text="The follow-up surfaced one finding.",
+        messages_json=messages_json,
+        model="?",
+        provider_id="?",
+        usage=usage,
+        latency=LatencyTrace(total_ms=0),
+        differential=payload,
+    )
+    # Fresh load — simulates the SPA hitting GET /turns after a refresh.
+    turns = ChatSession.resume("alice", session.session_id).load_turns()
+    assistant = [t for t in turns if t.role == "assistant"]
+    assert assistant, "assistant turn missing after resume"
+    reloaded = assistant[0].differential
+    assert reloaded is not None
+    assert len(reloaded.cards) == 1
+    assert reloaded.cards[0].condition_id == "pneumonia"
+    assert reloaded.cards[0].headline == "Likely Pneumonia"
+    assert reloaded.session.banner_key is None
+    assert reloaded.language == "en"
+
+
+def test_load_turns_skips_malformed_persisted_differential():
+    """Schema-drifted or corrupt differential payloads must not break
+    the whole session load — the turn's summary text still renders,
+    just without cards."""
+    session = ChatSession.new("alice")
+    session.path.parent.mkdir(parents=True, exist_ok=True)
+    with session.path.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "text": "hi"}) + "\n")
+        # Missing required fields on the differential payload.
+        fh.write(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "text": "text still here",
+                    "differential": {"type": "differential_ready"},
+                }
+            )
+            + "\n"
+        )
+    turns = session.load_turns()
+    assistant = [t for t in turns if t.role == "assistant"]
+    assert assistant and assistant[0].text == "text still here"
+    assert assistant[0].differential is None
+
+
+def test_append_assistant_without_differential_writes_no_field():
+    """No differential → the assistant event contains no ``differential``
+    key, keeping the JSONL compact for non-symptoms turns."""
+    session = ChatSession.new("alice")
+    session.append_user("hi")
+    messages_json, usage, _ = _run_one_turn("hi")
+    session.append_assistant(
+        text="ok",
+        messages_json=messages_json,
+        model="?",
+        provider_id="?",
+        usage=usage,
+        latency=LatencyTrace(total_ms=0),
+    )
+    lines = session.path.read_text("utf-8").splitlines()
+    events = [json.loads(line) for line in lines]
+    assistant_event = next(e for e in events if e["type"] == "assistant")
+    assert "differential" not in assistant_event
+
+
 def test_load_turns_recovers_a_cancelled_assistant_event():
     session = ChatSession.new("alice")
     session.append_user("hi")

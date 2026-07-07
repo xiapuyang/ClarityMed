@@ -123,6 +123,66 @@ async def test_get_turns_returns_prior_turns(web_client, test_user, auth_cookies
     body = resp.json()
     assert [t["role"] for t in body] == ["user", "system"]
     assert body[0]["text"] == "hello"
+    # ``differential`` is optional and defaults to null for non-symptoms turns.
+    for t in body:
+        assert t.get("differential") is None
+
+
+async def test_get_turns_carries_persisted_differential(
+    web_client, test_user, auth_cookies
+):
+    """Symptoms turn's DifferentialReady payload round-trips through the
+    JSONL log and the GET /turns projection, so the SPA can rehydrate
+    cards after a page refresh without a rerun."""
+    from claritymed.core.events import (
+        DifferentialCard,
+        DifferentialReady,
+        DifferentialSessionMeta,
+    )
+
+    payload = DifferentialReady(
+        cards=[
+            DifferentialCard(
+                condition_id="pneumonia",
+                condition_name="Pneumonia",
+                probability=0.72,
+                severity_tier="Urgent",
+                confidence_bucket="high",
+                confidence_label="Confident",
+                headline="Likely Pneumonia",
+                report="Infection of the lung tissue.",
+            ),
+        ],
+        session=DifferentialSessionMeta(),
+        language="en",
+    )
+    session = ChatSession.new(test_user.user_id)
+    session.append_user("fever + chest pain")
+    session.append_assistant(
+        text="The follow-up surfaced one finding.",
+        messages_json=b"",  # not needed for the turns projection
+        model="omlx",
+        provider_id="omlx",
+        usage=None,
+        differential=payload,
+    )
+
+    resp = await web_client.get(
+        f"/api/v1/sessions/{session.session_id}/turns", cookies=auth_cookies
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assistant = [t for t in body if t["role"] == "assistant"]
+    assert assistant, "no assistant turn returned"
+    diff = assistant[0]["differential"]
+    assert diff is not None
+    assert diff["type"] == "differential_ready"
+    assert len(diff["cards"]) == 1
+    assert diff["cards"][0]["condition_id"] == "pneumonia"
+    assert "citations" not in diff["cards"][0]
+    assert "suggestion" not in diff["cards"][0]
+    assert diff["session"]["banner_key"] is None
+    assert diff["language"] == "en"
 
 
 # --- streaming happy path ---------------------------------------------
@@ -315,6 +375,62 @@ async def test_unknown_provider_returns_500_and_audits(
         )
     assert resp.status_code == 500
     assert any("web.chat.unknown_provider" in r.message for r in caplog.records)
+
+
+async def test_factory_raising_generic_exception_clears_busy_sessions(
+    web_client, test_user, auth_cookies
+):  # noqa: ARG001
+    """Regression: unhandled factory exception must not orphan busy_sessions.
+
+    The route handler adds session_id to busy_sessions synchronously
+    before invoking the AskService factory (so 409-on-busy fires
+    before any bytes stream). If the factory then raises anything
+    other than a specifically-handled error (UnknownProviderError,
+    etc.), the discard call must still happen — otherwise the next
+    request on the same session receives a permanent 409 with no way
+    to recover short of restarting the backend.
+
+    Reproduces the failure mode we saw when a stale in-process
+    ``claritymed.errors`` module cache made ``symptoms_plugin`` fail
+    to import ``SymptomsCatalogValidationError`` mid-factory.
+    """
+
+    def boom_factory(account, chat_session, **_):  # noqa: ARG001
+        raise RuntimeError("factory blew up for reasons")
+
+    web_client._transport.app.state.ask_service_factory = boom_factory  # type: ignore[attr-defined]
+    sid = await _new_session_id(web_client, auth_cookies)
+
+    # First request: the factory crashes. In production the ASGI stack
+    # surfaces this as HTTP 500 via the default exception handler; in
+    # this test's ASGITransport the exception is re-raised through the
+    # client. Either way, ``busy_sessions`` MUST be cleaned up before
+    # control leaves the route handler — otherwise the next request on
+    # the same session hits a permanent 409 with no recovery short of
+    # a backend restart.
+    with pytest.raises(RuntimeError, match="factory blew up"):
+        await web_client.post(
+            f"/api/v1/sessions/{sid}/stream",
+            json={"q": "hi"},
+            cookies=auth_cookies,
+            headers=_csrf(),
+        )
+    assert sid not in web_client._transport.app.state.busy_sessions, (  # type: ignore[attr-defined]
+        "busy_sessions leaked session_id after factory exception"
+    )
+
+    # Second request: SHOULD NOT be 409 — busy_sessions was cleared.
+    _install_factory(web_client._transport.app)  # type: ignore[attr-defined]
+    r2 = await web_client.post(
+        f"/api/v1/sessions/{sid}/stream",
+        json={"q": "hi"},
+        cookies=auth_cookies,
+        headers=_csrf(),
+    )
+    assert r2.status_code == 200, (
+        f"expected 200 after crashed factory cleaned up busy_sessions, "
+        f"got {r2.status_code} (regressed to permanent-409 bug)"
+    )
 
 
 async def test_stream_error_inside_run_yields_error_event(

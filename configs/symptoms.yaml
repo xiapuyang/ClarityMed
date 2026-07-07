@@ -90,6 +90,14 @@ init_matcher:
   device: cpu                     # CPU keeps BASD GPU/MPS free
   threshold: 0.55                 # cosine cutoff; sweep on a dev set
 
+# Multi-card renderer knob. After sub-session completion the plugin
+# builds up to `top_n_cap` DifferentialCard entries from the tool's
+# differential (or partial_differential), sorted by probability and
+# clipped after severity_override reordering. Default 3 matches the
+# feat-symptoms-multi-card-render spec.
+card_renderer:
+  top_n_cap: 3
+
 eligibility:
   # Production default chosen by Phase 2 A/B (Unit 10). `direct` is the
   # cheapest fallback while the eval set is being labeled.

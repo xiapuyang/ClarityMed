@@ -135,6 +135,12 @@ class TurnResponse(BaseModel):
 
     Projection of ``ChatTurn`` plus a ``cancelled`` flag so the SPA can
     render half-finished assistant bubbles with the right state.
+
+    ``differential`` is the multi-card renderer's sidecar payload
+    persisted on symptoms turns; ``None`` for every other turn.
+    Serialized as a plain dict so the wire schema doesn't pull
+    ``DifferentialReady`` into every downstream typing dependency —
+    the SPA reconstitutes it against its own hand-mirrored TS types.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -142,6 +148,7 @@ class TurnResponse(BaseModel):
     role: Literal["user", "assistant", "system"]
     text: str
     cancelled: bool = False
+    differential: dict[str, Any] | None = None
 
 
 class StreamRequest(BaseModel):

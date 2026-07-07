@@ -7,10 +7,13 @@
 # qualifier elicitation budgets, and reply-footer keys.
 #
 # `default_sensitivity` is the app-wide fallback when a user has not
-# expressed a preference. It MUST NOT be `off` — the config loader
-# rejects that at startup. `off` is a per-user choice only.
+# expressed a preference. Any of the four levels is accepted, including
+# `off`. Note that `CLARITYMED_FORCE_EMERGENCY_GATE` still defaults to
+# `on` and will upgrade a resolved `off` back to `lenient`; if you want
+# `off` to actually take effect app-wide, also set that env var to `0`
+# / `false` in the deployment environment.
 
-default_sensitivity: balanced
+default_sensitivity: "off"    # quoted — bareword `off` in YAML 1.1 → boolean False
 
 # Pin the gate's extractor / composer / critical_reply LLMs to one
 # specific provider from `configs/models.yaml`. KTD-E1 requires
