@@ -9,6 +9,7 @@ severities rather than an artifact of the loader.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -121,6 +122,7 @@ def load_pidx(
     data_dir: str | Path,
     *,
     strict_severity: bool = True,
+    whitelist: set[str] | None = None,
 ) -> tuple[dict[str, int], np.ndarray]:
     """Load ``release_conditions.json``; return ``(name → idx, severity vector)``.
 
@@ -130,6 +132,13 @@ def load_pidx(
     pipeline's tier mapping (a Critical disease silently downgraded to
     Moderate). Pass ``strict_severity=False`` only in test fixtures where
     a partial JSON is intentional.
+
+    ``whitelist`` restricts the returned pidx to a named subset of
+    diseases (subset-training use case). When set, every name in the
+    whitelist MUST exist in the corpus — a typo fails loud with the
+    unrecognized names listed, rather than silently shrinking the
+    training scope. The returned pidx is a dense 0-based re-indexing
+    over the whitelist intersection.
     """
     path = Path(data_dir) / DDXPLUS_CONDITIONS_JSON
     if not path.exists():
@@ -149,6 +158,15 @@ def load_pidx(
         raise DdxplusSchemaError(
             f"DDXPlus conditions schema {path} has no named conditions"
         )
+    if whitelist is not None:
+        unknown = sorted(whitelist - set(names))
+        if unknown:
+            raise DdxplusSchemaError(
+                f"whitelist references unknown DDXPlus conditions: {unknown}. "
+                f"Check spelling against release_conditions.json — names must "
+                f"match exactly (case + punctuation)."
+            )
+        names = [n for n in names if n in whitelist]
     pidx = {n: i for i, n in enumerate(names)}
     sev = np.full(len(names), 3.0)
     missing: list[str] = []
@@ -232,6 +250,12 @@ def load_patients(
 ) -> list[dict]:
     """Read up to ``n`` patients from ``release_{split}_patients.zip``.
 
+    Rows whose ``PATHOLOGY`` is not in ``pidx`` are skipped — this is
+    how subset-training filters out-of-scope patients when ``pidx`` was
+    built with a whitelist. A count of dropped pathologies is printed
+    when non-zero; under a full pidx this stays silent because DDXPlus
+    is a clean release.
+
     Returns the dict shape :class:`TypedEnv` consumes (not ``Patient``
     instances) so the env's inner ``self.batch`` access pattern stays
     unchanged. ``Patient`` is for typed callers (training entry, tests).
@@ -249,6 +273,19 @@ def load_patients(
             f"`uv run python -m claritymed.ingest.symptoms.ddxplus.prepare`."
         )
     df = pd.read_csv(path, nrows=n)
-    return [
-        parse_patient(row, schema, pidx).to_dict() for row in df.itertuples(index=False)
-    ]
+    kept: list[dict] = []
+    dropped: Counter[str] = Counter()
+    for row in df.itertuples(index=False):
+        if row.PATHOLOGY not in pidx:
+            dropped[row.PATHOLOGY] += 1
+            continue
+        kept.append(parse_patient(row, schema, pidx).to_dict())
+    if dropped:
+        total = sum(dropped.values())
+        top = ", ".join(f"{n}={c}" for n, c in dropped.most_common(5))
+        print(
+            f"[load_patients {split}] filtered {total} of {total + len(kept)} rows "
+            f"({100 * total / (total + len(kept)):.1f}%) — PATHOLOGY not in pidx. "
+            f"Top dropped: {top}"
+        )
+    return kept

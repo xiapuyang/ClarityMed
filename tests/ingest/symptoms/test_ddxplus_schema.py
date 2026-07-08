@@ -22,9 +22,11 @@ from claritymed.ingest.symptoms.ddxplus.prepare import (
 from claritymed.ingest.symptoms.ddxplus.schema import (
     DDXPLUS_CONDITIONS_JSON,
     DDXPLUS_EVIDENCES_JSON,
+    DDXPLUS_SPLIT_FILES,
     DdxplusSchemaError,
     Patient,
     load_evidence_schema,
+    load_patients,
     load_pidx,
     parse_patient,
 )
@@ -147,6 +149,24 @@ def test_load_pidx_missing_file_raises(tmp_path: Path) -> None:
         load_pidx(tmp_path)
 
 
+def test_load_pidx_whitelist_filters_to_subset(tmp_path: Path) -> None:
+    """Whitelist restricts pidx + shrinks the severity vector to match."""
+    _write_conditions(tmp_path)
+    pidx, sev = load_pidx(tmp_path, whitelist={"Common cold"})
+    assert pidx == {"Common cold": 0}
+    assert len(sev) == 1
+    assert sev[0] == 5.0
+
+
+def test_load_pidx_whitelist_unknown_name_raises(tmp_path: Path) -> None:
+    """Typos in the whitelist fail loud — subset training must not silently
+    shrink to an unintended scope because the operator misspelled a name."""
+    _write_conditions(tmp_path)
+    with pytest.raises(DdxplusSchemaError) as exc:
+        load_pidx(tmp_path, whitelist={"Common cold", "Pneumnia"})  # typo
+    assert "Pneumnia" in str(exc.value)
+
+
 # --- parse_patient ---------------------------------------------------------
 
 
@@ -224,6 +244,69 @@ def test_parse_patient_to_dict_round_trip(tmp_path: Path) -> None:
     }
     assert set(d) == expected_keys
     assert isinstance(d["diff"], np.ndarray)
+
+
+# --- load_patients ---------------------------------------------------------
+
+
+def _write_split_csv(data_dir: Path, split: str, rows: list[dict]) -> None:
+    """Write a mini split CSV in the DDXPlus schema (columns match load_patients)."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "AGE",
+            "SEX",
+            "PATHOLOGY",
+            "EVIDENCES",
+            "INITIAL_EVIDENCE",
+            "DIFFERENTIAL_DIAGNOSIS",
+        ],
+    )
+    df.to_csv(data_dir / DDXPLUS_SPLIT_FILES[split], index=False)
+
+
+def test_load_patients_filters_out_of_scope_pathology(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Rows whose PATHOLOGY is outside pidx are silently dropped (subset case).
+
+    A summary line is printed so operators can spot unexpected drops without
+    a stack trace — but the return value contains only the in-scope patients.
+    """
+    _write_evidences(tmp_path)
+    _write_conditions(tmp_path)
+    _write_split_csv(
+        tmp_path,
+        "train",
+        [
+            {
+                "AGE": 30,
+                "SEX": "M",
+                "PATHOLOGY": "Common cold",
+                "EVIDENCES": repr(["E_1"]),
+                "INITIAL_EVIDENCE": "E_1",
+                "DIFFERENTIAL_DIAGNOSIS": repr([["Common cold", 1.0]]),
+            },
+            {
+                "AGE": 40,
+                "SEX": "F",
+                "PATHOLOGY": "Acute appendicitis",  # out-of-scope under whitelist
+                "EVIDENCES": repr(["E_2"]),
+                "INITIAL_EVIDENCE": "E_2",
+                "DIFFERENTIAL_DIAGNOSIS": repr([["Acute appendicitis", 1.0]]),
+            },
+        ],
+    )
+    schema = load_evidence_schema(tmp_path)
+    pidx, _ = load_pidx(tmp_path, whitelist={"Common cold"})
+    kept = load_patients(tmp_path, n=10, split="train", schema=schema, pidx=pidx)
+    assert len(kept) == 1
+    assert kept[0]["d"] == pidx["Common cold"]
+    out = capsys.readouterr().out
+    assert "Acute appendicitis" in out
+    assert "filtered 1" in out
 
 
 # --- prepare.py: cmd_check -------------------------------------------------

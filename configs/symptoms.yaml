@@ -15,7 +15,7 @@
 
 datasets:
   - id: ddxplus
-    enabled: true  # weights + manifest present at $CLARITYMED_HOME/models/symptoms/ddxplus/typed_basd_v2/
+    enabled: false  # disabled — subset ddxplus_pneumonia_flu is the active dataset
     # One or more models can serve this dataset; the first id is the
     # canonical primary used by the "first" selection strategy. Add
     # additional ids and set model_selection: round_robin for A/B or
@@ -65,6 +65,57 @@ datasets:
           - 过敏 / 皮肤：荨麻疹、过敏性休克、血管性水肿。
           - 其他系统性感染 / 炎症性表现。
 
+  # -----------------------------------------------------------------
+  # Subset-trained DDXPlus model — Pneumonia + Influenza scope.
+  #
+  # The adapter cross-checks `disease_whitelist` below against
+  # `manifest.diseases_trained` in the checkpoint. A mismatch fails
+  # loud at startup — safer than silent class-index misalignment.
+  #
+  # Subset differentials are SUBSET-CONDITIONAL: P(disease | disease ∈
+  # trained_subset). The model CANNOT rule out conditions outside the
+  # whitelist — the LLM must gate scope BEFORE trusting the ranking.
+  # This caveat is surfaced to the LLM via domain_description below and
+  # feeds the `{covered_conditions}` block in the tool description.
+  - id: ddxplus_pneumonia_flu
+    enabled: true
+    adapter_id: ddxplus                    # reuse DDXPlusAdapter (same corpus)
+    i18n_key_prefix: symptoms.ddxplus      # share parent i18n namespace (same evidence pool + condition names)
+    model_ids: [typed_basd_pneumonia_flu_v1]
+    model_selection: first
+    partial_min_confidence: 0.5
+    severity_high_specificity_evidence_ids: []
+    session_ttl_seconds: 1800
+    use_initial_symptom_flag: true
+    init_symptom_filter:
+      exclude_antecedent: true
+      allowed_dtypes: ["B"]
+    disease_whitelist:                     # MUST equal manifest.diseases_trained
+      - Pneumonia
+      - Influenza
+    domain_description:
+      en: |
+        id: ddxplus_pneumonia_flu
+        DDXPlus subset — Pneumonia + Influenza (2 respiratory infections).
+        Use only when the chief complaint is plausibly one of these two
+        (fever + cough + fatigue + myalgia patterns; recent flu season
+        exposure; radiographic-suggestive presentation).
+        Returned probabilities are SUBSET-CONDITIONAL — treat as ranking
+        between Pneumonia and Influenza, NOT as posterior over all
+        possible diseases. Cannot rule out Bronchitis, URTI, TB,
+        Bronchiectasis, or other overlapping presentations. If the
+        complaint could plausibly be one of those, route to `ddxplus`
+        instead via dataset_hint.
+      zh: |
+        id: ddxplus_pneumonia_flu
+        DDXPlus 子集 — 肺炎 + 流感（2 类呼吸道感染）。
+        仅当主诉合理落在这两类范围内时使用（发热 + 咳嗽 + 乏力 + 肌痛
+        组合、近期流感季暴露、影像提示等）。
+        返回的概率是子集条件下的排序 (P(disease | disease ∈ {Pneumonia,
+        Influenza}))，而非全疾病谱后验。不能排除支气管炎、上呼吸道感染、
+        肺结核、支气管扩张等重叠表现；若合理怀疑这些，用 dataset_hint
+        改走 `ddxplus`。
+
 models:
   - id: typed_basd_v2
     algorithm_module: typed_basd
@@ -78,6 +129,20 @@ models:
     maxstep: 18
     patho_temp: 1.0
     stop_thres: 0.1
+
+  # Subset model paired with the ddxplus_pneumonia_flu dataset above.
+  # maxstep + patho_temp are the operating point picked by
+  # `claritymed-symptoms-tune-ddxplus --diseases "Pneumonia,Influenza"`
+  # against the promoted checkpoint (2026-07-07 sweep: T=3.0, ms=6
+  # gave DDF1=86.07 IL=6.00 DDR=98.90 DDP=80.20 — 4x fewer questions
+  # and +7pp DDF1 over the baked defaults).
+  - id: typed_basd_pneumonia_flu_v1
+    algorithm_module: typed_basd
+    weights_subpath: ddxplus/typed_basd_pneumonia_flu_v1
+    manifest_sha256: "92044eb64c6fbb3732b2938ed5ef98a386bb32a6de2813a2130ddf5012863bde"
+    maxstep: 6
+    patho_temp: 3.0
+    stop_thres: 0.3
 
 # Process-wide chief-complaint matcher embedder. Shared singleton —
 # every dataset's per-catalog vectors are encoded against this one

@@ -70,12 +70,14 @@ def build_dataset(
             Operator-facing — points at the adapter import path so a
             missing-adapter case is easy to diagnose.
     """
-    adapter = _ADAPTERS.get(spec.id)
+    adapter_key = spec.resolved_adapter_id()
+    adapter = _ADAPTERS.get(adapter_key)
     if adapter is None:
         raise UnknownDatasetError(
-            f"no adapter registered for dataset {spec.id!r}. "
-            f"Registered: {available_adapters()!r}. "
-            f"Add a register_adapter(...) call in the dataset's adapter module."
+            f"no adapter registered for adapter_id {adapter_key!r} "
+            f"(dataset {spec.id!r}). Registered: {available_adapters()!r}. "
+            f"Add a register_adapter(...) call in the dataset's adapter "
+            f"module, or set adapter_id on the spec to an existing one."
         )
     by_id = {m.id: m for m in model_specs}
     needed = {mid: by_id[mid] for mid in spec.model_ids if mid in by_id}

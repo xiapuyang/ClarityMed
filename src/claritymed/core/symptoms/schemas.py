@@ -244,6 +244,64 @@ class DatasetSpec(BaseModel):
         ),
     )
 
+    # Subset training scope. When set, this dataset carries a model trained
+    # on only these disease names — the adapter passes this as the pidx
+    # whitelist and cross-checks against manifest.diseases_trained at load
+    # time. Mismatch is fail-loud: silent class-index misalignment would
+    # produce wrong differentials in production. ``None`` = full corpus,
+    # the historical default. Names must match release_conditions.json.
+    disease_whitelist: list[str] | None = Field(
+        default=None,
+        description=(
+            "Whitelist of disease names for subset-trained models. None "
+            "means the model was trained on the full corpus. Set values "
+            "must match release_conditions.json exactly (case + punctuation) "
+            "and must match manifest.diseases_trained on disk."
+        ),
+    )
+
+    # Which registered adapter services this dataset. Defaults to ``id``
+    # — the common case where one adapter serves one dataset. Subset
+    # variants of an existing dataset (same evidence schema + condition
+    # file, different pidx scope) point at the parent adapter's id so
+    # multiple DatasetSpec entries can share one adapter without needing
+    # a synthetic adapter subclass per subset. Example: a subset entry
+    # with ``id: ddxplus_pneumonia_flu, adapter_id: ddxplus`` reuses the
+    # DDXPlusAdapter registered under ``ddxplus``.
+    adapter_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_]{0,63}$",
+        description=(
+            "Adapter id used to dispatch dataset loading. Defaults to "
+            "the dataset's own ``id`` — override only when reusing a "
+            "parent adapter for a subset/variant of the same corpus."
+        ),
+    )
+
+    def resolved_adapter_id(self) -> str:
+        """Return the adapter id used for registry dispatch."""
+        return self.adapter_id or self.id
+
+    @model_validator(mode="after")
+    def _disease_whitelist_unique_and_sized(self) -> "DatasetSpec":
+        if self.disease_whitelist is None:
+            return self
+        seen = set(self.disease_whitelist)
+        if len(seen) != len(self.disease_whitelist):
+            raise ValueError(
+                f"datasets[id={self.id!r}].disease_whitelist has duplicates: "
+                f"{self.disease_whitelist!r}"
+            )
+        if len(seen) < 2:
+            raise ValueError(
+                f"datasets[id={self.id!r}].disease_whitelist needs at least "
+                f"2 names ({self.disease_whitelist!r}); a 1-class model is "
+                f"not a classifier."
+            )
+        return self
+
     def resolved_i18n_prefix(self) -> str:
         """Return the active prefix (explicit override or convention)."""
         return self.i18n_key_prefix or f"symptoms.{self.id}"

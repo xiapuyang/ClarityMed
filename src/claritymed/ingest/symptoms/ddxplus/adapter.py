@@ -129,7 +129,8 @@ def _load_torch_agent(schema: dict, n_dis: int, weights_path: Path, device: str)
 def _build_canonical(spec: DatasetSpec, data_dir: Path) -> CanonicalDataset:
     """Read DDXPlus JSONs + raw evidence text and produce the canonical form."""
     schema = load_evidence_schema(data_dir)
-    pidx, severity = load_pidx(data_dir)
+    whitelist = set(spec.disease_whitelist) if spec.disease_whitelist else None
+    pidx, severity = load_pidx(data_dir, whitelist=whitelist)
 
     # Raw evidences carry question_en + value_meaning; pull both into
     # CanonicalEvidence for fallback rendering. ``schema["evs"]`` is the
@@ -267,6 +268,7 @@ class DDXPlusAdapter:
             model_spec = model_specs[model_id]
             weights_dir = _models_root() / model_spec.weights_subpath
             manifest = _verify_manifest_chain(model_spec, weights_dir)
+            _assert_whitelist_matches_manifest(spec, model_spec, manifest)
             agent = _load_torch_agent(
                 canonical.layout,
                 n_dis=n_dis,
@@ -283,6 +285,43 @@ class DDXPlusAdapter:
             canonical=canonical,
             models=models,
             init_catalog=init_catalog,
+        )
+
+
+def _assert_whitelist_matches_manifest(
+    spec: DatasetSpec, model_spec: ModelSpec, manifest: dict
+) -> None:
+    """Refuse to load when ``spec.disease_whitelist`` doesn't match the
+    checkpoint's ``manifest.diseases_trained``.
+
+    The patho head's class-idx contract is baked into the trained weights
+    via the alphabetical pidx built from the whitelist at train time. If
+    the config's whitelist and the manifest's diseases_trained disagree,
+    the pidx built at load time will assign different diseases to the
+    same output indices — the model will confidently emit wrong
+    differentials in production. Fail loud instead.
+    """
+    if spec.disease_whitelist is None:
+        return
+    trained = manifest.get("diseases_trained")
+    if trained is None:
+        raise RuntimeError(
+            f"dataset {spec.id!r} declares disease_whitelist but model "
+            f"{model_spec.id!r}'s manifest has no 'diseases_trained' field. "
+            f"Either the checkpoint predates the subset-training feature "
+            f"(retrain with the current train.py) or the manifest was "
+            f"hand-edited. Refusing to load."
+        )
+    if set(trained) != set(spec.disease_whitelist):
+        only_config = sorted(set(spec.disease_whitelist) - set(trained))
+        only_manifest = sorted(set(trained) - set(spec.disease_whitelist))
+        raise RuntimeError(
+            f"dataset {spec.id!r} vs model {model_spec.id!r}: "
+            f"disease_whitelist ↔ manifest.diseases_trained mismatch. "
+            f"config-only: {only_config}; manifest-only: {only_manifest}. "
+            f"Retrain the model with the current whitelist, or point the "
+            f"config at a matching checkpoint. Refusing to load — class "
+            f"indices would silently misalign."
         )
 
 

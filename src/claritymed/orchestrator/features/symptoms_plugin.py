@@ -1329,7 +1329,11 @@ def make_symptoms_factory(
     vocabs: EvidenceVocabMap = {}
     sidecars: SidecarMap = {}
     for ds in enabled:
-        if ds.id == "ddxplus":
+        # Subset variants (e.g. ddxplus_pneumonia_flu) share the parent
+        # dataset's evidence pool + i18n; key vocabs off adapter_id, then
+        # register under this dataset's own id so DirectEligibility's
+        # per-dataset lookup finds them.
+        if ds.resolved_adapter_id() == "ddxplus":
             data_dir = _Path(str(DATA_DIR)) / "symptoms" / "ddxplus"
             per_evidence = _load_ddxplus_vocab(data_dir)
             if per_evidence:

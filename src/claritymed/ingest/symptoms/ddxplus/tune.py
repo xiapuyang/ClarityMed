@@ -114,6 +114,14 @@ def main() -> None:
     )
     ap.add_argument("--stop-thres", type=float, default=0.1)
     ap.add_argument(
+        "--diseases",
+        default=None,
+        help="Comma-separated disease names, matching the subset the "
+        "checkpoint was trained on (e.g. 'Pneumonia,Influenza'). MUST match "
+        "manifest.diseases_trained — mismatch triggers a shape error at "
+        "weight load. Leave unset for full-corpus checkpoints.",
+    )
+    ap.add_argument(
         "--quick",
         action="store_true",
         help="100-patient subset smoke test.",
@@ -131,6 +139,10 @@ def main() -> None:
     maxsteps = [int(s) for s in args.maxsteps.split(",")]
     temps = [float(t) for t in args.temps.split(",")]
 
+    whitelist: set[str] | None = None
+    if args.diseases:
+        whitelist = {d.strip() for d in args.diseases.split(",") if d.strip()}
+
     if args.quick:
         args.eval_n = 100
 
@@ -138,8 +150,10 @@ def main() -> None:
         seed_everything(args.seed)
     device = resolve_device(args.device)
     schema = load_evidence_schema(args.data_dir)
-    pidx, sev = load_pidx(args.data_dir)
+    pidx, sev = load_pidx(args.data_dir, whitelist=whitelist)
     n_dis = len(pidx)
+    if whitelist:
+        print(f"[tune] subset pidx = {pidx}")
     test_pats = load_patients(args.data_dir, args.eval_n, "test", schema, pidx)
 
     import mlflow
@@ -211,7 +225,15 @@ def _elbow_maxstep(maxsteps: list[int], il_by_maxstep: dict[int, float]) -> int:
     Walks sorted maxsteps and returns the first ms where the *next* step's
     marginal IL gain/step drops below SATURATION_RATE — the point at which
     the stop gate is already terminating most games before the cap.
-    Falls back to the largest maxstep if no saturation is detected.
+
+    Falls back to the SMALLEST maxstep when no saturation is detected: this
+    covers the "stop gate never fires" case (e.g. a 2-class subset where
+    max symptom prob stays > stop_thres for every state along the way).
+    In that regime IL == maxstep everywhere and there is no principled way
+    to prefer any point over the shortest one; the alternative — picking
+    the largest maxstep as before — silently recommends the WORST point
+    in the sweep by cost per DDF1. A warning is printed so operators
+    notice the degraded selection semantics.
     """
     sorted_ms = sorted(maxsteps)
     for i in range(len(sorted_ms) - 1):
@@ -219,7 +241,17 @@ def _elbow_maxstep(maxsteps: list[int], il_by_maxstep: dict[int, float]) -> int:
         delta_il = il_by_maxstep[sorted_ms[i + 1]] - il_by_maxstep[sorted_ms[i]]
         if delta_il / delta_ms < SATURATION_RATE:
             return sorted_ms[i]
-    return sorted_ms[-1]
+    print(
+        f"[tune] warning: no IL saturation elbow found across maxsteps "
+        f"{sorted_ms} (marginal IL/step never dropped below "
+        f"{SATURATION_RATE}). Stop gate is not firing naturally — falling "
+        f"back to smallest maxstep ({sorted_ms[0]}). Common cause: subset "
+        f"model where max symptom prob stays > stop_thres for every "
+        f"question. Inspect the table and pick the (T, ms) point yourself "
+        f"if this recommendation looks off.",
+        file=sys.stderr,
+    )
+    return sorted_ms[0]
 
 
 def _print_results(
@@ -245,7 +277,9 @@ def _print_results(
         for maxstep in maxsteps:
             m = results[temp][maxstep]
             dsr = m.DSR if not np.isnan(m.DSR) else float("nan")
-            passes_dsr = not np.isnan(dsr) and dsr >= DSR_FLOOR
+            # NaN DSR = subset pidx has no severe (severity < 3) diseases.
+            # Not a training failure; skip the floor check for that case.
+            passes_dsr = np.isnan(dsr) or dsr >= DSR_FLOOR
             at_elbow = maxstep >= elbow_ms
             score = m.DDF1 - IL_PENALTY * m.IL
             flag = ""

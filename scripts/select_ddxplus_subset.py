@@ -288,7 +288,7 @@ def _print_report(bundle: dict) -> None:
 
 
 def main() -> None:
-    """CLI: ``uv run claritymed-symptoms-select-subset-ddxplus ...``."""
+    """CLI: ``uv run python scripts/select_ddxplus_subset.py ...``."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--data-dir", required=True, type=Path)
     ap.add_argument(

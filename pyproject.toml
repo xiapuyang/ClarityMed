@@ -241,7 +241,6 @@ claritymed-symptoms-train-ddxplus = "claritymed.ingest.symptoms.ddxplus.train:ma
 claritymed-symptoms-ablate-ddxplus = "claritymed.ingest.symptoms.ddxplus.ablate_maxstep:main"
 claritymed-symptoms-hparam-ddxplus = "claritymed.ingest.symptoms.ddxplus.hparam_search:main"
 claritymed-symptoms-tune-ddxplus = "claritymed.ingest.symptoms.ddxplus.tune:main"
-claritymed-symptoms-select-subset-ddxplus = "claritymed.ingest.symptoms.ddxplus.select_subset:main"
 claritymed-symptoms-generate-i18n = "claritymed.ingest.symptoms.generate_i18n:main"
 claritymed-symptoms-translate-i18n = "claritymed.ingest.symptoms.translate_i18n:main"
 # Vision (forge framework — one CLI drives hparam / train / tune / deploy /

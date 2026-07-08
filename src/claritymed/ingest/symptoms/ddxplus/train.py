@@ -116,16 +116,58 @@ def main() -> None:
     )
     ap.add_argument("--stop-thres", type=float, default=None)
     ap.add_argument(
-        "--target", choices=["pathology", "differential"], default="differential"
+        "--target",
+        choices=["pathology", "differential"],
+        default=None,
+        help="Loss target. Defaults to 'differential' (full 49-class) or "
+        "'pathology' when --diseases is set (subset-conditional differentials "
+        "degrade to near-one-hot; see docs).",
+    )
+    ap.add_argument(
+        "--diseases",
+        default=None,
+        help="Comma-separated disease names for subset training "
+        "(e.g. 'Pneumonia,Influenza'). When set: pidx shrinks to this list "
+        "in name-sorted order, out-of-scope patients are dropped, and the "
+        "trained model handles a subset-conditional differential only. "
+        "Names must match release_conditions.json exactly.",
     )
     ap.add_argument("--ordinal", action="store_true")
     ap.add_argument("--smoke", action="store_true", help="Tiny run for sanity testing.")
     args = ap.parse_args()
 
-    if args.out_subpath is None:
-        args.out_subpath = (
-            f"ddxplus/run/typed_basd_v2_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    whitelist: set[str] | None = None
+    whitelist_sorted: list[str] = []
+    if args.diseases:
+        whitelist_sorted = sorted(
+            d.strip() for d in args.diseases.split(",") if d.strip()
         )
+        whitelist = set(whitelist_sorted)
+        if len(whitelist) < 2:
+            raise SystemExit(
+                f"--diseases needs at least 2 names, got {whitelist_sorted!r}. "
+                f"A 1-class model is not a classifier."
+            )
+
+    if args.target is None:
+        args.target = "pathology" if whitelist else "differential"
+    elif whitelist and args.target == "differential":
+        print(
+            "[train] WARNING: --target differential with --diseases set. "
+            "Under a small subset the renormalized differential collapses to "
+            "near one-hot (see docs). --target pathology is the honest choice."
+        )
+
+    if args.out_subpath is None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if whitelist:
+            # Slug from initials + count for readability at the filesystem level.
+            slug = "_".join(
+                n.replace(" ", "-").lower()[:6] for n in whitelist_sorted[:3]
+            )
+            args.out_subpath = f"ddxplus/run/typed_basd_subset_{slug}_{ts}"
+        else:
+            args.out_subpath = f"ddxplus/run/typed_basd_v2_{ts}"
     if args.stop_thres is None:
         args.stop_thres = 0.7 if args.stop_mode == "learned" else 0.1
     if args.smoke:
@@ -144,8 +186,14 @@ def main() -> None:
     device = resolve_device(args.device)
     t0 = time.time()
     schema = load_evidence_schema(args.data_dir, use_ordinal=args.ordinal)
-    pidx, sev = load_pidx(args.data_dir)
+    pidx, sev = load_pidx(args.data_dir, whitelist=whitelist)
     n_dis = len(pidx)
+    if whitelist:
+        print(
+            f"[train] subset training: pidx = {pidx} "
+            f"(target={args.target}; --episodes reads N raw rows before filtering — "
+            f"bump it if the kept-count is too low)"
+        )
     train_pats = load_patients(args.data_dir, args.episodes, "train", schema, pidx)
     env = TypedEnv(train_pats, schema, n_dis)
     print(
@@ -171,6 +219,10 @@ def main() -> None:
     best_weights_path = out_dir / "weights.pt"
     model_id = Path(args.out_subpath).name
 
+    # Sorted pidx names — this ordering is what the patho head learns.
+    # Recorded in the manifest so the server adapter can fail-loud when
+    # the runtime whitelist config drifts from what was trained.
+    diseases_trained = sorted(pidx, key=lambda n: pidx[n])
     train_params = {
         "hidden": args.hidden,
         "lr": args.lr,
@@ -188,6 +240,8 @@ def main() -> None:
         "target": args.target,
         "ordinal": args.ordinal,
         "device": str(device),
+        "whitelist_active": whitelist is not None,
+        "train_pats_kept": len(train_pats),
     }
 
     with symptom_run(
@@ -219,7 +273,15 @@ def main() -> None:
                 games=len(val_pats),
                 severity=sev,
             )
-            score = val_m.DDF1 if val_m.DSR >= DSR_FLOOR else val_m.DSR - 200.0
+            # DSR is NaN when the pidx has no severe (severity < 3) diseases —
+            # a subset case, not a training failure. Fall back to DDF1 as the
+            # improvement signal so the gate doesn't lock out every epoch.
+            if np.isnan(val_m.DSR):
+                score = val_m.DDF1
+            elif val_m.DSR >= DSR_FLOOR:
+                score = val_m.DDF1
+            else:
+                score = val_m.DSR - 200.0
             improved = score > best_score
             if improved:
                 best_score = score
@@ -270,6 +332,11 @@ def main() -> None:
             "training_commit": _git_commit(),
             "sha256": _sha256_file(best_weights_path),
             "train_params": train_params,
+            # diseases_trained is the class-idx contract of the patho head.
+            # Adapter must reject a config whose disease_whitelist doesn't
+            # match this list exactly — otherwise class ids silently misalign.
+            "diseases_trained": diseases_trained,
+            "training_target": args.target,
             "eval": {
                 **dataclasses.asdict(metrics),
                 "maxstep": args.maxstep,
