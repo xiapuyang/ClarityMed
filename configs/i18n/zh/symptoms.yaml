@@ -61,6 +61,13 @@ symptoms:
       cancelled_early_meaningful: "您已提前结束追问——下方卡片基于部分答案。"
       cancelled_no_result: "追问在模型收敛前已结束，暂无可靠的鉴别诊断可展示——如果可以，多回答几个问题再试一次。"
       session_expired: "追问会话已超时，暂无可靠的鉴别诊断可展示——请再试一次。"
+    # v3 subset-parametric ``Other`` 类的显示文案 —— 当数据集设置
+    # ``target_condition_ids`` 时，wire 会额外产出一个合成的 Other
+    # 卡片。它不是真实的 DDXPlus 疾病，所以不在 symptoms_conditions.yaml
+    # 里；用这里的文案渲染。
+    other:
+      name: "其他可能的情况"
+      description: "症状表现不太像两个追踪目标疾病——很可能是其他病因，建议就诊做更广的鉴别评估。"
     # 卡片本身只渲染 headline + report。次日汇总的下一步建议和
     # 权威引用由 LLM 依 symptoms_final_reply 提示写成的摘要段落
     # 承担，而不是逐卡展示（避免噪音 + 保留 LLM 组织语言的能力）。

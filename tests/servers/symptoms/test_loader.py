@@ -73,7 +73,7 @@ def _write_artifact(
 def _model_spec(manifest_sha: str, *, subpath: str = "test_model") -> ModelSpec:
     return ModelSpec(
         id="test_model",
-        algorithm_module="claritymed.ingest.symptoms.typed_basd",
+        algorithm_module="typed_basd",
         weights_subpath=subpath,
         manifest_sha256=manifest_sha,
         maxstep=10,
@@ -195,7 +195,7 @@ def test_apply_model_overrides_with_both_values_set() -> None:
     agent = SimpleNamespace(temp=1.0, thres=0.5)
     spec = ModelSpec(
         id="m",
-        algorithm_module="claritymed.ingest.symptoms.typed_basd",
+        algorithm_module="typed_basd",
         weights_subpath="m",
         manifest_sha256="0" * 64,
         maxstep=10,
@@ -211,7 +211,7 @@ def test_apply_model_overrides_with_none_keeps_checkpoint_values() -> None:
     agent = SimpleNamespace(temp=1.0, thres=0.5)
     spec = ModelSpec(
         id="m",
-        algorithm_module="claritymed.ingest.symptoms.typed_basd",
+        algorithm_module="typed_basd",
         weights_subpath="m",
         manifest_sha256="0" * 64,
         maxstep=10,
@@ -230,7 +230,7 @@ def test_load_dataset_rejects_unknown_dataset_id() -> None:
     spec = DatasetSpec(id="custom_set", model_ids=["m"])
     model_spec = ModelSpec(
         id="m",
-        algorithm_module="claritymed.ingest.symptoms.typed_basd",
+        algorithm_module="typed_basd",
         weights_subpath="m",
         manifest_sha256="0" * 64,
         maxstep=10,

@@ -63,6 +63,13 @@ symptoms:
       cancelled_early_meaningful: "You stopped the follow-up early — cards below are based on partial answers."
       cancelled_no_result: "The follow-up ended before the model could narrow things down. There is no reliable differential to show — try again if you can answer a few more questions."
       session_expired: "The follow-up session timed out. There is no reliable differential to show — try again."
+    # v3 subset-parametric ``Other`` bucket — the synthetic class the
+    # wire emits when ``target_condition_ids`` is set. Rendered as a
+    # regular card with these display strings; not a real DDXPlus
+    # condition, so it doesn't live in symptoms_conditions.yaml.
+    other:
+      name: "Another likely condition"
+      description: "The pattern suggests neither of the tracked conditions — likely another cause. See a clinician for a broader evaluation."
     # Cards render only headline + report. Aggregate next-steps and
     # authority anchoring are delegated to the LLM's summary paragraph
     # (``symptoms_final_reply``) rendered around the card list, so

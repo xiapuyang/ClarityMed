@@ -93,12 +93,17 @@ def _stub_weights_and_manifest(weights_dir: Path) -> str:
 
 @pytest.fixture
 def patched_torch_loader(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace torch agent-loading with a stub that returns a sentinel object."""
+    """Replace algorithm loading with a stub that returns a sentinel object.
 
-    def _fake_loader(schema, n_dis, weights_path, device):  # noqa: ARG001
+    Patches the algorithm-neutral dispatcher (:func:`_load_agent`) so
+    both typed_basd and xgb code paths short-circuit uniformly. The
+    fixture name is kept for backward compatibility with existing tests.
+    """
+
+    def _fake_loader(algorithm_module, schema, n_dis, weights_path, device):  # noqa: ARG001
         return SimpleNamespace(loaded_from=str(weights_path), n_dis=n_dis)
 
-    monkeypatch.setattr(adapter_mod, "_load_torch_agent", _fake_loader)
+    monkeypatch.setattr(adapter_mod, "_load_agent", _fake_loader)
 
 
 def _spec(model_ids=("typed_basd_v1",)) -> DatasetSpec:

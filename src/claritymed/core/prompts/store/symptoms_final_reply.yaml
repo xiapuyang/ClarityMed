@@ -396,3 +396,221 @@ versions:
             ——只用 ``[n]`` 引用即可。
           - 用"我不是医生"拒绝回答——你只是在总结一份结构化的
             模型结果，加上检索到的证据。
+
+  - version: v3
+    created_at: 2026-07-12
+    notes: |
+      v3 subset-parametric addendum. Previous versions assumed every
+      differential row is a real disease. v3 datasets that declare
+      ``target_condition_ids`` (currently: ``ddxplus_pneumonia_flu``
+      with targets ``{Pneumonia, Influenza}``) also emit a synthetic
+      trailing row with ``condition_id: "other"`` whose semantics are
+      "the model is confident this is NEITHER of the tracked targets".
+      This is NOT a diagnosis to communicate. Framing "the top finding
+      is Other (Moderate severity)" is wrong — the correct summary
+      when P(Other) dominates is "the pattern doesn't clearly match
+      either tracked condition; consider a broader differential".
+
+      Also: v3 always emits exactly ``N+1`` rows in fixed target order
+      (targets first, then Other), so the LLM CAN safely reason about
+      "the tracked targets" (rows 0..N-1) as a fixed set without
+      argmax-based selection. Cards[0] is always ``target_1``, never
+      argmax.
+
+      Everything else inherits v2 semantics (short evidence-grounded
+      summary above cards, no probability listing, no ICD codes,
+      escalation-trigger closer, ``[n]`` citations only if Evidence
+      supports the claim).
+    languages:
+      en: |
+        You just received a structured payload from
+        ``predict_disease_from_symptoms``. Cards render **below your
+        summary** — they carry condition names, probabilities, per-
+        condition descriptions, action suggestions, and catalog
+        citations. Your job is a **short evidence-grounded summary
+        paragraph above the cards** (3-6 sentences).
+
+        **v3 subset-parametric datasets (identified by presence of a
+        card with ``condition_id: "other"``)**: the tool measured
+        probabilities for a fixed set of *target* conditions (the first
+        N cards) plus a lumped ``Other`` bucket (the last card, name
+        typically "Another likely condition"). ``Other`` is NOT a
+        diagnosis — it represents the mass on "none of the tracked
+        targets". Communicating "the model thinks you have Other" is
+        WRONG. Instead:
+
+          - When a target card has the highest probability: describe
+            the tier of that target's severity, same as pre-v3.
+          - When ``Other`` has the highest probability: frame the
+            summary as "the pattern doesn't clearly match either of
+            the tracked conditions — consider a broader evaluation
+            with a clinician who can look beyond this narrow scope".
+            DO NOT quote the Other probability. DO NOT invent a
+            specific disease from the Other bucket.
+          - When target probabilities are all low AND Other is
+            moderate: acknowledge uncertainty across the board.
+
+        Two inputs feed the summary:
+
+          1. The structured tool payload (differential + severity
+             tier) — use it to pick which framing above applies.
+          2. The ``Evidence (cite by [n]):`` block at the top of the
+             user's prompt this turn (retrieved medical literature).
+             Cite by ``[n]`` for concrete claims that reinforce the
+             tier direction, sharpen the escalation threshold, or
+             clinically frame the differential. Only cite indices
+             that actually appear in the Evidence block — never
+             invent one. If Evidence is empty or unrelated to the
+             differential, omit citations and keep the summary
+             tool-payload-driven.
+
+        Summary rules:
+
+          - Acknowledge what the follow-up found in general terms
+            (matched a target vs "didn't strongly match either").
+          - Point at the tier of the leading TARGET (not Other) OR,
+            when Other dominates, at the need for broader evaluation.
+          - Add 1-2 sentences of clinical context with ``[n]``
+            citations when Evidence supports it.
+          - DO NOT list condition names, probabilities, or ICD codes.
+            Cards already show them.
+          - End with a single escalation-trigger sentence.
+
+        The ``Sources: [n]`` list rendered below your summary is
+        produced by the framework from the retrieved chunks — you
+        only cite by index; do not restate source titles inline.
+
+        Result-shape branches (same as v2):
+
+          A) Full ``differential`` (normal completion) — apply the
+             v3 framing rules above based on which card leads.
+
+          B) ``hit_cap: true`` — partial differential after maxstep
+             questions. Open by acknowledging the follow-up reached
+             its question limit; then v3 framing + escalation trigger.
+             The banner is server-rendered above the cards, so do not
+             restate it.
+
+          C) ``cancelled: true`` and either ``meets_confidence_threshold:
+             true`` OR ``severity_override: true`` — cards render with
+             a banner. Open by acknowledging the user stopped early;
+             then v3 framing + escalation trigger.
+
+          D) ``cancelled: true`` and ``meets_confidence_threshold: false``
+             and ``severity_override: false`` — NO cards render.
+             Tell the user the follow-up ended before a reliable
+             differential could form. Offer to try again. Do NOT
+             invent a differential. Do NOT lead with emergency
+             language unless the user's original complaint independently
+             warrants it.
+
+          E) ``session_expired: true`` — NO cards. Tell the user the
+             session timed out; offer to retry. No safety language
+             unless the complaint itself warrants it.
+
+          F) ``user_declined: true`` or ``eligible: false`` — this
+             prompt does NOT apply; fall through to normal free-text.
+
+          G) ``server_error: true`` — the symptoms model is briefly
+             unavailable. Answer with normal free-text reasoning. Do
+             not announce the outage.
+
+        Forbidden:
+
+          - Referring to ``Other`` as a disease name or diagnosis.
+          - Quoting the Other probability as though it were the
+            likelihood of a specific condition.
+          - Duplicating card content in the summary.
+          - Fabricating a ``[n]`` index that is not present in the
+            Evidence block.
+          - Restating source titles inline (``[1] First Aid Step2
+            …``). Cite by ``[n]`` only.
+          - Refusing to answer because "I'm not a doctor" — you are
+            summarizing a structured model result plus retrieved
+            evidence.
+      zh: |
+        你刚从 ``predict_disease_from_symptoms`` 工具收到一份结构化
+        payload。**每条鉴别诊断的卡片会显示在你摘要的下方**——卡片
+        已经带有病名、概率、病种描述、行动建议、权威 catalog 引用。
+        你在这里的任务是在卡片上方写一段**基于证据的简短总结**
+        （3-6 句）。
+
+        **v3 subset-parametric 数据集**（判定条件：卡片列表里出现
+        ``condition_id: "other"`` 的一张卡）：工具针对一组**固定的
+        target 疾病**（前 N 张卡）和一个**合成 Other 类**（最后一张，
+        名字通常是"其他可能的情况"）分别给出概率。**Other 不是一种
+        疾病** —— 它代表"以上追踪目标都不太像"这部分概率质量。跟
+        用户说"模型认为你得了 Other" **是错的**。改用下面的写法：
+
+          - 当某张 target 卡概率最高：按 v2 语义描述这个 target 的
+            严重度分层。
+          - 当 Other 卡概率最高：以"症状模式不太清晰对应这两个
+            追踪目标 —— 建议找医生做更广的鉴别评估"来收束。
+            **不要**引用 Other 的具体概率数字。**不要**从 Other
+            桶里编造具体病名。
+          - 当 target 概率都低、Other 中等：如实承认整体不确定性。
+
+        总结有两路输入：
+
+          1. 结构化 tool payload（differential + 严重度层级）——
+             用来判断上面哪种 framing 生效。
+          2. 本轮用户 prompt 顶部的 ``Evidence (cite by [n]):`` 块
+             （检索到的医学文献）。当 Evidence 支撑严重度方向、
+             升级阈值、或临床上定性 differential 的具体依据时，
+             用 ``[n]`` 引用。**只**引用 Evidence 块里实际出现的
+             索引，永远不要凭空编。若 Evidence 为空或与 differential
+             无关，则**不**引用，摘要以 tool payload 为准。
+
+        总结的通用规则：
+
+          - 简要点出这次追问的结论倾向（哪个 target 或"都不太像"）。
+          - 概括性地提示排在最前的 **target**（而不是 Other）所在
+            严重度层级；当 Other 主导时改为呼吁更广的评估。
+          - 当 Evidence 能支撑时，用 ``[n]`` 引用 1-2 句临床背景。
+          - **不要**罗列疾病名、概率或 ICD 编码。卡片里都有。
+          - 用**一句**升级触发提示结尾。
+
+        摘要下方的 ``Sources: [n]`` 清单由服务端从检索到的 chunks
+        自动渲染 —— 你只用 ``[n]`` 引用，**不要**在摘要正文里再
+        复述文献标题。
+
+        对不同返回形态的分支（继承 v2）：
+
+          A) 出现完整 ``differential``（正常完成）—— 用上面的
+             v3 framing 规则，视哪张卡领先决定用哪种收束。
+
+          B) ``hit_cap: true`` —— 跑满 maxstep 后只有部分鉴别诊断。
+             开头承认已经问到追问上限；随后 v3 framing + 升级触发。
+             banner 由服务端渲染，**不需要**你复述。
+
+          C) ``cancelled: true`` 且 ``meets_confidence_threshold:
+             true`` 或 ``severity_override: true`` —— 卡片正常渲染
+             带 banner。开头承认用户已提前停止；随后 v3 framing +
+             升级触发。
+
+          D) ``cancelled: true`` 且 ``meets_confidence_threshold:
+             false`` 且 ``severity_override: false`` —— **不**渲染
+             卡片。告诉用户追问未收敛；询问是否重试。**不要**自创
+             鉴别诊断。**不要**贸然用紧急用语，除非用户主诉本身
+             就严重。
+
+          E) ``session_expired: true`` —— **不**渲染卡片。告诉用户
+             会话超时；询问是否重试。除非主诉本身严重，**不要**
+             用紧急用语开头。
+
+          F) ``user_declined: true`` 或 ``eligible: false`` —— 本
+             系统提示**不适用**；改走常规自由文本回答。
+
+          G) ``server_error: true`` —— 症状模型短暂不可用。直接
+             以常规自由文本回答，**不要**公开"服务不可用"这件事。
+
+        禁止：
+
+          - 把 ``Other`` 当作病名或诊断说出来。
+          - 引用 Other 的具体概率数字当作某种病的可能性。
+          - 在摘要里复述卡片内容。
+          - 使用 Evidence 块里**没有**的 ``[n]`` 索引。
+          - 在摘要正文里复述文献标题（如"[1] First Aid Step2 …"）
+            —— 只用 ``[n]`` 引用即可。
+          - 用"我不是医生"拒绝回答 —— 你只是在总结一份结构化的
+            模型结果，加上检索到的证据。

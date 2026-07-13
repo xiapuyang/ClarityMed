@@ -137,12 +137,18 @@ class DifferentialRow(BaseModel):
     the LLM and the audit layer compute tier semantics from it.
     ``icd10`` is best-effort metadata sourced from the corpus and may
     be ``None`` for datasets that don't carry it.
+
+    ``condition_idx=None`` is reserved for the synthetic ``Other`` row
+    v3 subset-parametric datasets emit — Other is not a canonical
+    catalog entry, so it has no pidx integer to reference. Callers that
+    key audit logs on the integer index must handle the None case (or
+    fall back to the slug, which is always present).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     condition_id: str = Field(min_length=1, max_length=128)
-    condition_idx: int = Field(ge=0)
+    condition_idx: int | None = Field(default=None, ge=0)
     condition_name: str
     probability: float = Field(ge=0.0, le=1.0)
     severity: int = Field(ge=1, le=5)

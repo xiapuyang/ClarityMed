@@ -260,6 +260,27 @@ class DatasetSpec(BaseModel):
         ),
     )
 
+    # v3 subset-parametric mode. When set, the classifier emits ``N+1``
+    # probabilities: the N targets in list order + a trailing synthetic
+    # ``Other`` class covering every non-target disease in the corpus.
+    # Mutually exclusive with ``disease_whitelist`` (that's the v2
+    # subset-conditional mode where non-target patients are DROPPED at
+    # training instead of relabelled). The wire layer emits exactly
+    # ``N+1`` rows in target order followed by ``Other`` so the frontend
+    # can render fixed slots without argmax-based reordering. See
+    # docs/plans/2026-07-09-001-xgb-v3-subset-plan.md for the design
+    # rationale; the ``xgb_v3`` train mode (``--targets`` CLI flag)
+    # produces checkpoints compatible with this field.
+    target_condition_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "v3-native subset targets. List of canonical condition slugs "
+            "(NOT display names) — the classifier learned {targets..., "
+            "Other} as N+1 classes and the wire emits them in this order. "
+            "Cannot be combined with ``disease_whitelist``."
+        ),
+    )
+
     # Which registered adapter services this dataset. Defaults to ``id``
     # — the common case where one adapter serves one dataset. Subset
     # variants of an existing dataset (same evidence schema + condition
@@ -302,6 +323,32 @@ class DatasetSpec(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _target_condition_ids_shape(self) -> "DatasetSpec":
+        if self.target_condition_ids is None:
+            return self
+        if self.disease_whitelist is not None:
+            raise ValueError(
+                f"datasets[id={self.id!r}] sets both ``disease_whitelist`` and "
+                f"``target_condition_ids``. Pick one: whitelist is v2 "
+                f"subset-conditional (drops non-targets from training); "
+                f"target_condition_ids is v3 subset-parametric (relabels "
+                f"non-targets as Other). See "
+                f"docs/plans/2026-07-09-001-xgb-v3-subset-plan.md."
+            )
+        seen = set(self.target_condition_ids)
+        if len(seen) != len(self.target_condition_ids):
+            raise ValueError(
+                f"datasets[id={self.id!r}].target_condition_ids has "
+                f"duplicates: {self.target_condition_ids!r}"
+            )
+        if len(seen) < 1:
+            raise ValueError(
+                f"datasets[id={self.id!r}].target_condition_ids needs at "
+                f"least one target — Other is added automatically."
+            )
+        return self
+
     def resolved_i18n_prefix(self) -> str:
         """Return the active prefix (explicit override or convention)."""
         return self.i18n_key_prefix or f"symptoms.{self.id}"
@@ -335,16 +382,35 @@ class ModelSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
-    algorithm_module: str = Field(min_length=1, max_length=64)
+    # Algorithm implementation the checkpoint was trained under. Drives
+    # adapter dispatch: ``typed_basd`` loads via torch, ``xgb`` via joblib.
+    # Adding a third algorithm requires (a) a new literal member, (b) a
+    # branch in ``ingest/symptoms/ddxplus/adapter.py::_load_agent``, and
+    # (c) the matching train / tune CLIs under ``ingest/symptoms/<name>/``.
+    algorithm_module: Literal["typed_basd", "xgb"] = Field(
+        description="Algorithm implementation for this checkpoint."
+    )
     weights_subpath: str = Field(min_length=1, max_length=256)
     manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    # Per-session question budget. Populated from claritymed-symptoms-tune-ddxplus.
+    # Per-session question budget. Populated from the algorithm's tune CLI
+    # (``claritymed-symptoms-tune-ddxplus`` for typed_basd,
+    # ``claritymed-symptoms-xgb-tune-ddxplus`` for xgb).
     maxstep: int = Field(ge=1, le=50)
     # Softmax temperature for the pathology classifier (overrides checkpoint).
-    # null → fall back to the value baked into the checkpoint.
+    # null → fall back to the value baked into the checkpoint. Ignored by
+    # the xgb algorithm module (posterior calibration is applied at training
+    # time via CalibratedClassifierCV, not runtime temperature).
     patho_temp: float | None = Field(default=None, gt=0.0, le=10.0)
-    # Stop-gate threshold (overrides checkpoint). Heuristic mode: max symptom
-    # prob must drop below this to keep asking. null → use checkpoint value.
+    # Stop-gate threshold (overrides checkpoint). SEMANTIC OVERLOAD by
+    # algorithm (KTD-D3):
+    #
+    # * ``typed_basd`` (heuristic mode): max symptom prob must drop
+    #   BELOW this to stop asking. Lower thres → ask more questions.
+    # * ``xgb``: max class prob must rise ABOVE this to stop asking.
+    #   Higher thres → ask more questions.
+    #
+    # Same field, opposite direction. Split into stop.mode + stop.threshold
+    # when a third algorithm arrives; overload is deliberate for v1.
     stop_thres: float | None = Field(default=None, gt=0.0, le=1.0)
 
     @model_validator(mode="after")

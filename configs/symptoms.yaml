@@ -81,7 +81,12 @@ datasets:
     enabled: true
     adapter_id: ddxplus                    # reuse DDXPlusAdapter (same corpus)
     i18n_key_prefix: symptoms.ddxplus      # share parent i18n namespace (same evidence pool + condition names)
-    model_ids: [typed_basd_pneumonia_flu_v1]
+    #model_ids: [typed_basd_pneumonia_flu_v1, xgb_pneumonia_flu_v2, xgb_pne_inf_v3]
+    model_ids: [xgb_pne_inf_v3]
+    # v3 (subset-parametric, N+1-class native) is the shipping model.
+    # v2 (subset-conditional, 2-class) stays defined in ``models:`` below
+    # as a rollback target — swap ids here to switch. See
+    # docs/plans/2026-07-09-001-xgb-v3-subset-plan.md for design.
     model_selection: first
     partial_min_confidence: 0.5
     severity_high_specificity_evidence_ids: []
@@ -90,31 +95,39 @@ datasets:
     init_symptom_filter:
       exclude_antecedent: true
       allowed_dtypes: ["B"]
-    disease_whitelist:                     # MUST equal manifest.diseases_trained
-      - Pneumonia
-      - Influenza
+    # v3 subset-parametric — canonical condition slugs (NOT display names)
+    # for the target set. Non-target diseases lump into a synthetic
+    # ``Other`` class the classifier emits as its last output. The wire
+    # (servers/symptoms/differential.py::_topk_rows_v3) always emits
+    # N+1 rows in this order + Other, so the frontend can render fixed
+    # slots. Swap to a different target list (e.g. {stemi, pericarditis})
+    # by editing this list — no code changes needed downstream.
+    target_condition_ids:
+      - pneumonia
+      - influenza
     domain_description:
       en: |
         id: ddxplus_pneumonia_flu
-        DDXPlus subset — Pneumonia + Influenza (2 respiratory infections).
-        Use only when the chief complaint is plausibly one of these two
-        (fever + cough + fatigue + myalgia patterns; recent flu season
-        exposure; radiographic-suggestive presentation).
-        Returned probabilities are SUBSET-CONDITIONAL — treat as ranking
-        between Pneumonia and Influenza, NOT as posterior over all
-        possible diseases. Cannot rule out Bronchitis, URTI, TB,
-        Bronchiectasis, or other overlapping presentations. If the
-        complaint could plausibly be one of those, route to `ddxplus`
-        instead via dataset_hint.
+        DDXPlus subset — Pneumonia + Influenza (2 respiratory infections)
+        with an explicit ``Other`` class for everything else in DDXPlus.
+        Use when the chief complaint plausibly falls anywhere in the
+        respiratory / infectious differential — the model will say
+        ``P(Pneumonia)``, ``P(Influenza)``, or ``P(Other)`` honestly.
+        Unlike v2, Other IS a first-class output: high P(Other) means
+        "the model is confident this is NEITHER of the two targets".
+        A patient with Bronchitis / URTI / COVID / TB will now surface
+        as high P(Other) rather than a false Pneumonia or Influenza
+        prediction. Only route to full ``ddxplus`` when the complaint
+        is clearly outside respiratory infection scope.
       zh: |
         id: ddxplus_pneumonia_flu
-        DDXPlus 子集 — 肺炎 + 流感（2 类呼吸道感染）。
-        仅当主诉合理落在这两类范围内时使用（发热 + 咳嗽 + 乏力 + 肌痛
-        组合、近期流感季暴露、影像提示等）。
-        返回的概率是子集条件下的排序 (P(disease | disease ∈ {Pneumonia,
-        Influenza}))，而非全疾病谱后验。不能排除支气管炎、上呼吸道感染、
-        肺结核、支气管扩张等重叠表现；若合理怀疑这些，用 dataset_hint
-        改走 `ddxplus`。
+        DDXPlus 子集 — 肺炎 + 流感（2 类呼吸道感染） + 显式 ``Other`` 类
+        （包含 DDXPlus 里其他 47 种疾病）。
+        当主诉大致落在呼吸 / 感染鉴别范围内时用；模型会诚实输出
+        ``P(肺炎)``、``P(流感)`` 或 ``P(Other)``。与 v2 不同，Other 是
+        一等公民 —— 高 P(Other) 明确说 "这两个都不像"。支气管炎 / URTI /
+        COVID / 肺结核 病人会以高 P(Other) 出现，而不是被错判为肺炎或流感。
+        仅当主诉明显不在呼吸感染范围时，用 dataset_hint 走全量 ``ddxplus``。
 
 models:
   - id: typed_basd_v2
@@ -143,6 +156,72 @@ models:
     maxstep: 6
     patho_temp: 3.0
     stop_thres: 0.3
+
+  # -----------------------------------------------------------------
+  # XGBoost sibling to the typed-BASD subset model — same Pneumonia +
+  # Influenza scope, different algorithm. Ships CPU-native and produces
+  # human-readable feature-importance rankings in its manifest.
+  #
+  # DIFFERENT stop_thres semantics vs typed-BASD (KTD-D3 overload):
+  # XGBoost stops when max class prob RISES ABOVE stop_thres; typed_basd
+  # stops when max symptom prob DROPS BELOW it. Same field, opposite
+  # direction — see ModelSpec.stop_thres docstring.
+  #
+  # patho_temp is ignored — XGBoost calibration is applied at training
+  # time via CalibratedClassifierCV, not runtime temperature.
+  #
+  # v2 (2026-07-08 retrain): blacklists E_131 / E_135 (dermatology
+  # categoricals with |Gap|>0.86 class-conditional prevalence — near-
+  # deterministic label proxies in the DDXPlus subset) at the encoder
+  # layer, and switches ig_policy from sum→mean per-evidence aggregation
+  # so wide multi-value evidences (E_55, E_133) no longer outrank strong
+  # binary evidences (E_77 sputum, E_88 fatigue) by column count alone.
+  # Post-mortem: docs/solutions/2026-07-08-001-xgb-label-leak.md.
+  #
+  # maxstep + stop_thres picked by the 2026-07-08 tune sweep against the
+  # v2 checkpoint (--maxsteps 3,4,6,8,10 --stop-thres 0.85,0.90,0.95,0.99).
+  # Elbow at ms=3 with stop_thres 0.85 (0.85 / 0.90 / 0.95 give identical
+  # numbers because the model rarely hits the gate without the derm label
+  # leak). Test slice (n=5000 raw → 236 kept): IL=1.18 DDF1=84.89 DDR=84.32
+  # DDP=93.01, ACC=96.44 on full 1039-patient test. Compared to v1
+  # (IL=0.68 DDF1=80.81 DDR=74.40 DDP=96.73 ACC=100 @ ms=6): v1's ACC=100
+  # was the label-leak mirage; v2 trades 3.6 pp ACC for +4.15 pp DDF1
+  # and +10 pp DDR — a much healthier differential.
+  - id: xgb_pneumonia_flu_v2
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pneumonia_flu_v2
+    manifest_sha256: "474fb05cd64dc5d1c40a7e71e07ec6bba67b74b15081eb0525f0e99d6f130eb5"
+    maxstep: 3
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.85
+
+  # -----------------------------------------------------------------
+  # v3 subset-parametric — 3-class native {Pneumonia, Influenza, Other}.
+  # Trained on the full 285k-patient DDXPlus corpus (no whitelist);
+  # ``Pneumonia`` and ``Influenza`` keep their pathology labels while
+  # every other disease is relabelled ``Other`` before ``multi:softprob``
+  # fitting. Sample weights apply inverse-frequency balancing so all
+  # three classes contribute equal loss mass, defeating the ~95% Other
+  # prior that made naive 49-class + projection stop at turn 0.
+  #
+  # Pairs with dataset ``ddxplus_pneumonia_flu`` which declares
+  # ``target_condition_ids: [pneumonia, influenza]``. The wire layer
+  # emits N+1 rows in that order + a synthetic ``Other`` row. Frontend
+  # renders fixed slots; no argmax reordering needed.
+  #
+  # Operating point picked from the 2026-07-09 sweep:
+  #   ms=18 thres=0.95 → IL=5.36 PR-AUC(Pne)=0.656 PR-AUC(Inf)=0.357
+  #                      R@P=0.7(Pne)=0.667 (5000-patient test slice)
+  # PR-AUC(Pne)=0.947 is achievable at IL=17.6/thres=0.99 (ceiling)
+  # but requires ~3× the questions — ms=18/thres=0.95 is the elbow.
+  # See docs/plans/2026-07-09-001-xgb-v3-subset-plan.md.
+  - id: xgb_pne_inf_v3
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v3
+    manifest_sha256: "41081d23e43ba57331e331b4b1074e7bc66424ba7fe4b4cbc01f4bb0686ada6f"
+    maxstep: 18
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.95
 
 # Process-wide chief-complaint matcher embedder. Shared singleton —
 # every dataset's per-catalog vectors are encoded against this one

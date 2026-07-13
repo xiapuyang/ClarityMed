@@ -84,6 +84,15 @@ symptoms-server = [
     # BASD for GPU memory. SapBERT is the recommended default model; any
     # SentenceTransformer-compatible id works via `init_matcher.model_id`.
     "sentence-transformers>=3.0",
+    # XGBoost algorithm module — CPU-native gradient-boosted trees for the
+    # xgb symptom-prediction pipeline. Ships classifier + ev-marginals
+    # regressor pair; consumed by ingest/symptoms/xgb/. scikit-learn is
+    # used for CalibratedClassifierCV + MultiOutputRegressor wrapper;
+    # joblib for the checkpoint (weights.pkl) that the adapter loads
+    # instead of torch.load.
+    "xgboost>=2.0",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
 ]
 # Medical-clip server (BiomedCLIP zero-shot modality / disease screening).
 # Optional because open_clip_torch + the BiomedCLIP weights (~400 MB FP16)
@@ -241,6 +250,12 @@ claritymed-symptoms-train-ddxplus = "claritymed.ingest.symptoms.ddxplus.train:ma
 claritymed-symptoms-ablate-ddxplus = "claritymed.ingest.symptoms.ddxplus.ablate_maxstep:main"
 claritymed-symptoms-hparam-ddxplus = "claritymed.ingest.symptoms.ddxplus.hparam_search:main"
 claritymed-symptoms-tune-ddxplus = "claritymed.ingest.symptoms.ddxplus.tune:main"
+# XGBoost symptom-prediction algorithm — sibling to typed_basd for the
+# DDXPlus corpus. train writes joblib checkpoints under
+# ``ddxplus/xgb_*``; tune sweeps XGBoost-specific knobs (maxstep,
+# stop_thres, ig_smoothing) rather than typed_basd's temp.
+claritymed-symptoms-xgb-train-ddxplus = "claritymed.ingest.symptoms.xgb.train:main"
+claritymed-symptoms-xgb-tune-ddxplus = "claritymed.ingest.symptoms.xgb.tune:main"
 claritymed-symptoms-generate-i18n = "claritymed.ingest.symptoms.generate_i18n:main"
 claritymed-symptoms-translate-i18n = "claritymed.ingest.symptoms.translate_i18n:main"
 # Vision (forge framework — one CLI drives hparam / train / tune / deploy /

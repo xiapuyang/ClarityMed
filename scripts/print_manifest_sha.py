@@ -32,6 +32,31 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _declared_weights_sha(manifest: dict) -> str | None:
+    """Return the weights digest the manifest declares under either key.
+
+    typed_basd + xgb manifests use ``sha256``; vision manifests use
+    ``sha256_weights``. Fall through in that order — first hit wins so
+    a manifest with both keys (shouldn't happen but safe) surfaces the
+    symptoms convention.
+    """
+    return manifest.get("sha256") or manifest.get("sha256_weights") or None
+
+
+def _weights_path_for(manifest: dict, root: Path) -> Path:
+    """Resolve the weights filename by algorithm.
+
+    typed_basd → ``weights.pt``; xgb → ``weights.pkl``; other algorithms
+    fall through to ``weights.pt`` for legacy compatibility. Only used
+    for the digest print + mismatch warning — the real load path lives
+    in the adapter.
+    """
+    algo = manifest.get("algorithm_module", "")
+    if algo == "xgb":
+        return root / "weights.pkl"
+    return root / "weights.pt"
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -45,15 +70,20 @@ def main(argv: list[str]) -> int:
         return 1
     manifest_sha = _sha256(manifest_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    weights_path = root / "weights.pt"
+    weights_path = _weights_path_for(manifest, root)
     if weights_path.exists():
         weights_sha = _sha256(weights_path)
     else:
         weights_sha = "<missing>"
+    declared = _declared_weights_sha(manifest) or "<missing>"
     print(f"manifest.json sha256: {manifest_sha}")
-    print(f"weights.pt sha256:    {weights_sha}")
-    print(f"manifest declares:    {manifest.get('sha256_weights', '<missing>')}")
-    if weights_sha != "<missing>" and weights_sha != manifest.get("sha256_weights", ""):
+    print(f"{weights_path.name} sha256:    {weights_sha}")
+    print(f"manifest declares:    {declared}")
+    if (
+        weights_sha != "<missing>"
+        and declared != "<missing>"
+        and weights_sha != declared
+    ):
         print(
             "WARNING: weights sha mismatch — manifest will be rejected at startup",
             file=sys.stderr,

@@ -39,8 +39,20 @@ from claritymed.ingest.symptoms.ddxplus.schema import (
     load_pidx,
 )
 from claritymed.ingest.symptoms.typed_basd import TypedEnv, build_basd
+from claritymed.ingest.symptoms.xgb.algorithm import XgbAgent
+from claritymed.ingest.symptoms.xgb.encoding import (
+    feature_columns_from_schema,
+)
 
 DDXPLUS_DATASET_ID = "ddxplus"
+
+# Filenames the adapter looks for under each checkpoint dir. Keyed by
+# ``ModelSpec.algorithm_module`` so a train/serve mismatch fails on the
+# missing-file check rather than by silently loading the wrong artifact.
+_WEIGHTS_FILENAME = {
+    "typed_basd": "weights.pt",
+    "xgb": "weights.pkl",
+}
 
 
 def _sha256_file(path: Path) -> str:
@@ -59,9 +71,20 @@ def _models_root() -> Path:
     return _cfg.CLARITYMED_HOME / "models" / "symptoms"
 
 
-def _verify_manifest_chain(model_spec: ModelSpec, weights_dir: Path) -> dict:
+def _verify_manifest_chain(
+    model_spec: ModelSpec, weights_dir: Path
+) -> tuple[dict, Path]:
+    """Verify the (config-sha ↔ manifest ↔ weights) integrity chain.
+
+    Returns the parsed manifest and the resolved weights path so callers
+    don't recompute the filename by algorithm. The weights filename is
+    algorithm-specific (``weights.pt`` for typed_basd, ``weights.pkl``
+    for xgb) — a train/serve mismatch fails as a missing-file error
+    here rather than silently loading the wrong artifact.
+    """
     manifest_path = weights_dir / "manifest.json"
-    weights_path = weights_dir / "weights.pt"
+    weights_filename = _WEIGHTS_FILENAME[model_spec.algorithm_module]
+    weights_path = weights_dir / weights_filename
     if not manifest_path.exists():
         raise FileNotFoundError(
             f"manifest.json missing under {weights_dir}; train the dataset "
@@ -69,8 +92,8 @@ def _verify_manifest_chain(model_spec: ModelSpec, weights_dir: Path) -> dict:
         )
     if not weights_path.exists():
         raise FileNotFoundError(
-            f"weights.pt missing under {weights_dir}; manifest present but "
-            f"checkpoint is not."
+            f"{weights_filename} missing under {weights_dir}; manifest "
+            f"present but checkpoint is not."
         )
     actual_manifest_sha = _sha256_file(manifest_path)
     if actual_manifest_sha != model_spec.manifest_sha256:
@@ -94,10 +117,81 @@ def _verify_manifest_chain(model_spec: ModelSpec, weights_dir: Path) -> dict:
             f"manifest declares {declared}, on-disk {weights_path} hashes "
             f"to {actual_weights_sha}. Refusing to load."
         )
-    return manifest
+    return manifest, weights_path
 
 
-def _load_torch_agent(schema: dict, n_dis: int, weights_path: Path, device: str):
+def _assert_manifest_algorithm_matches_spec(
+    model_spec: ModelSpec, manifest: dict
+) -> None:
+    """Refuse to load when config's algorithm_module ≠ manifest's.
+
+    The two must agree — otherwise the adapter would try to load a torch
+    checkpoint as joblib (or vice versa) and blow up with an opaque
+    unpickling error deep inside the loader.
+    """
+    manifest_algo = manifest.get("algorithm_module")
+    if manifest_algo != model_spec.algorithm_module:
+        raise RuntimeError(
+            f"algorithm_module mismatch for model {model_spec.id!r}: "
+            f"configs/symptoms.yaml declares {model_spec.algorithm_module!r}, "
+            f"manifest declares {manifest_algo!r}. Refusing to load — "
+            f"the wrong loader would silently corrupt the checkpoint."
+        )
+
+
+def _verify_feature_columns(manifest: dict, columns: list[str]) -> None:
+    """Ensure the checkpoint's feature_columns match the live schema.
+
+    Only relevant for algorithms that persist a feature-column list
+    (currently just ``xgb``). A drift between train-time and serve-time
+    schemas would silently mis-index features and produce confidently
+    wrong predictions — fail loud here instead.
+    """
+    declared = manifest.get("feature_columns")
+    if declared is None:
+        raise RuntimeError(
+            "xgb manifest missing 'feature_columns' — cannot verify "
+            "column-order stability. Retrain with the current train.py."
+        )
+    if list(declared) != list(columns):
+        only_manifest = set(declared) - set(columns)
+        only_live = set(columns) - set(declared)
+        raise RuntimeError(
+            f"feature_columns mismatch: manifest has {len(declared)} "
+            f"columns, live schema has {len(columns)}. "
+            f"manifest-only: {sorted(only_manifest)[:5]}...; "
+            f"schema-only: {sorted(only_live)[:5]}.... "
+            f"Either the DDXPlus schema changed between train and serve, "
+            f"or the checkpoint was trained against a different subset. "
+            f"Refusing to load."
+        )
+
+
+def _load_agent(
+    algorithm_module: str,
+    schema: dict,
+    n_dis: int,
+    weights_path: Path,
+    device: str,
+):
+    """Dispatch checkpoint loading by ``algorithm_module``.
+
+    Each branch takes the algorithm-appropriate encoder path — torch for
+    typed_basd, joblib for xgb. Callers only see the returned Agent (both
+    branches conform to the same next_action/should_stop/diagnose surface).
+    """
+    if algorithm_module == "typed_basd":
+        return _load_typed_basd_agent(schema, n_dis, weights_path, device)
+    if algorithm_module == "xgb":
+        return _load_xgb_agent(schema, weights_path)
+    raise RuntimeError(
+        f"unknown algorithm_module={algorithm_module!r}; "
+        f"supported: {sorted(_WEIGHTS_FILENAME)!r}"
+    )
+
+
+def _load_typed_basd_agent(schema: dict, n_dis: int, weights_path: Path, device: str):
+    """Load a torch typed-BASD checkpoint."""
     import torch
 
     state = torch.load(weights_path, map_location=device)
@@ -124,6 +218,11 @@ def _load_torch_agent(schema: dict, n_dis: int, weights_path: Path, device: str)
     agent.thres = state.get("thres", agent.thres)
     agent.temp = state.get("temp", agent.temp)
     return agent
+
+
+def _load_xgb_agent(schema: dict, weights_path: Path) -> XgbAgent:
+    """Load a joblib xgb checkpoint. n_dis is derived from the classifier."""
+    return XgbAgent.load(weights_path, schema)
 
 
 def _build_canonical(spec: DatasetSpec, data_dir: Path) -> CanonicalDataset:
@@ -267,12 +366,21 @@ class DDXPlusAdapter:
         for model_id in spec.model_ids:
             model_spec = model_specs[model_id]
             weights_dir = _models_root() / model_spec.weights_subpath
-            manifest = _verify_manifest_chain(model_spec, weights_dir)
+            manifest, weights_path = _verify_manifest_chain(model_spec, weights_dir)
+            _assert_manifest_algorithm_matches_spec(model_spec, manifest)
             _assert_whitelist_matches_manifest(spec, model_spec, manifest)
-            agent = _load_torch_agent(
+            _assert_target_condition_ids_match_manifest(spec, model_spec, manifest)
+            if model_spec.algorithm_module == "xgb":
+                # Only the xgb pipeline persists an explicit feature-column
+                # list — typed_basd's column-order contract is implicit
+                # in the schema-derived TypedEnv layout.
+                columns, _labels, _index = feature_columns_from_schema(canonical.layout)
+                _verify_feature_columns(manifest, columns)
+            agent = _load_agent(
+                model_spec.algorithm_module,
                 canonical.layout,
                 n_dis=n_dis,
-                weights_path=weights_dir / "weights.pt",
+                weights_path=weights_path,
                 device=device,
             )
             models[model_id] = LoadedModel(
@@ -300,8 +408,14 @@ def _assert_whitelist_matches_manifest(
     the pidx built at load time will assign different diseases to the
     same output indices — the model will confidently emit wrong
     differentials in production. Fail loud instead.
+
+    Skipped when ``target_condition_ids`` is set — that's the v3
+    subset-parametric path, which uses a distinct manifest field
+    (``train_params.targets``) and its own validator below.
     """
     if spec.disease_whitelist is None:
+        return
+    if spec.target_condition_ids is not None:
         return
     trained = manifest.get("diseases_trained")
     if trained is None:
@@ -323,6 +437,82 @@ def _assert_whitelist_matches_manifest(
             f"config at a matching checkpoint. Refusing to load — class "
             f"indices would silently misalign."
         )
+
+
+def _assert_target_condition_ids_match_manifest(
+    spec: DatasetSpec, model_spec: ModelSpec, manifest: dict
+) -> None:
+    """Refuse to load when v3 target_condition_ids don't align with the checkpoint.
+
+    v3 checkpoints record ``train_params.targets`` (the ordered list of
+    disease display names the model was trained with) and
+    ``diseases_trained`` = ``[<targets>..., "Other"]``. The wire depends
+    on positional alignment: ``probs[k]`` MUST correspond to
+    ``spec.target_condition_ids[k]``. A mismatch would silently return
+    P(Influenza) where the UI shows Pneumonia.
+
+    Check both:
+    1. ``manifest.diseases_trained`` has exactly ``N+1`` entries with
+       ``Other`` last.
+    2. The first ``N`` entries match ``spec.target_condition_ids`` when
+       normalized to the canonical slug form (lowercase, spaces → -).
+
+    A soft skip when ``train_params.targets`` is absent (checkpoint is
+    from before v3 wiring) — we still catch the class-count mismatch,
+    which is what really matters for correctness.
+    """
+    if spec.target_condition_ids is None:
+        return
+    trained = manifest.get("diseases_trained") or []
+    n_expected = len(spec.target_condition_ids) + 1
+    if len(trained) != n_expected:
+        raise RuntimeError(
+            f"dataset {spec.id!r} vs model {model_spec.id!r}: v3 mode expects "
+            f"``manifest.diseases_trained`` to have {n_expected} entries "
+            f"(N targets + ``Other``), got {len(trained)}: {trained!r}. "
+            f"Retrain with ``--targets`` matching the config, or update the "
+            f"config's ``target_condition_ids`` to match the checkpoint."
+        )
+    if trained[-1] != "Other":
+        raise RuntimeError(
+            f"dataset {spec.id!r} vs model {model_spec.id!r}: v3 checkpoint "
+            f"must have ``Other`` as its trailing class, got {trained[-1]!r}. "
+            f"This checkpoint predates the v3 relabel convention."
+        )
+    # Normalize target display names → slugs for comparison. Case-fold and
+    # replace whitespace with '-' to match the canonical condition slug
+    # convention used in release_conditions.json.
+    manifest_slugs = [
+        _slug_of_display(name)
+        for name in trained[:-1]  # drop Other
+    ]
+    if manifest_slugs != list(spec.target_condition_ids):
+        raise RuntimeError(
+            f"dataset {spec.id!r} vs model {model_spec.id!r}: v3 target order "
+            f"mismatch. config target_condition_ids={spec.target_condition_ids!r}, "
+            f"manifest slugs={manifest_slugs!r} (normalized from "
+            f"``{trained[:-1]!r}``). Positional order matters — probs[k] must "
+            f"match target_condition_ids[k]."
+        )
+
+
+def _slug_of_display(name: str) -> str:
+    """Normalize a DDXPlus display name to the canonical slug form.
+
+    DDXPlus's ``release_conditions.json`` slugs are lowercase with
+    spaces / punctuation replaced or dropped. This helper is a
+    best-effort inverse used only for the manifest-vs-spec check —
+    match the specific transformations used by the canonical builder
+    in ``core/symptoms/datasets/canonical.py`` when adding new targets.
+    """
+    return (
+        name.lower()
+        .replace(" ", "_")
+        .replace("(", "")
+        .replace(")", "")
+        .replace("/", "_")
+        .replace("-", "_")
+    )
 
 
 def _maybe_build_init_catalog(spec, canonical, init_matcher):

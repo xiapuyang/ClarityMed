@@ -33,6 +33,20 @@ DIFFERENTIAL_PROB_THRESHOLD = 0.01
 # without burying the leading diagnosis.
 TOP_K = 5
 
+# v3 synthetic "Other" bucket — used when the dataset declares
+# ``target_condition_ids`` and the classifier's last class is the
+# non-target lump. Neither the DDXPlus canonical catalog nor the i18n
+# store has an entry for this pseudo-condition, so we hand-emit the
+# fields the frontend needs. ``condition_id: "other"`` is a sentinel
+# the UI switches on; ``severity=3`` matches the v3 training placeholder
+# in ``xgb/train.py::_OTHER_CLASS_SEVERITY`` (Moderate — the safest
+# neutral default for a bucket that could contain any non-target).
+_OTHER_CONDITION_ID = "other"
+_OTHER_SEVERITY_PLACEHOLDER = 3
+_OTHER_ICD10 = ""
+_OTHER_DISPLAY_NAME_KEY = "symptoms.card.other.name"
+_OTHER_DISPLAY_NAME_FALLBACK = "Other likely condition"
+
 # Severity ≤ this is "concerning" — used by the severity_override flag
 # during partial-result rendering. Matches the post_process tier check
 # in the plugin (Critical=1, Urgent=2).
@@ -51,9 +65,25 @@ def _evidence_rows(sub: SubSessionState) -> list[EvidenceCollectedRow]:
 def _topk_rows(
     ds: LoadedDataset, probs: np.ndarray, language: str
 ) -> list[DifferentialRow]:
-    """Return the top-K conditions above the display threshold."""
+    """Return the differential rows for the given probs.
+
+    Two dispatch paths based on ``ds.spec.target_condition_ids``:
+
+    * **v3 subset-parametric**: emit exactly ``N+1`` rows in fixed order —
+      the N targets in the config-declared order, then a synthetic
+      ``Other`` row summing the trailing class probability. All rows
+      always emitted (no ``DIFFERENTIAL_PROB_THRESHOLD`` filter) so the
+      frontend can render fixed slots without argmax reordering. Sums to
+      1 within float precision.
+    * **legacy v1/v2**: rank the full pidx classes by probability, keep
+      top-K above ``DIFFERENTIAL_PROB_THRESHOLD``, and localize each via
+      the canonical catalog. Preserves v2 semantics for callers that
+      still use ``disease_whitelist``.
+    """
     if probs.ndim == 2:
         probs = probs[0]
+    if ds.spec.target_condition_ids is not None:
+        return _topk_rows_v3(ds, probs, language)
     eligible = np.where(probs >= DIFFERENTIAL_PROB_THRESHOLD)[0]
     ordered = sorted(eligible.tolist(), key=lambda i: -probs[i])
     rows: list[DifferentialRow] = []
@@ -71,6 +101,51 @@ def _topk_rows(
                 icd10=cond.icd10,
             )
         )
+    return rows
+
+
+def _topk_rows_v3(
+    ds: LoadedDataset, probs: np.ndarray, language: str
+) -> list[DifferentialRow]:
+    """v3 emission: N target rows in fixed order + Other row.
+
+    Expects the model's probs vector to have length ``len(targets) + 1``
+    where index k in ``[0, N)`` is ``P(target_k)`` and index N is
+    ``P(Other)``. The adapter's shape-check at load time (see
+    ``ingest/symptoms/ddxplus/adapter.py::_verify_target_shape``)
+    guarantees this invariant so we can index blindly here.
+    """
+    from claritymed.core.i18n.loader import t
+
+    targets = ds.spec.target_condition_ids or []
+    rows: list[DifferentialRow] = []
+    for k, cond_id in enumerate(targets):
+        cond = ds.canonical.condition_by_id(cond_id)
+        rows.append(
+            DifferentialRow(
+                condition_id=cond.id,
+                condition_idx=cond.idx,
+                condition_name=localize_condition(
+                    ds.canonical, ds.spec, cond.id, language
+                ),
+                probability=float(probs[k]),
+                severity=cond.severity,
+                icd10=cond.icd10,
+            )
+        )
+    other_name = t(_OTHER_DISPLAY_NAME_KEY, lang=language)
+    if other_name == _OTHER_DISPLAY_NAME_KEY:  # missing i18n entry — fall back
+        other_name = _OTHER_DISPLAY_NAME_FALLBACK
+    rows.append(
+        DifferentialRow(
+            condition_id=_OTHER_CONDITION_ID,
+            condition_idx=None,  # Other is synthetic — no pidx entry.
+            condition_name=other_name,
+            probability=float(probs[len(targets)]),
+            severity=_OTHER_SEVERITY_PLACEHOLDER,
+            icd10=_OTHER_ICD10,
+        )
+    )
     return rows
 
 
