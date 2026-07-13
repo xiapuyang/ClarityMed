@@ -116,15 +116,19 @@ def directional_headline(
     severity_tier: SeverityTier,
     condition_name: str,
     language: Language,
-) -> str:
+) -> str | None:
     """Build the tier-appropriate directional headline for one card.
 
     Rank 1 picks from ``symptoms.headline.top.{likely|probably|consider}``
-    by probability. Rank 2+ picks
+    by probability — the directional word adds tier context beyond what
+    the card title's confidence chip carries. Rank 2+ picks
     ``symptoms.headline.also.unlikely_but_rule_out`` when severity is
-    Critical/Urgent AND probability is very low (surfaces the
-    "unlikely but consequences are severe if missed" case); otherwise
-    ``symptoms.headline.also.standard``.
+    Critical/Urgent AND probability is very low (surfaces the "unlikely
+    but consequences are severe if missed" case). All other rank 2+ cards
+    get ``None`` — the previous ``Also consider {condition}`` template
+    only repeated the condition name already shown in the card title
+    (``Pneumonia — Uncertain · 2%``) and cluttered the UI with a bold
+    duplicate line. Renderers must skip a ``None`` headline.
     """
     if rank == 1:
         if probability >= _HEADLINE_LIKELY:
@@ -133,15 +137,17 @@ def directional_headline(
             key = f"{_HEADLINE_KEY}.top.probably"
         else:
             key = f"{_HEADLINE_KEY}.top.consider"
-    else:
-        if (
-            severity_tier in _UNLIKELY_RULE_OUT_TIERS
-            and probability < _UNLIKELY_RULE_OUT_PROB
-        ):
-            key = f"{_HEADLINE_KEY}.also.unlikely_but_rule_out"
-        else:
-            key = f"{_HEADLINE_KEY}.also.standard"
-    return t(key, lang=language, condition=condition_name)
+        return t(key, lang=language, condition=condition_name)
+    if (
+        severity_tier in _UNLIKELY_RULE_OUT_TIERS
+        and probability < _UNLIKELY_RULE_OUT_PROB
+    ):
+        return t(
+            f"{_HEADLINE_KEY}.also.unlikely_but_rule_out",
+            lang=language,
+            condition=condition_name,
+        )
+    return None
 
 
 def _build_card(

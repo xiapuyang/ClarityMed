@@ -50,8 +50,13 @@ symptoms:
       likely: "Likely {condition}"           # rank 1, prob >= 0.60
       probably: "Probably {condition}"       # rank 1, 0.40-0.60
       consider: "Consider {condition}"       # rank 1, < 0.40
+    # Rank 2+ standard headline was removed — the card title already
+    # shows ``{condition_name} — {confidence_label} · {probability}%`` so
+    # "Also consider {condition}" was a bold duplicate. Only the safety
+    # variant remains, for Critical/Urgent low-probability cards where
+    # the "unlikely but rule out" framing carries clinical intent that
+    # the card title alone doesn't convey.
     also:
-      standard: "Also consider {condition}"                # rank 2+
       unlikely_but_rule_out: "Unlikely {condition} (but rule out)"
 
   card:

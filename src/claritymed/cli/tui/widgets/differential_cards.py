@@ -46,13 +46,19 @@ def _card_text(card: DifferentialCard) -> Text:
     """
     txt = Text()
 
-    # Headline + confidence chip on one row. Chip is right-aligned in
-    # spirit but Textual's Static doesn't do inline right-align on a
-    # single Rich Text, so we render `headline    [bucket]` with a
-    # visible separator and let the terminal wrap on narrow widths.
+    # Headline (when present) + confidence chip on one row. Chip is
+    # right-aligned in spirit but Textual's Static doesn't do inline
+    # right-align on a single Rich Text, so we render
+    # ``headline    [bucket]`` with a visible separator and let the
+    # terminal wrap on narrow widths. ``headline`` is ``None`` for
+    # standard rank 2+ cards (see :func:`directional_headline` — the
+    # card title already carries the condition name, so repeating it
+    # here would be a bold duplicate). In that case the confidence chip
+    # leads the row alone.
     bucket_color = _BUCKET_COLOR.get(card.confidence_bucket, "white")
-    txt.append(card.headline, style="bold")
-    txt.append("   ")
+    if card.headline:
+        txt.append(card.headline, style="bold")
+        txt.append("   ")
     txt.append(
         f"[{card.confidence_label} · {int(card.probability * 100)}%]",
         style=f"bold {bucket_color}",

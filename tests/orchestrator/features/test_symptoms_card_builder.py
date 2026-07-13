@@ -78,32 +78,42 @@ def test_headline_rank1_consider():
     assert h == "Consider URTI"
 
 
-def test_headline_rank2_standard():
+def test_headline_rank2_standard_is_none():
+    """Standard rank 2+ headline was removed — card title already carries name."""
     h = directional_headline(2, 0.35, "Moderate", "Bronchitis", "en")
-    assert h == "Also consider Bronchitis"
+    assert h is None
 
 
 def test_headline_rank2_unlikely_but_rule_out_critical():
     """Low-probability rank-2 with Critical severity → rule-out variant."""
     h = directional_headline(2, 0.10, "Critical", "PE", "en")
-    assert "Unlikely" in h and "rule out" in h
+    assert h is not None and "Unlikely" in h and "rule out" in h
 
 
 def test_headline_rank2_unlikely_but_rule_out_urgent():
     h = directional_headline(2, 0.10, "Urgent", "NSTEMI", "en")
-    assert "Unlikely" in h and "rule out" in h
+    assert h is not None and "Unlikely" in h and "rule out" in h
 
 
-def test_headline_rank2_moderate_severity_stays_standard():
-    """Low probability at Moderate severity does NOT get the rule-out variant."""
+def test_headline_rank2_moderate_severity_stays_none():
+    """Low probability at Moderate severity does NOT get the rule-out variant.
+
+    Moderate is below the ``_UNLIKELY_RULE_OUT_TIERS`` bar, so the card
+    falls into the standard rank 2+ path — which now returns ``None``
+    since the previous ``Also consider`` template was removed.
+    """
     h = directional_headline(2, 0.10, "Moderate", "URTI", "en")
-    assert h == "Also consider URTI"
+    assert h is None
 
 
-def test_headline_rank2_high_probability_stays_standard_even_at_critical():
-    """Rule-out variant only fires below the low-probability threshold."""
+def test_headline_rank2_high_probability_stays_none_even_at_critical():
+    """Rule-out variant only fires below the low-probability threshold.
+
+    Above threshold, even a Critical rank-2 falls into the standard
+    path — which now returns ``None``.
+    """
     h = directional_headline(2, 0.55, "Critical", "PE", "en")
-    assert h == "Also consider PE"
+    assert h is None
 
 
 def test_headline_zh_interpolation():

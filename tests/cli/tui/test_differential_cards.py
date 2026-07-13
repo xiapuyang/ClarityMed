@@ -61,6 +61,25 @@ def test_card_text_omits_next_steps_and_citations():
     assert "Peer-reviewed reference" not in plain
 
 
+def test_card_text_skips_none_headline_but_keeps_confidence_chip():
+    """Standard rank 2+ cards have ``headline=None``; renderer must not
+    emit a leading bold line but the confidence chip still shows.
+
+    Before this cut the widget rendered ``Also consider Pneumonia`` bold
+    above the description — a duplicate of the card title. Now the None
+    case falls straight through to the confidence chip.
+    """
+    card = _card(headline=None)
+    plain = _card_text(card).plain
+    assert "Likely Pneumonia" not in plain
+    assert "Also consider" not in plain
+    # Chip + severity + report body still render.
+    assert "Confident" in plain
+    assert "72%" in plain
+    assert "Severity tier: Urgent" in plain
+    assert "Infection of the lung tissue." in plain
+
+
 def test_card_bubble_constructs_without_language():
     card = _card()
     bubble = DifferentialCardBubble(card)

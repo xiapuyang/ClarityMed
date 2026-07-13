@@ -79,3 +79,4 @@ demo/
 hparam.db
 src/claritymed/web/admin_ui/.vite/
 mlruns/
+runs/

@@ -211,7 +211,13 @@ class DifferentialCard(BaseModel):
     # Derived / curated:
     confidence_bucket: ConfidenceBucket
     confidence_label: str = Field(min_length=1)
-    headline: str = Field(min_length=1)
+    # ``None`` for standard rank 2+ cards — the card title already carries
+    # ``{condition_name} — {confidence_label} · {probability}%`` so the
+    # previous ``Also consider {condition}`` template was a bold duplicate.
+    # Rank 1 always has a directional cue (Likely/Probably/Consider); rank
+    # 2+ keeps it only for the Critical/Urgent "unlikely but rule out"
+    # safety variant. Renderers must skip a ``None`` headline entirely.
+    headline: str | None = Field(default=None, min_length=1)
     report: str = Field(min_length=1)
 
 

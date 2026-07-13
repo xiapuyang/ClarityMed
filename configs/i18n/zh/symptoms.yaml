@@ -48,8 +48,12 @@ symptoms:
       likely: "很可能是{condition}"          # rank 1、概率 ≥ 0.60
       probably: "可能是{condition}"          # rank 1、0.40-0.60
       consider: "{condition}"                 # rank 1、< 0.40
+    # rank 2+ 的 standard 变体已下线 —— 卡片标题已经显示
+    # ``{condition_name} — {confidence_label} · {probability}%``，
+    # "另需考虑{condition}" 只是把条件名重复了一遍，造成粗体冗余。
+    # 只保留高严重度低概率场景下 "unlikely but rule out" 的安全变体，
+    # 那种情况下 headline 带的临床意图是标题本身给不出的。
     also:
-      standard: "另需考虑{condition}"                     # rank 2+
       unlikely_but_rule_out: "{condition}（但需排查）"
 
   card:
