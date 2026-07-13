@@ -477,6 +477,42 @@ def _diagnose(ds: LoadedDataset, sub: SubSessionState) -> np.ndarray:
     return probs
 
 
+# Number of top classes emitted in the ``probs=`` field of the session-exit
+# INFO logs. Three matches the v3 subset-parametric layout (Pne / Inf /
+# Other) and stays tolerable for larger legacy datasets — enough to spot-
+# check decision correctness without turning the log line into a wall of
+# noise. Grep-friendly format is ``id:prob,id:prob,id:prob``.
+_LOG_PROBS_TOPK = 3
+
+
+def _format_probs_topk(ds: LoadedDataset, probs: np.ndarray) -> str:
+    """Render the top-K posterior as a grep-friendly ``id:prob`` list.
+
+    Used in the ``session done`` / ``session cap`` / ``session cancelled``
+    INFO lines so operators can eyeball the model's final call against a
+    known-good Pneumonia / Influenza sample. v3 subset-parametric
+    datasets emit a synthetic trailing ``Other`` class with no canonical
+    entry — rendered as the literal ``other`` slug. Legacy datasets
+    resolve every index through :meth:`condition_by_idx`.
+    """
+    if probs.ndim == 2:
+        probs = probs[0]
+    targets = ds.spec.target_condition_ids
+    order = np.argsort(-probs)[:_LOG_PROBS_TOPK]
+    parts: list[str] = []
+    for i in order:
+        i = int(i)
+        if targets is not None:
+            name = targets[i] if i < len(targets) else "other"
+        else:
+            try:
+                name = ds.canonical.condition_by_idx(i).id
+            except (KeyError, IndexError):
+                name = f"idx{i}"
+        parts.append(f"{name}:{float(probs[i]):.3f}")
+    return ",".join(parts)
+
+
 # --- routes ---------------------------------------------------------------
 
 
@@ -604,10 +640,11 @@ def turn(
         diff, evidence_rows = format_differential(ds, sub, probs)
         SERVER_STATE.sessions.pop(session_id, None)
         logger.info(
-            "session done: session=%s turn=%d differential=%d req_id=%s",
+            "session done: session=%s turn=%d differential=%d probs=%s req_id=%s",
             session_id,
             sub.turn_count,
             len(diff),
+            _format_probs_topk(ds, probs),
             req_id or "-",
         )
         return TurnResponse(
@@ -623,10 +660,11 @@ def turn(
         outcome = format_cancel_outcome(ds, sub, probs)
         SERVER_STATE.sessions.pop(session_id, None)
         logger.info(
-            "session cap: session=%s turn=%d confidence=%.3f req_id=%s",
+            "session cap: session=%s turn=%d confidence=%.3f probs=%s req_id=%s",
             session_id,
             outcome["turn_count"],
             outcome["partial_confidence"],
+            _format_probs_topk(ds, probs),
             req_id or "-",
         )
         return TurnResponse(
@@ -642,7 +680,11 @@ def turn(
     question, ev_idx = _try_render_question(ds, sub, next_ev_idx)
     sub.last_ev_idx = ev_idx
     next_ev = ds.canonical.evidence_by_idx(ev_idx)
-    logger.debug(
+    # Upgraded from DEBUG so every asked question lands in the standard
+    # INFO stream — needed for the "sample a Pneumonia/Influenza case,
+    # verify the question sequence" spot-check workflow. One line per
+    # turn per active session; volume stays bounded by maxstep.
+    logger.info(
         "session turn %d: session=%s next_evidence=%s req_id=%s",
         sub.turn_count,
         session_id,
@@ -675,11 +717,12 @@ def cancel_session(
     req_id = http_req.headers.get("X-Request-ID", "")
     logger.info(
         "session cancelled: session=%s dataset=%s turn=%d "
-        "confidence=%.3f threshold_met=%s severity_override=%s req_id=%s",
+        "confidence=%.3f probs=%s threshold_met=%s severity_override=%s req_id=%s",
         session_id,
         dataset_id,
         outcome["turn_count"],
         outcome["partial_confidence"],
+        _format_probs_topk(ds, probs),
         outcome["meets_confidence_threshold"],
         outcome["severity_override"],
         req_id or "-",

@@ -605,3 +605,164 @@ def test_start_session_no_injection_when_below_threshold(client: TestClient) -> 
     assert response.status_code == 200
     sub = SERVER_STATE.sessions[response.json()["session_id"]]
     assert sub.evidence_collected == []
+
+
+# --- INFO logging for spot-check / audit workflows -----------------------
+
+
+def test_turn_done_log_carries_probs_field(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ``session done`` INFO log must include the top-K posterior.
+
+    Operators grep for ``session done: session=<id>`` to spot-check
+    Pneumonia / Influenza replays against the offline verifier; without
+    the ``probs=`` field, the log tells them a session finished but not
+    what the model actually decided.
+    """
+    agent = _StubAgent(
+        n_evidences=3,
+        probs=np.array([0.85, 0.1, 0.05]),
+        stop_after=1,
+    )
+    SERVER_STATE.datasets["testds"] = _loaded_dataset(agent=agent)
+    SERVER_STATE.config_loaded = True
+
+    start = client.post("/v1/datasets/testds/sessions", json=_start_payload()).json()
+    session_id = start["session_id"]
+    with caplog.at_level("INFO", logger="claritymed.servers.symptoms"):
+        client.post(
+            f"/v1/datasets/testds/sessions/{session_id}/turn",
+            json={"answer": "Yes", "language": "en"},
+        )
+    done_lines = [
+        r for r in caplog.records if r.getMessage().startswith("session done:")
+    ]
+    assert done_lines, "expected exactly one 'session done' log line"
+    msg = done_lines[0].getMessage()
+    # Format: id:prob,id:prob,id:prob — leading class must be the argmax.
+    assert "probs=critical_disease:0.850" in msg
+    assert "moderate_disease:0.100" in msg
+    assert "mild_disease:0.050" in msg
+
+
+def test_turn_next_evidence_logged_at_info_level(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Per-turn ``next_evidence`` must land at INFO for spot-check greps.
+
+    Previously logged at DEBUG, which most operator log pipelines drop.
+    Upgraded so a full session's asked-question sequence is recoverable
+    from the standard log stream without turning on verbose debug.
+    """
+    agent = _StubAgent(
+        n_evidences=3,
+        probs=np.array([0.4, 0.3, 0.3]),
+        stop_after=10,
+    )
+    SERVER_STATE.datasets["testds"] = _loaded_dataset(agent=agent, maxstep=8)
+    SERVER_STATE.config_loaded = True
+
+    start = client.post("/v1/datasets/testds/sessions", json=_start_payload()).json()
+    session_id = start["session_id"]
+    with caplog.at_level("INFO", logger="claritymed.servers.symptoms"):
+        client.post(
+            f"/v1/datasets/testds/sessions/{session_id}/turn",
+            json={"answer": "Yes", "language": "en"},
+        )
+    turn_lines = [
+        r
+        for r in caplog.records
+        if "session turn" in r.getMessage() and r.levelname == "INFO"
+    ]
+    assert turn_lines, "per-turn next_evidence log must fire at INFO"
+    assert "next_evidence=E_" in turn_lines[0].getMessage()
+
+
+def test_cancel_log_carries_probs_field(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``session cancelled`` INFO log includes probs + threshold_met + override."""
+    agent = _StubAgent(
+        n_evidences=3,
+        probs=np.array([0.25, 0.35, 0.4]),  # severity-1 has prob 0.25 → override
+        stop_after=100,
+    )
+    SERVER_STATE.datasets["testds"] = _loaded_dataset(agent=agent)
+    SERVER_STATE.config_loaded = True
+    start = client.post("/v1/datasets/testds/sessions", json=_start_payload()).json()
+    session_id = start["session_id"]
+    with caplog.at_level("INFO", logger="claritymed.servers.symptoms"):
+        client.delete(f"/v1/datasets/testds/sessions/{session_id}")
+    cancel_lines = [
+        r for r in caplog.records if r.getMessage().startswith("session cancelled:")
+    ]
+    assert cancel_lines
+    msg = cancel_lines[0].getMessage()
+    # Argmax is mild_disease (idx 2, prob 0.4) → leads the probs list.
+    assert "probs=mild_disease:0.400" in msg
+    assert "moderate_disease:0.350" in msg
+    assert "critical_disease:0.250" in msg
+
+
+def test_cap_log_carries_probs_field(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``session cap`` INFO log includes probs alongside the confidence field."""
+    agent = _StubAgent(
+        n_evidences=3,
+        probs=np.array([0.5, 0.3, 0.2]),
+        stop_after=100,
+    )
+    SERVER_STATE.datasets["testds"] = _loaded_dataset(agent=agent, maxstep=2)
+    SERVER_STATE.config_loaded = True
+    start = client.post("/v1/datasets/testds/sessions", json=_start_payload()).json()
+    session_id = start["session_id"]
+    client.post(
+        f"/v1/datasets/testds/sessions/{session_id}/turn",
+        json={"answer": "Yes", "language": "en"},
+    )
+    with caplog.at_level("INFO", logger="claritymed.servers.symptoms"):
+        client.post(
+            f"/v1/datasets/testds/sessions/{session_id}/turn",
+            json={"answer": "Yes", "language": "en"},
+        )
+    cap_lines = [r for r in caplog.records if r.getMessage().startswith("session cap:")]
+    assert cap_lines
+    msg = cap_lines[0].getMessage()
+    assert "probs=critical_disease:0.500" in msg
+    assert "moderate_disease:0.300" in msg
+    assert "mild_disease:0.200" in msg
+
+
+def test_format_probs_topk_uses_target_slugs_for_v3_subset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v3 subset-parametric datasets render the trailing bucket as ``other``.
+
+    ``target_condition_ids`` on the spec means the classifier emits
+    ``N+1`` classes: the first N are targets by slug order, the last is
+    a synthetic Other bucket. The log formatter must use the slug list
+    (not ``condition_by_idx``, which would resolve to a real disease at
+    that pidx position and mislabel Other as e.g. ``pneumonia``).
+    """
+    ds = _loaded_dataset(
+        agent=_StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
+    )
+    # Retrofit the spec with a v3 target list — mirrors what the
+    # ddxplus_pneumonia_flu dataset config declares in configs/symptoms.yaml.
+    monkeypatch.setattr(
+        ds.spec.__class__,
+        "target_condition_ids",
+        ("critical_disease", "moderate_disease"),
+        raising=False,
+    )
+    object.__setattr__(
+        ds.spec, "target_condition_ids", ("critical_disease", "moderate_disease")
+    )
+    probs = np.array([0.05, 0.10, 0.85])  # Other dominates
+    formatted = app_mod._format_probs_topk(ds, probs)
+    # Argmax is the trailing Other bucket at index 2.
+    assert formatted.startswith("other:0.850")
+    assert "moderate_disease:0.100" in formatted
+    assert "critical_disease:0.050" in formatted
