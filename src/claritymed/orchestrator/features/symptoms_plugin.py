@@ -985,6 +985,20 @@ class SymptomsFeature:
             payload_kind="symptoms.session.completed",
             diff_key="differential",
         )
+        # Pick the actual argmax — v3 subset-parametric datasets ship the
+        # differential in fixed slot order (targets first, ``Other`` last)
+        # so the frontend can render N+1 cards without argmax reordering.
+        # That means ``diff_raw[0]`` is the leading target slot, NOT the
+        # highest-probability row: when ``P(Other) = 0.97`` the row-0
+        # target may sit at 0.02, and reporting ``top_condition_id`` as
+        # that target misleads every dashboard consuming this event.
+        # Explicit argmax on ``probability`` keeps the field honest for
+        # legacy (already-sorted) and v3 (slot-ordered) datasets alike.
+        top_id = (
+            max(diff_raw, key=lambda r: r["probability"])["condition_id"]
+            if diff_raw
+            else None
+        )
         audit_event(
             "symptoms.session.completed",
             {
@@ -993,7 +1007,7 @@ class SymptomsFeature:
                 "session_id": "<elided>",
                 "turns_used": turn_resp.turn_count,
                 "severity_tier": _tier_for(turn_resp.differential),
-                "top_condition_id": diff_raw[0]["condition_id"] if diff_raw else None,
+                "top_condition_id": top_id,
             },
         )
         return {

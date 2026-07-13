@@ -897,6 +897,83 @@ async def test_handle_done_writes_phi_payload(monkeypatch: pytest.MonkeyPatch) -
     assert len(payload["transcript"]) >= 1
 
 
+async def test_handle_done_top_condition_id_picks_argmax_not_slot0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``top_condition_id`` in the audit event must be the argmax by prob.
+
+    v3 subset-parametric datasets ship the differential in fixed slot
+    order — ``[Pneumonia, Influenza, Other]`` — so the frontend can
+    render N+1 cards without argmax reordering. That means a P(Other)-
+    dominant session would still have ``diff[0] == Pneumonia`` even
+    when the model is confident this is NEITHER target. Reporting
+    ``top_condition_id="pneumonia"`` in that case corrupts every
+    downstream dashboard keyed on this field.
+
+    This test locks the fix at the audit-event site: with a
+    v3-shaped diff where slot 0 is Pneumonia@0.02 and slot 2 is
+    Other@0.96, the audit event must carry ``top_condition_id="other"``.
+    """
+    captured: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "claritymed.orchestrator.features.symptoms_plugin.write_payload",
+        lambda uid, req_id, payload: None,
+    )
+    monkeypatch.setattr(
+        "claritymed.orchestrator.features.symptoms_plugin.audit_event",
+        lambda kind, payload: captured.append((kind, payload)),
+    )
+    elig = _StubEligibility(
+        EligibilityResult(eligible=True, reason="in_scope", confidence=0.7)
+    )
+    channel = _StubChannel([_yes(), _initial_batch_answer(), _turn_answer("Yes")])
+    # v3-shape: fixed slot order Pne / Inf / Other, Other dominates.
+    diff = [
+        DifferentialRow(
+            condition_id="pneumonia",
+            condition_idx=0,
+            condition_name="Pneumonia",
+            probability=0.02,
+            severity=3,
+        ),
+        DifferentialRow(
+            condition_id="influenza",
+            condition_idx=1,
+            condition_name="Influenza",
+            probability=0.01,
+            severity=3,
+        ),
+        DifferentialRow(
+            condition_id="other",
+            condition_idx=None,
+            condition_name="Other likely condition",
+            probability=0.97,
+            severity=3,
+        ),
+    ]
+    done = TurnResponse(
+        done=True, differential=diff, evidence_collected=[], turn_count=2
+    )
+    client = _StubClient(start=_start_resp(), turns=[done])
+    plugin = _make_plugin(eligibility=elig, client=client)
+    deps = _deps()
+    deps.prompt_channel = channel
+    token = apply_context(request_id=_REQUEST_ID, user_id=_USER_ID, language="en")
+    try:
+        await plugin._predict(SimpleNamespace(deps=deps), complaint="chest pain")
+    finally:
+        from claritymed.context import reset_context
+
+        reset_context(token)
+    completed = [
+        payload for kind, payload in captured if kind == "symptoms.session.completed"
+    ]
+    assert len(completed) == 1
+    # Bug: previously ``diff[0]["condition_id"] == "pneumonia"`` regardless
+    # of probability. Fix: argmax picks the true winner — ``other``.
+    assert completed[0]["top_condition_id"] == "other"
+
+
 async def test_handle_cap_writes_phi_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cap-hit session writes partial_differential + transcript to the PHI payload."""
     written: list[dict] = []
