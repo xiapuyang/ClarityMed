@@ -12,7 +12,7 @@
     "restart_required": "Restart the backend to apply changes."
   },
   "nav": {
-    "overview": "X",
+    "overview": "Overview",
     "rag": "RAG Corpus",
     "benchmark": "Benchmark",
     "models": "Models",

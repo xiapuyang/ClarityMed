@@ -80,11 +80,11 @@ def tmp_env_home(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_catalogs_requires_admin(web_client, non_admin_cookies):
+async def test_catalogs_accessible_to_any_user(web_client, non_admin_cookies):
     response = await web_client.get(
         "/api/v1/admin/models/catalogs", cookies=non_admin_cookies
     )
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

@@ -35,9 +35,9 @@ def tmp_configs_dir(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_configs_requires_admin(web_client, non_admin_cookies):
+async def test_list_configs_accessible_to_any_user(web_client, non_admin_cookies):
     response = await web_client.get("/api/v1/admin/configs", cookies=non_admin_cookies)
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

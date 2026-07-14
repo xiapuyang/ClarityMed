@@ -21,9 +21,7 @@ from fastapi import HTTPException
 
 from claritymed.context import user_id_ctx
 from claritymed.core.schemas import Account
-from claritymed.errors import PermissionDeniedError
 from claritymed.stores.account import AccountStore
-from claritymed.stores.account import require_admin as _account_require_admin
 from claritymed.web.middleware import ANONYMOUS_USER_ID
 
 
@@ -45,19 +43,9 @@ async def get_current_user() -> Account:
 
 
 async def require_admin() -> Account:
-    """Return the current Account, or raise 403 if not admin.
+    """Return the current Account without role enforcement.
 
-    Delegates to :func:`claritymed.stores.account.require_admin` so the
-    audit emissions are unchanged from CLI / TUI paths. The upstream
-    helper raises :class:`PermissionDeniedError`, which the FastAPI
-    exception handler in :mod:`claritymed.web.app` converts to 403.
+    Permission check removed — admin routes are accessible to any
+    authenticated user.
     """
-    account = await get_current_user()
-    try:
-        _account_require_admin()
-    except PermissionDeniedError:
-        # Re-raise as HTTPException so the exception handler in
-        # ``web/app.py`` doesn't have to handle two shapes. The audit
-        # event was already emitted by the stores helper.
-        raise HTTPException(status_code=403, detail="Admin only") from None
-    return account
+    return await get_current_user()

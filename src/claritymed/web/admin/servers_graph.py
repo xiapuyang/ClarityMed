@@ -125,6 +125,25 @@ NODES_PROCESS: tuple[ServerNode, ...] = (
         health_path="/admin/",
         depends_on=("claritymed_web",),
     ),
+    # Qdrant vector store — RAG retrieval reads and writes here.
+    ServerNode(
+        id="qdrant",
+        kind="process",
+        label="qdrant",
+        port=6333,
+        port_env="CLARITYMED_QDRANT_PORT",
+        health_path="/healthz",
+    ),
+    # Arize Phoenix — OpenTelemetry tracing and LLM observability.
+    # HTTP UI / REST API on 6006; gRPC collector on 4317.
+    ServerNode(
+        id="phoenix",
+        kind="process",
+        label="phoenix",
+        port=6006,
+        port_env="CLARITYMED_PHOENIX_PORT",
+        health_path="/healthz",
+    ),
 )
 
 # Logical pseudo-nodes — operators see "what breaks if X dies".
@@ -133,7 +152,7 @@ NODES_LOGICAL: tuple[ServerNode, ...] = (
         id="rag",
         kind="logical",
         label="RAG",
-        depends_on=("embedder", "reranker"),
+        depends_on=("embedder", "reranker", "qdrant"),
     ),
     ServerNode(
         id="chat",

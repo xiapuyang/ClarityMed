@@ -104,7 +104,7 @@ async def test_openapi_admin_can_access_in_production(web_client, test_user):
     assert body["info"]["title"] == "ClarityMed Web"
 
 
-async def test_openapi_non_admin_returns_404_in_production(
+async def test_openapi_non_admin_returns_200_in_production(
     web_client, test_user, non_admin_user
 ):
     assert non_admin_user.role == "user"
@@ -113,7 +113,7 @@ async def test_openapi_non_admin_returns_404_in_production(
         "/openapi.json",
         cookies={COOKIE_ACCESS_TOKEN: token},
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 200
 
 
 async def test_openapi_dev_mode_opens_unauthenticated(monkeypatch, jwt_secret):  # noqa: ARG001

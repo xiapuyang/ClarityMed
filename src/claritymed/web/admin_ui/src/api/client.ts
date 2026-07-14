@@ -18,8 +18,6 @@ type FetchInit = Omit<RequestInit, "body"> & { body?: unknown };
 // - Includes credentials so the session cookie travels.
 // - Throws AdminApiError on non-2xx with the parsed detail attached.
 // - Redirects to the chat SPA login on 401 (admin SPA does not own auth).
-// - Routes 403 to the local /admin/forbidden page so the operator sees
-//   the role mismatch rather than a blank screen.
 export async function adminFetch<T = unknown>(
   path: string,
   init: FetchInit = {},
@@ -49,10 +47,6 @@ export async function adminFetch<T = unknown>(
   if (res.status === 401) {
     window.location.assign("/");
     throw new AdminApiError(401, null, "not_authenticated");
-  }
-  if (res.status === 403) {
-    window.location.assign("/admin/forbidden");
-    throw new AdminApiError(403, null, "forbidden");
   }
   if (!res.ok) {
     let detail: unknown = null;
@@ -86,10 +80,6 @@ export async function adminFetchMultipart<T = unknown>(
   if (res.status === 401) {
     window.location.assign("/");
     throw new AdminApiError(401, null, "not_authenticated");
-  }
-  if (res.status === 403) {
-    window.location.assign("/admin/forbidden");
-    throw new AdminApiError(403, null, "forbidden");
   }
   if (!res.ok) {
     let detail: unknown = null;

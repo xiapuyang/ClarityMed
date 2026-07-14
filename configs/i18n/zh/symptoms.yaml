@@ -66,12 +66,22 @@ symptoms:
       cancelled_no_result: "追问在模型收敛前已结束，暂无可靠的鉴别诊断可展示——如果可以，多回答几个问题再试一次。"
       session_expired: "追问会话已超时，暂无可靠的鉴别诊断可展示——请再试一次。"
     # v3 subset-parametric ``Other`` 类的显示文案 —— 当数据集设置
-    # ``target_condition_ids`` 时，wire 会额外产出一个合成的 Other
-    # 卡片。它不是真实的 DDXPlus 疾病，所以不在 symptoms_conditions.yaml
-    # 里；用这里的文案渲染。
+    # ``target_condition_ids`` 时，wire 会产出一张合成的 Other 卡片，
+    # card builder 用这里的三个 key 拼出对应的 ``ConditionEntry``（见
+    # ``symptoms_card_builder._other_condition_entry``）。不是真实的
+    # DDXPlus 疾病，所以不在 symptoms_conditions.yaml 里。
+    #
+    # * ``name``   —— 卡片 display_name（同时也是
+    #                servers/symptoms/differential.py::_topk_rows_v3
+    #                产出的 DifferentialRow.condition_name）。
+    # * ``report`` —— 2-4 句面向患者的解释，说明模型为什么落在这个
+    #                桶而不是任一 target。
+    # * ``suggestion`` —— 下一步行动建议（会汇总进 LLM 的总结段，
+    #                    不逐卡渲染）。
     other:
       name: "其他可能的情况"
-      description: "症状表现不太像两个追踪目标疾病——很可能是其他病因，建议就诊做更广的鉴别评估。"
+      report: "症状表现不太像两个追踪目标疾病——很可能是这个模型追踪范围以外的病因。"
+      suggestion: "建议就诊做更广的鉴别评估——这个模型只覆盖两个追踪目标，无法确诊或排除范围以外的任何病。"
     # 卡片本身只渲染 headline + report。次日汇总的下一步建议和
     # 权威引用由 LLM 依 symptoms_final_reply 提示写成的摘要段落
     # 承担，而不是逐卡展示（避免噪音 + 保留 LLM 组织语言的能力）。

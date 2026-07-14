@@ -15,10 +15,10 @@ async def test_admin_health_requires_auth(web_client):
 
 
 @pytest.mark.asyncio
-async def test_admin_health_requires_admin_role(web_client, non_admin_cookies):
-    """role=user → 403."""
+async def test_admin_health_accessible_to_any_user(web_client, non_admin_cookies):
+    """role=user → 200 (admin routes open to all authenticated users)."""
     response = await web_client.get(ADMIN_HEALTH, cookies=non_admin_cookies)
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

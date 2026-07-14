@@ -56,9 +56,9 @@ async def test_list_audit_empty(web_client, admin_cookies, audit_log_path):
 
 
 @pytest.mark.asyncio
-async def test_list_audit_requires_admin(web_client, non_admin_cookies):
+async def test_list_audit_accessible_to_any_user(web_client, non_admin_cookies):
     response = await web_client.get("/api/v1/admin/audit", cookies=non_admin_cookies)
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

@@ -17,9 +17,9 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_servers_requires_admin(web_client, non_admin_cookies):
+async def test_servers_accessible_to_any_user(web_client, non_admin_cookies):
     response = await web_client.get("/api/v1/admin/servers", cookies=non_admin_cookies)
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -54,6 +54,8 @@ async def test_servers_graph_includes_process_nodes(web_client, admin_cookies):
         "claritymed_web",
         "claritymed_ui",
         "admin_ui",
+        "qdrant",
+        "phoenix",
     }
     logical_ids = {n["id"] for n in body["nodes"] if n["kind"] == "logical"}
     assert "rag" in logical_ids

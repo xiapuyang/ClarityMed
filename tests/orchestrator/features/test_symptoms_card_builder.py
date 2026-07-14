@@ -306,6 +306,59 @@ def test_build_event_severity_override_case_e(catalog):
     assert "Unlikely" in ev.cards[1].headline and "rule out" in ev.cards[1].headline
 
 
+def test_build_event_renders_synthetic_other_card_from_i18n(catalog, caplog):
+    """v3 subset-parametric ``other`` row renders as a card, not a warning.
+
+    The wire emits ``condition_id="other"`` for the trailing synthetic
+    bucket when the dataset declares ``target_condition_ids``. That
+    slug has no ``symptoms_conditions.yaml`` entry — until this fix,
+    the card builder logged a ``no catalog entry`` warning and skipped
+    the card. Users then saw only Pneumonia + Influenza cards even
+    when P(Other) dominated, hiding the model's actual leading call.
+
+    Regression lock: with a v3-shape diff where Other leads by
+    probability, the event carries an Other card built from
+    ``symptoms.card.other.{name,report,suggestion}``.
+    """
+    rows = [
+        _row("pneumonia", 0.02, 3),
+        _row("influenza", 0.01, 3),
+        _row("other", 0.97, 3),
+    ]
+    with caplog.at_level("WARNING"):
+        ev = build_differential_ready(
+            {"eligible": True, "_raw_differential": rows},
+            catalog=catalog,
+            language="en",
+            top_n_cap=5,
+        )
+    # Sorted by probability → Other leads.
+    assert ev is not None
+    assert [c.condition_id for c in ev.cards] == ["other", "pneumonia", "influenza"]
+    other_card = ev.cards[0]
+    assert other_card.condition_name == "Another likely condition"
+    assert other_card.report
+    # Must NOT trigger the "no catalog entry" warning path.
+    assert not any(
+        "no catalog entry for 'other'" in rec.message for rec in caplog.records
+    )
+
+
+def test_build_event_synthetic_other_card_zh(catalog):
+    """Same Other-card synthesis for Chinese — uses the zh i18n entries."""
+    rows = [_row("other", 0.90, 3)]
+    ev = build_differential_ready(
+        {"eligible": True, "_raw_differential": rows},
+        catalog=catalog,
+        language="zh",
+        top_n_cap=3,
+    )
+    assert ev is not None
+    assert len(ev.cards) == 1
+    # Chinese ``symptoms.card.other.name`` = "其他可能的情况"
+    assert ev.cards[0].condition_name == "其他可能的情况"
+
+
 def test_build_event_zh_uses_zh_catalog_and_labels(catalog):
     rows = [_row("pneumonia", 0.72, 2)]
     ev = build_differential_ready(

@@ -99,11 +99,11 @@ def tmp_retrieval(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rag_collections_requires_admin(web_client, non_admin_cookies):
+async def test_rag_collections_accessible_to_any_user(web_client, non_admin_cookies):
     response = await web_client.get(
         "/api/v1/admin/rag/collections", cookies=non_admin_cookies
     )
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -194,7 +194,9 @@ async def test_upsert_rejects_invalid_metadata_json(
 
 
 @pytest.mark.asyncio
-async def test_upsert_requires_admin(web_client, non_admin_cookies, tmp_retrieval):
+async def test_upsert_accessible_to_any_user(
+    web_client, non_admin_cookies, tmp_retrieval
+):
     response = await web_client.post(
         "/api/v1/admin/rag/collections/upsert",
         cookies=non_admin_cookies,
@@ -202,7 +204,7 @@ async def test_upsert_requires_admin(web_client, non_admin_cookies, tmp_retrieva
         data={"metadata": json.dumps({"name": "good_name"})},
         files={"files": ("note.txt", b"x", "text/plain")},
     )
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

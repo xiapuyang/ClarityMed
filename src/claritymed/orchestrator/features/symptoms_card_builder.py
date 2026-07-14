@@ -66,6 +66,17 @@ _CONFIDENCE_LABEL_KEY = "symptoms.confidence.labels"
 _HEADLINE_KEY = "symptoms.headline"
 _BANNER_KEY_ROOT = "symptoms.card.banner"
 
+# v3 subset-parametric ``Other`` sentinel. The wire
+# (``servers/symptoms/differential.py::_topk_rows_v3``) emits a
+# trailing row with ``condition_id == _OTHER_SENTINEL`` whenever the
+# dataset declares ``target_condition_ids``. That row has no entry in
+# ``symptoms_conditions.yaml`` — it's a synthetic bucket, not a real
+# DDXPlus condition. The card builder synthesizes its
+# :class:`ConditionEntry` from ``symptoms.card.other.{name,report,
+# suggestion}`` at runtime instead of catalog lookup.
+_OTHER_SENTINEL = "other"
+_OTHER_I18N_ROOT = "symptoms.card.other"
+
 # Fallback thresholds when i18n is missing or malformed. Matches the
 # EN defaults in configs/i18n/en/symptoms.yaml — kept in code as a
 # defensive default so a stripped-down i18n file cannot silently
@@ -176,6 +187,44 @@ def _build_card(
     )
 
 
+def _other_condition_entry(language: Language) -> ConditionEntry | None:
+    """Synthesize the ``ConditionEntry`` for the v3 synthetic ``Other`` bucket.
+
+    The ``other`` row is not a DDXPlus condition, so it's not in
+    ``symptoms_conditions.yaml``. Instead, its display strings live under
+    ``symptoms.card.other.{name,report,suggestion}`` in the runtime i18n
+    file. Returns ``None`` if any of the three keys is missing so the
+    caller falls into the same "no catalog entry" warning path that any
+    other missing condition triggers — surfaces a bad i18n edit instead
+    of rendering a card with the raw key strings.
+    """
+    display_name = t(f"{_OTHER_I18N_ROOT}.name", lang=language)
+    report = t(f"{_OTHER_I18N_ROOT}.report", lang=language)
+    suggestion = t(f"{_OTHER_I18N_ROOT}.suggestion", lang=language)
+    # ``t`` echoes the key back when missing — sentinel-check by prefix
+    # so a legitimate string that happens to contain the key doesn't
+    # false-negative.
+    for key, value in (
+        ("name", display_name),
+        ("report", report),
+        ("suggestion", suggestion),
+    ):
+        if value.startswith(_OTHER_I18N_ROOT):
+            logger.warning(
+                "symptoms card builder: missing i18n key %s.%s for lang=%s; "
+                "cannot synthesize Other condition entry",
+                _OTHER_I18N_ROOT,
+                key,
+                language,
+            )
+            return None
+    return ConditionEntry(
+        display_name=display_name,
+        report=report,
+        suggestion=suggestion,
+    )
+
+
 def _pick_rows_for_cards(result: dict, top_n_cap: int) -> list[DifferentialRow]:
     """Pick which raw rows the cards will render.
 
@@ -264,7 +313,10 @@ def build_differential_ready(
     rows = _pick_rows_for_cards(result, top_n_cap)
     cards: list[DifferentialCard] = []
     for rank, row in enumerate(rows, start=1):
-        entry = catalog.get(row.condition_id, language)
+        if row.condition_id == _OTHER_SENTINEL:
+            entry = _other_condition_entry(language)
+        else:
+            entry = catalog.get(row.condition_id, language)
         if entry is None:
             logger.warning(
                 "symptoms card builder: no catalog entry for %r in %s; "
