@@ -54,6 +54,11 @@
 
 set -euo pipefail
 
+# All HuggingFace models (SapBERT, BiomedCLIP) are pre-cached locally.
+# Disable the remote version-check so huggingface_hub doesn't time out
+# when huggingface.co is unreachable.
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+
 HOME_DIR="${CLARITYMED_HOME:-$HOME/.claritymed}"
 LOG_DIR="${CLARITYMED_LOG_DIR:-$HOME_DIR/logs}"
 RUN_DIR="$HOME_DIR/run"

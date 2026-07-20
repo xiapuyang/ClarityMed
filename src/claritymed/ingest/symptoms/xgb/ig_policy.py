@@ -93,6 +93,7 @@ def information_gain_per_column(
     marginals: np.ndarray,
     smoothing: float = 0.0,
     class_projection: ClassProjection | None = None,
+    recall_weight: float = 0.0,
 ) -> np.ndarray:
     """Batched per-column IG for a single partial state.
 
@@ -116,6 +117,12 @@ def information_gain_per_column(
     budget on tasks like "surface P(pneumonia) + P(influenza) honestly
     but stop asking the moment the target vs non-target decision is
     settled".
+
+    ``recall_weight`` adds a bonus proportional to the expected absolute
+    shift in aggregate target-class probability (all projected buckets
+    except the trailing Other bucket). Only active when both
+    ``recall_weight > 0`` and ``class_projection`` is set — without a
+    projection there is no unambiguous "target" bucket to track.
     """
     u = len(unasked_columns)
     if u == 0:
@@ -143,7 +150,22 @@ def information_gain_per_column(
 
     p1 = np.clip(marginals[unasked_columns] + smoothing, 0.0, 1.0)
     p0 = 1.0 - p1
-    return (h_now - p1 * h_yes - p0 * h_no).astype(np.float32)
+    ig = (h_now - p1 * h_yes - p0 * h_no).astype(np.float32)
+
+    if recall_weight > 0.0 and class_projection is not None:
+        # Bonus for expected absolute shift in P(target) = P(all buckets
+        # except the trailing Other bucket). Biases the policy toward
+        # features that move P(Pne)+P(Flu) rather than those that only
+        # distinguish within the Other bucket.
+        p_target_now = float(probs_now[:-1].sum())
+        p_target_yes = probs[:u, :-1].sum(axis=1)
+        p_target_no = probs[u:, :-1].sum(axis=1)
+        delta = p1 * np.abs(p_target_yes - p_target_now) + p0 * np.abs(
+            p_target_no - p_target_now
+        )
+        ig += (recall_weight * delta).astype(np.float32)
+
+    return ig
 
 
 def information_gain_per_evidence(
@@ -154,6 +176,7 @@ def information_gain_per_evidence(
     marginals: np.ndarray,
     smoothing: float = 0.0,
     class_projection: ClassProjection | None = None,
+    recall_weight: float = 0.0,
 ) -> np.ndarray:
     """Aggregate column-level IG into per-evidence scores.
 
@@ -184,6 +207,7 @@ def information_gain_per_evidence(
         marginals,
         smoothing=smoothing,
         class_projection=class_projection,
+        recall_weight=recall_weight,
     )
     for ev_i, (start, end) in enumerate(per_ev_slices):
         if start == end:
@@ -206,6 +230,7 @@ def pick_next_evidence(
     marginals: np.ndarray,
     smoothing: float = 0.0,
     class_projection: ClassProjection | None = None,
+    recall_weight: float = 0.0,
 ) -> int:
     """Return the evidence index that maximises IG. -1 when all asked.
 
@@ -221,6 +246,7 @@ def pick_next_evidence(
         marginals,
         smoothing=smoothing,
         class_projection=class_projection,
+        recall_weight=recall_weight,
     )
     if np.all(np.isneginf(scores)):
         return -1

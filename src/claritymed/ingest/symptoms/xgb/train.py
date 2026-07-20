@@ -77,6 +77,9 @@ DEFAULT_MAXSTEP = 6
 DEFAULT_KEEP_LO = 0.3
 DEFAULT_KEEP_HI = 0.7
 DEFAULT_TARGET_COST_MULTIPLIER = 1.0  # 1.0 → pure inverse-frequency balancing
+DEFAULT_INIT_NOISE_RATE = (
+    0.0  # 0.0 = disabled; 0.3 recommended for init-robust training
+)
 FEATURE_IMPORTANCE_TOP_K = 30
 # Placeholder severity for the synthetic ``Other`` class in --targets
 # mode. interactive_eval uses severity only to compute DSR/PSR/PAR,
@@ -208,6 +211,94 @@ def _build_sample_weights(
     if target_cost_multiplier != 1.0 and n_targets is not None:
         weights[y < n_targets] *= target_cost_multiplier
     return weights
+
+
+def _apply_init_noise(
+    x: np.ndarray,
+    patients: list[dict],
+    schema: dict,
+    columns_idx: dict[str, int],
+    noise_rate: float,
+    rng: np.random.Generator,
+    init_noise_common_evs: list[str] | None = None,
+    init_noise_common_weight: float = 0.7,
+) -> np.ndarray:
+    """Corrupt the init evidence column for a random fraction of training rows.
+
+    Training data uses ground-truth ``INITIAL_EVIDENCE`` labels, but at
+    inference time init comes from SapBERT text-matching and can be wrong.
+    This function bridges the gap by randomly:
+
+    * Zeroing out the init evidence column (50% of corrupted rows) —
+      teaches the classifier to work with no init at all.
+    * Replacing with a random other binary evidence column (50% of corrupted
+      rows) — teaches the classifier to work when init points at the wrong
+      evidence.
+
+    When ``init_noise_common_evs`` is provided, the replacement pool is
+    biased: with probability ``init_noise_common_weight`` we sample from
+    the common-evidence list (inference-distribution-matched), and with
+    ``1 - init_noise_common_weight`` from the remaining binary columns.
+    This matches the real inference distribution where SapBERT almost
+    always maps free-text complaints to a small set of high-frequency
+    evidences (e.g. E_91 fever, E_144 cough) rather than uniform random
+    from all 208 binary columns.
+
+    Applied after ``encode_patient_batch`` and before mask augmentation so
+    every masked replica also sees the corrupted init. ``noise_rate`` is the
+    fraction of rows to corrupt; 0.0 is a no-op.
+    """
+    if noise_rate <= 0.0:
+        return x
+
+    ev_names = [ev["name"] for ev in schema["evs"]]
+    # Collect binary evidence column indices (not blacklisted).
+    binary_cols: list[int] = []
+    for ev in schema["evs"]:
+        if ev["dtype"] == "B":
+            col = columns_idx.get(ev["name"])
+            if col is not None:
+                binary_cols.append(col)
+    binary_cols_arr = np.array(binary_cols, dtype=np.int64)
+
+    # Resolve common-evidence column indices once outside the patient loop.
+    common_cols_arr: np.ndarray | None = None
+    if init_noise_common_evs:
+        common_cols = [
+            columns_idx[name] for name in init_noise_common_evs if name in columns_idx
+        ]
+        if common_cols:
+            common_cols_arr = np.array(common_cols, dtype=np.int64)
+
+    x_out = x.copy()
+    for i, p in enumerate(patients):
+        if rng.random() >= noise_rate:
+            continue
+        ev_i = p["init"]
+        if ev_i >= len(ev_names):
+            continue
+        ev_name = ev_names[ev_i]
+        init_col = columns_idx.get(ev_name)
+        if init_col is None:
+            # Blacklisted evidence — already absent from the feature matrix.
+            continue
+        # Zero out the ground-truth init evidence.
+        x_out[i, init_col] = 0.0
+        # With 50% probability, substitute a replacement init evidence.
+        if rng.random() < 0.5:
+            other = binary_cols_arr[binary_cols_arr != init_col]
+            if len(other) == 0:
+                continue
+            if common_cols_arr is not None and rng.random() < init_noise_common_weight:
+                # Bias toward inference-time distribution: sample from the
+                # common-evidence pool (excluding the current init_col).
+                pool = common_cols_arr[common_cols_arr != init_col]
+                if len(pool) == 0:
+                    pool = other
+            else:
+                pool = other
+            x_out[i, int(rng.choice(pool))] = 1.0
+    return x_out
 
 
 def build_mask_pairs(
@@ -383,6 +474,9 @@ def train_xgb_agent(
     class_balance: bool = False,
     n_targets: int | None = None,
     target_cost_multiplier: float = 1.0,
+    init_noise_rate: float = 0.0,
+    init_noise_common_evs: list[str] | None = None,
+    ig_recall_weight: float = 0.0,
 ) -> XgbAgent:
     """Fit classifier + ev_marginals + optional calibration → :class:`XgbAgent`.
 
@@ -399,8 +493,32 @@ def train_xgb_agent(
     weight the first N classes (asymmetric target-vs-Other cost).
     """
     rng = np.random.default_rng(seed)
-    x_train = encode_patient_batch(train_patients, schema, columns_idx)
+    x_train_clean = encode_patient_batch(train_patients, schema, columns_idx)
     y_train = np.asarray([p["d"] for p in train_patients], dtype=np.int64)
+
+    # Method 3: init noise augmentation. Corrupts the init evidence column for
+    # a fraction of training rows so the classifier learns robust behavior when
+    # SapBERT maps the user's complaint to the wrong (or no) init evidence.
+    # Applied before mask augmentation so every masked replica also inherits
+    # the corrupted init. No-op when init_noise_rate=0.0.
+    #
+    # IMPORTANT: only the classifier sees the corrupted x_train. The
+    # ev_marginals regressor and global_marginals always use x_train_clean
+    # so the IG policy's feature-correlation estimates remain accurate.
+    # Corrupting ev_marginals would cause the IG policy to ask non-
+    # discriminative questions (validated regression: v4 init-noise run).
+    if init_noise_rate > 0.0:
+        x_train = _apply_init_noise(
+            x_train_clean,
+            train_patients,
+            schema,
+            columns_idx,
+            noise_rate=init_noise_rate,
+            rng=np.random.default_rng(seed + 999),
+            init_noise_common_evs=init_noise_common_evs,
+        )
+    else:
+        x_train = x_train_clean
 
     # Under ``mask_policy=random`` the classifier ALSO learns on partial
     # states — not just the ev_marginals regressor. Training only on full
@@ -519,7 +637,7 @@ def train_xgb_agent(
 
     ev_marginals: Any | None = None
     if mask_policy != "full":
-        x_masked, x_true = build_mask_pairs(x_train, keep_lo, keep_hi, rng)
+        x_masked, x_true = build_mask_pairs(x_train_clean, keep_lo, keep_hi, rng)
         ev_marginals = _fit_ev_marginals(
             x_masked,
             x_true,
@@ -529,7 +647,7 @@ def train_xgb_agent(
             seed=seed,
         )
 
-    global_marginals = x_train.mean(axis=0).astype(np.float32)
+    global_marginals = x_train_clean.mean(axis=0).astype(np.float32)
     return build_xgb_agent(
         classifier=clf,
         ev_marginals=ev_marginals,
@@ -538,6 +656,7 @@ def train_xgb_agent(
         columns_idx=columns_idx,
         thres=stop_thres,
         ig_smoothing=ig_smoothing,
+        ig_recall_weight=ig_recall_weight,
         global_marginals=global_marginals,
     )
 
@@ -647,6 +766,36 @@ def _build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--ig-smoothing", type=float, default=DEFAULT_IG_SMOOTHING)
     ap.add_argument("--maxstep", type=int, default=DEFAULT_MAXSTEP)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--init-noise-rate",
+        type=float,
+        default=DEFAULT_INIT_NOISE_RATE,
+        help="Fraction [0, 1) of training rows whose init evidence is randomly "
+        "zeroed out or replaced by a different binary evidence. Bridges the "
+        "gap between ground-truth INITIAL_EVIDENCE at training time and "
+        "approximate SapBERT text-matching at inference time. 0.0 = disabled "
+        "(default); 0.3 is a reasonable starting point for init-robust training.",
+    )
+    ap.add_argument(
+        "--init-noise-common-evs",
+        default=None,
+        help="Comma-separated evidence names (e.g. 'E_91,E_144,E_66') to bias "
+        "init-noise replacements toward. When set, 70%% of replacement draws "
+        "come from this pool instead of uniform random across all binary "
+        "evidence columns — matches the real inference distribution where "
+        "SapBERT maps complaints to a small high-frequency evidence set. "
+        "Only active when --init-noise-rate > 0.",
+    )
+    ap.add_argument(
+        "--ig-recall-weight",
+        type=float,
+        default=0.0,
+        help="Bonus weight added to IG scores proportional to the expected "
+        "absolute shift in aggregate target-class probability. Biases the "
+        "IG policy toward features that move P(Pne)+P(Flu) rather than "
+        "features that only distinguish within the Other bucket. Requires "
+        "--targets to be set (class projection must exist). 0.0 = standard IG.",
+    )
     ap.add_argument(
         "--smoke",
         action="store_true",
@@ -781,6 +930,9 @@ def main() -> None:
         "targets": target_names or None,
         "target_cost_multiplier": args.target_cost_multiplier if target_names else None,
         "class_balance": bool(target_names),
+        "init_noise_rate": args.init_noise_rate,
+        "init_noise_common_evs": args.init_noise_common_evs,
+        "ig_recall_weight": args.ig_recall_weight,
     }
 
     out_dir = _models_dir() / args.out_subpath
@@ -811,6 +963,13 @@ def main() -> None:
             class_balance=bool(target_names),
             n_targets=n_targets,
             target_cost_multiplier=args.target_cost_multiplier,
+            init_noise_rate=args.init_noise_rate,
+            init_noise_common_evs=(
+                [e.strip() for e in args.init_noise_common_evs.split(",") if e.strip()]
+                if args.init_noise_common_evs
+                else None
+            ),
+            ig_recall_weight=args.ig_recall_weight,
         )
         agent.save(weights_path)
         print(f"[xgb-train] wrote {weights_path}  [{time.time() - t0:.1f}s]")

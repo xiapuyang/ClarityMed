@@ -42,6 +42,9 @@ from claritymed.core.symptoms.datasets import LoadedDataset, build_dataset
 from claritymed.core.symptoms.init_matcher import InitMatcherEmbedder
 from claritymed.core.symptoms.schemas import SymptomsConfig
 from claritymed.errors import UnknownDatasetError
+from claritymed.ingest.symptoms.xgb.mock_agent import (
+    is_mock_enabled as _is_mock_enabled,
+)
 from claritymed.ingest.symptoms import (  # noqa: F401 — registers adapters
     ddxplus as _register_adapters,
 )
@@ -353,6 +356,8 @@ def _maybe_inject_initial_symptom(
     sub-threshold score, encode failure — converge on ``None`` and
     leave ``state`` untouched.
     """
+    if _is_mock_enabled():
+        return None
     matcher = SERVER_STATE.init_matcher_model
     if matcher is None or ds.init_catalog is None:
         return None

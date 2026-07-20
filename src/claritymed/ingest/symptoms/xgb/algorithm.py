@@ -48,6 +48,7 @@ from claritymed.ingest.symptoms.xgb.encoding import (
 )
 from claritymed.ingest.symptoms.xgb.ig_policy import (
     ClassProjection,
+    information_gain_per_evidence,
     pick_next_evidence,
 )
 
@@ -99,6 +100,7 @@ class XgbAgent:
     mode: str = _MODE_CONFIDENCE
     temp: float = 1.0
     ig_smoothing: float = 0.05
+    ig_recall_weight: float = 0.0
     global_marginals: np.ndarray | None = None
     # PoC additions for the 49-class + projected-IG design (see docs):
     # target_class_idxs pins the classes we want the IG policy + stop gate
@@ -111,6 +113,30 @@ class XgbAgent:
     stop_policy: str = _STOP_PROJ_MAX
     variant_a_target_thres: float = _VARIANT_A_TARGET_THRES
     variant_a_other_thres: float = _VARIANT_A_OTHER_THRES
+    # Serve-time penalty multiplier applied to antecedent-evidence IG scores
+    # before argmax. 1.0 = no penalty (default); 0.1–0.3 pushes antecedents
+    # to the back of the queue so current-symptom evidences dominate early
+    # turns. Set via ModelSpec YAML (antecedent_penalty key) — no retraining.
+    antecedent_penalty: float = 1.0
+
+    def _antecedent_ev_mask(self) -> np.ndarray:
+        """Bool array ``(n_ev,)`` — True where evidence is an antecedent.
+
+        Built once from the schema and cached. Antecedents are risk factors /
+        comorbidities (e.g. crowded living, obesity) rather than current
+        symptoms. When ``antecedent_penalty < 1.0`` the IG policy multiplies
+        antecedent scores by this factor so symptom-type evidences dominate
+        early turns.
+        """
+        cached = getattr(self, "_cached_antecedent_mask", None)
+        if cached is not None:
+            return cached
+        mask = np.array(
+            [bool(ev.get("is_antecedent", False)) for ev in self.schema["evs"]],
+            dtype=bool,
+        )
+        object.__setattr__(self, "_cached_antecedent_mask", mask)
+        return mask
 
     def _predict_proba(self, x: np.ndarray) -> np.ndarray:
         """Wrap ``classifier.predict_proba`` — always ``(batch, n_classes)``.
@@ -162,7 +188,10 @@ class XgbAgent:
         batch collapses that into F predicts of ``(B,)`` — seconds.
         """
         if self.ev_marginals is not None:
-            raw = self.ev_marginals.predict(x_xgb)
+            import joblib
+
+            with joblib.parallel_config(backend="threading"):
+                raw = self.ev_marginals.predict(x_xgb)
             return np.clip(np.asarray(raw, dtype=np.float32), 0.0, 1.0)
         if self.global_marginals is None:
             base = np.full(self.n_features, 0.05, dtype=np.float32)
@@ -188,17 +217,36 @@ class XgbAgent:
         )
         marginals_batch = self._marginals_batch(x_xgb)
         projection = self._class_projection()
+        apply_penalty = self.antecedent_penalty < 1.0
+        ant_mask = self._antecedent_ev_mask() if apply_penalty else None
         out = np.zeros(batch, dtype=np.int64)
         for i in range(batch):
-            picked = pick_next_evidence(
-                x_xgb[i],
-                asked[i],
-                self.ev_col_index,
-                self._predict_proba,
-                marginals_batch[i],
-                smoothing=self.ig_smoothing,
-                class_projection=projection,
-            )
+            if apply_penalty:
+                scores = information_gain_per_evidence(
+                    x_xgb[i],
+                    asked[i],
+                    self.ev_col_index,
+                    self._predict_proba,
+                    marginals_batch[i],
+                    smoothing=self.ig_smoothing,
+                    class_projection=projection,
+                    recall_weight=self.ig_recall_weight,
+                )
+                scores[ant_mask] *= self.antecedent_penalty  # type: ignore[index]
+                picked = (
+                    int(np.argmax(scores)) if not np.all(np.isneginf(scores)) else -1
+                )
+            else:
+                picked = pick_next_evidence(
+                    x_xgb[i],
+                    asked[i],
+                    self.ev_col_index,
+                    self._predict_proba,
+                    marginals_batch[i],
+                    smoothing=self.ig_smoothing,
+                    class_projection=projection,
+                    recall_weight=self.ig_recall_weight,
+                )
             out[i] = picked if picked >= 0 else 0
         return out
 
@@ -268,6 +316,7 @@ class XgbAgent:
             "mode": self.mode,
             "temp": self.temp,
             "ig_smoothing": self.ig_smoothing,
+            "ig_recall_weight": self.ig_recall_weight,
             "global_marginals": self.global_marginals,
         }
         joblib.dump(payload, path)
@@ -305,6 +354,7 @@ class XgbAgent:
             mode=payload.get("mode", _MODE_CONFIDENCE),
             temp=payload.get("temp", 1.0),
             ig_smoothing=payload.get("ig_smoothing", 0.05),
+            ig_recall_weight=payload.get("ig_recall_weight", 0.0),
             global_marginals=payload.get("global_marginals"),
         )
 
@@ -318,6 +368,7 @@ def build_xgb_agent(
     *,
     thres: float = 0.90,
     ig_smoothing: float = 0.05,
+    ig_recall_weight: float = 0.0,
     global_marginals: np.ndarray | None = None,
 ) -> XgbAgent:
     """Assemble an :class:`XgbAgent` from freshly-trained components.
@@ -337,5 +388,6 @@ def build_xgb_agent(
         n_features=len(columns),
         thres=thres,
         ig_smoothing=ig_smoothing,
+        ig_recall_weight=ig_recall_weight,
         global_marginals=global_marginals,
     )

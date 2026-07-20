@@ -412,6 +412,12 @@ class ModelSpec(BaseModel):
     # Same field, opposite direction. Split into stop.mode + stop.threshold
     # when a third algorithm arrives; overload is deliberate for v1.
     stop_thres: float | None = Field(default=None, gt=0.0, le=1.0)
+    # Antecedent-evidence IG penalty (xgb only). IG scores for antecedent
+    # evidences (risk factors, comorbidities) are multiplied by this factor
+    # before argmax so current-symptom evidences dominate early turns.
+    # 1.0 = no penalty (default); 0.1–0.3 pushes antecedents to the back
+    # without fully excluding them. No retraining needed — serve-time only.
+    antecedent_penalty: float | None = Field(default=None, gt=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _weights_subpath_relative(self) -> "ModelSpec":

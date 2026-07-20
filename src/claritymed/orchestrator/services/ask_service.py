@@ -106,6 +106,8 @@ _EVIDENCE_BLOCK_RE = re.compile(
 # out-of-range — never strip legitimate bracketed text — by matching
 # digits only.
 _CITATION_RE = re.compile(r"\[(\d+)\]")
+# Some LLMs emit MediaWiki/Obsidian-style ``[[N]]`` instead of ``[N]``.
+_DOUBLE_CITATION_RE = re.compile(r"\[\[(\d+)\]\]")
 
 
 def _strip_evidence_block(text: str) -> str:
@@ -2288,6 +2290,7 @@ class AskService:
         already rendered the original (incorrect) bracket.
         """
         bad: list[int] = []
+        text = _DOUBLE_CITATION_RE.sub(r"[\1]", text)
 
         def _sub(m: "re.Match[str]") -> str:
             n = int(m.group(1))

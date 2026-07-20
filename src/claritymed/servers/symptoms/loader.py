@@ -159,6 +159,10 @@ def apply_model_overrides(agent, model_spec: "ModelSpec") -> None:
         agent.temp = model_spec.patho_temp
     if model_spec.stop_thres is not None:
         agent.thres = model_spec.stop_thres
+    if model_spec.antecedent_penalty is not None and hasattr(
+        agent, "antecedent_penalty"
+    ):
+        agent.antecedent_penalty = model_spec.antecedent_penalty
 
 
 def load_dataset(

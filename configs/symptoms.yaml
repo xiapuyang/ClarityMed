@@ -82,7 +82,7 @@ datasets:
     adapter_id: ddxplus                    # reuse DDXPlusAdapter (same corpus)
     i18n_key_prefix: symptoms.ddxplus      # share parent i18n namespace (same evidence pool + condition names)
     #model_ids: [typed_basd_pneumonia_flu_v1, xgb_pneumonia_flu_v2, xgb_pne_inf_v3]
-    model_ids: [xgb_pne_inf_v3]
+    model_ids: [xgb_pne_inf_v5_recallig]
     # v3 (subset-parametric, N+1-class native) is the shipping model.
     # v2 (subset-conditional, 2-class) stays defined in ``models:`` below
     # as a rollback target — swap ids here to switch. See
@@ -222,6 +222,39 @@ models:
     maxstep: 18
     patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
     stop_thres: 0.95
+
+  - id: xgb_pne_inf_v4b_initnoise03
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v4b_initnoise03
+    manifest_sha256: "aee11f3a2fffbd3985b26d4cb23f4388aebcc0a076a9ac53fa5f8ba97b0ba9bd"
+    maxstep: 18
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.95    # trained stop_thres=0.85; serve-time override to 0.95
+
+  # -----------------------------------------------------------------
+  # v5 — recall-weighted IG + biased init-noise replacement.
+  #
+  # Two changes over v4b:
+  #   1. ig_recall_weight=0.5: IG policy adds a bonus proportional to
+  #      expected |ΔP(Pne+Flu)| — biases question selection toward
+  #      features that shift target-class probability (E_77 colored
+  #      sputum, E_220 pleuritic pain) over features that only
+  #      distinguish within the Other bucket.
+  #   2. init_noise_common_evs=E_91,E_144,E_66: init-noise replacement
+  #      draws are 70% from this inference-distribution-matched pool
+  #      instead of uniform random over all 208 binary columns.
+  #
+  # Eval vs v4b (n=20000 test, maxstep=6, stop_thres=0.90 baked):
+  #   IL: 1.60 → 2.02 (+0.42 turns)  ACC: 88.9% → 90.3% (+1.4pp)
+  #   PSR: 15.8% → 16.0% (+0.2pp)   DDF1: 63.2% → 63.2% (flat)
+  - id: xgb_pne_inf_v5_recallig
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_recallig
+    manifest_sha256: "2e0e8b925ae345ab66cb9f17d4bdfb5895576e176eb4a8e34da29e2563b694aa"
+    maxstep: 18
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.98    # serve-time override; trained at 0.90
+    antecedent_penalty: 0.15  # demote risk-factor questions; symptoms dominate
 
 # Process-wide chief-complaint matcher embedder. Shared singleton —
 # every dataset's per-catalog vectors are encoded against this one

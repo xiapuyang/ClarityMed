@@ -43,6 +43,7 @@ from claritymed.ingest.symptoms.xgb.algorithm import XgbAgent
 from claritymed.ingest.symptoms.xgb.encoding import (
     feature_columns_from_schema,
 )
+from claritymed.ingest.symptoms.xgb.mock_agent import wrap_with_mock_if_enabled
 
 DDXPLUS_DATASET_ID = "ddxplus"
 
@@ -383,6 +384,7 @@ class DDXPlusAdapter:
                 weights_path=weights_path,
                 device=device,
             )
+            agent = wrap_with_mock_if_enabled(agent, canonical.layout, n_classes=n_dis)
             models[model_id] = LoadedModel(
                 spec=model_spec, agent=agent, manifest=manifest
             )

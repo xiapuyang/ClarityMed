@@ -58,7 +58,12 @@ from claritymed.ingest.symptoms.ddxplus.schema import (
     load_patients,
     load_pidx,
 )
-from claritymed.ingest.symptoms.typed_basd import TypedEnv, seed_everything
+from claritymed.ingest.symptoms.typed_basd import (
+    AGE_BUCKETS,
+    SEX2IDX,
+    TypedEnv,
+    seed_everything,
+)
 from claritymed.ingest.symptoms.xgb.algorithm import XgbAgent
 from claritymed.ingest.symptoms.xgb.encoding import (
     encode_patient_batch,
@@ -74,6 +79,8 @@ DEFAULT_WEIGHTS = (
 DEFAULT_OUT_DIR = pathlib.Path("runs/xgb_v3_demo_and_verify")
 
 DEFAULT_N_TEST = 5000
+DEFAULT_AGE_BUCKET = 4  # default user: 37yo → bucket 4 (30–44)
+DEFAULT_SEX = 0  # default user: M
 DEFAULT_N_PER_CLASS = 20
 DEFAULT_PER_BUCKET = 5
 DEFAULT_HIGH_THRES = 0.65
@@ -566,6 +573,144 @@ def section_interactive_replay(
 
 
 # ---------------------------------------------------------------------------
+# Section 4 — fixed-path scenario sweep + determinism check.
+# ---------------------------------------------------------------------------
+
+# Candidate init evidences for "I have fever, cough, and muscle aches for 3 days".
+# These represent what the init-matcher might inject depending on the complaint text.
+_COMPLAINT_INIT_CANDIDATES = [
+    ("E_91", "fever"),
+    ("E_201", "cough"),
+    ("E_144", "muscle aches"),
+    (None, "no init (empty state)"),
+]
+
+_N_DET_RUNS = 20  # how many times to repeat next_action to verify determinism
+
+
+@dataclass
+class ScenarioResult:
+    """One (Q1-ans, Q2-ans) combination with probs + next question."""
+
+    init_ev: str | None  # evidence id pre-seeded as init, or None
+    q1_ev: str
+    q1_ans: bool
+    q2_ev: str
+    q2_ans: bool
+    probs_after_q1: list[float]
+    probs_after_q2: list[float]
+    should_stop_after_q2: bool
+    q3_ev: str
+    q3_text: str
+
+
+@dataclass
+class DeterminismResult:
+    """next_action consistency check across N repeated calls on the same state."""
+
+    init_ev: str | None
+    n_runs: int
+    q1_ev: str  # what next_action returns from empty/init state
+    all_same: bool
+
+
+def _build_binary_state(
+    schema: dict,
+    init_ev_id: str | None,
+    answers: dict[str, bool],
+) -> np.ndarray:
+    """Build a typed-BASD state row for a set of binary evidence answers.
+
+    Uses s_size + context_size to match the shape TypedEnv produces so
+    encode_typed_state_batch's slice-by-offset logic works unchanged.
+    Binary encoding: +1 = yes, -1 = no, 0 = not asked.
+    """
+    s_size: int = schema["sym_size"]
+    context_size = len(AGE_BUCKETS) + len(SEX2IDX)
+    ev_id_to_idx = {ev["name"]: i for i, ev in enumerate(schema["evs"])}
+    off = schema["off"]
+    state = np.zeros((1, s_size + context_size), dtype=np.float32)
+    if init_ev_id and init_ev_id in ev_id_to_idx:
+        ev_i = ev_id_to_idx[init_ev_id]
+        state[0, int(off[ev_i])] = 1.0
+    for ev_id, is_yes in answers.items():
+        if ev_id not in ev_id_to_idx:
+            continue
+        ev_i = ev_id_to_idx[ev_id]
+        state[0, int(off[ev_i])] = 1.0 if is_yes else -1.0
+    return state
+
+
+def section_fixed_path_scenarios(
+    agent: XgbAgent,
+    schema: dict,
+    meta: dict[str, dict],
+    q1_ev: str,
+    q2_ev: str,
+) -> tuple[list[ScenarioResult], list[DeterminismResult]]:
+    """Enumerate all (Q1-ans × Q2-ans) scenarios and verify next_action determinism.
+
+    For each of the 4 complaint-init candidates, builds states for every
+    combination of Q1/Q2 boolean answers, records probs + Q3.  Then runs
+    next_action _N_DET_RUNS times on an empty-answer state to confirm the
+    question selection is fully deterministic (expected: always identical
+    for XGBoost since it has no randomness at inference time).
+
+    Note: XGBoost encodes only the evidence one-hot vector — age/sex slots
+    in the typed-BASD state are silently ignored by encode_typed_state_batch.
+    The question sequence is therefore age/sex-independent.
+    """
+    ev_names = [ev["name"] for ev in schema["evs"]]
+    scenarios: list[ScenarioResult] = []
+    det_results: list[DeterminismResult] = []
+
+    for init_ev_id, _label in _COMPLAINT_INIT_CANDIDATES:
+        # Determinism check: from the init state (no Q1/Q2 answers yet),
+        # call next_action N times and verify all calls return the same ev.
+        state_init = _build_binary_state(schema, init_ev_id, {})
+        actions = [int(agent.next_action(state_init)[0]) for _ in range(_N_DET_RUNS)]
+        det_results.append(
+            DeterminismResult(
+                init_ev=init_ev_id,
+                n_runs=_N_DET_RUNS,
+                q1_ev=ev_names[actions[0]],
+                all_same=len(set(actions)) == 1,
+            )
+        )
+
+        # Enumerate 4 answer combinations for Q1 × Q2.
+        for q1_ans in (True, False):
+            state_q1 = _build_binary_state(schema, init_ev_id, {q1_ev: q1_ans})
+            _, probs_q1 = agent.diagnose(state_q1)
+
+            for q2_ans in (True, False):
+                state_q2 = _build_binary_state(
+                    schema, init_ev_id, {q1_ev: q1_ans, q2_ev: q2_ans}
+                )
+                _, probs_q2 = agent.diagnose(state_q2)
+                should_stop = bool(agent.should_stop(state_q2)[0])
+                q3_i = int(agent.next_action(state_q2)[0])
+                q3_ev_id = ev_names[q3_i]
+                q3_text = meta.get(q3_ev_id, {}).get("question_en", q3_ev_id)
+                scenarios.append(
+                    ScenarioResult(
+                        init_ev=init_ev_id,
+                        q1_ev=q1_ev,
+                        q1_ans=q1_ans,
+                        q2_ev=q2_ev,
+                        q2_ans=q2_ans,
+                        probs_after_q1=[float(x) for x in probs_q1[0]],
+                        probs_after_q2=[float(x) for x in probs_q2[0]],
+                        should_stop_after_q2=should_stop,
+                        q3_ev=q3_ev_id,
+                        q3_text=q3_text,
+                    )
+                )
+
+    return scenarios, det_results
+
+
+# ---------------------------------------------------------------------------
 # Reporting.
 # ---------------------------------------------------------------------------
 
@@ -577,6 +722,85 @@ def _fmt_probs(probs: list[float] | tuple[float, ...]) -> str:
     )
 
 
+def _render_section4(
+    lines: list[str],
+    scenarios: list[ScenarioResult],
+    det_results: list[DeterminismResult],
+    args: argparse.Namespace,
+) -> None:
+    """Append Section 4 markdown to ``lines`` in place."""
+    lines.append("## Section 4 — Fixed-path scenarios (default user profile)")
+    lines.append("")
+    lines.append(f"- Default user: age_bucket={args.age_bucket} (30–44 yrs), sex=M")
+    lines.append(
+        "- **Note**: XGBoost encodes only the evidence one-hot vector. "
+        "Age/sex slots in the typed-BASD state are ignored at inference — "
+        "question sequence is age/sex-independent."
+    )
+    lines.append(
+        f"- Observed question order from live session: Q1={args.q1_ev}, Q2={args.q2_ev}"
+    )
+    lines.append(f'- Complaint: "{args.complaint_text}"')
+    lines.append("")
+
+    # Determinism check table
+    lines.append("### Determinism check — Q1 consistency across init evidences")
+    lines.append("")
+    lines.append(
+        f"next_action called {_N_DET_RUNS}× on the same state (no Q1/Q2 answers) "
+        "for each init evidence candidate:"
+    )
+    lines.append("")
+    lines.append("| Init evidence | Represents | Q1 returned | Deterministic? |")
+    lines.append("|--------------|-----------|-------------|---------------|")
+    for dr in det_results:
+        init_label = dr.init_ev if dr.init_ev else "None"
+        complaint_label = next(
+            lbl for ev, lbl in _COMPLAINT_INIT_CANDIDATES if ev == dr.init_ev
+        )
+        det_str = "✓ yes" if dr.all_same else "✗ NO"
+        match_str = "✓" if dr.q1_ev == args.q1_ev else f"✗ ({dr.q1_ev})"
+        lines.append(
+            f"| `{init_label}` | {complaint_label} | `{dr.q1_ev}` = {match_str} | {det_str} |"
+        )
+    lines.append("")
+
+    # 4-scenario table per init candidate
+    lines.append("### Scenario outcomes — 4 answer combinations per init evidence")
+    lines.append("")
+    by_init: dict[str | None, list[ScenarioResult]] = {}
+    for s in scenarios:
+        by_init.setdefault(s.init_ev, []).append(s)
+
+    for init_ev_id, init_label in _COMPLAINT_INIT_CANDIDATES:
+        group = by_init.get(init_ev_id, [])
+        if not group:
+            continue
+        lines.append(
+            f"#### Init: `{init_ev_id if init_ev_id else 'None'}` ({init_label})"
+        )
+        lines.append("")
+        lines.append(
+            f"| {args.q1_ev} | {args.q2_ev} | P(Pne) after Q1 | P(Pne) after Q2 | "
+            f"P(Inf) after Q2 | P(Other) after Q2 | stop? | Q3 |"
+        )
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for s in group:
+            q1_str = "yes" if s.q1_ans else "no"
+            q2_str = "yes" if s.q2_ans else "no"
+            stop_str = "✓" if s.should_stop_after_q2 else ""
+            lines.append(
+                f"| {q1_str} | {q2_str} "
+                f"| {s.probs_after_q1[PNE_IDX]:.3f} "
+                f"| {s.probs_after_q2[PNE_IDX]:.3f} "
+                f"| {s.probs_after_q2[INF_IDX]:.3f} "
+                f"| {s.probs_after_q2[OTHER_IDX]:.3f} "
+                f"| {stop_str} "
+                f"| `{s.q3_ev}` {s.q3_text[:60]} |"
+            )
+        lines.append("")
+
+
 def _render_report(
     out_path: pathlib.Path,
     typical: list[TypicalCase],
@@ -584,6 +808,8 @@ def _render_report(
     synthetic: list[SyntheticCase],
     synthetic_axes: list[str],
     replay: list[ReplayTrace],
+    scenarios: list[ScenarioResult],
+    det_results: list[DeterminismResult],
     args: argparse.Namespace,
     total_patients_scored: int,
 ) -> None:
@@ -708,6 +934,8 @@ def _render_report(
                     f"→ **{step.answer}** → {_fmt_probs(step.probs)}"
                 )
             lines.append("")
+    lines.append("")
+    _render_section4(lines, scenarios, det_results, args)
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -760,9 +988,24 @@ def main() -> None:
         help="Binary evidence id to fix as 'yes' across the synthetic sweep. "
         "Defaults to the first cough-related binary evidence in the schema.",
     )
-    ap.add_argument("--age-bucket", type=int, default=3)
-    ap.add_argument("--sex", type=int, default=0)
+    ap.add_argument("--age-bucket", type=int, default=DEFAULT_AGE_BUCKET)
+    ap.add_argument("--sex", type=int, default=DEFAULT_SEX)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--q1-ev",
+        default="E_66",
+        help="Evidence id of the first observed question (default: E_66).",
+    )
+    ap.add_argument(
+        "--q2-ev",
+        default="E_97",
+        help="Evidence id of the second observed question (default: E_97).",
+    )
+    ap.add_argument(
+        "--complaint-text",
+        default="I have fever, cough, and muscle aches for 3 days",
+        help="Complaint text used as the Section 4 scenario description.",
+    )
     args = ap.parse_args()
 
     seed_everything(args.seed)
@@ -842,6 +1085,18 @@ def main() -> None:
     )
     _dump_jsonl(args.out_dir / "replay.jsonl", replay)
 
+    # Section 4
+    print("running section 4 — fixed-path scenarios + determinism check...")
+    scenarios, det_results = section_fixed_path_scenarios(
+        agent,
+        schema,
+        meta,
+        q1_ev=args.q1_ev,
+        q2_ev=args.q2_ev,
+    )
+    _dump_jsonl(args.out_dir / "scenarios.jsonl", scenarios)
+    _dump_jsonl(args.out_dir / "determinism.jsonl", det_results)
+
     _render_report(
         args.out_dir / "report.md",
         typical,
@@ -849,6 +1104,8 @@ def main() -> None:
         synthetic,
         synthetic_axes,
         replay,
+        scenarios,
+        det_results,
         args,
         total_patients_scored=len(patients),
     )
