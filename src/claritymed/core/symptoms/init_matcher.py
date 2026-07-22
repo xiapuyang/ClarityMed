@@ -220,6 +220,54 @@ class InitMatcherEmbedder:
             evidence_idx=catalog.candidate_idx[best_local], score=best_score
         )
 
+    def match_topk(
+        self,
+        complaint_text: str,
+        catalog: "InitSymptomCatalog",
+        *,
+        k: int = 3,
+        min_score: float | None = None,
+    ) -> list[MatchResult]:
+        """Return up to ``k`` matches with score ≥ threshold, best first.
+
+        Empty list on encode failure, blank text, or when no candidate
+        clears ``min_score`` (defaults to ``catalog.threshold``). Callers
+        use this to inject every above-threshold complaint match, closing
+        the "user mentioned 3 symptoms, top-1 only reveals 1" gap that
+        biases the model toward the base rate.
+
+        The classifier is trained with ``build_mask_pairs`` revealing
+        multiple positive evidences on partial states, so multi-evidence
+        early state is in-distribution — no retraining is required to
+        exploit this.
+        """
+        if not complaint_text or not complaint_text.strip():
+            return []
+        vecs = self.encode([complaint_text.strip()])
+        if vecs is None or vecs.shape[0] == 0:
+            return []
+        vec = vecs[0]
+        if float(np.linalg.norm(vec)) < _NORM_EPS:
+            return []
+        scores = catalog.matrix @ vec
+        cutoff = min_score if min_score is not None else catalog.threshold
+        # Sort descending, then filter by cutoff. argsort([-scores]) is
+        # cheaper than argpartition for typical catalog sizes (<200) and
+        # keeps the ranking stable for logging.
+        order = np.argsort(-scores)
+        results: list[MatchResult] = []
+        for local_idx in order[: max(1, int(k))]:
+            score = float(scores[local_idx])
+            if score < cutoff:
+                break
+            results.append(
+                MatchResult(
+                    evidence_idx=catalog.candidate_idx[int(local_idx)],
+                    score=score,
+                )
+            )
+        return results
+
 
 # --- catalog builders -------------------------------------------------------
 
@@ -233,15 +281,22 @@ def filter_candidate_evidences(
     Default filter (Mila parity): ``is_antecedent=False`` AND
     ``dtype="B"``. Datasets may relax either side via
     :class:`~claritymed.core.symptoms.schemas.InitSymptomFilter`.
-    Returns evidences in their original order so the matrix row
-    order is reproducible across reloads.
+    When ``spec.allowed_evidence_ids`` is set (non-empty list), a
+    third filter kicks in: only evidences whose id is in the list
+    survive. Returns evidences in their original order so the matrix
+    row order is reproducible across reloads.
     """
     allowed = set(spec.allowed_dtypes)
+    id_whitelist: set[str] | None = (
+        set(spec.allowed_evidence_ids) if spec.allowed_evidence_ids else None
+    )
     out: list["CanonicalEvidence"] = []
     for ev in evidences:
         if spec.exclude_antecedent and ev.is_antecedent:
             continue
         if ev.dtype not in allowed:
+            continue
+        if id_whitelist is not None and ev.id not in id_whitelist:
             continue
         out.append(ev)
     return out

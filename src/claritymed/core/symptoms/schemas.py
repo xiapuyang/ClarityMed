@@ -59,6 +59,19 @@ class InitSymptomFilter(BaseModel):
     where the matcher should also consider M-type localizers) can
     override either field — but enabling M requires runtime support
     for value resolution that v1 doesn't ship.
+
+    ``allowed_evidence_ids`` is an OPTIONAL whitelist applied AFTER the
+    dtype + antecedent filter. When set, only evidences whose id appears
+    in the list survive into the SapBERT catalog. Rationale: on a
+    focused dataset like Pneumonia+Influenza, the full 96-candidate
+    catalog exposes overly-specific disease claims (E_202 whooping
+    cough, E_194 stridor, E_112 wheezing) that SapBERT can semantically
+    reach from a generic "cough" complaint but that a triage tool
+    should NEVER inject as user-endorsed positives. Data-driven pick:
+    top-N evidences by INITIAL_EVIDENCE frequency in the target
+    disease's training population. Empty list → treated as ``None``
+    (no whitelist) to keep the default legacy behavior for datasets
+    that don't opt in.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -68,6 +81,16 @@ class InitSymptomFilter(BaseModel):
         default_factory=lambda: ["B"],
         min_length=1,
         max_length=3,
+    )
+    allowed_evidence_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Whitelist of evidence ids. When set, the catalog only includes "
+            "evidences whose id is in this list. Applied after dtype + "
+            "antecedent filter. Use for focused datasets where the full "
+            "candidate pool contains disease-specific evidences that must "
+            "never be silently injected."
+        ),
     )
 
 
@@ -436,6 +459,30 @@ class ModelSpec(BaseModel):
     # 1.0 = no penalty (default); 0.1–0.3 pushes antecedents to the back
     # without fully excluding them. No retraining needed — serve-time only.
     antecedent_penalty: float | None = Field(default=None, gt=0.0, le=1.0)
+    # IG recall bonus knobs (xgb only). Both no-ops on typed_basd.
+    # ``ig_recall_weight`` scales the target-shift bonus added on top of
+    # entropy IG; typical range 0.5-2.0. ``ig_recall_mode`` controls
+    # direction — "asymmetric" rewards target-INCREASING shifts only
+    # (recommended, matches "confirm Pne/Flu recall" utility); "symmetric"
+    # rewards either direction (legacy behavior for A/B comparisons).
+    # ``None`` on either keeps the value baked into the checkpoint —
+    # useful when a new dataset spec pairs with an old checkpoint.
+    ig_recall_weight: float | None = Field(default=None, ge=0.0, le=10.0)
+    ig_recall_mode: Literal["asymmetric", "symmetric"] | None = Field(default=None)
+    # Stop-policy variant (xgb only). Overrides the value baked into the
+    # agent at load time.
+    # * ``proj_max`` — legacy: any projected bucket max > stop_thres.
+    # * ``proj_variant_a`` — target-max > 0.60 OR Other > 0.85. Prevents
+    #   premature stops when Pne/Flu is quietly rising.
+    # * ``proj_target_sum`` — sum(P(targets)) > target_thres OR
+    #   P(Other) > other_thres. Stops on "definitely respiratory" even
+    #   when the model can't yet resolve Pne vs Flu individually — the
+    #   "minimize questions × maximize recall" utility.
+    stop_policy: (
+        Literal["proj_max", "proj_variant_a", "proj_target_sum"] | None
+    ) = Field(default=None)
+    stop_target_thres: float | None = Field(default=None, gt=0.0, le=1.0)
+    stop_other_thres: float | None = Field(default=None, gt=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _weights_subpath_relative(self) -> "ModelSpec":

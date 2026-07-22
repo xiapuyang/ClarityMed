@@ -109,12 +109,18 @@ class EvidenceCollectedRow(BaseModel):
     """One Q&A round-trip the server applied to internal state.
 
     ``source`` distinguishes user-answered evidence from
-    init-matcher-inferred evidence (the latter is pre-revealed on
-    turn 0 by mapping the LLM-supplied symptom summary to a candidate
-    evidence — see :func:`_maybe_inject_initial_symptom`). The LLM
-    downstream can frame the two differently in the final reply
-    ("you reported …" vs "the model inferred …"). Defaults to
-    ``"modal_answer"`` so existing call sites stay schema-compatible.
+    init-matcher-inferred evidence. Under the pre-question flow, an
+    ``init_matcher`` entry means "SapBERT proposed this evidence based
+    on the symptom summary and the user confirmed with Yes/No" — the
+    answer is authoritative, only the *choice of question* was inferred.
+    Defaults to ``"modal_answer"`` so existing call sites stay
+    schema-compatible.
+
+    ``match_score`` is the SapBERT cosine score (0.0-1.0) that led the
+    matcher to pick this evidence, populated only when ``source ==
+    "init_matcher"``. Kept in the payload so audit + eval can inspect
+    which matches were weak vs strong; downstream reply generation is
+    free to ignore it.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -124,6 +130,7 @@ class EvidenceCollectedRow(BaseModel):
     evidence_type: Literal["B", "C", "M"]
     answer: str | int | float | list[str]
     source: Literal["modal_answer", "init_matcher"] = "modal_answer"
+    match_score: float | None = None
 
 
 class DifferentialRow(BaseModel):

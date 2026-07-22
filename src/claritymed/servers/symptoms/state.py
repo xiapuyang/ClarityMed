@@ -25,6 +25,7 @@ from claritymed.core.symptoms.datasets import LoadedDataset
 
 if TYPE_CHECKING:
     from claritymed.core.symptoms.init_matcher import InitMatcherEmbedder
+    from claritymed.core.symptoms.schemas import InitMatcherConfig
 
 
 @dataclass
@@ -48,6 +49,14 @@ class SubSessionState:
     language: str = "en"
     evidence_collected: list[dict] = field(default_factory=list)
     profile: dict = field(default_factory=dict)
+    # Queue of SapBERT-matched init evidences awaiting user confirmation.
+    # Each entry: ``{"ev_idx": int, "score": float}``. The session asks
+    # each as a Yes/No question BEFORE handing off to the IG policy —
+    # closes the "SapBERT semantic overreach + no negation" bug where
+    # a complaint like "I have a cough" would silently inject
+    # ``whooping_cough=Yes`` (E_202) into the state. When the queue is
+    # empty the session runs the normal IG next_action loop.
+    pending_init_confirmations: list[dict] = field(default_factory=list)
 
 
 class _ServerState:
@@ -63,6 +72,10 @@ class _ServerState:
         # matching is disabled — every code path treats absence as a
         # no-op rather than an error.
         self.init_matcher_model: "InitMatcherEmbedder | None" = None
+        # Frozen copy of ``SymptomsConfig.init_matcher`` for the injection
+        # helper — it needs ``max_matches`` + ``min_confidence_gate`` at
+        # request time. Kept as ``None`` when the matcher is disabled.
+        self.init_matcher_cfg: "InitMatcherConfig | None" = None
 
     def reset(self) -> None:
         """Test helper — drops all loaded datasets + sessions + matcher."""
@@ -70,6 +83,7 @@ class _ServerState:
         self.sessions.clear()
         self.config_loaded = False
         self.init_matcher_model = None
+        self.init_matcher_cfg = None
 
 
 SERVER_STATE = _ServerState()

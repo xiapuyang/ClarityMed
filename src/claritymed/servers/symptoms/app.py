@@ -147,6 +147,9 @@ def _load_config_sync() -> None:
         return
     device = resolve_device("auto")
     SERVER_STATE.init_matcher_model = _maybe_build_init_matcher(config)
+    # Store the frozen config so ``_maybe_inject_initial_symptom`` can read
+    # ``max_matches`` + ``min_confidence_gate`` without going back to disk.
+    SERVER_STATE.init_matcher_cfg = config.init_matcher
     for spec in config.datasets:
         if not spec.enabled:
             continue
@@ -339,66 +342,76 @@ def _initial_state(ds: LoadedDataset, age_years: int, sex: str) -> np.ndarray:
     return state
 
 
-def _maybe_inject_initial_symptom(
-    ds: LoadedDataset, state: np.ndarray, complaint_text: str
-) -> int | None:
-    """Pre-reveal the matched chief-complaint evidence on turn 0.
+def _match_init_evidences(
+    ds: LoadedDataset, complaint_text: str
+) -> list[tuple[int, float]]:
+    """Return SapBERT-matched candidate evidences ranked by cosine score.
 
-    Mirrors the training-time mechanism: ``typed_basd.py:247`` writes
-    ``Patient.init`` into the state at batch initialization, so the
-    BASD agent learned to make turn-0 decisions conditioned on one
-    evidence already being present. Skipping this step at runtime
-    leaves the agent in a state distribution it never saw during
-    training — measurable as a turn-0 ``next_action`` drift.
+    Does NOT write to the state vector — callers are expected to render
+    each match as a Yes/No pre-question so the user confirms before the
+    model treats them as positives. This closes the "SapBERT semantic
+    overreach + no negation detection" bug: a complaint mentioning
+    "cough" would previously match E_202 whooping cough at 0.554
+    (above threshold) and be injected as ``whooping_cough=Yes`` with no
+    user consent — the model would then chase whooping-cough-specific
+    questions (E_194 stridor) and give a confidently wrong result.
 
-    Returns the matched evidence idx (for audit) or ``None`` when no
-    match was injected. All failure modes — no matcher, no catalog,
-    sub-threshold score, encode failure — converge on ``None`` and
-    leave ``state`` untouched.
+    Returns ``[(evidence_idx, score), ...]`` in descending-score order,
+    empty when nothing matched or a failure mode fired (no matcher, no
+    catalog, sub-threshold, encode failure, mock enabled).
     """
     if _is_mock_enabled():
-        return None
+        return []
     matcher = SERVER_STATE.init_matcher_model
     if matcher is None or ds.init_catalog is None:
-        return None
+        return []
     text = (complaint_text or "").strip()
     if not text:
-        return None
-    result = matcher.match(text, ds.init_catalog)
-    if result.evidence_idx is None:
+        return []
+    matcher_cfg = getattr(SERVER_STATE, "init_matcher_cfg", None)
+    max_matches = getattr(matcher_cfg, "max_matches", 1) if matcher_cfg else 1
+    min_confidence_gate = (
+        getattr(matcher_cfg, "min_confidence_gate", None) if matcher_cfg else None
+    )
+    matches = matcher.match_topk(text, ds.init_catalog, k=max_matches)
+    if not matches:
         logger.debug(
-            "init-matcher: no injection (score=%.3f < threshold=%.2f) text_len=%d",
-            result.score,
+            "init-matcher: no matches (top score < threshold=%.2f) text_len=%d",
             ds.init_catalog.threshold,
             len(text),
         )
-        return None
-    ev = ds.canonical.evidence_by_idx(result.evidence_idx)
-    # B-only candidate pool (enforced upstream by InitSymptomFilter)
-    # → ``bin_pos`` is the right write payload. Asserting here keeps
-    # the contract crisp if a future filter relaxation accidentally
-    # lets a C / M slip through.
-    if ev.dtype != "B":
-        logger.warning(
-            "init-matcher matched non-B evidence %s (dtype=%s); skipping "
-            "injection to avoid malformed state write",
-            ev.id,
-            ev.dtype,
+        return []
+    # Confidence gate: if the BEST match is below the gate, skip the
+    # whole batch. Prevents a mediocre top-1 from generating a train of
+    # low-confidence pre-questions that just annoy the user.
+    if min_confidence_gate is not None and matches[0].score < min_confidence_gate:
+        logger.info(
+            "init-matcher: gated (best score=%.3f < gate=%.2f); no pre-questions",
+            matches[0].score,
+            min_confidence_gate,
         )
-        return None
-    env = _writer_env(ds)
-    env._write(
-        state[0],
-        result.evidence_idx,
-        {"bin_pos": {result.evidence_idx}, "cat_val": {}, "multi_val": {}},
-    )
-    logger.info(
-        "init-matcher injected %s (idx=%d, score=%.3f) as turn-0 evidence",
-        ev.id,
-        result.evidence_idx,
-        result.score,
-    )
-    return result.evidence_idx
+        return []
+    out: list[tuple[int, float]] = []
+    for result in matches:
+        ev = ds.canonical.evidence_by_idx(result.evidence_idx)
+        # B-only candidate pool (enforced upstream by InitSymptomFilter).
+        # A non-B slip-through means someone relaxed the filter without
+        # plumbing pre-question value resolution — skip.
+        if ev.dtype != "B":
+            logger.warning(
+                "init-matcher matched non-B evidence %s (dtype=%s); skipping",
+                ev.id,
+                ev.dtype,
+            )
+            continue
+        out.append((result.evidence_idx, result.score))
+        logger.info(
+            "init-matcher queued %s (idx=%d, score=%.3f) as pre-question",
+            ev.id,
+            result.evidence_idx,
+            result.score,
+        )
+    return out
 
 
 def _writer_env(ds: LoadedDataset) -> TypedEnv:
@@ -543,20 +556,31 @@ def start_session(
 ) -> StartSessionResponse:
     """Initialize a sub-session — return the first question.
 
-    Init-symptom injection: when ``req.symptom_summary`` (preferred) or
-    ``req.complaint`` (fallback) matches a catalog candidate above the
-    dataset's threshold, that evidence is pre-revealed in the state
-    vector before the first ``next_action`` call. This mirrors the
-    training-time ``Patient.init`` mechanism — see
-    :func:`_maybe_inject_initial_symptom` for the train/serve skew
-    rationale.
+    Pre-question flow: when ``req.symptom_summary`` (preferred) or
+    ``req.complaint`` (fallback) yields SapBERT catalog matches above
+    the dataset's threshold, each match is asked as a Yes/No confirmation
+    question BEFORE the IG policy kicks in. This closes the "SapBERT
+    silently injects wrong Yes into state" bug — the user gets to
+    confirm or deny each matched evidence. When SapBERT matches nothing
+    (or matching is disabled), the session opens directly with the IG
+    policy's first pick from an empty state.
     """
     ds = _require_dataset(dataset_id)
     state = _initial_state(ds, req.profile.age_years, req.profile.sex)
     matcher_text = req.symptom_summary or req.complaint
-    initial_evidence_idx = _maybe_inject_initial_symptom(ds, state, matcher_text)
+    matches = _match_init_evidences(ds, matcher_text)
     model = ds.select_model()
-    first_ev_idx = int(model.agent.next_action(state)[0])
+    pending: list[dict] = []
+    if matches:
+        # First match → immediate first_question. Rest → queue for
+        # subsequent /turn calls to render in order.
+        first_ev_idx = matches[0][0]
+        first_score: float | None = matches[0][1]
+        for ev_i, score_i in matches[1:]:
+            pending.append({"ev_idx": int(ev_i), "score": float(score_i)})
+    else:
+        first_ev_idx = int(model.agent.next_action(state)[0])
+        first_score = None
     flush_mps_cache()
     question, ev_idx = _try_render_question(
         ds,
@@ -583,32 +607,24 @@ def start_session(
         last_ev_idx=ev_idx,
         language=req.language,
         profile={"age_years": req.profile.age_years, "sex": req.profile.sex},
+        pending_init_confirmations=pending,
     )
-    # Record the injected evidence in the trail so audit + final
-    # payload reflect it (training does the same — init counts as a
-    # collected evidence even though the user didn't answer a
-    # question for it).
-    if initial_evidence_idx is not None:
-        init_ev = ds.canonical.evidence_by_idx(initial_evidence_idx)
-        sub.evidence_collected.append(
-            {
-                "evidence_id": init_ev.id,
-                "evidence_name": init_ev.id,
-                "evidence_type": init_ev.dtype,
-                "answer": "Yes",
-                "source": "init_matcher",
-            }
-        )
+    # Track whether the current question is an init-matcher pre-question
+    # so ``turn`` can tag the evidence_collected entry accordingly.
+    if first_score is not None:
+        sub.profile["_current_source"] = "init_matcher"
+        sub.profile["_current_match_score"] = float(first_score)
     SERVER_STATE.sessions[session_id] = sub
     req_id = http_req.headers.get("X-Request-ID", "")
     first_ev = ds.canonical.evidence_by_idx(first_ev_idx)
     logger.info(
         "session started: session=%s dataset=%s first_evidence=%s "
-        "init_matcher=%s req_id=%s",
+        "pre_questions_queued=%d matcher_hits=%d req_id=%s",
         session_id,
         dataset_id,
         first_ev.id,
-        initial_evidence_idx is not None,
+        len(pending),
+        len(matches),
         req_id or "-",
     )
     return StartSessionResponse(session_id=session_id, first_question=question)
@@ -633,9 +649,42 @@ def turn(
         )
     # Update language for late turns where the plugin's locale changed.
     sub.language = req.language
+    # If the current question was an init-matcher pre-question, tag the
+    # about-to-be-appended evidence entry with the source + score so
+    # audit distinguishes user-confirmed init evidences from IG picks.
+    _init_src = sub.profile.pop("_current_source", None)
+    _init_score = sub.profile.pop("_current_match_score", None)
     _apply_answer(ds, sub, req)
+    if _init_src and sub.evidence_collected:
+        sub.evidence_collected[-1]["source"] = _init_src
+        if _init_score is not None:
+            sub.evidence_collected[-1]["match_score"] = float(_init_score)
     model = ds.model(sub.model_id)
     req_id = http_req.headers.get("X-Request-ID", "")
+
+    # Pre-question queue: if SapBERT matched multiple init evidences,
+    # ask each as a Yes/No confirmation BEFORE handing off to the IG
+    # policy. Skips should_stop / cap checks — we want the user to
+    # finish confirming the complaint context first. Once the queue
+    # empties, control falls through to the normal IG loop.
+    if sub.pending_init_confirmations:
+        next_pre = sub.pending_init_confirmations.pop(0)
+        pre_ev_idx = int(next_pre["ev_idx"])
+        question, ev_idx = _try_render_question(ds, sub, pre_ev_idx)
+        sub.last_ev_idx = ev_idx
+        sub.profile["_current_source"] = "init_matcher"
+        sub.profile["_current_match_score"] = float(next_pre["score"])
+        pre_ev = ds.canonical.evidence_by_idx(ev_idx)
+        logger.info(
+            "session pre-question %d: session=%s next_evidence=%s "
+            "remaining=%d req_id=%s",
+            sub.turn_count,
+            session_id,
+            pre_ev.id,
+            len(sub.pending_init_confirmations),
+            req_id or "-",
+        )
+        return TurnResponse(next_question=question, turn_count=sub.turn_count)
 
     # Stop gate first — same order as the demo's interactive_eval.
     stop = model.agent.should_stop(sub.state)

@@ -350,6 +350,77 @@ def test_turn_hits_cap_at_maxstep(client: TestClient) -> None:
     assert session_id not in SERVER_STATE.sessions
 
 
+def test_turn_drains_pre_question_queue_before_ig_takes_over(
+    client: TestClient,
+) -> None:
+    """With N init matches, the first N /turn calls should serve queued
+    pre-questions (not IG picks) and the user's Yes/No writes to state.
+    Once the queue drains, control passes to the agent's next_action."""
+    from claritymed.core.symptoms.init_matcher import MatchResult
+    from claritymed.core.symptoms.schemas import InitMatcherConfig
+
+    agent = _StubAgent(
+        n_evidences=3,
+        probs=np.array([0.5, 0.3, 0.2]),
+        stop_after=100,
+    )
+    SERVER_STATE.datasets["testds"] = _loaded_dataset_with_catalog(agent)
+    SERVER_STATE.config_loaded = True
+
+    class _MultiStub:
+        def match(self, text, catalog):  # noqa: ARG002
+            return MatchResult(evidence_idx=None, score=0.0)
+
+        def match_topk(self, text, catalog, *, k=3, min_score=None):  # noqa: ARG002
+            return [
+                MatchResult(evidence_idx=0, score=0.90),
+                MatchResult(evidence_idx=1, score=0.75),
+            ][:k]
+
+    SERVER_STATE.init_matcher_model = _MultiStub()
+    SERVER_STATE.init_matcher_cfg = InitMatcherConfig(max_matches=3)
+
+    start = client.post(
+        "/v1/datasets/testds/sessions",
+        json={**_start_payload(), "symptom_summary": "multi symptom summary"},
+    ).json()
+    session_id = start["session_id"]
+    # First question is the top match (E_a).
+    assert start["first_question"]["header"] == "E_a"
+
+    # Answer Yes to E_a → server should apply it, then serve E_b from
+    # the pre-question queue (NOT run IG next_action).
+    r1 = client.post(
+        f"/v1/datasets/testds/sessions/{session_id}/turn",
+        json={"answer": "Yes", "language": "en"},
+    ).json()
+    assert r1["done"] is False
+    assert r1["next_question"]["header"] == "E_b"
+    sub = SERVER_STATE.sessions[session_id]
+    # After the /turn, evidence_collected has ONE entry tagged as init.
+    assert len(sub.evidence_collected) == 1
+    assert sub.evidence_collected[0]["evidence_id"] == "E_a"
+    assert sub.evidence_collected[0]["source"] == "init_matcher"
+    assert sub.evidence_collected[0]["answer"] == "Yes"
+    # Queue is drained now.
+    assert sub.pending_init_confirmations == []
+
+    # Answer No to E_b → queue empty, so next question comes from IG
+    # (the stub agent's next_action returns evidence 0 by default; that
+    # was already asked so it stays at 0 as fallback, but the important
+    # thing is the source tag is NOT init_matcher).
+    r2 = client.post(
+        f"/v1/datasets/testds/sessions/{session_id}/turn",
+        json={"answer": "No", "language": "en"},
+    ).json()
+    assert r2["done"] is False
+    sub = SERVER_STATE.sessions[session_id]
+    # Second collected entry is the E_b confirmation with "No".
+    assert sub.evidence_collected[1]["evidence_id"] == "E_b"
+    assert sub.evidence_collected[1]["source"] == "init_matcher"
+    assert sub.evidence_collected[1]["answer"] == "No"
+
+
 def test_turn_rejects_unknown_session(client: TestClient) -> None:
     """Unknown session → 404 in the shared envelope."""
     SERVER_STATE.datasets["testds"] = _loaded_dataset(
@@ -472,6 +543,22 @@ class _StubMatcher:
             text.strip(), MatchResult(evidence_idx=None, score=0.0)
         )
 
+    def match_topk(
+        self,
+        text: str,
+        catalog,
+        *,
+        k: int = 3,
+        min_score: float | None = None,  # noqa: ARG002
+    ) -> list["MatchResult"]:
+        """Same canned map, wrapped as a list. Sub-threshold matches (idx=None)
+        are filtered so the server sees the same "no injection" branch it
+        would with a real matcher below-threshold path."""
+        result = self.match(text, catalog)
+        if result.evidence_idx is None:
+            return []
+        return [result][:k]
+
 
 def _loaded_dataset_with_catalog(agent: _StubAgent, *, threshold: float = 0.5):
     """LoadedDataset variant with an init catalog wired in.
@@ -496,7 +583,13 @@ def _loaded_dataset_with_catalog(agent: _StubAgent, *, threshold: float = 0.5):
     )
 
 
-def test_start_session_injects_matched_evidence_into_state(client: TestClient) -> None:
+def test_start_session_asks_matched_evidence_as_first_pre_question(
+    client: TestClient,
+) -> None:
+    """Under the pre-question flow, a SapBERT match becomes the first
+    Yes/No question the user sees. State is NOT pre-written — the user
+    confirms before we treat the evidence as positive. This closes the
+    "SapBERT semantic overreach + no negation detection" hole."""
     from claritymed.core.symptoms.init_matcher import MatchResult
 
     agent = _StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
@@ -514,13 +607,69 @@ def test_start_session_injects_matched_evidence_into_state(client: TestClient) -
     session_id = body["session_id"]
     sub = SERVER_STATE.sessions[session_id]
 
-    assert sub.evidence_collected[0]["evidence_id"] == "E_b"
-    assert sub.evidence_collected[0]["source"] == "init_matcher"
-    # The matched evidence's block-start slot is 1 in state[0] —
-    # the layout's `off` array maps idx → slot.
+    # The matched evidence (E_b, idx=1) is the first question asked.
+    assert body["first_question"]["header"] == "E_b"
+    # State is NOT pre-written; the user must confirm.
     ds = SERVER_STATE.datasets["testds"]
     block_start = int(ds.canonical.layout["off"][1])
-    assert sub.state[0, block_start] == 1.0
+    assert sub.state[0, block_start] == 0.0
+    # evidence_collected is empty at session start; it gets filled on
+    # the user's answer.
+    assert sub.evidence_collected == []
+    # Only one match → no more pending confirmations.
+    assert sub.pending_init_confirmations == []
+    # The pending source tag is recorded so the next /turn labels the
+    # collected evidence as originating from the init matcher.
+    assert sub.profile.get("_current_source") == "init_matcher"
+
+
+def test_start_session_queues_secondary_matches_for_later_turns(
+    client: TestClient,
+) -> None:
+    """When SapBERT returns multiple matches, first becomes first_question,
+    the rest sit in ``pending_init_confirmations`` and get rendered one
+    at a time on subsequent /turn calls."""
+    from claritymed.core.symptoms.init_matcher import MatchResult
+    from claritymed.core.symptoms.schemas import InitMatcherConfig
+
+    agent = _StubAgent(n_evidences=3, probs=np.array([0.9, 0.05, 0.05]))
+    SERVER_STATE.datasets["testds"] = _loaded_dataset_with_catalog(agent)
+    SERVER_STATE.config_loaded = True
+
+    class _MultiStub:
+        def match(self, text, catalog):  # noqa: ARG002
+            return MatchResult(evidence_idx=None, score=0.0)
+
+        def match_topk(self, text, catalog, *, k=3, min_score=None):  # noqa: ARG002
+            # E_a, E_b are binary in the stub — E_c is categorical and
+            # would be filtered out by the B-only guard, so this test
+            # only queues the two binaries.
+            return [
+                MatchResult(evidence_idx=0, score=0.90),
+                MatchResult(evidence_idx=1, score=0.75),
+            ][:k]
+
+    SERVER_STATE.init_matcher_model = _MultiStub()
+    SERVER_STATE.init_matcher_cfg = InitMatcherConfig(max_matches=3)
+
+    payload = _start_payload()
+    payload["symptom_summary"] = "multi symptom summary"
+
+    response = client.post("/v1/datasets/testds/sessions", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    sub = SERVER_STATE.sessions[body["session_id"]]
+
+    assert body["first_question"]["header"] == "E_a"  # idx=0
+    # One remaining binary match queued (E_c categorical was filtered).
+    assert [q["ev_idx"] for q in sub.pending_init_confirmations] == [1]
+    # Neither binary match has been written to state yet — the user
+    # confirms via /turn before we treat them as positives.
+    for ev_i in (0, 1):
+        block = int(
+            SERVER_STATE.datasets["testds"].canonical.layout["off"][ev_i]
+        )
+        assert sub.state[0, block] == 0.0
 
 
 def test_start_session_falls_back_to_complaint_when_no_summary(

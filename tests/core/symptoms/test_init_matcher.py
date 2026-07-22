@@ -319,3 +319,80 @@ def test_build_catalog_shape_mismatch_returns_none() -> None:
     spec = InitSymptomFilter()
     cat = build_catalog(evs, spec, em, threshold=0.5)
     assert cat is None
+
+
+# --- match_topk ----------------------------------------------------------
+
+
+def test_match_topk_returns_all_above_threshold_in_score_order() -> None:
+    """User text similar to two catalog rows returns both, best first."""
+    matrix = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],  # idx 7 — fever
+            [0.0, 1.0, 0.0, 0.0],  # idx 9 — cough
+            [0.0, 0.0, 1.0, 0.0],  # idx 12 — chest pain (orthogonal to query)
+        ],
+        dtype=np.float32,
+    )
+    catalog = InitSymptomCatalog(
+        candidate_idx=[7, 9, 12], matrix=matrix, threshold=0.4
+    )
+    # Query overlaps rows 0 (~0.8) and 1 (~0.6) after normalization.
+    em = _make_embedder(
+        _StubModel({"fever and cough": np.array([0.8, 0.6, 0.0, 0.0])}),
+        threshold=0.4,
+    )
+    results = em.match_topk("fever and cough", catalog, k=3)
+    assert [r.evidence_idx for r in results] == [7, 9]
+    # Scores sorted descending.
+    assert results[0].score >= results[1].score
+
+
+def test_match_topk_stops_at_first_below_threshold() -> None:
+    """Ranking is descending; once we hit the cutoff we stop appending."""
+    matrix = np.array(
+        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float32
+    )
+    catalog = InitSymptomCatalog(candidate_idx=[7, 9], matrix=matrix, threshold=0.75)
+    em = _make_embedder(
+        _StubModel({"query": np.array([0.9, 0.1, 0.0, 0.0])}),
+        threshold=0.75,
+    )
+    results = em.match_topk("query", catalog, k=5)
+    # Only the first vector scores above 0.75 (0.9-ish); the second (0.1) falls out.
+    assert len(results) == 1
+    assert results[0].evidence_idx == 7
+
+
+def test_match_topk_respects_k_cap() -> None:
+    matrix = np.eye(4, dtype=np.float32)
+    catalog = InitSymptomCatalog(
+        candidate_idx=[10, 11, 12, 13], matrix=matrix, threshold=0.1
+    )
+    em = _make_embedder(
+        _StubModel({"q": np.array([0.5, 0.5, 0.5, 0.5])}), threshold=0.1
+    )
+    results = em.match_topk("q", catalog, k=2)
+    assert len(results) == 2
+
+
+def test_match_topk_empty_text_returns_empty() -> None:
+    matrix = np.eye(2, dtype=np.float32)
+    catalog = InitSymptomCatalog(candidate_idx=[0, 1], matrix=matrix, threshold=0.5)
+    em = _make_embedder(_StubModel({}))
+    assert em.match_topk("", catalog) == []
+    assert em.match_topk("   ", catalog) == []
+
+
+def test_match_topk_min_score_overrides_threshold() -> None:
+    """Explicit min_score wins when it's stricter than the catalog threshold."""
+    matrix = np.array(
+        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float32
+    )
+    catalog = InitSymptomCatalog(candidate_idx=[7, 9], matrix=matrix, threshold=0.3)
+    em = _make_embedder(
+        _StubModel({"q": np.array([0.7, 0.4, 0.0, 0.0])}), threshold=0.3
+    )
+    strict = em.match_topk("q", catalog, k=5, min_score=0.6)
+    # Only the top match clears 0.6.
+    assert [r.evidence_idx for r in strict] == [7]
