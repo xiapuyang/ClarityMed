@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Stop any combination of the five ClarityMed inference servers via pidfile.
-# SIGTERM first, then SIGKILL after 10 s of grace. Falls back to
-# ``pkill -f <pattern>`` if the pidfile is missing or stale (covers servers
-# started outside this script).
+# SIGTERM first, then SIGKILL after 10 s of grace. Also runs
+# ``pkill -f <pattern>`` as an unconditional post-sweep — catches:
+#   * pidfile missing entirely (server started outside this script);
+#   * pidfile PID died but the orphan child still holds the port
+#     (e.g. shell that ran run.sh exited, `uv run` wrapper adopted by
+#     init, python server child kept listening). Without the sweep,
+#     the next restart hits Errno 48 "address already in use" because
+#     stop.sh silently left the orphan alive.
 #
 # Symptoms uses the full console-script name (`claritymed-symptoms-server`)
 # as its pkill pattern so it does NOT match the unrelated training CLI
@@ -26,7 +31,7 @@ RUN_DIR="$HOME_DIR/run"
 
 stop_one() {
   local name="$1"
-  local pkill_pattern="$2"  # exact console-script name for the pkill fallback
+  local pkill_pattern="$2"  # exact console-script name for the pkill sweep
   local pidfile="$RUN_DIR/$name.pid"
 
   if [ -f "$pidfile" ]; then
@@ -52,12 +57,18 @@ stop_one() {
     fi
     rm -f "$pidfile"
   else
-    echo "[$name] no pidfile — trying pkill"
-    if pkill -f "$pkill_pattern" 2>/dev/null; then
-      echo "[$name] killed via pkill"
-    else
-      echo "[$name] nothing to stop"
-    fi
+    echo "[$name] no pidfile"
+  fi
+
+  # Unconditional post-sweep. Two failure modes this catches:
+  #   1. No pidfile at all — server started outside this script.
+  #   2. Pidfile PID is dead but its orphan child is still listening on
+  #      the port. Real-world path: parent shell dies, ``uv run``
+  #      wrapper reparents to init (ppid=1), the python server child
+  #      keeps the socket. Without this sweep the next run.sh hits
+  #      Errno 48 and restart silently fails.
+  if pkill -f "$pkill_pattern" 2>/dev/null; then
+    echo "[$name] killed leftover(s) via pkill (pattern: $pkill_pattern)"
   fi
 }
 
