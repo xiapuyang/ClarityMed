@@ -86,6 +86,17 @@ _TOOL_RETURN_PHI_SAFE: frozenset[str] = frozenset(
         "save_allergy",
         "save_condition",
         "update_profile_field",
+        # Differential returns: {"eligible": True, "differential":
+        # [{"condition_name": <catalog literal>, "probability": <float>,
+        # "severity": <int 1-5>}, ...], "turns_used": <int>}. Every field
+        # is server-constructed from a finite catalog or a numeric range;
+        # user modal answers stay in AskDeps and are never echoed back
+        # into the tool return content. The NER regularly false-positives
+        # on the payload (mistakes condition names or "severity: 3" for
+        # PHI-like signals) — reproducible via
+        # ``PhiGuard.from_config().scrub_free_text(json.dumps(payload))``
+        # → ``model_hits: 1, rule_hits: {}``.
+        "predict_disease_from_symptoms",
     }
 )
 

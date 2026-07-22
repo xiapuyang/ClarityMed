@@ -342,6 +342,46 @@ async def test_trusted_tool_return_marker_persists(guard, _ctx):
     assert getattr(part, _PHI_SAFE_ATTR, False) is True
 
 
+async def test_trusted_ddx_tool_return_skipped_by_name(guard, _ctx):
+    """``predict_disease_from_symptoms`` return payload is a
+    server-constructed differential (catalog condition_name + float
+    probability + int severity), never echoes user text. Empirically the
+    NER false-positives on the payload (``model_hits: 1`` on a payload
+    with only "Pneumonia" / 0.848 / 3 fields). This test locks the
+    allowlist entry so nobody removes it and re-breaks cloud DDX runs
+    with a ``PhiLeakDetected`` on a payload that carries no PHI."""
+    inner = _RecordingInner()
+    wrapper = PhiAssertionModel(inner, guard=guard)
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="predict_disease_from_symptoms",
+                    tool_call_id="call-ddx",
+                    content={
+                        "eligible": True,
+                        "differential": [
+                            {
+                                "condition_name": "Pneumonia",
+                                "probability": 0.848,
+                                "severity": 3,
+                            },
+                            {
+                                "condition_name": "Influenza",
+                                "probability": 0.009,
+                                "severity": 4,
+                            },
+                        ],
+                        "turns_used": 5,
+                    },
+                ),
+            ]
+        )
+    ]
+    await wrapper.request(messages, None, _params())  # must not raise
+    assert inner.calls
+
+
 async def test_untrusted_tool_return_still_scans(guard, _ctx):
     """A tool_name outside the allowlist still gets content-scanned —
     the allowlist is an opt-in promise, not a default."""
