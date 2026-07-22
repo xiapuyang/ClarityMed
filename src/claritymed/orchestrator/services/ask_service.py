@@ -1215,6 +1215,15 @@ class AskService:
             if request_id_ctx.get() is None and captured_rid:
                 apply_context(captured_rid, user_id, captured_lang)
             if not finalized and self._chat_session is not None:
+                # Mirror _finalize_turn's differential persistence on the
+                # cancelled path. Without this a tear-down between
+                # DifferentialReady emit and Done (SSE client disconnect,
+                # user refresh, background-tab throttling) drops the
+                # sidecar payload: cards render live but load_turns()
+                # returns differential=None on resume, so refresh wipes
+                # the multi-card panel. Set by SymptomsFeature._maybe_
+                # emit_differential_ready — None on non-symptoms turns.
+                pending_diff = getattr(deps, "differential_ready", None)
                 try:
                     self._chat_session.append_assistant(
                         text=result["final_text"],
@@ -1225,6 +1234,7 @@ class AskService:
                         latency=result["latency"],
                         steps=result["steps"],
                         cancelled=True,
+                        differential=pending_diff,
                     )
                     audit_event(
                         "mode.cancelled",
@@ -1234,6 +1244,21 @@ class AskService:
                             "had_error": bool(result["had_error"]),
                         },
                     )
+                    # Signal for the "results shown + new question box
+                    # unresponsive, cards disappear on refresh" class of
+                    # bug reports. Fires only when the stream was torn
+                    # down after cards were emitted — the intersection
+                    # of "differential ready" and "not finalized" pins
+                    # the tear-down window down for later triage.
+                    if pending_diff is not None:
+                        audit_event(
+                            "stream.cancelled_with_pending_differential",
+                            payload={
+                                "user_id": user_id,
+                                "session_id": self._chat_session.session_id,
+                                "had_error": bool(result["had_error"]),
+                            },
+                        )
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "failed to persist cancelled turn for user %s", user_id
