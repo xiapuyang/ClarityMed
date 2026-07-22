@@ -114,6 +114,24 @@ class InitMatcherConfig(BaseModel):
             "starting point; sweep on a dev set to tune."
         ),
     )
+    # Multi-evidence init injection. When the user mentions several
+    # symptoms in one message ("咳嗽发烧胸闷"), a single top-1 SapBERT
+    # pick throws away the rest. With ``max_matches > 1`` every match
+    # scoring ≥ threshold is injected into the state before the first
+    # ``next_action`` call. The classifier already sees multi-positive
+    # partial states during training (mask-policy random reveals
+    # multiple evidences early), so no retraining is required. Set to
+    # 1 to reproduce the legacy top-1 behavior.
+    max_matches: int = Field(default=3, ge=1, le=10)
+    # Confidence gate on top of ``threshold``. The base threshold is
+    # what SapBERT considers a match at all; ``min_confidence_gate``
+    # is a stricter cutoff: matches with score ≥ ``threshold`` but
+    # < ``min_confidence_gate`` still fall through to zero-init injection
+    # (letting the IG policy pick the first question from an empty state,
+    # matching the mock behavior). Prevents low-confidence SapBERT picks
+    # from anchoring the model to a wrong starting posterior. ``None``
+    # keeps threshold as the only gate.
+    min_confidence_gate: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 # --- datasets + models -----------------------------------------------------

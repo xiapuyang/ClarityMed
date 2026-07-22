@@ -185,3 +185,84 @@ def test_should_stop_monotonic_in_threshold(thres: float):
     n_stops = agent.should_stop(s).sum()
     agent.thres = 0.99
     assert agent.should_stop(s).sum() <= n_stops
+
+
+# --- proj_target_sum stop policy ----------------------------------------
+
+
+def _fake_2class_probs_agent(target_prob: float, other_prob: float) -> XgbAgent:
+    """Return an agent whose classifier emits fixed 3-class probs [T0, T1, Other].
+
+    Used to exercise the projected stop policies without a real train. The
+    two target slots split ``target_prob`` evenly; ``other_prob`` fills the
+    Other bucket; they need not sum to 1 in this test — we only care about
+    the stop-gate math.
+    """
+    from claritymed.ingest.symptoms.xgb.algorithm import XgbAgent
+
+    class _FixedClf:
+        classes_ = np.arange(3)
+
+        def predict_proba(self, x):
+            b = x.shape[0]
+            row = np.array(
+                [target_prob / 2, target_prob / 2, other_prob], dtype=np.float32
+            )
+            return np.tile(row, (b, 1))
+
+    schema = _mini_schema()
+    columns, _labels, columns_idx = feature_columns_from_schema(schema)
+    ev_col_index = [[0], [1]]
+    return XgbAgent(
+        classifier=_FixedClf(),
+        ev_marginals=None,
+        schema=schema,
+        columns=columns,
+        ev_col_index=ev_col_index,
+        n_features=len(columns),
+        thres=0.9,
+        target_class_idxs=[0, 1],
+        stop_policy="proj_target_sum",
+        target_sum_target_thres=0.65,
+        target_sum_other_thres=0.85,
+    )
+
+
+def test_target_sum_stop_fires_on_target_sum_above_thres():
+    """Pne=0.4, Flu=0.4 → sum=0.8 > 0.65 → should_stop=True even though
+    per-target max (0.4) is below variant-A's 0.6. This is the whole point
+    of the target-sum policy: confirm 'respiratory infection' without
+    resolving Pne vs Flu individually."""
+    agent = _fake_2class_probs_agent(target_prob=0.8, other_prob=0.2)
+    s = np.zeros((3, agent.schema["sym_size"] + 10))
+    assert agent.should_stop(s).all()
+
+
+def test_target_sum_stop_holds_when_target_sum_below_thres():
+    """Ambiguous state (target_sum=0.5, other=0.5) — must NOT stop."""
+    agent = _fake_2class_probs_agent(target_prob=0.5, other_prob=0.5)
+    s = np.zeros((3, agent.schema["sym_size"] + 10))
+    assert not agent.should_stop(s).any()
+
+
+def test_target_sum_stop_fires_when_other_dominates():
+    """P(Other)=0.9 > 0.85 → done, regardless of target sum."""
+    agent = _fake_2class_probs_agent(target_prob=0.1, other_prob=0.9)
+    s = np.zeros((3, agent.schema["sym_size"] + 10))
+    assert agent.should_stop(s).all()
+
+
+def test_ig_recall_mode_persists_across_save_load():
+    """Round-trip the asymmetric mode via joblib so an operator can set it
+    at train time and know serving picks it up. Also exercises the load
+    default when the field is absent (legacy checkpoints)."""
+    agent = _train_mini_agent()
+    agent.ig_recall_weight = 1.5
+    agent.ig_recall_mode = "asymmetric"
+    schema = _mini_schema()
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "weights.pkl"
+        agent.save(path)
+        reloaded = XgbAgent.load(path, schema)
+    assert reloaded.ig_recall_weight == 1.5
+    assert reloaded.ig_recall_mode == "asymmetric"

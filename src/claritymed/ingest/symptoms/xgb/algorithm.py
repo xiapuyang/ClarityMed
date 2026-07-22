@@ -70,8 +70,19 @@ _MODE_CONFIDENCE = "confidence"
 #   targets. Both thresholds tune independently.
 _STOP_PROJ_MAX = "proj_max"
 _STOP_PROJ_VARIANT_A = "proj_variant_a"
+# * ``proj_target_sum``: stop when the SUM of target-bucket probabilities
+#   exceeds ``target_thres`` OR the Other bucket exceeds ``other_thres``.
+#   Complements ``proj_variant_a`` (which uses per-target max): the sum
+#   variant fires when the model is confident it's a target class but
+#   can't yet resolve Pne vs Flu individually — the "minimize questions
+#   × maximize target recall" utility. Recommended default for
+#   Pne+Flu two-target datasets where the frontend groups both under
+#   "respiratory infection likely".
+_STOP_PROJ_TARGET_SUM = "proj_target_sum"
 _VARIANT_A_TARGET_THRES = 0.60
 _VARIANT_A_OTHER_THRES = 0.85
+_TARGET_SUM_TARGET_THRES = 0.70
+_TARGET_SUM_OTHER_THRES = 0.85
 
 
 @dataclass
@@ -101,6 +112,11 @@ class XgbAgent:
     temp: float = 1.0
     ig_smoothing: float = 0.05
     ig_recall_weight: float = 0.0
+    # Direction the recall bonus counts: "asymmetric" rewards only
+    # target-increasing shifts (correct for "confirm Pne/Flu recall"),
+    # "symmetric" is the legacy |ΔP_target| behavior. Both no-ops when
+    # ig_recall_weight == 0. See ig_policy.information_gain_per_column.
+    ig_recall_mode: str = "asymmetric"
     global_marginals: np.ndarray | None = None
     # PoC additions for the 49-class + projected-IG design (see docs):
     # target_class_idxs pins the classes we want the IG policy + stop gate
@@ -113,6 +129,8 @@ class XgbAgent:
     stop_policy: str = _STOP_PROJ_MAX
     variant_a_target_thres: float = _VARIANT_A_TARGET_THRES
     variant_a_other_thres: float = _VARIANT_A_OTHER_THRES
+    target_sum_target_thres: float = _TARGET_SUM_TARGET_THRES
+    target_sum_other_thres: float = _TARGET_SUM_OTHER_THRES
     # Serve-time penalty multiplier applied to antecedent-evidence IG scores
     # before argmax. 1.0 = no penalty (default); 0.1–0.3 pushes antecedents
     # to the back of the queue so current-symptom evidences dominate early
@@ -231,6 +249,7 @@ class XgbAgent:
                     smoothing=self.ig_smoothing,
                     class_projection=projection,
                     recall_weight=self.ig_recall_weight,
+                    recall_mode=self.ig_recall_mode,
                 )
                 scores[ant_mask] *= self.antecedent_penalty  # type: ignore[index]
                 picked = (
@@ -246,6 +265,7 @@ class XgbAgent:
                     smoothing=self.ig_smoothing,
                     class_projection=projection,
                     recall_weight=self.ig_recall_weight,
+                    recall_mode=self.ig_recall_mode,
                 )
             out[i] = picked if picked >= 0 else 0
         return out
@@ -284,6 +304,15 @@ class XgbAgent:
             return (target_max > self.variant_a_target_thres) | (
                 other > self.variant_a_other_thres
             )
+        if self.stop_policy == _STOP_PROJ_TARGET_SUM:
+            # Sum-of-targets stop: "definitely respiratory (Pne or Flu)"
+            # counts as done even without resolving Pne vs Flu. Matches the
+            # "minimize questions × maximize target recall" utility.
+            target_sum = proj_probs[:, :n_target].sum(axis=1)
+            other = proj_probs[:, n_target]
+            return (target_sum > self.target_sum_target_thres) | (
+                other > self.target_sum_other_thres
+            )
         return proj_probs.max(axis=1) > self.thres
 
     def diagnose(self, state: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -317,6 +346,7 @@ class XgbAgent:
             "temp": self.temp,
             "ig_smoothing": self.ig_smoothing,
             "ig_recall_weight": self.ig_recall_weight,
+            "ig_recall_mode": self.ig_recall_mode,
             "global_marginals": self.global_marginals,
         }
         joblib.dump(payload, path)
@@ -355,6 +385,13 @@ class XgbAgent:
             temp=payload.get("temp", 1.0),
             ig_smoothing=payload.get("ig_smoothing", 0.05),
             ig_recall_weight=payload.get("ig_recall_weight", 0.0),
+            # Default asymmetric — old v5 checkpoints trained under symmetric
+            # abs() semantics but the module docstring for
+            # ``information_gain_per_column`` treats asymmetric as the
+            # recommended default now. Operators who want to reproduce the
+            # legacy v5 numbers set ``ig_recall_mode: symmetric`` in the
+            # ModelSpec override.
+            ig_recall_mode=payload.get("ig_recall_mode", "asymmetric"),
             global_marginals=payload.get("global_marginals"),
         )
 

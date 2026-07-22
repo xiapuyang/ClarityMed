@@ -226,6 +226,29 @@ def _load_xgb_agent(schema: dict, weights_path: Path) -> XgbAgent:
     return XgbAgent.load(weights_path, schema)
 
 
+def _apply_xgb_ig_overrides(agent, model_spec: ModelSpec) -> None:
+    """Override serve-time IG knobs from ModelSpec YAML — no retraining.
+
+    Both fields are optional; ``None`` leaves the checkpoint's baked value
+    in place. Silently skips non-xgb agents (typed_basd has no analogous
+    knobs) so the caller can invoke unconditionally.
+    """
+    if not isinstance(agent, XgbAgent):
+        return
+    if model_spec.ig_recall_weight is not None:
+        agent.ig_recall_weight = float(model_spec.ig_recall_weight)
+    if model_spec.ig_recall_mode is not None:
+        agent.ig_recall_mode = model_spec.ig_recall_mode
+    if model_spec.stop_policy is not None:
+        agent.stop_policy = model_spec.stop_policy
+    if model_spec.stop_target_thres is not None:
+        agent.variant_a_target_thres = float(model_spec.stop_target_thres)
+        agent.target_sum_target_thres = float(model_spec.stop_target_thres)
+    if model_spec.stop_other_thres is not None:
+        agent.variant_a_other_thres = float(model_spec.stop_other_thres)
+        agent.target_sum_other_thres = float(model_spec.stop_other_thres)
+
+
 def _build_canonical(spec: DatasetSpec, data_dir: Path) -> CanonicalDataset:
     """Read DDXPlus JSONs + raw evidence text and produce the canonical form."""
     schema = load_evidence_schema(data_dir)
@@ -384,6 +407,21 @@ class DDXPlusAdapter:
                 weights_path=weights_path,
                 device=device,
             )
+            # Enable class projection for xgb agents on v3 subset-parametric
+            # datasets. The IG recall bonus + variant-A stop are both gated
+            # on ``target_class_idxs`` being non-None; without this line the
+            # ``ig_recall_weight`` baked into the checkpoint is silently a
+            # no-op because ``_class_projection()`` returns None.
+            if (
+                model_spec.algorithm_module == "xgb"
+                and spec.target_condition_ids is not None
+                and hasattr(agent, "target_class_idxs")
+            ):
+                # v3 checkpoints emit classes in ``[targets..., Other]``
+                # order, so targets are always indices 0..N-1 of the
+                # classifier's output.
+                agent.target_class_idxs = list(range(len(spec.target_condition_ids)))
+            _apply_xgb_ig_overrides(agent, model_spec)
             agent = wrap_with_mock_if_enabled(agent, canonical.layout, n_classes=n_dis)
             models[model_id] = LoadedModel(
                 spec=model_spec, agent=agent, manifest=manifest

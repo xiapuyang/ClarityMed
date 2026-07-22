@@ -341,3 +341,100 @@ def test_smoothing_shifts_marginal():
     # branch's entropy. Adding smoothing shifts weight to the yes branch,
     # revealing the class-1-collapsing signal.
     assert ig_smoothed[0] > ig_no_smooth[0]
+
+
+# --- asymmetric recall bonus --------------------------------------------
+
+
+def test_recall_bonus_asymmetric_ignores_target_decreasing_shift():
+    """A feature whose 'yes' branch confidently rules OUT targets earns
+    a symmetric-abs recall bonus (large |ΔP_target|) but ZERO asymmetric
+    bonus. Verifies the fix for v5's Other-drift: questions predictably
+    pushing posterior toward Other no longer get double-counted."""
+    from claritymed.ingest.symptoms.xgb.ig_policy import (
+        ClassProjection,
+        information_gain_per_column,
+    )
+
+    def clf(x: np.ndarray) -> np.ndarray:
+        # Baseline (state=0): uniform-ish over {Pne, Flu, Other} → target sum ≈ 0.6.
+        # feature=1 → confidently Other; feature=0 → baseline.
+        out = np.zeros((len(x), 3), dtype=np.float32)
+        for i, row in enumerate(x):
+            if row[0] > 0.5:
+                out[i] = [0.05, 0.05, 0.90]  # target sum crashes to 0.10
+            else:
+                out[i] = [0.30, 0.30, 0.40]  # baseline: target sum 0.60
+        return out
+
+    state = np.zeros(1, dtype=np.float32)
+    marginals = np.array([0.5], dtype=np.float32)
+    projection: ClassProjection = [[0], [1], [2]]
+
+    ig_sym = information_gain_per_column(
+        state,
+        np.array([0]),
+        clf,
+        marginals,
+        smoothing=0.0,
+        class_projection=projection,
+        recall_weight=2.0,
+        recall_mode="symmetric",
+    )
+    ig_asym = information_gain_per_column(
+        state,
+        np.array([0]),
+        clf,
+        marginals,
+        smoothing=0.0,
+        class_projection=projection,
+        recall_weight=2.0,
+        recall_mode="asymmetric",
+    )
+    # Symmetric mode rewards the target-decreasing shift; asymmetric does not.
+    # The gap must reflect that difference — asymmetric IG strictly < symmetric.
+    assert ig_asym[0] < ig_sym[0]
+
+
+def test_recall_bonus_asymmetric_still_rewards_target_increasing_shift():
+    """Sanity check the asymmetric mode still adds a bonus when the
+    feature CONFIRMS targets — the whole point of the recall bonus."""
+    from claritymed.ingest.symptoms.xgb.ig_policy import (
+        ClassProjection,
+        information_gain_per_column,
+    )
+
+    def clf(x: np.ndarray) -> np.ndarray:
+        out = np.zeros((len(x), 3), dtype=np.float32)
+        for i, row in enumerate(x):
+            if row[0] > 0.5:
+                out[i] = [0.60, 0.30, 0.10]  # target sum shoots to 0.9
+            else:
+                out[i] = [0.30, 0.20, 0.50]  # baseline: target sum 0.5
+        return out
+
+    state = np.zeros(1, dtype=np.float32)
+    marginals = np.array([0.5], dtype=np.float32)
+    projection: ClassProjection = [[0], [1], [2]]
+
+    ig_no_bonus = information_gain_per_column(
+        state,
+        np.array([0]),
+        clf,
+        marginals,
+        smoothing=0.0,
+        class_projection=projection,
+        recall_weight=0.0,
+    )
+    ig_asym = information_gain_per_column(
+        state,
+        np.array([0]),
+        clf,
+        marginals,
+        smoothing=0.0,
+        class_projection=projection,
+        recall_weight=2.0,
+        recall_mode="asymmetric",
+    )
+    # Bonus fires: asymmetric IG strictly > no-bonus baseline.
+    assert ig_asym[0] > ig_no_bonus[0]

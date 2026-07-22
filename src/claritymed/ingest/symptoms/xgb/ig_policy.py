@@ -94,6 +94,7 @@ def information_gain_per_column(
     smoothing: float = 0.0,
     class_projection: ClassProjection | None = None,
     recall_weight: float = 0.0,
+    recall_mode: str = "asymmetric",
 ) -> np.ndarray:
     """Batched per-column IG for a single partial state.
 
@@ -118,11 +119,23 @@ def information_gain_per_column(
     but stop asking the moment the target vs non-target decision is
     settled".
 
-    ``recall_weight`` adds a bonus proportional to the expected absolute
-    shift in aggregate target-class probability (all projected buckets
-    except the trailing Other bucket). Only active when both
-    ``recall_weight > 0`` and ``class_projection`` is set — without a
-    projection there is no unambiguous "target" bucket to track.
+    ``recall_weight`` adds a bonus proportional to the expected shift in
+    aggregate target-class probability (all projected buckets except the
+    trailing Other bucket). Only active when both ``recall_weight > 0``
+    and ``class_projection`` is set — without a projection there is no
+    unambiguous "target" bucket to track.
+
+    ``recall_mode`` controls the shift function:
+
+    * ``"asymmetric"`` (default) — reward only shifts that INCREASE
+      P(target). Uses ``max(0, ΔP_target)`` per branch. Correct choice
+      for "confirm Pne/Flu recall" utility: a question predictably
+      driving posterior toward Other yields zero recall bonus. Combined
+      with entropy IG the policy still picks confirm-Other questions
+      when they're the highest total signal, but no longer double-rewards
+      them via the recall term.
+    * ``"symmetric"`` — legacy behavior, uses ``|ΔP_target|``. Retained
+      for A/B parity; do not use for new configs.
     """
     u = len(unasked_columns)
     if u == 0:
@@ -153,16 +166,20 @@ def information_gain_per_column(
     ig = (h_now - p1 * h_yes - p0 * h_no).astype(np.float32)
 
     if recall_weight > 0.0 and class_projection is not None:
-        # Bonus for expected absolute shift in P(target) = P(all buckets
-        # except the trailing Other bucket). Biases the policy toward
-        # features that move P(Pne)+P(Flu) rather than those that only
-        # distinguish within the Other bucket.
+        # Bonus for expected shift in P(target) = P(all buckets except the
+        # trailing Other bucket). Biases the policy toward features that
+        # move P(Pne)+P(Flu) rather than those that only distinguish within
+        # the Other bucket.
         p_target_now = float(probs_now[:-1].sum())
         p_target_yes = probs[:u, :-1].sum(axis=1)
         p_target_no = probs[u:, :-1].sum(axis=1)
-        delta = p1 * np.abs(p_target_yes - p_target_now) + p0 * np.abs(
-            p_target_no - p_target_now
-        )
+        if recall_mode == "symmetric":
+            up_yes = np.abs(p_target_yes - p_target_now)
+            up_no = np.abs(p_target_no - p_target_now)
+        else:  # "asymmetric" — reward only target-increasing shifts
+            up_yes = np.maximum(0.0, p_target_yes - p_target_now)
+            up_no = np.maximum(0.0, p_target_no - p_target_now)
+        delta = p1 * up_yes + p0 * up_no
         ig += (recall_weight * delta).astype(np.float32)
 
     return ig
@@ -177,6 +194,7 @@ def information_gain_per_evidence(
     smoothing: float = 0.0,
     class_projection: ClassProjection | None = None,
     recall_weight: float = 0.0,
+    recall_mode: str = "asymmetric",
 ) -> np.ndarray:
     """Aggregate column-level IG into per-evidence scores.
 
@@ -208,6 +226,7 @@ def information_gain_per_evidence(
         smoothing=smoothing,
         class_projection=class_projection,
         recall_weight=recall_weight,
+        recall_mode=recall_mode,
     )
     for ev_i, (start, end) in enumerate(per_ev_slices):
         if start == end:
@@ -231,6 +250,7 @@ def pick_next_evidence(
     smoothing: float = 0.0,
     class_projection: ClassProjection | None = None,
     recall_weight: float = 0.0,
+    recall_mode: str = "asymmetric",
 ) -> int:
     """Return the evidence index that maximises IG. -1 when all asked.
 
@@ -247,6 +267,7 @@ def pick_next_evidence(
         smoothing=smoothing,
         class_projection=class_projection,
         recall_weight=recall_weight,
+        recall_mode=recall_mode,
     )
     if np.all(np.isneginf(scores)):
         return -1
