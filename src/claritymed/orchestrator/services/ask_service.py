@@ -963,12 +963,32 @@ class AskService:
             self._feature_modes.pop(vision.name, None)
 
     async def _run_inner(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
+        from opentelemetry import context as otel_context
         from opentelemetry import trace as otel_trace
 
         tracer = otel_trace.get_tracer("claritymed.ask")
-        with tracer.start_as_current_span("ask.request"):
+        # Manual span + attach/detach instead of ``with start_as_current_span``.
+        # When the consumer breaks on Done (TUI pattern), the generator is
+        # aclose'd later by asyncio/GC — potentially in a foreign Task /
+        # contextvars.Context. The ``with`` block's __exit__ then calls
+        # ``otel_context.detach(token)`` in that alien context and
+        # ``ContextVar.reset(token)`` raises ``ValueError: Token was created
+        # in a different Context``. Worse, the raise happens *before*
+        # ``span.end()`` inside ``use_span``, so the span leaks unfinished
+        # and the exception propagates through generator finalization,
+        # polluting the next test's fixture setup. Upstream tracked at
+        # open-telemetry/opentelemetry-python#2606.
+        span = tracer.start_span("ask.request")
+        token = otel_context.attach(otel_trace.set_span_in_context(span))
+        try:
             async for ev in self._run_scoped(user_input, user_id):
                 yield ev
+        finally:
+            try:
+                otel_context.detach(token)
+            except ValueError:
+                pass
+            span.end()
 
     async def _run_scoped(self, user_input: str, user_id: str) -> AsyncIterator[Event]:
         from claritymed.context import (
