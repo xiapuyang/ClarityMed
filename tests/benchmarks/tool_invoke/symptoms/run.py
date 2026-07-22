@@ -54,7 +54,7 @@ from claritymed.core.symptoms.eligibility.base import (
 )
 from claritymed.core.symptoms.registry import DatasetRegistry
 from claritymed.orchestrator.features.symptoms_plugin import SymptomsFeature
-from claritymed.orchestrator.services import AskService
+from claritymed.orchestrator.services import AskService, build_rag_strategy
 from claritymed.orchestrator.services.chat_session import ChatSession
 
 from tests.benchmarks.tool_invoke import base, phoenix_upload
@@ -267,6 +267,18 @@ async def _run_one_trial(
         model = build_model(provider)
         chat = ChatSession.new(base.USER_ID)
         rag_mode = load_retrieval_config().rag.mode
+        # Mirror the TUI production path — ``build_ask_service`` in
+        # ``orchestrator/services/factory.py`` constructs a RagStrategy and
+        # passes it to AskService, but this bench runner used to skip it,
+        # which silently disabled RAG chunk injection into the prompt.
+        # Result: bench measured tool-selection with a clean context and
+        # inflated pass rates well above what real chat delivers (chat
+        # session 68077442 shows the same flu-triad prompt at 14260 input
+        # tokens with a StatPearls chunk in the prompt, and the model
+        # answers inline instead of calling the tool). Returns ``None``
+        # when ``rag.enabled=false`` so the bench naturally no-ops in
+        # RAG-disabled environments.
+        strategy = build_rag_strategy(model=model)
 
         async with SymptomsServerClient(symptoms_url) as client:
             service = AskService(
@@ -275,6 +287,7 @@ async def _run_one_trial(
                 provider_id=provider.id,
                 model_name=provider.model,
                 provider_config=provider,
+                strategy=strategy,
                 rag_mode=rag_mode,
                 prompt_channel=channel,
                 tool_approval_channel=approval,

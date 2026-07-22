@@ -2,6 +2,10 @@
   "schema_version": 1,
   "runner": "symptoms",
   "cases": {
+    "cold_worsening_to_sob": {
+      "revision": 1,
+      "content_sha256": "ae41427c6f935fee7999503948a61ca63430d6e4c7353173ff22da01ff4e0377"
+    },
     "en_breath_chest_dizziness": {
       "revision": 1,
       "content_sha256": "f17224422818832a54a6f1c41d7f55311d44b219ec2e92331c7dc716e1d292c3"
@@ -26,13 +30,61 @@
       "revision": 1,
       "content_sha256": "55e778f6c78b1632042d9220d14778ec4f789f3a7c80d5b6555e36853b295fe5"
     },
+    "flu_chills_no_measured_fever": {
+      "revision": 1,
+      "content_sha256": "d98cad2c729b4dfb33853ca7a21aab16b59e33d4f5a4005d54935b2fe66f62da"
+    },
+    "flu_high_fever_chills_myalgia": {
+      "revision": 1,
+      "content_sha256": "f4287b68cd5dccf40da4b8f45e23fa7909ff268f2e048227a6bffbb60690f9e5"
+    },
+    "flu_triad_3d": {
+      "revision": 1,
+      "content_sha256": "88fdb6ae9e7d104a068cb78152a582ce64345b746246c9fc55f243295008df4f"
+    },
+    "flu_triad_3d_bare_report": {
+      "revision": 1,
+      "content_sha256": "062dedf4533c941456a8b1ca62a1b730371151b6bd77b47fdcbab5e04e68c365"
+    },
+    "flu_triad_3d_verbatim": {
+      "revision": 1,
+      "content_sha256": "bf7bf69d5c83f368d84d2702188e69beaffdb1662e9db348a19dc15f678b0b5a"
+    },
+    "fp_chronic_cough_2mo": {
+      "revision": 1,
+      "content_sha256": "62adfc892ba4ff8b0d49c0a0e3f96246ad5059d29e9572a3d2f4a0f15492f505"
+    },
+    "fp_cold_medicine_recommendation": {
+      "revision": 1,
+      "content_sha256": "2e4168ab842712326f9f7d966ddf58130c6d11580ce26b2561d98670f4ff4fed"
+    },
+    "fp_cold_vs_flu_knowledge": {
+      "revision": 1,
+      "content_sha256": "18e1343a0b7b48e9cafc20a252069cc8b28f3b520b7606d798145ddc83e200e8"
+    },
     "fp_drug_side_effect_query": {
       "revision": 1,
       "content_sha256": "54e39822f715999b76189cf075fe052a8ad132166aff4bcf369440ac2a45428a"
     },
+    "fp_flu_recovered_last_week": {
+      "revision": 1,
+      "content_sha256": "f3230a0b46ff46c6c29d40e0e803c183d6d9e7acd2e888bc94d933bda1555a81"
+    },
+    "fp_flu_shot_arm_soreness": {
+      "revision": 1,
+      "content_sha256": "7a25403a7e5c47c73fab55d94b1e367ba03ba7eca9a9ca41dd34b352f84a537a"
+    },
+    "fp_flu_vaccine_timing": {
+      "revision": 1,
+      "content_sha256": "4e35116e6003353460aa1d3d743eeb8ff5456ddd35fdd2f4ead5e99207d5c2d9"
+    },
     "fp_hypothetical_disease_query": {
       "revision": 1,
       "content_sha256": "02fc3ee77f9f67db1b47ce19c87ab304be8fdd16ce2ef49c7b219691b4c42861"
+    },
+    "fp_kid_has_flu_prevention": {
+      "revision": 1,
+      "content_sha256": "c146551d39e72ce85da901e36f9db47213cd00a0828e1a84784807b5c54926b4"
     },
     "fp_lab_result_question": {
       "revision": 1,
@@ -50,6 +102,10 @@
       "revision": 1,
       "content_sha256": "2a620e20f7d331fb36c2d26dba92e67ecd6779199568dab9c27ae3965fa7bad1"
     },
+    "fp_pneumonia_family_worry": {
+      "revision": 1,
+      "content_sha256": "48f4d8baeca917e5a7315d4445e9f32169fc53f0670db85088e06cce76f729f2"
+    },
     "fp_recovery_update": {
       "revision": 1,
       "content_sha256": "984469700b6745311d80192c0750ea6b341a495e29e0a59c7a349b68939ff500"
@@ -57,6 +113,22 @@
     "fp_third_party_symptoms": {
       "revision": 1,
       "content_sha256": "78153a08d15d5e1fe799f354bcd90428e2965f2e46ea2b9a38f3ec5eb368678c"
+    },
+    "pneumonia_hemoptysis_fever": {
+      "revision": 1,
+      "content_sha256": "7ef74186f285f96e46a6cbd6b0b97592674544e849283361df8886bba4d79a22"
+    },
+    "pneumonia_productive_cough_fever": {
+      "revision": 1,
+      "content_sha256": "aeda9dec152949a9d3a8ce48df9b4a6f5a66a981a7e6f13230bb9c27f35b26c6"
+    },
+    "post_cold_chest_tight": {
+      "revision": 1,
+      "content_sha256": "06b84ac75d38889adfb50171e15b5316710e8f055a7e9afd235550dff6897482"
+    },
+    "urti_sore_throat_congestion": {
+      "revision": 1,
+      "content_sha256": "589dac290a5d649c038128ba601d0ac154c5674ceed31b67810826f86fafe3c1"
     },
     "zh_allergy_save": {
       "revision": 1,
