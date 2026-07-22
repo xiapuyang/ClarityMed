@@ -110,6 +110,13 @@ AuditKind = Literal[
     "mode.ask.scrub_assembled",
     "mode.rag",
     "mode.cancelled",
+    # Emitted from _run_scoped's finally when the turn was cancelled AFTER
+    # SymptomsFeature._maybe_emit_differential_ready fired but BEFORE the
+    # stream reached Done. Narrows the tear-down window for the "cards
+    # rendered live but disappeared on refresh" class of bug reports. Fires
+    # in addition to mode.cancelled, not instead of it.
+    # payload allowlist: user_id, session_id, had_error
+    "stream.cancelled_with_pending_differential",
     "mode.ask.history_trimmed",
     # Tool-mode compliance: LLM wrote "I will retrieve..." but never
     # actually invoked retrieve_medical_literature this turn. Grep to
