@@ -95,6 +95,32 @@ datasets:
     init_symptom_filter:
       exclude_antecedent: true
       allowed_dtypes: ["B"]
+      # Data-driven whitelist of the top-16 INITIAL_EVIDENCE symbols among
+      # Pneumonia+Influenza training patients (15047 patients from
+      # DDXPlus train split). Prevents SapBERT from semantically reaching
+      # overly-specific disease claims like E_202 whooping cough,
+      # E_203 intense coughing fits, E_194 stridor, E_112/E_214 wheezing
+      # — those are training-time NEVER-init evidences for Pne/Flu and
+      # asking them first drives the model into wrong-disease territory.
+      # Percentages are frequency among Pne+Flu patients' INITIAL_EVIDENCE
+      # (see scripts/analyze in the plan docs).
+      allowed_evidence_ids:
+        - E_53   # pain somewhere (11.9%) — general pain screen
+        - E_129  # skin lesions (10.3%) — screening question
+        - E_201  # cough (9.2%)
+        - E_91   # fever (8.6%)
+        - E_94   # chills (7.8%)
+        - E_144  # diffuse muscle pain (7.4%)
+        - E_161  # loss of appetite (7.0%)
+        - E_181  # nasal congestion / runny nose (6.0%)
+        - E_88   # severe fatigue, cannot do usual activities (4.9%)
+        - E_50   # significantly increased sweating (4.5%)
+        - E_77   # colored/abundant sputum cough (4.4%)
+        - E_97   # sore throat (3.6%)
+        - E_66   # shortness of breath (3.6%)
+        - E_175  # generalized new fatigue + muscle aches (2.7%)
+        - E_45   # coughing up blood (2.6%)
+        - E_220  # pleuritic pain (2.5%)
     # v3 subset-parametric — canonical condition slugs (NOT display names)
     # for the target set. Non-target diseases lump into a synthetic
     # ``Other`` class the classifier emits as its last output. The wire
@@ -255,6 +281,25 @@ models:
     patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
     stop_thres: 0.98    # serve-time override; trained at 0.90
     antecedent_penalty: 0.15  # demote risk-factor questions; symptoms dominate
+    # Serve-time IG + stop overrides (no retraining). Rationale:
+    # - v5 checkpoint baked ig_recall_weight=0.5 under symmetric abs()
+    #   semantics; asymmetric mode counts only target-increasing shifts,
+    #   so 0.5 → 1.5 keeps the effective bias in the same ballpark while
+    #   removing the Other-drift bug.
+    # - stop_policy=proj_target_sum lets the model stop when P(Pne)+P(Flu)
+    #   > 0.65 without needing to resolve Pne vs Flu individually; matches
+    #   the "minimize questions × maximize target recall" utility.
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    stop_policy: proj_target_sum
+    # 0.85 (not 0.65) so the model DIFFERENTIATES Pne vs Flu, not just
+    # "respiratory infection". Empirical: SapBERT init injection of
+    # fever+cough+muscle-pain already puts P(Pne+Flu) at ~0.83, so 0.65
+    # would fire the stop at turn 0 and freeze the answer at whichever
+    # target the classifier's prior favors (flu, in the v5 model). 0.85
+    # gives the IG policy 2-4 turns to disambiguate before stopping.
+    stop_target_thres: 0.85
+    stop_other_thres: 0.90
 
 # Process-wide chief-complaint matcher embedder. Shared singleton —
 # every dataset's per-catalog vectors are encoded against this one
@@ -265,7 +310,26 @@ init_matcher:
   enabled: true
   model_id: cambridgeltl/SapBERT-from-PubMedBERT-fulltext
   device: cpu                     # CPU keeps BASD GPU/MPS free
-  threshold: 0.55                 # cosine cutoff; sweep on a dev set
+  # 0.50 is safe now that ``allowed_evidence_ids`` restricts the catalog
+  # to 16 Pne/Flu-relevant symptoms. On the full 96 candidates 0.55 was
+  # the right floor to keep noise out; on the restricted pool 0.50 lets
+  # in the ~0.51-0.52 matches for cough/muscle pain that showed up on
+  # normal Pne/Flu complaints. Sub-threshold false positives are still
+  # user-confirmed via pre-questions so the downside is bounded.
+  threshold: 0.50
+  # Multi-symptom injection: users often list several complaints in one
+  # message ("fever, cough, muscle aches"). Every match ≥ threshold up
+  # to this cap is queued as a Yes/No pre-question for the user to
+  # confirm BEFORE the IG policy takes over. Closes the "SapBERT silently
+  # decides Yes for the user" bug — see servers/symptoms/app.py::
+  # _match_init_evidences docstring.
+  max_matches: 3
+  # No min_confidence_gate: with the pre-question flow, low-confidence
+  # matches are just extra Yes/No questions the user can trivially deny.
+  # A gate here would over-suppress legit matches (SapBERT's score
+  # distribution for common Pne/Flu complaints tops out around 0.60-0.65
+  # so 0.62 gated everything). Left null so the base threshold is the
+  # only cutoff. To re-enable, add ``min_confidence_gate: 0.55`` here.
 
 # Multi-card renderer knob. After sub-session completion the plugin
 # builds up to `top_n_cap` DifferentialCard entries from the tool's
