@@ -301,6 +301,79 @@ models:
     stop_target_thres: 0.95
     stop_other_thres: 0.90
 
+  # -----------------------------------------------------------------
+  # Isotonic post-hoc calibration on top of xgb_pne_inf_v5_recallig
+  # (produced by scripts/calibrate_symptoms_model.py). Base XGBoost
+  # trees are untouched; only per-class monotonic recalibration heads
+  # are added via CalibratedClassifierCV(method='isotonic',
+  # FrozenEstimator). Purpose: cut the Other→Pne false-positive rate
+  # driving Pne precision down to ~0.36 in v5_recallig, without moving
+  # recall (monotonic preserves ranking).
+  #
+  # NOT wired into ddxplus_pneumonia_flu.model_ids yet — kept off-dataset
+  # for A/B eval only (scripts/eval_symptoms_metrics.py --model-id
+  # xgb_pne_inf_v5_iso). Promote by adding here after A/B validates the
+  # trade-off on the test split.
+  #
+  # All serve-time knobs mirror v5_recallig so the A/B compares
+  # calibration effect in isolation, not policy differences.
+  - id: xgb_pne_inf_v5_iso
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_iso
+    manifest_sha256: "fa80af84ce97a2e4367b8b9529b1ca6b80d119c38dac7b5af8cb2f9701965cad"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.90
+    antecedent_penalty: 0.15
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    # Isotonic pushes target probs toward 0 systematically, so proj_max
+    # against a symmetric threshold fires Other before targets ever build.
+    # Variant-A separates the two: stop only on Other when very confident
+    # (0.99), otherwise let IG accumulate target probability up to 0.40.
+    stop_policy: proj_variant_a
+    stop_target_thres: 0.40
+    stop_other_thres: 0.99
+
+  # Platt (sigmoid) sibling of xgb_pne_inf_v5_iso — 2-parameter smooth
+  # calibrator instead of non-parametric isotonic. Recommended default
+  # per train.py:378-384 ("isotonic overfits on small calibration sets").
+  # Same serve knobs as v5_recallig for a like-for-like A/B on the
+  # calibration mechanism alone.
+  - id: xgb_pne_inf_v5_platt
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_platt
+    manifest_sha256: "3f66dd2a7a3bbc774ff1e55d55654c1e1ef7f78aa311d2c0ad9199ada20c7619"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.90
+    antecedent_penalty: 0.15
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    stop_policy: proj_max
+    stop_target_thres: 0.95
+    stop_other_thres: 0.90
+
+  # Platt sibling calibrated on IG-loop *rollout snapshots* (not full-
+  # signature validation). 20k validation patients rolled through the
+  # actual IG loop under v5_recallig's serve config → 138k
+  # (encoded_state, label) pairs spanning turns 0..17. Calibrator learns
+  # the distribution of classifier inputs at diagnosis time, not at
+  # train time — the fix Path 1/2 couldn't make.
+  - id: xgb_pne_inf_v5_platt_rollout
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_platt_rollout
+    manifest_sha256: "f98042a65a209ca257a9c06d544f0bbccaae8987122bf2b3fcd8618968573834"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.90
+    antecedent_penalty: 0.15
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    stop_policy: proj_max
+    stop_target_thres: 0.95
+    stop_other_thres: 0.90
+
 # Process-wide chief-complaint matcher embedder. Shared singleton —
 # every dataset's per-catalog vectors are encoded against this one
 # model. SapBERT is the default (UMLS-trained, ~440MB on disk, CPU-fast
