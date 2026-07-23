@@ -291,11 +291,16 @@ def _load_typed_basd_agent(
     state = torch.load(weights_path, map_location=device, weights_only=True)
     hidden = state["trunk"]["0.weight"].shape[0]
     stop_thres_ckpt = state.get("thres", 0.1)
+    # Read the checkpoint's native class count — do NOT assume the caller's
+    # ``n_dis`` (which is len(full_pidx)==49). A native (N+1)-class subset
+    # checkpoint stores a patho head of shape (N+1, hidden); building the
+    # Agent with n_dis=49 triggers a state_dict size-mismatch on load.
+    n_native = int(state["patho"]["weight"].shape[0])
 
-    seed_env = TypedEnv([], schema, n_dis)
+    seed_env = TypedEnv([], schema, n_native)
     base = build_basd(
         seed_env,
-        n_dis=n_dis,
+        n_dis=n_native,
         hidden=hidden,
         lr=1e-4,
         device=device,
@@ -310,9 +315,9 @@ def _load_typed_basd_agent(
     base.thres = resolved.stop_thres  # config override wins over checkpoint
     base.temp = resolved.patho_temp
 
-    n_native = int(base.patho.out_features)
     if n_native == len(resolved.target_condition_ids) + 1:
-        # Already native 3-class typed_basd — no projection needed.
+        # Native (N+1)-class subset — no projection needed.
+        print(f"typed_basd is native {n_native}-class subset — no projection")
         return base
     print(
         f"typed_basd native class count = {n_native}; projecting "

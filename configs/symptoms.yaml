@@ -183,6 +183,23 @@ models:
     patho_temp: 3.0
     stop_thres: 0.3
 
+  # Native 3-class typed_basd — targets = [Pneumonia, Influenza] + Other.
+  # Trained via `--targets` (v3 subset-parametric mode). Complements
+  # typed_basd_pneumonia_flu_v1 which is 2-class (drops Other patients).
+  # NOT wired to any dataset.model_ids — off-dataset A/B slot only. Chat
+  # still routes to xgb_pne_inf_v5_recallig.
+  # Train recipe mirrors typed_basd_pneumonia_flu_v1 (200k episodes, 15
+  # epochs, hidden=512, lr=3e-4, batch=200, patho_temp=1.0). Early
+  # stopped at epoch 8. Internal trainer test metrics on n=5000:
+  # IL=9.51, DDF1=90.49, DDR=86.38, DDP=99.91.
+  - id: typed_basd_pne_flu_other_v1
+    algorithm_module: typed_basd
+    weights_subpath: ddxplus/typed_basd_pne_flu_other_v1
+    manifest_sha256: "68f472c322b46fcdeb496465518a19491e846c1081d5d9428e8a23d4f243a4d9"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.3
+
   # -----------------------------------------------------------------
   # XGBoost sibling to the typed-BASD subset model — same Pneumonia +
   # Influenza scope, different algorithm. Ships CPU-native and produces
