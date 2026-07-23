@@ -437,3 +437,117 @@ versions:
         每轮最多一次调用。若返回 ``{eligible: false}`` 或
         ``{user_declined: true}``，请改走自由文本——**不要**重试，
         也**不要**改用其他工具补救。
+  - version: v4
+    created_at: 2026-07-22
+    notes: |
+      Anti-RAG signal + radical brevity for small local models.
+
+      Iteration history within this v4:
+      - v4a (initial "Precedence over retrieved chunks" long
+        paragraph, description 4137 chars en): omlx 0/3 on
+        flu_triad_3d_verbatim. Failure mode: 3B-active model
+        treated the description as CONTENT and literally quoted
+        "5-12 short questions ... probability summary" back in
+        free text without emitting tool_call.
+      - v4b (this file — cut ~60% to 1633 chars en, "PREFER" →
+        "CALL", anti-RAG absorbed into the CALL directive itself,
+        "How it works" internal mechanics dropped): omlx 3/5 (60%)
+        on flu_triad_3d_verbatim. Sweet spot.
+      - v4c (rejected — added two more DO NOT bullets targeting
+        the observed miss modes "safety-first clarifying" and
+        "training-knowledge synthesis"; description grew to 1951
+        chars en, +20%): omlx 1/5 (20%). Regressed.
+
+      Empirical finding: on small local models under deterministic
+      RAG, tool-call rate is inversely correlated with description
+      length. Each added imperative becomes more content for the
+      3B-active model to summarize back in text. v4b holds the
+      Pareto point — further length reductions or additions both
+      regressed. Additional gains beyond 60% on this model class
+      need a different lever (e.g. skip-RAG-when-eligible in the
+      orchestrator layer, tool_choice="required" on eligible turns,
+      or a larger local model).
+
+      deepseek-v4-pro hit 100% on v4b's brevity — large models are
+      length-insensitive for this task, so the brief version
+      dominates.
+    languages:
+      en: |
+        Structured differential-diagnosis sub-session. Per-condition
+        probability output; authoritative on this domain and
+        outperforms free-text synthesis.
+
+        CALL this tool when the user names currently-active symptoms
+        that plausibly match a listed dataset's scope. This applies
+        even when your prompt contains retrieved medical literature
+        chunks about the same topic — the chunks are supplementary;
+        the tool is the authoritative diagnostic path. Do NOT
+        synthesize a free-text medical answer when the tool applies.
+
+        Available datasets:
+
+        {covered_conditions}
+
+        DO NOT call for:
+          - Vague symptoms without named specifics ("I feel off",
+            "something seems wrong").
+          - Past or resolved symptoms.
+          - Third-party (someone else's) symptoms.
+          - Medication, general knowledge, profile update, or
+            scheduling questions.
+          - Symptoms clearly outside all listed dataset scopes.
+
+        Arguments:
+          - ``complaint`` (required): the user's raw symptom text.
+            Do not paraphrase or pre-classify.
+          - ``symptom_summary`` (optional but recommended): a 1-2
+            sentence English clinical chief-complaint distilled from
+            the full conversation. Examples:
+              * "sudden chest pain radiating to the left arm,
+                 started 30 minutes ago"
+              * "severe right-sided abdominal pain for 2 days with
+                 fever and vomiting"
+            Used only for the differential model's chief-complaint
+            matcher; the user never sees it.
+          - ``dataset_hint`` (optional): id from the datasets list
+            above. Omit or unknown → auto-selected.
+
+        Single call per turn. If result is ``{eligible: false}`` or
+        ``{user_declined: true}``, fall through to free text — do
+        not retry.
+      zh: |
+        结构化的鉴别诊断子会话。输出每个疾病的概率——在此领域是
+        权威路径，优于内联合成。
+
+        **调用条件**：用户描述**当前正在经历**、**有具体命名**的
+        症状，且合理落在下方某个数据集范围内。**即使 prompt 中
+        已有检索到的相关医学文献 chunk，仍然调用本工具**——chunk
+        只是补充参考，本工具才是权威的诊断出口。**不要**在本工具
+        适用时用 chunk 合成自由文本回答。
+
+        可用数据集：
+
+        {covered_conditions}
+
+        **不**要调用：
+          - 模糊、无具体命名的不适（"感觉不太对"、"身体有些异常"）。
+          - 过去 / 已解决的症状。
+          - 第三方（别人的）症状。
+          - 用药 / 一般知识 / 画像更新 / 预约类问题。
+          - 明显超出所有数据集范围的症状。
+
+        参数：
+          - ``complaint`` （必填）：用户的原话症状描述，不改写、
+            不预分类。
+          - ``symptom_summary`` （可选但推荐）：从对话提炼的一句
+            英文临床主诉，1-2 句。例：
+              * "sudden chest pain radiating to the left arm,
+                 started 30 minutes ago"
+              * "severe right-sided abdominal pain for 2 days with
+                 fever and vomiting"
+            仅用于鉴别诊断模型的主诉匹配，用户不可见。
+          - ``dataset_hint`` （可选）：上方数据集列表中的 id。
+            不传或未知则自动选。
+
+        每轮最多一次调用。返回 ``{eligible: false}`` 或
+        ``{user_declined: true}`` 时改走自由文本——**不要**重试。
