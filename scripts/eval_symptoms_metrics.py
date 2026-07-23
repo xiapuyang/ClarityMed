@@ -47,7 +47,7 @@ from claritymed.ingest.symptoms.ddxplus.schema import (
     load_patients,
     load_pidx,
 )
-from claritymed.ingest.symptoms.typed_basd import TypedEnv, seed_everything
+from claritymed.ingest.symptoms.typed_basd import TypedEnv, build_basd, seed_everything
 from claritymed.ingest.symptoms.xgb.algorithm import XgbAgent
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -74,17 +74,20 @@ class ResolvedModel:
     """Everything the interactive loop needs from configs/symptoms.yaml."""
 
     model_id: str
+    algorithm_module: str  # "xgb" | "typed_basd"
     weights_subpath: str
     class_names: list[str]  # ordered: targets first, then "Other"
     maxstep: int
     stop_thres: float
-    antecedent_penalty: float
-    ig_recall_weight: float
-    ig_recall_mode: str
-    stop_policy: str
-    stop_target_thres: float
-    stop_other_thres: float
+    patho_temp: float
     target_condition_ids: list[str]  # names in the dataset's pidx space
+    # xgb-only knobs — ignored for typed_basd.
+    antecedent_penalty: float | None = None
+    ig_recall_weight: float | None = None
+    ig_recall_mode: str | None = None
+    stop_policy: str | None = None
+    stop_target_thres: float | None = None
+    stop_other_thres: float | None = None
 
 
 def _resolve_model(model_id: str, dataset_id: str) -> ResolvedModel:
@@ -101,45 +104,136 @@ def _resolve_model(model_id: str, dataset_id: str) -> ResolvedModel:
     dataset = dataset_specs[dataset_id]
     target_ids: list[str] = list(dataset["target_condition_ids"])
     if model_id not in dataset["model_ids"]:
-        raise SystemExit(
-            f"model {model_id!r} not registered on dataset {dataset_id!r}; "
-            f"registered: {dataset['model_ids']}"
+        # Warn but proceed — allows A/B testing checkpoints (e.g. an
+        # experimental calibrated variant) without wiring them into the
+        # production dataset entry, which would force the server to load
+        # them at startup.
+        print(
+            f"[warn] model {model_id!r} not in dataset {dataset_id!r}.model_ids; "
+            f"proceeding for A/B eval (production chat still uses "
+            f"{dataset['model_ids']})",
+            file=sys.stderr,
         )
     model_specs = {m["id"]: m for m in cfg["models"]}
     if model_id not in model_specs:
         raise SystemExit(f"model {model_id!r} not in models[] of {CONFIG_PATH}")
     m = model_specs[model_id]
-    if m.get("algorithm_module") != "xgb":
+    algo = m.get("algorithm_module")
+    if algo not in {"xgb", "typed_basd"}:
         raise SystemExit(
-            f"model {model_id!r} algorithm_module={m.get('algorithm_module')!r}; "
-            f"this script only handles xgb. Add a branch here to eval typed_basd."
+            f"model {model_id!r} algorithm_module={algo!r}; supported: xgb, typed_basd"
         )
     class_names = [n.capitalize() for n in target_ids] + ["Other"]
-    return ResolvedModel(
+    # xgb has additional IG + stop-policy knobs; typed_basd is neural-net
+    # and reads its stop threshold as a symptom-prob cutoff instead
+    # (KTD-D3: same field, opposite direction — see servers/symptoms/loader.py).
+    common = dict(
         model_id=model_id,
+        algorithm_module=algo,
         weights_subpath=m["weights_subpath"],
         class_names=class_names,
         maxstep=int(m["maxstep"]),
         stop_thres=float(m["stop_thres"]),
-        antecedent_penalty=float(m["antecedent_penalty"]),
-        ig_recall_weight=float(m["ig_recall_weight"]),
-        ig_recall_mode=str(m["ig_recall_mode"]),
-        stop_policy=str(m["stop_policy"]),
-        stop_target_thres=float(m["stop_target_thres"]),
-        stop_other_thres=float(m["stop_other_thres"]),
+        patho_temp=float(m.get("patho_temp", 1.0)),
         target_condition_ids=target_ids,
     )
+    if algo == "xgb":
+        return ResolvedModel(
+            **common,
+            antecedent_penalty=float(m["antecedent_penalty"]),
+            ig_recall_weight=float(m["ig_recall_weight"]),
+            ig_recall_mode=str(m["ig_recall_mode"]),
+            stop_policy=str(m["stop_policy"]),
+            stop_target_thres=float(m["stop_target_thres"]),
+            stop_other_thres=float(m["stop_other_thres"]),
+        )
+    return ResolvedModel(**common)
 
 
-def _load_agent(
-    resolved: ResolvedModel, schema: dict, models_root: pathlib.Path
-) -> XgbAgent:
-    """Load the checkpoint and apply every production-side override.
+def _project_probs(
+    probs_full: np.ndarray, target_idxs: list[int], n_classes: int
+) -> np.ndarray:
+    """Reduce ``(batch, n_classes)`` posterior to ``(batch, N+1)``.
+
+    ``target_idxs[k]`` becomes projected class ``k``; the trailing column
+    is the sum over all non-target classes ('Other'). Sum-to-1 is
+    preserved because we're summing a disjoint partition of the raw
+    class space. Copied from scripts/eval_xgb_subset_metrics.py so both
+    scripts stay independent — no cross-import.
+    """
+    if probs_full.ndim == 1:
+        probs_full = probs_full[np.newaxis, :]
+    n_targets = len(target_idxs)
+    out = np.zeros((probs_full.shape[0], n_targets + 1), dtype=probs_full.dtype)
+    for k, idx in enumerate(target_idxs):
+        out[:, k] = probs_full[:, idx]
+    other_mask = np.ones(n_classes, dtype=bool)
+    other_mask[list(target_idxs)] = False
+    out[:, n_targets] = probs_full[:, other_mask].sum(axis=1)
+    return out
+
+
+class _ProjectingAgent:
+    """Wrap a native-49-class agent, expose 3-class diagnose() to callers.
+
+    ``next_action`` / ``should_stop`` pass through — question selection
+    and termination stay in the base agent's native space (which is
+    correct: BASD's next_action picks the highest-prob unresolved
+    symptom; that's independent of the projection).
+
+    ``diagnose`` returns ``(hard_pred, soft_probs)`` where:
+
+    * ``hard_pred``: **argmax-then-bucket** on the native 49-class
+      posterior. Picks the single most-likely disease first, then
+      buckets it into ``(target..., Other)``. Reflects how a deployed
+      49-class model would route a decision to the 3-class UI — the
+      model's own top pick wins. Avoids the systematic "Other beats
+      any single target" bias that sum-projected argmax suffers from
+      when 47 non-target competitors each hold a small slice of mass.
+    * ``soft_probs``: sum-projected 3-class probabilities. Non-target
+      classes are summed into Other, sum-to-1 preserved. Used for ECE
+      / Brier / Brier R² — those metrics want a full calibrated 3-way
+      distribution.
+
+    The two can disagree (a patient may have hard_pred=Pne while
+    soft_probs.argmax()=Other). That's intentional: they measure
+    different things.
+    """
+
+    def __init__(self, base_agent, target_idxs: list[int], n_classes: int) -> None:
+        self._base = base_agent
+        self._target_idxs = target_idxs
+        self._n_classes = n_classes
+        self._target_set = set(target_idxs)
+        self._other_bucket_idx = len(target_idxs)  # 3-class layout: [..., Other]
+        # Map native class idx -> bucket idx (targets first, then Other)
+        self._bucket_of = {t: k for k, t in enumerate(target_idxs)}
+
+    def diagnose(self, state):
+        _, probs_full = self._base.diagnose(state)
+        native_argmax = probs_full.argmax(axis=1)
+        hard_pred = np.array(
+            [
+                self._bucket_of.get(int(c), self._other_bucket_idx)
+                for c in native_argmax
+            ],
+            dtype=np.int64,
+        )
+        probs_proj = _project_probs(probs_full, self._target_idxs, self._n_classes)
+        return hard_pred, probs_proj
+
+    def next_action(self, state):
+        return self._base.next_action(state)
+
+    def should_stop(self, state):
+        return self._base.should_stop(state)
+
+
+def _load_xgb_agent(resolved: ResolvedModel, schema: dict, models_root: pathlib.Path):
+    """Load XGBoost checkpoint + apply serve-time overrides.
 
     Mirrors ``ingest/symptoms/ddxplus/adapter.py::_apply_xgb_ig_overrides``
-    plus ``apply_model_overrides`` from ``servers/symptoms/loader.py`` so
-    the numbers this script prints match what the running symptoms server
-    would produce on the same patients.
+    plus ``apply_model_overrides`` from ``servers/symptoms/loader.py``.
     """
     weights_path = models_root / resolved.weights_subpath / "weights.pkl"
     if not weights_path.exists():
@@ -150,9 +244,10 @@ def _load_agent(
     n_classes = int(agent.classifier.classes_.shape[0])
     if n_classes != n_target + 1:
         raise SystemExit(
-            f"checkpoint has {n_classes} classes but config declares "
+            f"xgb checkpoint has {n_classes} classes but config declares "
             f"{n_target} targets + Other = {n_target + 1}. Refusing to eval "
-            f"a legacy 49-class model here — use scripts/eval_xgb_subset_metrics.py."
+            f"a legacy 49-class xgb model here — this script requires native "
+            f"subset xgb."
         )
 
     agent.thres = resolved.stop_thres
@@ -164,9 +259,84 @@ def _load_agent(
     agent.target_sum_target_thres = resolved.stop_target_thres
     agent.variant_a_other_thres = resolved.stop_other_thres
     agent.target_sum_other_thres = resolved.stop_other_thres
-    # Native 3-class model — targets are classifier output indices 0..N-1.
     agent.target_class_idxs = list(range(n_target))
     return agent
+
+
+def _load_typed_basd_agent(
+    resolved: ResolvedModel,
+    schema: dict,
+    models_root: pathlib.Path,
+    n_dis: int,
+    target_full_idxs: list[int],
+):
+    """Load a torch typed_basd checkpoint and wrap it for projection.
+
+    typed_basd_v2 is trained on the full 49-class DDXPlus corpus. To
+    compare against the 3-class xgb baseline we project its posterior
+    at diagnose time: target classes stay 1-to-1, the rest sum into
+    Other. next_action / should_stop are untouched — question selection
+    and stop logic operate in the native space.
+    """
+    import torch
+
+    weights_path = models_root / resolved.weights_subpath / "weights.pt"
+    if not weights_path.exists():
+        raise SystemExit(f"weights not found: {weights_path}")
+
+    # Follow servers/symptoms/loader.py::load_torch_agent: read hidden
+    # width from the checkpoint so we don't have to duplicate the tune
+    # sweep's hyperparameters in the eval script.
+    device = "cpu"  # eval is single-shot; cpu avoids device-move overhead
+    state = torch.load(weights_path, map_location=device, weights_only=True)
+    hidden = state["trunk"]["0.weight"].shape[0]
+    stop_thres_ckpt = state.get("thres", 0.1)
+
+    seed_env = TypedEnv([], schema, n_dis)
+    base = build_basd(
+        seed_env,
+        n_dis=n_dis,
+        hidden=hidden,
+        lr=1e-4,
+        device=device,
+        stop_thres=stop_thres_ckpt,
+        stop_mode="heuristic",
+    )
+    base.trunk.load_state_dict(state["trunk"])
+    base.sym.load_state_dict(state["sym"])
+    base.patho.load_state_dict(state["patho"])
+    if base.stop is not None and state.get("stop") is not None:
+        base.stop.load_state_dict(state["stop"])
+    base.thres = resolved.stop_thres  # config override wins over checkpoint
+    base.temp = resolved.patho_temp
+
+    n_native = int(base.patho.out_features)
+    if n_native == len(resolved.target_condition_ids) + 1:
+        # Already native 3-class typed_basd — no projection needed.
+        return base
+    print(
+        f"typed_basd native class count = {n_native}; projecting "
+        f"to {len(resolved.target_condition_ids)} targets + Other"
+    )
+    return _ProjectingAgent(base, target_full_idxs, n_native)
+
+
+def _load_agent(
+    resolved: ResolvedModel,
+    schema: dict,
+    models_root: pathlib.Path,
+    n_dis: int,
+    target_full_idxs: list[int],
+):
+    """Dispatch to per-algorithm loader; return an agent with the shared
+    ``diagnose / next_action / should_stop`` interface."""
+    if resolved.algorithm_module == "xgb":
+        return _load_xgb_agent(resolved, schema, models_root)
+    if resolved.algorithm_module == "typed_basd":
+        return _load_typed_basd_agent(
+            resolved, schema, models_root, n_dis, target_full_idxs
+        )
+    raise SystemExit(f"unhandled algorithm_module: {resolved.algorithm_module!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -177,18 +347,29 @@ def _load_agent(
 
 
 def _rollout(
-    agent: XgbAgent,
+    agent,
     patients: list[dict],
     schema: dict,
     n_dis: int,
     maxstep: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Run the BASD loop; return ``(final_probs [N, 3], il [N])``.
+    verify_target_idx: int | None = None,
+    verify_turns: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the IG loop; return ``(final_probs [N, 3], il [N])``.
 
     ``il[i]`` counts the number of evidence-reveal steps for patient i.
     Patients that satisfy ``should_stop`` at step 0 (e.g. SapBERT init
-    injection already pushes P(Pne)+P(Flu) past the threshold in production)
+    injection already pushes P(target) past the threshold in production)
     get IL=0 — matching how the server counts "questions asked".
+
+    ``verify_target_idx`` enables post-hoc verification: after the main
+    loop terminates, for every patient whose argmax landed on that
+    target class, one extra IG-picked question is asked and the model
+    re-diagnosed. Purpose is asymmetric precision boost on that class
+    (targets a specific over-confidence pattern) without touching the
+    main stop policy or requiring model retraining. IL is incremented
+    by 1 for each verified patient regardless of whether the answer
+    changed the argmax.
     """
     env = TypedEnv(list(patients), schema, n_dis)
     n = len(patients)
@@ -203,8 +384,40 @@ def _rollout(
         next_evs = agent.next_action(state)
         state = env.reveal(state, next_evs, stopped)
         il[~stopped] += 1
-    _, final_probs = agent.diagnose(state)
-    return final_probs.astype(np.float64), il
+    hard_pred, final_probs = agent.diagnose(state)
+    final_probs = final_probs.astype(np.float64)
+    hard_pred = np.asarray(hard_pred, dtype=np.int64)
+
+    if verify_target_idx is not None:
+        # Bias IG toward "target-vs-rest" discrimination — the default 3-way
+        # projection picks questions optimal for Pne/Flu/Other simultaneously,
+        # which after stop is rarely the best question to *refute* the current
+        # target prediction. Restoring the original list at the end keeps the
+        # agent stateless from the caller's perspective.
+        original_target_idxs = getattr(agent, "target_class_idxs", None)
+        agent.target_class_idxs = [verify_target_idx]
+
+        il = il.copy()
+        final_probs = final_probs.copy()
+        hard_pred = hard_pred.copy()
+        try:
+            for _turn in range(verify_turns):
+                verify_mask = hard_pred == verify_target_idx
+                if not verify_mask.any():
+                    break
+                freeze = ~verify_mask
+                next_evs = agent.next_action(state)
+                state = env.reveal(state, next_evs, freeze)
+                new_hard, new_probs = agent.diagnose(state)
+                new_probs = new_probs.astype(np.float64)
+                new_hard = np.asarray(new_hard, dtype=np.int64)
+                final_probs[verify_mask] = new_probs[verify_mask]
+                hard_pred[verify_mask] = new_hard[verify_mask]
+                il[verify_mask] += 1
+        finally:
+            agent.target_class_idxs = original_target_idxs
+
+    return final_probs, il, hard_pred
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +712,23 @@ def main() -> int:
         help="JSON output path. Default: data/bench/symptoms/eval_metrics_<ts>.json",
     )
     ap.add_argument("--no-json", action="store_true", help="Skip JSON dump.")
+    ap.add_argument(
+        "--verify-class",
+        default=None,
+        help="Post-hoc verification: after main rollout, ask up to "
+        "--verify-turns extra IG questions (target-vs-rest projection) "
+        "for patients whose argmax equals this class name (e.g. 'Pneumonia'), "
+        "re-diagnose after each. Precision-boost fix for an over-confident "
+        "target without retraining. Class name must match "
+        "resolved.class_names exactly.",
+    )
+    ap.add_argument(
+        "--verify-turns",
+        type=int,
+        default=1,
+        help="Max extra questions per verified patient (default 1). Loop "
+        "stops early per-patient once argmax leaves the target class.",
+    )
     args = ap.parse_args()
 
     seed_everything(args.seed)
@@ -513,15 +743,34 @@ def main() -> int:
     print(f"loaded {len(patients)} test patients (requested {args.n_test})")
     _relabel_to_subset(patients, slug_to_idx, resolved.target_condition_ids)
 
-    agent = _load_agent(resolved, schema, args.models_root)
     n_dis = len(full_pidx)
+    target_full_idxs = [slug_to_idx[slug] for slug in resolved.target_condition_ids]
+    agent = _load_agent(resolved, schema, args.models_root, n_dis, target_full_idxs)
+
+    verify_idx: int | None = None
+    if args.verify_class is not None:
+        if args.verify_class not in resolved.class_names:
+            raise SystemExit(
+                f"--verify-class {args.verify_class!r} not in {resolved.class_names}"
+            )
+        verify_idx = resolved.class_names.index(args.verify_class)
+        print(
+            f"post-hoc verification enabled for class: {args.verify_class} (idx={verify_idx})"
+        )
 
     t0 = time.perf_counter()
-    probs, il = _rollout(agent, patients, schema, n_dis, resolved.maxstep)
+    probs, il, y_pred = _rollout(
+        agent,
+        patients,
+        schema,
+        n_dis,
+        resolved.maxstep,
+        verify_target_idx=verify_idx,
+        verify_turns=args.verify_turns,
+    )
     elapsed = time.perf_counter() - t0
 
     y_true = np.asarray([p["d"] for p in patients], dtype=np.int64)
-    y_pred = probs.argmax(axis=1)
 
     per_class = _per_class_prf(y_true, y_pred, resolved.class_names, il)
     calib = _calibration(y_true, probs)
