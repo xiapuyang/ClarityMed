@@ -132,6 +132,16 @@ def main() -> None:
         "trained model handles a subset-conditional differential only. "
         "Names must match release_conditions.json exactly.",
     )
+    ap.add_argument(
+        "--targets",
+        default=None,
+        help="Comma-separated target disease names for 3-class native "
+        "subset training (e.g. 'Pneumonia,Influenza'). Non-target patients "
+        "are RELABELED to a synthetic 'Other' class instead of being "
+        "dropped (unlike --diseases). Produces a native (N+1)-class classifier. "
+        "Mutually exclusive with --diseases. Names must match "
+        "release_conditions.json exactly. Order defines subset class indices.",
+    )
     ap.add_argument("--ordinal", action="store_true")
     ap.add_argument("--smoke", action="store_true", help="Tiny run for sanity testing.")
     args = ap.parse_args()
@@ -149,8 +159,22 @@ def main() -> None:
                 f"A 1-class model is not a classifier."
             )
 
+    # v3 subset-parametric (3-class native) — mutually exclusive with v2
+    # whitelist mode. Names preserve the order the user typed them (defines
+    # subset class indices, mirrors xgb/train.py --targets semantics).
+    target_names: list[str] = []
+    if args.targets:
+        if args.diseases:
+            raise SystemExit(
+                "--diseases (v2 whitelist) and --targets (v3 native subset) "
+                "are mutually exclusive."
+            )
+        target_names = [n.strip() for n in args.targets.split(",") if n.strip()]
+        if not target_names:
+            raise SystemExit("--targets is empty after parsing.")
+
     if args.target is None:
-        args.target = "pathology" if whitelist else "differential"
+        args.target = "pathology" if (whitelist or target_names) else "differential"
     elif whitelist and args.target == "differential":
         print(
             "[train] WARNING: --target differential with --diseases set. "
@@ -160,7 +184,10 @@ def main() -> None:
 
     if args.out_subpath is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if whitelist:
+        if target_names:
+            slug = "_".join(n.replace(" ", "-").lower()[:6] for n in target_names[:3])
+            args.out_subpath = f"ddxplus/run/typed_basd_native_{slug}_other_{ts}"
+        elif whitelist:
             # Slug from initials + count for readability at the filesystem level.
             slug = "_".join(
                 n.replace(" ", "-").lower()[:6] for n in whitelist_sorted[:3]
@@ -186,15 +213,48 @@ def main() -> None:
     device = resolve_device(args.device)
     t0 = time.time()
     schema = load_evidence_schema(args.data_dir, use_ordinal=args.ordinal)
-    pidx, sev = load_pidx(args.data_dir, whitelist=whitelist)
-    n_dis = len(pidx)
-    if whitelist:
-        print(
-            f"[train] subset training: pidx = {pidx} "
-            f"(target={args.target}; --episodes reads N raw rows before filtering — "
-            f"bump it if the kept-count is too low)"
+
+    # Three loading modes:
+    # 1. --targets: load FULL pidx, then in-place relabel non-targets to Other class.
+    #    Produces a native (len(targets)+1)-class model, no data dropped.
+    # 2. --diseases: load whitelist-filtered pidx, drop out-of-scope patients.
+    #    Legacy 2-class subset-conditional model.
+    # 3. Neither: load full 49-class pidx (default).
+    subset_mapping: dict[int, int] | None = None
+    if target_names:
+        # Import lazily so a torch-only failure doesn't happen at module load —
+        # the xgb train.py path depends on xgboost which is an optional extra.
+        from claritymed.ingest.symptoms.xgb.train import (
+            _relabel_patients,
+            _resolve_subset_mapping,
         )
+
+        pidx_full, sev_full = load_pidx(args.data_dir, whitelist=None)
+        subset_mapping, n_dis = _resolve_subset_mapping(target_names, pidx_full)
+        pidx = pidx_full  # load_patients reads pidx to validate patient labels
+        # Rebuild severity vector in subset order: targets take their original
+        # severity, Other bucket gets 3.0 (moderate — matches xgb subset default).
+        sev = np.zeros(n_dis, dtype=np.float32)
+        for k, name in enumerate(target_names):
+            sev[k] = sev_full[pidx_full[name]]
+        sev[len(target_names)] = 3.0
+        print(
+            f"[train] native subset training: targets={target_names} "
+            f"→ classes {[*target_names, 'Other']} (n_dis={n_dis}); "
+            f"non-target patients are relabeled to Other, not dropped."
+        )
+    else:
+        pidx, sev = load_pidx(args.data_dir, whitelist=whitelist)
+        n_dis = len(pidx)
+        if whitelist:
+            print(
+                f"[train] subset training: pidx = {pidx} "
+                f"(target={args.target}; --episodes reads N raw rows before "
+                f"filtering — bump it if the kept-count is too low)"
+            )
     train_pats = load_patients(args.data_dir, args.episodes, "train", schema, pidx)
+    if subset_mapping is not None:
+        _relabel_patients(train_pats, subset_mapping)
     env = TypedEnv(train_pats, schema, n_dis)
     print(
         f"typed: questions(actions)={schema['n_ev']} "
@@ -214,6 +274,8 @@ def main() -> None:
     agent.temp = args.patho_temp
 
     val_pats = load_patients(args.data_dir, args.eval_n_val, "validate", schema, pidx)
+    if subset_mapping is not None:
+        _relabel_patients(val_pats, subset_mapping)
     out_dir = _models_dir() / args.out_subpath
     out_dir.mkdir(parents=True, exist_ok=True)
     best_weights_path = out_dir / "weights.pt"
@@ -221,8 +283,14 @@ def main() -> None:
 
     # Sorted pidx names — this ordering is what the patho head learns.
     # Recorded in the manifest so the server adapter can fail-loud when
-    # the runtime whitelist config drifts from what was trained.
-    diseases_trained = sorted(pidx, key=lambda n: pidx[n])
+    # the runtime whitelist config drifts from what was trained. Under
+    # --targets mode the ordering is [target_0, ..., target_N-1, Other] —
+    # matches the subset mapping's class layout so the adapter's
+    # target_condition_ids check (ddxplus/adapter.py:_assert_target_...) passes.
+    if target_names:
+        diseases_trained = [*target_names, "Other"]
+    else:
+        diseases_trained = sorted(pidx, key=lambda n: pidx[n])
     train_params = {
         "hidden": args.hidden,
         "lr": args.lr,
@@ -241,6 +309,8 @@ def main() -> None:
         "ordinal": args.ordinal,
         "device": str(device),
         "whitelist_active": whitelist is not None,
+        "targets": target_names or None,
+        "native_subset": bool(target_names),
         "train_pats_kept": len(train_pats),
     }
 
@@ -309,6 +379,8 @@ def main() -> None:
         agent.patho.load_state_dict(best_state["patho"])
 
         test_pats = load_patients(args.data_dir, args.eval_n, "test", schema, pidx)
+        if subset_mapping is not None:
+            _relabel_patients(test_pats, subset_mapping)
         metrics: EvalMetrics = interactive_eval(
             TypedEnv(test_pats, schema, n_dis),
             agent,
