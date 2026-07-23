@@ -279,7 +279,7 @@ models:
     manifest_sha256: "2e0e8b925ae345ab66cb9f17d4bdfb5895576e176eb4a8e34da29e2563b694aa"
     maxstep: 18
     patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
-    stop_thres: 0.98    # serve-time override; trained at 0.90
+    stop_thres: 0.90    # serve-time override; trained at 0.90 (lowered from 0.98 for proj_max experiment)
     antecedent_penalty: 0.15  # demote risk-factor questions; symptoms dominate
     # Serve-time IG + stop overrides (no retraining). Rationale:
     # - v5 checkpoint baked ig_recall_weight=0.5 under symmetric abs()
@@ -291,14 +291,14 @@ models:
     #   the "minimize questions × maximize target recall" utility.
     ig_recall_weight: 1.5
     ig_recall_mode: asymmetric
-    stop_policy: proj_target_sum
+    stop_policy: proj_max
     # 0.85 (not 0.65) so the model DIFFERENTIATES Pne vs Flu, not just
     # "respiratory infection". Empirical: SapBERT init injection of
     # fever+cough+muscle-pain already puts P(Pne+Flu) at ~0.83, so 0.65
     # would fire the stop at turn 0 and freeze the answer at whichever
     # target the classifier's prior favors (flu, in the v5 model). 0.85
     # gives the IG policy 2-4 turns to disambiguate before stopping.
-    stop_target_thres: 0.85
+    stop_target_thres: 0.95
     stop_other_thres: 0.90
 
 # Process-wide chief-complaint matcher embedder. Shared singleton —
