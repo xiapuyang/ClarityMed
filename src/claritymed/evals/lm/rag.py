@@ -22,9 +22,18 @@ Design notes:
   ``cli/commands/eval.py``. ``AskService`` doesn't enforce a user_exists check,
   so this stays clean.
 * Sync interface: lm-eval-harness is synchronous; ``AskService.run`` is
-  an async generator. Each request wraps the drain in ``asyncio.run``.
-  Serial-only — batching across questions would need a separate harness
-  (see plan §Risks).
+  an async generator. All requests in one ``generate_until`` call share a
+  single ``asyncio.Runner`` (Python 3.11+), so every question executes on
+  the same event loop. This matters because the RAG pipeline holds
+  long-lived ``httpx.AsyncClient`` instances (bge_m3 embedder, bge_v2_m3
+  reranker, etc.) whose underlying ``httpcore.AsyncConnectionPool`` is
+  bound to the loop it was first used on — using ``asyncio.run`` per
+  question closes that loop between calls, so question N+1 hits
+  ``RuntimeError: Event loop is closed`` the moment the pool schedules a
+  teardown callback. Each ``runner.run`` still gets a fresh ``Context``
+  (same as ``asyncio.run``), so ContextVars stay isolated between
+  questions. Serial-only — batching across questions would need a
+  separate harness (see plan §Risks).
 * Per-call wall-clock latency is captured the same way as the baseline,
   so the runner's JSONL writer fills ``latency_ms`` without branching
   on which adapter produced the row.
@@ -131,18 +140,22 @@ class ClaritymedRagLM(LM):
             unit="q",
             leave=False,
         )
-        for req in iterable:
-            context = self._unpack(req)
-            t0 = time.perf_counter_ns()
-            try:
-                text = asyncio.run(self._drain(context, doc_id=req.doc_id))
-            finally:
-                elapsed_ms = (time.perf_counter_ns() - t0) / 1_000_000
-                self.latencies_ms.append(elapsed_ms)
-                if req.doc_id is not None:
-                    self.latencies_ms_by_doc_id[req.doc_id] = elapsed_ms
+        # Single loop for the whole batch — see module docstring for why
+        # `asyncio.run` per question breaks the RAG pipeline's cached
+        # AsyncClients.
+        with asyncio.Runner() as runner:
+            for req in iterable:
+                context = self._unpack(req)
+                t0 = time.perf_counter_ns()
+                try:
+                    text = runner.run(self._drain(context, doc_id=req.doc_id))
+                finally:
+                    elapsed_ms = (time.perf_counter_ns() - t0) / 1_000_000
+                    self.latencies_ms.append(elapsed_ms)
+                    if req.doc_id is not None:
+                        self.latencies_ms_by_doc_id[req.doc_id] = elapsed_ms
 
-            completions.append(text)
+                completions.append(text)
         return completions
 
     # ------------------------------------------------------------------
@@ -203,8 +216,8 @@ class ClaritymedRagLM(LM):
         start_as_current_span`` (OTel detach) — and crucially does so
         *inside the same Task/Context that entered them*, so neither
         teardown raises the "Token was created in a different Context"
-        / "Failed to detach context" errors that hit when we let
-        ``asyncio.run`` shutdown finalize a half-consumed generator.
+        / "Failed to detach context" errors that hit when the shared
+        ``asyncio.Runner`` shutdown finalizes a half-consumed generator.
 
         On timeout we return an empty string so the downstream
         ``filter_list`` regex misses → ``exact_match=0`` → ``correct``

@@ -127,6 +127,39 @@ def test_multi_request_runs_each_through_the_service(monkeypatch):
     assert stub.calls == [("Q1?", "eval"), ("Q2?", "eval"), ("Q3?", "eval")]
 
 
+def test_multi_request_shares_one_event_loop(monkeypatch):
+    """Regression: all questions in a `generate_until` batch must run on
+    the same event loop so long-lived `httpx.AsyncClient` instances
+    (bge_m3 embedder, reranker, etc.) don't observe a closed loop between
+    calls. Reverting to `asyncio.run` per question would break this and
+    surface as `RuntimeError: Event loop is closed` on question 2 the
+    moment `httpcore.AsyncConnectionPool` schedules any callback."""
+    import asyncio
+
+    seen_loop_ids: list[int] = []
+
+    class _LoopCapturingService:
+        async def run(self, user_input: str, user_id: str):
+            seen_loop_ids.append(id(asyncio.get_running_loop()))
+            yield TokenChunk(text=user_input)
+            yield Done(final=user_input)
+
+    monkeypatch.setattr(
+        ClaritymedRagLM, "_build_service", lambda self: _LoopCapturingService()
+    )
+    monkeypatch.setattr("claritymed.evals.lm.rag._default_strategy", lambda _p: None)
+    lm = ClaritymedRagLM(_provider())
+
+    lm.generate_until(
+        [_instance("Q1?", idx=0), _instance("Q2?", idx=1), _instance("Q3?", idx=2)]
+    )
+
+    assert len(seen_loop_ids) == 3
+    assert len(set(seen_loop_ids)) == 1, (
+        f"expected all questions to share one loop; got {seen_loop_ids}"
+    )
+
+
 def test_ignores_non_token_events(monkeypatch):
     """Tool/retrieval events fire for audit purposes; the LM-facing
     completion sees only ``TokenChunk`` text."""
