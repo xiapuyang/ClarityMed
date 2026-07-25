@@ -85,6 +85,19 @@ def eval_run(
             "Ignored without --with-rag."
         ),
     ),
+    question_timeout: float | None = typer.Option(
+        None,
+        "--question-timeout",
+        min=1.0,
+        help=(
+            "Per-question wall-clock cap in seconds for the --with-rag arm. "
+            "Default (unset) uses ClaritymedRagLM's built-in 90.0s. Raise "
+            "for hard multi-hop reasoning (medqa bio+micro combos can chew "
+            "3000+ tokens > 90s on a local 35B model → empty completion "
+            "counts as wrong); lower to fail fast on stuck sessions. "
+            "Ignored without --with-rag."
+        ),
+    ),
 ) -> None:
     """Score the configured provider on TASK_ID.
 
@@ -99,6 +112,13 @@ def eval_run(
                 f"--rag-mode must be 'deterministic' or 'tool', got {rag_mode!r}."
             )
         )
+    if question_timeout is not None and not with_rag:
+        # Baseline arm bypasses ClaritymedRagLM entirely, so the flag has
+        # no effect there. Warn instead of silently swallowing.
+        _console.print(
+            "[yellow]warning:[/yellow] --question-timeout requires --with-rag; "
+            "the baseline arm ignores it."
+        )
     command_label = f"eval.{task_id} provider={provider_id or 'default'} arm={arm}" + (
         f" rag_mode={rag_mode}" if with_rag else ""
     )
@@ -109,8 +129,15 @@ def eval_run(
     ):
         provider = _resolve_for_eval(provider_id)
         if with_rag:
+            # Only forward question_timeout when the caller explicitly set it —
+            # ClaritymedRagLM's own default is the single source of truth for
+            # the 90 s baseline (see _DEFAULT_QUESTION_TIMEOUT_S in
+            # evals/lm/rag.py). Passing None here would clobber that.
+            rag_kwargs: dict = {"rag_mode": rag_mode}
+            if question_timeout is not None:
+                rag_kwargs["question_timeout_s"] = question_timeout
             runner = LmEvalRunner(
-                lm_factory=lambda p: ClaritymedRagLM(p, rag_mode=rag_mode),
+                lm_factory=lambda p: ClaritymedRagLM(p, **rag_kwargs),
                 run_tag="with-rag",
             )
         else:
