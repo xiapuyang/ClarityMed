@@ -54,6 +54,15 @@ providers:
     api_key_env: OMLX_API_KEY
     supports_vision: true   # Qwen3.6-35B-A3B supports image/binary inputs
 
+  # Same MLX endpoint, dense 27B variant. MLX server serves one model at a
+  # time — hot-swap the loaded model before using this provider id.
+  - id: omlx-27b
+    kind: local
+    model: "Qwen3.6-27B-oQ4-mtp"
+    base_url: "http://127.0.0.1:8000/v1"
+    api_key_env: OMLX_API_KEY
+    supports_vision: true
+
   # Example: remote local model behind auth (uncomment + set env var to use).
   # - id: ollama-remote
   #   kind: local
