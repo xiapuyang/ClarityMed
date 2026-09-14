@@ -36,9 +36,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import copy
 import pathlib
-from typing import Any
 
 import numpy as np
 
@@ -66,7 +64,7 @@ OTHER_IDX = 2
 # ``evidences with 'fever'/'cough'/'muscle' in the question_en`` grep in
 # ~/.claritymed/data/symptoms/ddxplus/release_evidences.json.
 _FALLBACK_INIT_MATCHES = [
-    ("E_91", 0.90),   # "Do you have a fever?"
+    ("E_91", 0.90),  # "Do you have a fever?"
     ("E_201", 0.85),  # "Do you have a cough?"
     ("E_144", 0.78),  # "Do you have diffuse muscle pain?"
 ]
@@ -94,7 +92,6 @@ def _sapbert_matches(
         )
         from claritymed.core.symptoms.datasets.canonical import (
             CanonicalEvidence,
-            CanonicalValue,
             InitSymptomCatalog,
         )
         from claritymed.core.symptoms.schemas import InitSymptomFilter
@@ -126,10 +123,8 @@ def _sapbert_matches(
     )
     filt = InitSymptomFilter()
     candidates = filter_candidate_evidences(canonical_evs, filt)
-    texts = [
-        ev.native_question_text.get("en") or ev.id for ev in candidates
-    ]
-    print(f"[trace] loading SapBERT (this takes ~5s the first time)...")
+    texts = [ev.native_question_text.get("en") or ev.id for ev in candidates]
+    print("[trace] loading SapBERT (this takes ~5s the first time)...")
     matrix = embedder.encode(texts)
     if matrix is None:
         print("[trace] SapBERT unavailable; using fallback matches")

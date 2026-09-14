@@ -40,8 +40,7 @@ import itertools
 import json
 import pathlib
 import time
-from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -58,11 +57,6 @@ from claritymed.ingest.symptoms.typed_basd import (
     seed_everything,
 )
 from claritymed.ingest.symptoms.xgb.algorithm import XgbAgent
-from claritymed.ingest.symptoms.xgb.encoding import (
-    encode_patient_batch,
-    feature_columns_from_schema,
-    load_evidence_meta,
-)
 
 DEFAULT_DATA_DIR = pathlib.Path.home() / ".claritymed/data/symptoms/ddxplus"
 DEFAULT_WEIGHTS = (
@@ -83,14 +77,14 @@ DEFAULT_INIT_EVS = ("E_144", "E_91")
 # question sequence + the two most predictive additional evidences from
 # the v5 manifest feature importance. K=8 → 256 permutations, fast on CPU.
 DEFAULT_ENUM_EVS = (
-    "E_77",   # colored/abundant sputum — Pne-specific
-    "E_88",   # severe fatigue — Flu-specific
-    "E_94",   # chills/shivers — either
-    "E_66",   # shortness of breath — Pne-leaning
+    "E_77",  # colored/abundant sputum — Pne-specific
+    "E_88",  # severe fatigue — Flu-specific
+    "E_94",  # chills/shivers — either
+    "E_66",  # shortness of breath — Pne-leaning
     "E_161",  # appetite loss — mild
     "E_220",  # pleuritic pain — Pne-specific
-    "E_1",    # chest pain — general
-    "E_53",   # sore throat — Flu-leaning
+    "E_1",  # chest pain — general
+    "E_53",  # sore throat — Flu-leaning
 )
 
 
@@ -202,7 +196,6 @@ def compute_tier_spread(
     k = len(enum_indices)
     n_perms = 2**k
     hist = TierHistogram(config_name=config_name, n_permutations=n_perms)
-    env_writer = TypedEnv([], schema, n_dis=agent.classifier.classes_.shape[0])
     for bits in itertools.product([0, 1], repeat=k):
         state = _initial_state(schema, init_evs)
         answers = []
@@ -227,9 +220,9 @@ class RecallMetrics:
     n_pne: int = 0
     n_flu: int = 0
     n_other: int = 0
-    target_top1_hit: int = 0        # argmax ∈ {Pne, Flu} on target patients
+    target_top1_hit: int = 0  # argmax ∈ {Pne, Flu} on target patients
     target_prob_recall_hit: int = 0  # P_target sum > 0.5 on target patients
-    other_top1_hit: int = 0          # argmax == Other on other patients
+    other_top1_hit: int = 0  # argmax == Other on other patients
     il_on_targets: list[int] = field(default_factory=list)
     il_on_others: list[int] = field(default_factory=list)
 
@@ -331,9 +324,7 @@ def run_interactive_loop(
 # ---------------------------------------------------------------------------
 
 
-def _stratified_sample(
-    patients: list[dict], n_per_class: int, seed: int
-) -> list[dict]:
+def _stratified_sample(patients: list[dict], n_per_class: int, seed: int) -> list[dict]:
     """Return n_per_class Pne + n_per_class Flu + n_per_class Other patients."""
     rng = np.random.default_rng(seed)
     by_class: dict[int, list[dict]] = {PNE_IDX: [], FLU_IDX: [], OTHER_IDX: []}
@@ -344,7 +335,9 @@ def _stratified_sample(
         pool = by_class[cls]
         if not pool:
             continue
-        sample_ids = rng.choice(len(pool), size=min(n_per_class, len(pool)), replace=False)
+        sample_ids = rng.choice(
+            len(pool), size=min(n_per_class, len(pool)), replace=False
+        )
         for i in sample_ids:
             out.append(pool[i])
     return out
@@ -432,16 +425,16 @@ def main() -> None:
 
         for scenario_name, init_evs in scenarios:
             label = f"{cfg['name']}|{scenario_name}"
-            print(f"[verify] {label}: tier spread ({2**len(DEFAULT_ENUM_EVS)} perms)...")
+            print(
+                f"[verify] {label}: tier spread ({2 ** len(DEFAULT_ENUM_EVS)} perms)..."
+            )
             hist = compute_tier_spread(a, schema, DEFAULT_ENUM_EVS, init_evs, label)
             tier_reports.append(hist.as_dict())
 
         if not args.skip_recall:
             print(f"[verify] {cfg['name']}: interactive recall...")
             sample = _stratified_sample(test_pats, args.n_per_class, seed=args.seed)
-            metrics = run_interactive_loop(
-                a, schema, sample, args.maxstep, cfg["name"]
-            )
+            metrics = run_interactive_loop(a, schema, sample, args.maxstep, cfg["name"])
             recall_reports.append(metrics.as_dict())
 
     # --- Emit reports ---
