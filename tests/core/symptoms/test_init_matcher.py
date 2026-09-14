@@ -334,9 +334,7 @@ def test_match_topk_returns_all_above_threshold_in_score_order() -> None:
         ],
         dtype=np.float32,
     )
-    catalog = InitSymptomCatalog(
-        candidate_idx=[7, 9, 12], matrix=matrix, threshold=0.4
-    )
+    catalog = InitSymptomCatalog(candidate_idx=[7, 9, 12], matrix=matrix, threshold=0.4)
     # Query overlaps rows 0 (~0.8) and 1 (~0.6) after normalization.
     em = _make_embedder(
         _StubModel({"fever and cough": np.array([0.8, 0.6, 0.0, 0.0])}),
@@ -350,9 +348,7 @@ def test_match_topk_returns_all_above_threshold_in_score_order() -> None:
 
 def test_match_topk_stops_at_first_below_threshold() -> None:
     """Ranking is descending; once we hit the cutoff we stop appending."""
-    matrix = np.array(
-        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float32
-    )
+    matrix = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
     catalog = InitSymptomCatalog(candidate_idx=[7, 9], matrix=matrix, threshold=0.75)
     em = _make_embedder(
         _StubModel({"query": np.array([0.9, 0.1, 0.0, 0.0])}),
@@ -386,9 +382,7 @@ def test_match_topk_empty_text_returns_empty() -> None:
 
 def test_match_topk_min_score_overrides_threshold() -> None:
     """Explicit min_score wins when it's stricter than the catalog threshold."""
-    matrix = np.array(
-        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float32
-    )
+    matrix = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], dtype=np.float32)
     catalog = InitSymptomCatalog(candidate_idx=[7, 9], matrix=matrix, threshold=0.3)
     em = _make_embedder(
         _StubModel({"q": np.array([0.7, 0.4, 0.0, 0.0])}), threshold=0.3

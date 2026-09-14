@@ -666,9 +666,7 @@ def test_start_session_queues_secondary_matches_for_later_turns(
     # Neither binary match has been written to state yet — the user
     # confirms via /turn before we treat them as positives.
     for ev_i in (0, 1):
-        block = int(
-            SERVER_STATE.datasets["testds"].canonical.layout["off"][ev_i]
-        )
+        block = int(SERVER_STATE.datasets["testds"].canonical.layout["off"][ev_i])
         assert sub.state[0, block] == 0.0
 
 

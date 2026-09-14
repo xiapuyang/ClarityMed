@@ -478,9 +478,9 @@ class ModelSpec(BaseModel):
     #   P(Other) > other_thres. Stops on "definitely respiratory" even
     #   when the model can't yet resolve Pne vs Flu individually — the
     #   "minimize questions × maximize recall" utility.
-    stop_policy: (
-        Literal["proj_max", "proj_variant_a", "proj_target_sum"] | None
-    ) = Field(default=None)
+    stop_policy: Literal["proj_max", "proj_variant_a", "proj_target_sum"] | None = (
+        Field(default=None)
+    )
     stop_target_thres: float | None = Field(default=None, gt=0.0, le=1.0)
     stop_other_thres: float | None = Field(default=None, gt=0.0, le=1.0)
 
