@@ -2,8 +2,8 @@ version: 1
 target: Pneumonia
 generated_at: '2026-07-05T23:18:56.742306+00:00'
 source:
-  baseline_weights: /Users/sharp/.claritymed/models/symptoms/ddxplus/typed_basd_v2/weights.pt
-  data_dir: /Users/sharp/.claritymed/data/symptoms/ddxplus
+  baseline_weights: ~/.claritymed/models/symptoms/ddxplus/typed_basd_v2/weights.pt
+  data_dir: ~/.claritymed/data/symptoms/ddxplus
   n_eval_patients: 20000
   eval_split: validate
 selection_params:

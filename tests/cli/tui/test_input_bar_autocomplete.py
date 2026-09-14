@@ -270,7 +270,7 @@ async def test_drag_drop_path_forwards_to_app_when_input_focused():
         bar = app.query_one(InputBar)
         bar.focus_input()
         inp = _input(app)
-        path_text = "/Users/sharp/Downloads/malignant\\ \\(3\\).png"
+        path_text = "/Users/example/Downloads/malignant\\ \\(3\\).png"
         inp.post_message(events.Paste(path_text))
         await pilot.pause()
         assert inp.text == ""

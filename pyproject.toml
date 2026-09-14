@@ -1,8 +1,36 @@
 [project]
 name = "claritymed"
 version = "0.1.0"
-description = "Patient-facing medical Q&A with structured uncertainty propagation."
+description = "Local-first medical AI assistant with PHI guardrails, deterministic emergency triage, and multi-modal diagnostics."
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "xiapuyang", email = "215984777+xiapuyang@users.noreply.github.com" },
+]
+keywords = [
+    "medical-ai",
+    "local-llm",
+    "phi-guardrails",
+    "emergency-triage",
+    "rag",
+    "pydantic-ai",
+    "mlx",
+    "differential-diagnosis",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Typing :: Typed",
+]
 dependencies = [
     "arize-phoenix-client>=2.7.0",
     # Cross-platform advisory file lock (fcntl on POSIX, msvcrt on Windows).
