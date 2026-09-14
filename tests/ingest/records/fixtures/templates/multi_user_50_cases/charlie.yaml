@@ -1,0 +1,62 @@
+cases:
+- case_id: case-charlie-039
+  event_date: '2024-01-01'
+  title: Charlie encounter 1
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #1.'
+- case_id: case-charlie-040
+  event_date: '2024-02-02'
+  title: Charlie encounter 2
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #2.'
+- case_id: case-charlie-041
+  event_date: '2024-03-03'
+  title: Charlie encounter 3
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #3.'
+- case_id: case-charlie-042
+  event_date: '2024-04-04'
+  title: Charlie encounter 4
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #4.'
+- case_id: case-charlie-043
+  event_date: '2024-05-05'
+  title: Charlie encounter 5
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #5.'
+- case_id: case-charlie-044
+  event_date: '2024-06-06'
+  title: Charlie encounter 6
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #6.'
+- case_id: case-charlie-045
+  event_date: '2024-07-07'
+  title: Charlie encounter 7
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #7.'
+- case_id: case-charlie-046
+  event_date: '2024-08-08'
+  title: Charlie encounter 8
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #8.'
+- case_id: case-charlie-047
+  event_date: '2024-09-09'
+  title: Charlie encounter 9
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #9.'
+- case_id: case-charlie-048
+  event_date: '2024-10-10'
+  title: Charlie encounter 10
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #10.'
+- case_id: case-charlie-049
+  event_date: '2024-11-11'
+  title: Charlie encounter 11
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #11.'
+- case_id: case-charlie-050
+  event_date: '2024-12-12'
+  title: Charlie encounter 12
+  kind: exam-report
+  body_md: 'Routine encounter for charlie, visit #12.'
+facts: {}

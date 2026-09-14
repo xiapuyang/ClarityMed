@@ -1,0 +1,927 @@
+# Synthetic adversarial cases — the panic-attack-as-MI canary.
+#
+# Every case here mimics a critical presentation but the clinical
+# ground truth is routine or urgent. The gate is graded by how often
+# it (correctly) refuses to fire critical on this set; see
+# evals/emergency/metrics.py::_adversarial_fpr for the precise
+# metric (critical-only on adversarial cases).
+#
+# Authoring approach:
+# Plan §"Eval Strategy" calls for LLM-generated + independent-LLM
+# judge for ~80 synthetic cases. Stage 2 ships hand-authored cases
+# patterned on real clinical mimics from DSM-5, AAFP, ICHD-3, ACEP
+# pattern banks (panic attack, costochondritis, GERD, pericarditis,
+# tension/migraine HA, hyperventilation, urticaria alone, vasovagal,
+# conversion disorder, cervical strain, passive SI, heat exhaustion).
+# These are pattern-by-pattern, not provider-generated, so they are
+# deterministic and reviewable. The LLM-gen + judge pipeline is a
+# Stage 3+ upgrade once the rule pack stabilizes.
+#
+# Distribution (60 cases):
+#   chest-pain mimics (mostly testing ACS / chest_pain_ambiguous):
+#     - panic attack       10  (5 en + 5 zh)
+#     - costochondritis     5
+#     - GERD / esoph spasm  5
+#     - pericarditis        4
+#   headache mimics (testing SAH):
+#     - tension / cluster   8
+#     - migraine w/ aura    5
+#   anaphylaxis mimics:
+#     - hyperventilation    3
+#     - urticaria alone     3
+#   neuro / stroke mimics:
+#     - vasovagal syncope   4
+#     - conversion disorder 3
+#     - cervical strain     3
+#   suicidal-ideation mimic:
+#     - passive SI          4
+#   sepsis / fever mimic:
+#     - heat exhaustion     3
+
+cases:
+
+  # ============================================================
+  # Panic attack (chest_pain mimic of ACS) — 10 cases
+  # ============================================================
+  - id: synth_adv_panic_001
+    source: synthetic
+    language: en
+    citation: "DSM-5 panic attack — chest pain + tachycardia + tingling"
+    notes: "Young + no qualifiers + anxiety history; must not fire critical."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 22
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_002
+    source: synthetic
+    language: en
+    citation: "DSM-5 panic attack — DOE + chest tightness"
+    notes: "Sudden onset, peaks within 10 min then resolves — DSM-5 panic."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 28
+      sex: M
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_003
+    source: synthetic
+    language: en
+    citation: "DSM-5 panic — first-time presentation, no prior history"
+    notes: "First-time panic attack in young patient — looks scary, not MI."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 19
+      sex: F
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_004
+    source: synthetic
+    language: en
+    citation: "ACEP panic-attack workup — palpitations + dyspnea + dizziness"
+    notes: "Young + isolated dyspnea + chest tightness, normal vitals on triage."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: [dyspnea]
+      age: 27
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_005
+    source: synthetic
+    language: en
+    citation: "DSM-5 panic — caffeine-triggered episode"
+    notes: "Caffeine binge + chest tightness; young, anxious, otherwise well."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 24
+      sex: M
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_006
+    source: synthetic
+    language: zh
+    citation: "DSM-5 惊恐发作 — 焦虑发作伴胸闷"
+    notes: "20岁女性，胸闷+心悸+手脚发麻，焦虑史，应判 urgent 不 critical。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 20
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_007
+    source: synthetic
+    language: zh
+    citation: "中华精神科 — 惊恐障碍急诊处置"
+    notes: "26岁男性，应激后突发胸痛+心悸，无放射，10分钟自行缓解。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 26
+      sex: M
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_008
+    source: synthetic
+    language: zh
+    citation: "DSM-5 panic — 大学生考试前发作"
+    notes: "19岁女学生，考试前胸闷+呼吸急促，焦虑量表阳性。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: [dyspnea]
+      age: 19
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_009
+    source: synthetic
+    language: zh
+    citation: "ICD-11 焦虑障碍 — 重复发作"
+    notes: "30岁女性，反复发作胸痛+恐惧感，每次<30分钟。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 30
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_panic_010
+    source: synthetic
+    language: zh
+    citation: "DSM-5 — 老年人首次惊恐发作（伴心血管警觉）"
+    notes: "45岁，惊恐发作伴胸痛但无放射/大汗；处于年龄灰带。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 45
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  # ============================================================
+  # Costochondritis — 5 cases
+  # ============================================================
+  - id: synth_adv_costo_001
+    source: synthetic
+    language: en
+    citation: "AAFP costochondritis — reproducible chest wall pain"
+    notes: "Reproducible on palpation; sharp; worse with deep breath. Not MI."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 32
+      sex: F
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_costo_002
+    source: synthetic
+    language: en
+    citation: "AAFP costochondritis — post-exercise onset"
+    notes: "After heavy lifting; localized + reproducible."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 28
+      sex: M
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_costo_003
+    source: synthetic
+    language: en
+    citation: "ACEP — costochondritis vs ACS workup"
+    notes: "Mid-age patient with reproducible chest wall tenderness."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 40
+      sex: F
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_costo_004
+    source: synthetic
+    language: zh
+    citation: "中华全科医学 — 肋软骨炎"
+    notes: "30岁，剑突旁压痛 + 深吸气时加重。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 30
+      sex: M
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_costo_005
+    source: synthetic
+    language: zh
+    citation: "AAFP 中文 — 肋间神经痛"
+    notes: "肋间神经痛，沿肋间走形，可触及压痛。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 38
+      sex: F
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  # ============================================================
+  # GERD / esophageal spasm — 5 cases
+  # ============================================================
+  - id: synth_adv_gerd_001
+    source: synthetic
+    language: en
+    citation: "ACG GERD — postprandial chest burning"
+    notes: "Burning after meals; worse lying down; relieved by antacid. Not MI."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 47
+      sex: M
+      key_history: [gerd]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_gerd_002
+    source: synthetic
+    language: en
+    citation: "AAFP — esophageal spasm"
+    notes: "Squeezing chest pain triggered by cold drinks; relieved by nitroglycerin (ambiguous!)."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 52
+      sex: F
+      key_history: [gerd]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_gerd_003
+    source: synthetic
+    language: zh
+    citation: "中华消化杂志 — 反流性食管炎"
+    notes: "餐后胸骨后烧灼感+反酸，平卧加重。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 55
+      sex: M
+      key_history: [gerd]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_gerd_004
+    source: synthetic
+    language: en
+    citation: "ACG — non-cardiac chest pain in young adult"
+    notes: "Young patient with intermittent chest burning, normal stress test."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 26
+      sex: F
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_gerd_005
+    source: synthetic
+    language: zh
+    citation: "胃食管反流诊治共识 — 不典型反流"
+    notes: "胸骨后烧灼+夜间发作；H2 阻滞剂改善。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 42
+      sex: F
+      key_history: [gerd]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  # ============================================================
+  # Pericarditis — 4 cases (also pleuritic, position-related)
+  # ============================================================
+  - id: synth_adv_pericarditis_001
+    source: synthetic
+    language: en
+    citation: "ACC pericarditis — pleuritic, position-dependent chest pain"
+    notes: "Sharp pleuritic pain; relieved by leaning forward. Not MI, but needs eval."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 34
+      sex: M
+      key_history: [recent_viral_uri]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_pericarditis_002
+    source: synthetic
+    language: en
+    citation: "AHA — pericarditis post-MI complication"
+    notes: "Position-related sharp chest pain in a recent post-MI patient — Dressler's."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 60
+      sex: F
+      key_history: [prior_mi]
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_pericarditis_003
+    source: synthetic
+    language: zh
+    citation: "中华心血管 — 心包炎"
+    notes: "心前区锐痛，前倾位减轻，深吸气加重。"
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 38
+      sex: M
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  - id: synth_adv_pericarditis_004
+    source: synthetic
+    language: en
+    citation: "AAFP — viral pericarditis"
+    notes: "Post-URI chest pain; pleuritic; young patient."
+    symptoms:
+      primary_complaint: chest_pain
+      qualifiers: []
+      age: 29
+      sex: M
+    ground_truth_level: urgent
+    ground_truth_rule_id: chest_pain_ambiguous_high_risk
+    is_adversarial: true
+
+  # ============================================================
+  # Tension / cluster headache (SAH mimic) — 8 cases
+  # ============================================================
+  - id: synth_adv_tension_ha_001
+    source: synthetic
+    language: en
+    citation: "ICHD-3 tension-type headache"
+    notes: "Bilateral pressing, mild-moderate; not sudden onset. NOT SAH."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 33
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_tension_ha_002
+    source: synthetic
+    language: en
+    citation: "ICHD-3 tension HA + stress"
+    notes: "Stress-related; gradual onset over hours; mild."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 41
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_tension_ha_003
+    source: synthetic
+    language: zh
+    citation: "ICHD-3 中文 — 紧张型头痛"
+    notes: "双侧压迫感，工作压力下加重。"
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 36
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_cluster_ha_001
+    source: synthetic
+    language: en
+    citation: "ICHD-3 cluster HA — periorbital, autonomic features"
+    notes: "Sharp periorbital pain, lacrimation, sudden onset BUT recurrent (not first-time thunderclap)."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: [sudden_onset]
+      age: 32
+      sex: M
+      key_history: [cluster_headache_known]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_tension_ha_004
+    source: synthetic
+    language: en
+    citation: "AAFP — medication overuse headache"
+    notes: "Daily NSAID use; chronic dull HA. Not SAH."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 50
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_tension_ha_005
+    source: synthetic
+    language: zh
+    citation: "中华神经科 — 慢性紧张型头痛"
+    notes: "慢性间断性头痛，无神经系统体征。"
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 44
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_tension_ha_006
+    source: synthetic
+    language: en
+    citation: "ICHD-3 — caffeine withdrawal HA"
+    notes: "Throbbing bilateral HA day after stopping coffee."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 28
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_tension_ha_007
+    source: synthetic
+    language: zh
+    citation: "ICHD-3 — 偏头痛先兆期"
+    notes: "偏头痛先兆，缓慢发作伴视觉先兆。"
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 31
+      sex: F
+      key_history: [migraine]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # ============================================================
+  # Migraine with aura — 5 cases
+  # ============================================================
+  - id: synth_adv_migraine_001
+    source: synthetic
+    language: en
+    citation: "ICHD-3 migraine with aura — visual scotoma"
+    notes: "Visual aura preceding HA; gradual onset; recurrent."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 26
+      sex: F
+      key_history: [migraine]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_migraine_002
+    source: synthetic
+    language: en
+    citation: "AAN — hemiplegic migraine (rare)"
+    notes: "Migraine with transient weakness — looks like stroke but resolves."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 22
+      sex: F
+      key_history: [hemiplegic_migraine_known]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_migraine_003
+    source: synthetic
+    language: zh
+    citation: "中华神经科 — 先兆性偏头痛"
+    notes: "先有锯齿状闪光，随后头痛，缓慢发作。"
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 28
+      sex: F
+      key_history: [migraine]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_migraine_004
+    source: synthetic
+    language: en
+    citation: "ICHD-3 — vestibular migraine"
+    notes: "Vertigo + mild HA; recurrent; benign."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 34
+      sex: F
+      key_history: [migraine]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_migraine_005
+    source: synthetic
+    language: en
+    citation: "ICHD-3 — menstrual migraine"
+    notes: "Cyclical HA tied to menses; gradual onset."
+    symptoms:
+      primary_complaint: headache
+      qualifiers: []
+      onset: gradual
+      age: 30
+      sex: F
+      key_history: [migraine]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # ============================================================
+  # Hyperventilation (anaphylaxis mimic) — 3 cases
+  # ============================================================
+  - id: synth_adv_hyperventilation_001
+    source: synthetic
+    language: en
+    citation: "ACEP — hyperventilation syndrome"
+    notes: "Tachypnea + tingling + dyspnea sensation; NO allergen, NO swelling, NO wheeze."
+    symptoms:
+      primary_complaint: respiratory_symptoms
+      qualifiers: []
+      age: 24
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_hyperventilation_002
+    source: synthetic
+    language: en
+    citation: "AAFP — hyperventilation in panic disorder"
+    notes: "Carpopedal spasm from hypocapnia; no airway involvement."
+    symptoms:
+      primary_complaint: respiratory_symptoms
+      qualifiers: []
+      age: 19
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_hyperventilation_003
+    source: synthetic
+    language: zh
+    citation: "中华急诊 — 过度通气综合征"
+    notes: "焦虑发作伴过度通气，手脚发麻，无气道症状。"
+    symptoms:
+      primary_complaint: respiratory_symptoms
+      qualifiers: []
+      age: 26
+      sex: F
+      key_history: [anxiety_disorder]
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # ============================================================
+  # Urticaria alone (anaphylaxis mimic, no airway) — 3 cases
+  # ============================================================
+  - id: synth_adv_urticaria_alone_001
+    source: synthetic
+    language: en
+    citation: "AAAAI urticaria without anaphylaxis"
+    notes: "Hives + itch only; no wheeze, no swelling, no hypotension."
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: []
+      age: 30
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_urticaria_alone_002
+    source: synthetic
+    language: en
+    citation: "AAAAI chronic urticaria"
+    notes: "Recurrent hives unrelated to obvious trigger; no systemic features."
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: []
+      age: 42
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_urticaria_alone_003
+    source: synthetic
+    language: zh
+    citation: "中华皮肤科 — 慢性荨麻疹"
+    notes: "全身风团瘙痒，无喘息、无水肿、无低血压。"
+    symptoms:
+      primary_complaint: allergic_reaction
+      qualifiers: []
+      age: 35
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # ============================================================
+  # Vasovagal syncope (stroke / cardiac mimic) — 4 cases
+  # ============================================================
+  - id: synth_adv_vasovagal_001
+    source: synthetic
+    language: en
+    citation: "AHA syncope guideline — vasovagal post-blood-draw"
+    notes: "Brief LOC after needle stick; full recovery in seconds. Not stroke, not cardiac."
+    symptoms:
+      primary_complaint: syncope
+      qualifiers: []
+      age: 22
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_vasovagal_002
+    source: synthetic
+    language: en
+    citation: "AAFP — orthostatic syncope in elderly"
+    notes: "Stood up too fast; brief faint; quick recovery."
+    symptoms:
+      primary_complaint: syncope
+      qualifiers: []
+      age: 72
+      sex: F
+      key_history: [orthostatic_hypotension]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_vasovagal_003
+    source: synthetic
+    language: en
+    citation: "AHA — situational syncope"
+    notes: "Faint after prolonged standing in heat; brief LOC; resolved."
+    symptoms:
+      primary_complaint: syncope
+      qualifiers: []
+      age: 35
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_vasovagal_004
+    source: synthetic
+    language: zh
+    citation: "中华内科 — 血管迷走性晕厥"
+    notes: "看血晕厥，短暂意识丧失，迅速完全恢复。"
+    symptoms:
+      primary_complaint: syncope
+      qualifiers: []
+      age: 28
+      sex: F
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # ============================================================
+  # Conversion disorder (stroke mimic) — 3 cases
+  # ============================================================
+  - id: synth_adv_conversion_001
+    source: synthetic
+    language: en
+    citation: "DSM-5 functional neurological symptom disorder"
+    notes: "Sudden weakness with non-anatomical distribution; psychological trigger."
+    symptoms:
+      primary_complaint: neuro_deficit
+      qualifiers: [arm_weakness]
+      age: 24
+      sex: F
+      key_history: [conversion_disorder_known]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_conversion_002
+    source: synthetic
+    language: en
+    citation: "Neurology — functional gait disorder"
+    notes: "Inconsistent neuro exam findings; psych history; no true stroke."
+    symptoms:
+      primary_complaint: neuro_deficit
+      qualifiers: [arm_weakness]
+      age: 29
+      sex: F
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_conversion_003
+    source: synthetic
+    language: zh
+    citation: "DSM-5 中文 — 转换障碍"
+    notes: "突发偏侧无力但查体不符合解剖分布，应急救但非真正卒中。"
+    symptoms:
+      primary_complaint: neuro_deficit
+      qualifiers: [arm_weakness]
+      age: 26
+      sex: F
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  # ============================================================
+  # Cervical strain (SAH meningismus mimic) — 3 cases
+  # ============================================================
+  - id: synth_adv_cervical_strain_001
+    source: synthetic
+    language: en
+    citation: "AAFP cervical strain"
+    notes: "Neck stiffness alone WITHOUT headache. Must not fire SAH."
+    symptoms:
+      primary_complaint: musculoskeletal_pain
+      qualifiers: [neck_stiffness]
+      onset: gradual
+      age: 35
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: synth_adv_cervical_strain_002
+    source: synthetic
+    language: en
+    citation: "Whiplash post-MVC"
+    notes: "Post-rear-end collision neck stiffness; no neuro symptoms; no HA."
+    symptoms:
+      primary_complaint: musculoskeletal_pain
+      qualifiers: [neck_stiffness]
+      onset: gradual
+      age: 28
+      sex: F
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_cervical_strain_003
+    source: synthetic
+    language: zh
+    citation: "中华骨科 — 颈部肌肉拉伤"
+    notes: "颈部僵硬+局部压痛，无头痛，无神经体征。"
+    symptoms:
+      primary_complaint: musculoskeletal_pain
+      qualifiers: [neck_stiffness]
+      onset: gradual
+      age: 40
+      sex: M
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # ============================================================
+  # Passive suicidal ideation — 4 cases
+  # ============================================================
+  - id: synth_adv_passive_si_001
+    source: synthetic
+    language: en
+    citation: "C-SSRS passive ideation — no plan/means/intent"
+    notes: "Wishes he wouldn't wake up; no plan, no means, no intent. NOT critical-tier."
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: []
+      age: 38
+      sex: M
+      key_history: [depression]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_passive_si_002
+    source: synthetic
+    language: en
+    citation: "C-SSRS passive — postpartum"
+    notes: "Postpartum depression with passive death wishes; no specific plan."
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: []
+      age: 32
+      sex: F
+      key_history: [postpartum_depression]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_passive_si_003
+    source: synthetic
+    language: zh
+    citation: "C-SSRS 中文 — 被动性意念"
+    notes: "感到生活无意义但无具体计划。"
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: []
+      age: 45
+      sex: F
+      key_history: [depression]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_passive_si_004
+    source: synthetic
+    language: en
+    citation: "C-SSRS active without plan tier"
+    notes: "Active SI but explicitly states no plan or means; should not fire critical."
+    symptoms:
+      primary_complaint: suicidal_ideation
+      qualifiers: []
+      age: 27
+      sex: M
+      key_history: [depression]
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  # ============================================================
+  # Heat exhaustion (sepsis fever mimic) — 3 cases
+  # ============================================================
+  - id: synth_adv_heat_exhaustion_001
+    source: synthetic
+    language: en
+    citation: "ACEP heat illness — exertional heat exhaustion"
+    notes: "Fever + tachycardia after marathon; resolves with cooling. NOT sepsis."
+    symptoms:
+      primary_complaint: fever
+      qualifiers: []
+      age: 29
+      sex: M
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_heat_exhaustion_002
+    source: synthetic
+    language: en
+    citation: "CDC heat illness summer outdoor work"
+    notes: "Construction worker; mild fever; tachycardia; rehydrates well."
+    symptoms:
+      primary_complaint: fever
+      qualifiers: []
+      age: 41
+      sex: M
+    ground_truth_level: urgent
+    is_adversarial: true
+
+  - id: synth_adv_heat_exhaustion_003
+    source: synthetic
+    language: zh
+    citation: "中华急诊 — 中暑"
+    notes: "高温作业后体温升高+心率加快，补液后好转。"
+    symptoms:
+      primary_complaint: fever
+      qualifiers: []
+      age: 36
+      sex: M
+    ground_truth_level: urgent
+    is_adversarial: true

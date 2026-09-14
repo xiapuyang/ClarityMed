@@ -1,0 +1,68 @@
+# Medical-clip server — BiomedCLIP-backed zero-shot tasks.
+#
+# Adding a new task = sibling entry under `tasks` + new endpoint in
+# servers/medical_clip/app.py (e.g. /v1/screen_disease) + new client
+# method in core/medical_clip/client.py. Endpoint per task — no generic
+# dispatcher, no speculative abstraction (origin §5.5 naming rationale).
+#
+# Server is loopback-bound by lifespan assertion (KTD-V8 — PHI never
+# leaves the box).
+
+server:
+  base_url: http://127.0.0.1:8086
+  expected_ms: 80
+  health_check_interval_s: 300
+
+model:
+  model_id: microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
+  device: auto                                  # cpu / cuda / mps (auto-detect)
+  # Pinned HuggingFace revision hash. Empty in v1 scaffolding; Unit 2 records
+  # the actual hash and adds a lifespan check that refuses to start when
+  # HF Hub serves a different revision (catches silent embedding drift).
+  revision: ""
+
+tasks:
+  # Modality classification — gates whether the vision-detection tool runs at
+  # all (KTD-V3 hard gate). Candidate prompts are tuned in Unit 2's smoke test
+  # against a small labeled fixture set; final thresholds determined there.
+  modality:
+    candidates:
+      - {label: ultrasound, prompts: ["an ultrasound image", "a sonogram"]}
+      - {label: ct,         prompts: ["a CT scan", "a computed tomography slice"]}
+      - {label: xray,       prompts: ["a chest X-ray", "a radiograph"]}
+      - {label: dermoscopy, prompts: ["a dermoscopy image of skin", "a skin lesion close-up"]}
+      - {label: histopathology, prompts: ["a histopathology slide", "a microscopy image of stained tissue", "a hematoxylin and eosin slide", "an H&E stained tissue section", "a histological section under a microscope", "a tissue biopsy showing cell nuclei", "a pathology specimen at high magnification"]}
+      - {label: photo,      prompts: ["a regular photograph", "a snapshot"]}
+      - {label: document,   prompts: ["a document or screenshot", "a page of text"]}
+    gating:
+      min_confidence: 0.55                      # below → modality=unknown, LLM asks user
+      # is_medical=true only when top1.score >= the per-modality entry
+      # below. Calibrated against data/bench/modality_classifier/ —
+      # mean(min_correct, max_wrong) as the rule, then capped at 0.70 so
+      # the bench-clean numbers (ct/xray/histopath read >0.90) don't
+      # lock real-world noisier uploads out. The cap means only
+      # modalities the bench shows need a *looser* floor than 0.70
+      # actually move; ultrasound is the one such case (BiomedCLIP
+      # spread is wide enough that genuine BUSI samples appear at
+      # ~0.57). `default` covers any future modality not listed here.
+      min_medical_confidence:
+        # ultrasound = min_correct from data/bench/modality_classifier/ —
+        # BiomedCLIP's spread on BUSI/breast_us_kaggle reaches as low as
+        # 0.5724 on correct predictions, so the per-modality floor sits
+        # at the observed worst-case TP. ct / xray / dermoscopy /
+        # histopathology all have min_correct above the project cap, so
+        # they ride the default — listed explicitly here to document
+        # that bench coverage exists for each.
+        ultrasound: 0.5724
+        ct: 0.70
+        xray: 0.70
+        dermoscopy: 0.70
+        histopathology: 0.70
+        default: 0.70
+  # Future tasks land as sibling keys, paired with a new endpoint, e.g.:
+  # screen_skin:                                # paired with POST /v1/screen_skin
+  #   candidates:
+  #     - {label: benign,     prompts: ["a benign skin lesion"]}
+  #     - {label: suspicious, prompts: ["a suspicious skin lesion"]}
+  #   gating:
+  #     min_confidence: 0.60

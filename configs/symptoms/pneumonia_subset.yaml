@@ -1,0 +1,96 @@
+version: 1
+target: Pneumonia
+generated_at: '2026-07-05T23:18:56.742306+00:00'
+source:
+  baseline_weights: /Users/sharp/.claritymed/models/symptoms/ddxplus/typed_basd_v2/weights.pt
+  data_dir: /Users/sharp/.claritymed/data/symptoms/ddxplus
+  n_eval_patients: 20000
+  eval_split: validate
+selection_params:
+  target_disease: Pneumonia
+  top_confused_n: 8
+  min_samples_train: 5000
+  max_samples_ratio: 2.0
+  combined_score_floor: 0.01
+diseases:
+  target:
+  - name: Pneumonia
+    train_samples: 25761
+    sampling_cap: null
+  from_confusion:
+  - name: Bronchitis
+    train_samples: 26400
+    sampling_cap: null
+    recall_share: 0.5712
+    precision_share: 0.3956
+    combined_score: 0.9668
+  - name: Possible NSTEMI / STEMI
+    train_samples: 21260
+    sampling_cap: null
+    recall_share: 0.125
+    precision_share: 0.0
+    combined_score: 0.125
+  - name: Acute COPD exacerbation / infection
+    train_samples: 17661
+    sampling_cap: null
+    recall_share: 0.0
+    precision_share: 0.109
+    combined_score: 0.109
+  - name: URTI
+    train_samples: 64368
+    sampling_cap: 51522
+    recall_share: 0.0
+    precision_share: 0.0779
+    combined_score: 0.0779
+  - name: Bronchiectasis
+    train_samples: 18795
+    sampling_cap: null
+    recall_share: 0.0243
+    precision_share: 0.0374
+    combined_score: 0.0617
+  - name: Tuberculosis
+    train_samples: 16245
+    sampling_cap: null
+    recall_share: 0.0087
+    precision_share: 0.0218
+    combined_score: 0.0305
+  - name: Pulmonary embolism
+    train_samples: 27468
+    sampling_cap: null
+    recall_share: 0.0208
+    precision_share: 0.0
+    combined_score: 0.0208
+  - name: Myocarditis
+    train_samples: 11073
+    sampling_cap: null
+    recall_share: 0.0208
+    precision_share: 0.0
+    combined_score: 0.0208
+  cannot_miss:
+  - name: Bronchospasm / acute asthma exacerbation
+    train_samples: 19875
+    sampling_cap: null
+    recall_share: 0.0
+    precision_share: 0.0093
+    combined_score: 0.0093
+    reason: bronchodilator_pathway
+  - name: Spontaneous pneumothorax
+    train_samples: 10162
+    sampling_cap: null
+    recall_share: 0.0069
+    precision_share: 0.0
+    combined_score: 0.0069
+    reason: chest_tube_acute_chest_pain_SOB
+  - name: Acute pulmonary edema
+    train_samples: 19018
+    sampling_cap: null
+    recall_share: 0.0
+    precision_share: 0.0
+    combined_score: 0.0
+    reason: cardiac_vs_infectious_diuretic_vs_abx
+dropped_low_sample: []
+capped_high_sample:
+- name: URTI
+  train_samples: 64368
+  sampling_cap: 51522
+  reason: exceeds_max_samples_ratio

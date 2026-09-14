@@ -1,0 +1,68 @@
+# Emergency triage gate config.
+#
+# See docs/plans/2026-06-23-001-feat-emergency-triage-gate-plan.md for
+# the full design. Phase 1 ships this file with the four sensitivity
+# profile stubs and the `default_sensitivity` knob; Phase 2 fills in
+# the per-profile `rule_overrides`, `ambiguous_rules_enabled`,
+# qualifier elicitation budgets, and reply-footer keys.
+#
+# `default_sensitivity` is the app-wide fallback when a user has not
+# expressed a preference. Any of the four levels is accepted, including
+# `off`. Note that `CLARITYMED_FORCE_EMERGENCY_GATE` still defaults to
+# `on` and will upgrade a resolved `off` back to `lenient`; if you want
+# `off` to actually take effect app-wide, also set that env var to `0`
+# / `false` in the deployment environment.
+
+default_sensitivity: "off"    # quoted — bareword `off` in YAML 1.1 → boolean False
+
+# Pin the gate's extractor / composer / critical_reply LLMs to one
+# specific provider from `configs/models.yaml`. KTD-E1 requires
+# `kind: local` — `_provider.build_local_gate_model` refuses anything
+# else. When unset (commented out), the gate binds to the first
+# kind=local entry in YAML order, which is order-brittle on hosts
+# running more than one local server. Pinning omlx explicitly here
+# avoids "binds to ollama, ollama is down, gate falls open every
+# turn" failure mode.
+provider_id: omlx
+
+sensitivity_profiles:
+  # High recall, tolerates false alarms. Drops chest-pain qualifier
+  # threshold to zero so any chest_pain fires the ACS rule; longer
+  # qualifier-elicitation budget so the agent gets more turns to
+  # gather missing details before backing off. Footer disclosed.
+  strict:
+    rule_overrides:
+      acs_acute_coronary_syndrome:
+        min_qualifier_matches: 0
+      sah_thunderclap_headache:
+        min_qualifier_matches: 0
+    ambiguous_rules_enabled: true
+    qualifier_elicitation_max_rounds: 3
+    reply_footer_i18n_key: emergency.footer.strict_mode_active
+
+  # Default. Targets ≥95% critical recall with ≤15% adversarial FPR.
+  # Rule defaults are tuned for this profile so no overrides needed.
+  balanced:
+    rule_overrides: {}
+    ambiguous_rules_enabled: true
+    qualifier_elicitation_max_rounds: 2
+
+  # High precision. Tight qualifier budget; ambiguous catch-alls
+  # disabled. The acs `min=2` override raises the threshold — allowed
+  # because ACS's floor is `balanced` (not `lenient`). Anaphylaxis,
+  # active_suicidal_ideation, and ectopic_pregnancy_bleed cannot be
+  # overridden here (their floor is `lenient`); the floor validator
+  # at config-load rejects any attempt.
+  lenient:
+    rule_overrides:
+      acs_acute_coronary_syndrome:
+        min_qualifier_matches: 2
+    ambiguous_rules_enabled: false
+    qualifier_elicitation_max_rounds: 1
+
+  # Gate does not run. Service short-circuits to routine and the
+  # disclaimer footer is auto-appended (un-bypassable). Quoted so
+  # PyYAML does not coerce the bareword `off` to boolean False.
+  "off":
+    short_circuit_to: routine
+    reply_footer_i18n_key: emergency.footer.gate_disabled

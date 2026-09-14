@@ -1,0 +1,119 @@
+# User-facing copy for the symptoms feature's interactive modals.
+# Loaded via core/i18n/loader.py; keys are addressed as `symptoms.<…>`.
+# Plugin code (orchestrator/features/symptoms_plugin.py) reads these
+# via t() / t_list() — keep both en + zh in sync; missing keys fall
+# back to the bare key string, which surfaces as obviously broken
+# copy.
+symptoms:
+  ui:
+    not_applicable: "not applicable"
+  confirm:
+    text: "I can run a short symptom-driven differential (~5-12 follow-up questions) to narrow down what this might be. Try it?"
+    header: "Try follow-up?"
+    yes_label: "Yes"
+    yes_description: "Run the symptom Q&A loop."
+    no_label: "No"
+    no_description: "Skip and answer with free text."
+  age:
+    question: "How old are you, in years?"
+    header: "Age"
+    unit: "years"
+  sex:
+    question: "Biological sex (for the differential model)?"
+    header: "Sex"
+    female_label: "Female"
+    female_description: "Biological sex female."
+    male_label: "Male"
+    male_description: "Biological sex male."
+  # Multi-card renderer (symptoms_plugin/_card_builder.py) reads these
+  # sub-trees to bucket confidence, format directional headlines, pick
+  # above-cards banners, and label per-card citation authority badges.
+  # Threshold floats are stored under i18n by design (per feat-symptoms-
+  # multi-card-render spec) so an operator can tune label wording and
+  # threshold together in one file; ZH inherits from EN via the loader's
+  # fallback so shipping a single language is safe.
+  confidence:
+    thresholds:
+      very_high: 0.75   # probability >= 0.75 → very_high bucket
+      high: 0.55        # 0.55-0.75 → high
+      moderate: 0.30    # 0.30-0.55 → moderate; below → low
+    labels:
+      very_high: "Highly Confident"
+      high: "Confident"
+      moderate: "Moderately Confident"
+      low: "Uncertain"
+
+  # Directional headline templates. ``{condition}`` is substituted with
+  # the localized display_name from symptoms_conditions.yaml.
+  headline:
+    top:
+      likely: "Likely {condition}"           # rank 1, prob >= 0.60
+      probably: "Probably {condition}"       # rank 1, 0.40-0.60
+      consider: "Consider {condition}"       # rank 1, < 0.40
+    # Rank 2+ standard headline was removed — the card title already
+    # shows ``{condition_name} — {confidence_label} · {probability}%`` so
+    # "Also consider {condition}" was a bold duplicate. Only the safety
+    # variant remains, for Critical/Urgent low-probability cards where
+    # the "unlikely but rule out" framing carries clinical intent that
+    # the card title alone doesn't convey.
+    also:
+      unlikely_but_rule_out: "Unlikely {condition} (but rule out)"
+
+  card:
+    # Above-cards banner. banner_key is server-computed from the
+    # DifferentialSessionMeta flag combination; ``None`` means no banner.
+    banner:
+      hit_cap: "Question limit reached — cards below are based on the answers gathered so far."
+      severity_override: "The model did not converge, but the pattern raises concern for a serious cause — do not delay evaluation."
+      cancelled_early_meaningful: "You stopped the follow-up early — cards below are based on partial answers."
+      cancelled_no_result: "The follow-up ended before the model could narrow things down. There is no reliable differential to show — try again if you can answer a few more questions."
+      session_expired: "The follow-up session timed out. There is no reliable differential to show — try again."
+    # v3 subset-parametric ``Other`` bucket — the synthetic class the
+    # wire emits when ``target_condition_ids`` is set. Rendered as a
+    # regular card whose ``ConditionEntry`` the card builder synthesizes
+    # from these three keys at runtime (see
+    # ``symptoms_card_builder._other_condition_entry``). Not a real
+    # DDXPlus condition, so it doesn't live in symptoms_conditions.yaml.
+    #
+    # * ``name``   — display_name on the card (also on
+    #                DifferentialRow.condition_name via
+    #                servers/symptoms/differential.py::_topk_rows_v3).
+    # * ``report`` — 2-4 patient-facing sentences describing why the
+    #                model landed here rather than a tracked target.
+    # * ``suggestion`` — action-oriented next step (aggregated into the
+    #                    LLM summary; not rendered per-card).
+    other:
+      name: "Another likely condition"
+      report: "The pattern suggests neither of the tracked conditions — likely a different cause that the tracked subset can't diagnose."
+      suggestion: "See a clinician who can evaluate the broader differential — the tracked-conditions model can't rule in or rule out anything outside its scope."
+    # Cards render only headline + report. Aggregate next-steps and
+    # authority anchoring are delegated to the LLM's summary paragraph
+    # (``symptoms_final_reply``) rendered around the card list, so
+    # each card stays free of per-card noise.
+
+  # Audit-only allow-list. NOT a verbatim safety-sentence template — the
+  # LLM composes prose per symptoms_final_reply.yaml; the post_process
+  # hook scans the reply for any keyword below. Absence at Critical /
+  # Urgent emits symptoms.safety_keywords.missing.
+  safety_keywords:
+    Critical:                          # severity 1
+      - "call 911"
+      - "emergency services"
+      - "ER now"
+      - "do not self-transport"
+      - "call emergency"
+    Urgent:                            # severity 2
+      - "same-day"
+      - "urgent care"
+      - "ER if"
+      - "today"
+    Moderate:                          # severity 3-4
+      - "within a week"
+      - "primary care"
+      - "watch for"
+      - "see your doctor"
+    Mild:                              # severity 5
+      - "self-care"
+      - "if it worsens"
+      - "if it persists"
+      - "rest"

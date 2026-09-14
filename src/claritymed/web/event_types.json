@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "types": [
+    "cancelled",
+    "differential_ready",
+    "done",
+    "error",
+    "interaction_requested",
+    "llm_call_started",
+    "llm_first_token",
+    "retrieval_completed",
+    "retrieval_filtered",
+    "retrieval_pending",
+    "retrieval_started",
+    "token_chunk",
+    "tokens_used",
+    "tool_completed",
+    "tool_started"
+  ]
+}

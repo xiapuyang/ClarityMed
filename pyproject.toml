@@ -1,30 +1,343 @@
 [project]
-name = "ClarityMed"
+name = "claritymed"
 version = "0.1.0"
-description = ""
+description = "Patient-facing medical Q&A with structured uncertainty propagation."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "arize-phoenix-client>=2.7.0",
+    # Cross-platform advisory file lock (fcntl on POSIX, msvcrt on Windows).
+    # Used by manifest_store / blob_store / settings_store / session_attachments
+    # for multi-process write safety. Drop-in replacement for the fcntl.flock
+    # we sketched in the brainstorm; ~30KB pure-Python, MIT.
+    "filelock>=3.13,<4",
+    # Local PDF text extraction (the digital-PDF first leg of the PHI OCR
+    # chain). Sub-100ms for typical reports, no model load. AGPLv3 —
+    # acknowledged at plan time; self-hosted distribution stance.
+    "pymupdf>=1.24,<2",
+    "llama-index-core>=0.14.22",
+    "llama-index-vector-stores-qdrant>=0.10.1",
+    "openinference-instrumentation-pydantic-ai>=0.1.16",
+    "opentelemetry-exporter-otlp>=1.42.1",
+    "opentelemetry-sdk>=1.42.1",
+    "pydantic>=2.9",
+    "pydantic-ai-slim[anthropic,openai]>=1.0",
+    "pyyaml>=6.0.2",
+    "qdrant-client>=1.18.0",
+    "rich>=13.6.0",
+    "sqlmodel>=0.0.22",
+    "starlette>=0.41.0",
+    "textual>=0.85,<1.0",
+    # OpenAI Privacy Filter — model-based PII scrub layer (names, addresses,
+    # dates, secrets) that runs after the regex pass. Default-on via
+    # configs/safety.yaml: phi.privacy_filter.enabled. ONNX runtime is the
+    # CPU inference backend; transformers provides the tokenizer.
+    "transformers>=4.40",
+    "onnxruntime>=1.17",
+    # Filetype detection for extensionless paste targets (Dockerfile,
+    # README without extension, raw clipboard bytes). Pure-local ONNX
+    # inference on the onnxruntime above; ~3 MB package, ~1 MB bundled
+    # model. PHI-safe by construction — never leaves the machine.
+    "magika>=0.6",
+    "typer>=0.26.7",
+    # macOS-only: NSPasteboard access for the Ctrl+V screenshot path.
+    # Without it _read_macos falls back to ``osascript "the clipboard as
+    # text"`` which can't read image bytes — pasting a screenshot
+    # silently produces nothing and CoreGraphics' jp2 stderr noise bleeds
+    # into the Textual render.
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "scipy>=1.17.1",
+    "optuna>=4.9.0",
+    "optuna-dashboard>=0.20.0",
+    "lm-eval>=0.4.5,<0.5",
+    "datasets>=2.20",
+]
+
+[project.optional-dependencies]
+# RAG inference servers (BGE-M3 embedder + bge-reranker-v2-m3). Optional
+# because they pull in heavy ML deps (torch + FlagEmbedding ~2GB) that
+# nobody needs unless they're hosting the servers themselves. Install
+# with ``uv sync --extra rag-server``.
+rag-server = [
+    "FlagEmbedding>=1.3",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+# Symptoms inference server (typed-BASD differential diagnosis). Optional
+# because most ClarityMed users won't host the symptoms feature themselves.
+# torch is the actual reason this is optional — main deps don't carry it
+# (numpy + scipy do come in via qdrant-client / llama-index-core / the
+# top-level scipy pin). Install with ``uv sync --extra symptoms-server``;
+# the train CLI (``claritymed-symptoms-train-ddxplus``) needs the same
+# extra.
+symptoms-server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "torch>=2.0",
+    "mlflow>=2.0",
+    # Only the DDXPlus schema loader uses pandas, and only when training /
+    # ablating against the dataset. Kept here (not main deps) because the
+    # 30 MB+ install isn't worth it for users who only run the TUI.
+    "pandas>=2.0",
+    # Init-symptom matcher (complaint → candidate evidence) — loaded once
+    # at server lifespan startup, CPU-default so it doesn't compete with
+    # BASD for GPU memory. SapBERT is the recommended default model; any
+    # SentenceTransformer-compatible id works via `init_matcher.model_id`.
+    "sentence-transformers>=3.0",
+    # XGBoost algorithm module — CPU-native gradient-boosted trees for the
+    # xgb symptom-prediction pipeline. Ships classifier + ev-marginals
+    # regressor pair; consumed by ingest/symptoms/xgb/. scikit-learn is
+    # used for CalibratedClassifierCV + MultiOutputRegressor wrapper;
+    # joblib for the checkpoint (weights.pkl) that the adapter loads
+    # instead of torch.load.
+    "xgboost>=2.0",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
+]
+# Medical-clip server (BiomedCLIP zero-shot modality / disease screening).
+# Optional because open_clip_torch + the BiomedCLIP weights (~400 MB FP16)
+# only matter for hosts running attachment-ingest modality classification
+# (KTD-V3 hard gate). The vision tool itself uses the HTTP client from
+# main deps; only operators booting the server need this extra.
+# Install with ``uv sync --extra medical-clip-server``.
+medical-clip-server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "torch>=2.0",
+    # open_clip is the canonical loader for BiomedCLIP — pulls the model
+    # via the ``hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224``
+    # URL scheme. Pin floor matches the first release with stable hf-hub
+    # support; CHK for revision drift sits in the engine wrapper.
+    "open-clip-torch>=2.24",
+    # huggingface_hub is the source of truth for "what revision did we
+    # actually pull" — the engine queries it at lifespan to fail-loud
+    # when HF Hub serves a different revision than the pinned hash.
+    "huggingface_hub>=0.23",
+    # Pillow for decoding the base64 image bytes the client posts.
+    "pillow>=10.0",
+]
+# Vision server — the disease-detection inference path (port 8085).
+# torch is already in the medical-clip extra but listed here too so the
+# vision extra is self-contained (an operator can boot vision without
+# also pulling open_clip / BiomedCLIP). Pillow is needed for the Torch
+# adapter's preprocess step; httpx for the client used by Unit 5's
+# VisionRegistry; fastapi + uvicorn for the server itself.
+# Install with ``uv sync --extra vision-server``.
+vision-server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "torch>=2.0",
+    # Pretrained encoders for BUSI U-Net (resnet50 / efficientnet_b0
+    # branches in build_busi_model). torchvision is required by smp's
+    # encoder loaders; smp wraps a U-Net decoder + aux classification
+    # head around any timm/torchvision backbone so we don't hand-roll
+    # the encoder → decoder channel plumbing per architecture.
+    "torchvision>=0.19",
+    "segmentation-models-pytorch>=0.4",
+    "pillow>=10.0",
+    # Training/tuning pipeline tracking (BUSI search/train/tune/deploy).
+    # Bundled here mirroring the symptoms-server convention — same extra
+    # serves both inference hosts and operators running the train CLIs.
+    "mlflow>=2.0",
+]
+# E2E quality evaluation — requires live local services (embedder + reranker +
+# Qdrant) and the project's configured LLM. Run with:
+#   uv sync --extra e2e
+#   uv run pytest tests/e2e -v --no-cov
+e2e = [
+    "deepeval>=4.0",
+    "httpx>=0.28.1",
+    # Re-run failed e2e tests up to N times before reporting failure.
+    # Required for the @pytest.mark.flaky(reruns=2, reruns_delay=5)
+    # decorators in tests/e2e — without this plugin those marks are
+    # silently no-ops and local-LLM variance (translation rewrites,
+    # HyDE hypotheticals) shows up as spurious test failures.
+    "pytest-rerunfailures>=15.0",
+]
+# Local OCR for scanned / messy PDFs — second leg of the chain after
+# pymupdf. marker-pdf is best-in-class but pulls PyTorch (~2 GB), so it is
+# behind an optional extra. License: GPL-3.0-or-later (acknowledged at
+# plan time alongside the pymupdf AGPL question).
+ocr-scanned = [
+    "marker-pdf>=0.2",
+]
+# Office formats (.docx / .pptx / .xlsx) — last leg of the document chain.
+# Pure-Python wrapper around the pandoc binary; ``pypandoc-binary`` ships
+# the binary alongside the wheel for installs that don't have pandoc on
+# PATH. Optional because most users never need it.
+ocr-office = [
+    "pypandoc-binary>=1.13",
+]
+# Local raster-image OCR — image_chain fallback when the vision LLM
+# (omlx) is unreachable. RapidOCR is a PaddleOCR ONNX port: ~50 MB of
+# models, runs on the onnxruntime we already pull for the PHI scrubber.
+# Chinese-medical-document quality is verified in tests/e2e/ocr/.
+# Optional because the fallback path is rare and the models are
+# non-trivial on disk.
+ocr-image = [
+    "rapidocr-onnxruntime>=1.4",
+]
+# Web layer — FastAPI app + JWT cookie auth + CSRF + chat SSE. Lives
+# behind an optional extra so plain CLI / TUI installs don't drag in
+# fastapi + uvicorn + jose + passlib. Install on the host that serves
+# the browser frontend with ``uv sync --extra web``.
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-jose[cryptography]>=3.3",
+    # Multipart parser for the attachments upload endpoint
+    # (POST /api/v1/sessions/{id}/attachments). Tiny dep, but
+    # FastAPI refuses to register a route with `UploadFile` /
+    # `Form` parameters without it.
+    "python-multipart>=0.0.9",
+    # bcrypt directly, not via passlib. passlib 1.7.4 (last release
+    # 2020) tries to detect a CVE workaround using a 250-byte test
+    # password that bcrypt 4+ rejects with a 72-byte cap; the detection
+    # routine raises during ``CryptContext`` construction and there's
+    # no patched passlib release. Using bcrypt directly is ~15 lines
+    # of glue in stores/auth.py and side-steps the maintenance trap.
+    "bcrypt>=4.0,<6",
+]
+# yolo_forge — Ultralytics-backed detection pipeline (RSNA Pneumonia
+# bbox is the first dataset). Heavy: ultralytics drags torch + opencv
+# + matplotlib, ~2GB on top of vision-server. Optional so the cloud
+# tier doesn't pull it; install on a GPU host with
+# ``uv sync --extra yolo-forge``. pydicom is reused for the shared
+# DICOM→PNG cache populated via the classification adapter's discover().
+yolo-forge = [
+    "ultralytics>=8.3",
+    "pydicom>=2.4",
+    "torch>=2.0",
+    "pillow>=10.0",
+    # Same tracking DB the classification ``forge`` writes to —
+    # ``claritymed-vision-<disease_id>`` experiments are shared so
+    # detection + classification runs land in one UI view, separated
+    # by the ``pipeline`` tag. yolo_forge no-ops silently when mlflow
+    # is missing, so this is "recommended" rather than load-bearing.
+    "mlflow>=2.0",
+    # RSNA Pneumonia download shells out to the ``kaggle`` CLI; declare
+    # it here so ``uv sync --extra yolo-forge`` survives venv rebuilds.
+    # Credentials live in ~/.kaggle/kaggle.json or KAGGLE_USERNAME/KEY.
+    "kaggle>=1.6",
+]
+
+[project.scripts]
+claritymed = "claritymed.cli.main:main"
+# Long-running RAG servers — installed but only usable after
+# `uv sync --extra rag-server` (FlagEmbedding + fastapi + uvicorn).
+# Without the extra, invoking either prints a clear remediation hint
+# and exits non-zero (see servers/embedder.py top-of-file try/except).
+claritymed-embedder = "claritymed.servers.embedder:main"
+claritymed-reranker = "claritymed.servers.reranker:main"
+# Symptoms server + training entry — only usable after
+# `uv sync --extra symptoms-server` (fastapi + uvicorn + httpx).
+# Training reuses torch already in the main deps.
+claritymed-symptoms-server = "claritymed.servers.symptoms.app:main"
+# Medical-clip server — only usable after
+# `uv sync --extra medical-clip-server` (fastapi + uvicorn + open_clip_torch
+# + huggingface_hub + pillow + torch). Hosts BiomedCLIP zero-shot on
+# loopback :8086 for attachment-ingest modality classification.
+claritymed-medical-clip-server = "claritymed.servers.medical_clip.app:main"
+# Vision server — only usable after `uv sync --extra vision-server`
+# (fastapi + uvicorn + torch + pillow). Hosts the disease-detection
+# adapters on loopback :8085; consumed by the orchestrator's
+# vision_plugin tool body (Unit 7).
+claritymed-vision-server = "claritymed.servers.vision.app:main"
+claritymed-symptoms-prepare-ddxplus = "claritymed.ingest.symptoms.ddxplus.prepare:main"
+claritymed-symptoms-train-ddxplus = "claritymed.ingest.symptoms.ddxplus.train:main"
+claritymed-symptoms-ablate-ddxplus = "claritymed.ingest.symptoms.ddxplus.ablate_maxstep:main"
+claritymed-symptoms-hparam-ddxplus = "claritymed.ingest.symptoms.ddxplus.hparam_search:main"
+claritymed-symptoms-tune-ddxplus = "claritymed.ingest.symptoms.ddxplus.tune:main"
+# XGBoost symptom-prediction algorithm — sibling to typed_basd for the
+# DDXPlus corpus. train writes joblib checkpoints under
+# ``ddxplus/xgb_*``; tune sweeps XGBoost-specific knobs (maxstep,
+# stop_thres, ig_smoothing) rather than typed_basd's temp.
+claritymed-symptoms-xgb-train-ddxplus = "claritymed.ingest.symptoms.xgb.train:main"
+claritymed-symptoms-xgb-tune-ddxplus = "claritymed.ingest.symptoms.xgb.tune:main"
+claritymed-symptoms-generate-i18n = "claritymed.ingest.symptoms.generate_i18n:main"
+claritymed-symptoms-translate-i18n = "claritymed.ingest.symptoms.translate_i18n:main"
+# Vision (forge framework — one CLI drives hparam / train / tune / deploy /
+# pipeline for any dataset via --model claritymed.ingest.vision.<ds>.models.<arch>:VAR).
+claritymed-vision-download-busi = "claritymed.ingest.vision.busi.download:_main"
+claritymed-vision-download-chest-ct = "claritymed.ingest.vision.chest_ct.download:_main"
+claritymed-vision-forge = "claritymed.ingest.vision.forge.cli:cli"
+# yolo_forge — Ultralytics-backed detection pipeline. Sibling to
+# vision-forge; usable after ``uv sync --extra yolo-forge``.
+claritymed-vision-yolo-forge = "claritymed.ingest.vision.yolo_forge.cli:cli"
+# Web layer entry point — only usable after ``uv sync --extra web``
+# (fastapi + uvicorn + python-jose + passlib). Binds uvicorn to
+# 127.0.0.1:8000 by default; production tops it with a reverse proxy.
+claritymed-web = "claritymed.web.app:serve"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ClarityMed"]
+packages = ["src/claritymed"]
+
+[tool.uv]
+# Without this, bare ``uv sync`` only installs the ``dev`` group and
+# silently uninstalls runtime-ocr after every run. See dependency-groups
+# above for why these are mirrored from the ocr-image / ocr-office
+# extras instead of being moved into base deps.
+default-groups = ["dev", "runtime-ocr"]
 
 [dependency-groups]
+# Runtime OCR fallbacks for the TUI client. Mirrored from the
+# ocr-image / ocr-office extras so PyPI users keep the opt-in entry
+# (``pip install claritymed[ocr-image]``) while local dev environments
+# pick them up automatically via ``default-groups`` below — bare
+# ``uv sync`` would otherwise uninstall them on every run.
+#
+# Heavy paths stay opt-in extras (ocr-scanned pulls ~2GB of torch,
+# every *-server extra pulls torch + an inference stack) — install
+# those only on the host that actually runs that pipeline.
+runtime-ocr = [
+    "marker-pdf>=0.2",
+    "pypandoc-binary>=1.13",
+    "rapidocr-onnxruntime>=1.4",
+]
 dev = [
     "httpx>=0.28.1",
     "pre-commit>=4.6.0",
+    # OCR e2e fixture generation: minimal real-format files generated
+    # in-process so tests/e2e/ocr/ doesn't have to ship binary fixtures.
+    "reportlab>=4.0",   # PDF
+    "python-docx>=1.0", # DOCX
+    "openpyxl>=3.1",    # XLSX
+    "python-pptx>=0.6", # PPTX
+    # ONNX adapter integration test: torch.onnx.export needs the
+    # `onnx` protobuf package to write a checkpoint. Same in-process
+    # fixture rationale as the OCR formats above — we'd rather build
+    # a tiny real .onnx at test time than ship a binary fixture.
+    "onnx>=1.16",
+    # RSNA Pneumonia Detection Challenge ingest: upstream ships DICOMs
+    # which we convert to PNG once + cache. Only consumed by the local
+    # cross-dataset drift bench (out of CI scope), so dev-group rather
+    # than runtime dep.
+    "pydicom>=2.4",
     "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.16",
+    "textual-dev>=1.8.0",
+    "diff-cover>=9.2",
 ]
 
 [tool.pytest.ini_options]
-addopts = "--cov=ClarityMed --cov-report=term-missing --cov-fail-under=80"
-pythonpath = ["."]
+# --ignore=tests/e2e keeps e2e out of normal CI runs (they need live services).
+# Run e2e explicitly: uv run pytest tests/e2e -v --no-cov
+addopts = "--cov=src/claritymed --cov-report=term-missing --cov-report=xml --cov-fail-under=80 --ignore=tests/e2e"
+pythonpath = ["src", "evals"]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "local: tests that require live local services; excluded from CI",
+    "mineru_office: MineRU Office formats (docx/xlsx/pptx) — cloud queue is systemically slow (>5min); skipped by default, run with `-m mineru_office`",
+]
 
 [tool.coverage.run]
-omit = ["serve.py"]
+source = ["src/claritymed"]

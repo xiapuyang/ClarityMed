@@ -1,0 +1,69 @@
+{
+  "app": {
+    "title": "ClarityMed 管理",
+    "loading": "加载中…",
+    "error": "出错了。",
+    "retry": "重试",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "confirm": "确认",
+    "restart_required": "重启后端以应用更改。"
+  },
+  "nav": {
+    "overview": "概览",
+    "rag": "RAG 语料",
+    "benchmark": "基准测试",
+    "models": "模型",
+    "servers": "服务",
+    "users": "用户",
+    "config": "系统配置",
+    "i18n": "多语言",
+    "audit": "审计日志",
+    "jobs": "任务"
+  },
+  "forbidden": {
+    "title": "仅管理员",
+    "body": "当前账号没有管理员权限。请使用管理员账号登录，或返回聊天首页。"
+  },
+  "lang": {
+    "en": "English",
+    "zh": "中文"
+  },
+  "overview": {
+    "title": "概览"
+  },
+  "rag": {
+    "title": "RAG 语料"
+  },
+  "benchmark": {
+    "title": "基准测试"
+  },
+  "models": {
+    "title": "模型",
+    "tabs": {
+      "catalogs": "目录",
+      "versions": "版本与流程",
+      "secrets": "密钥"
+    }
+  },
+  "servers": {
+    "title": "服务"
+  },
+  "users": {
+    "title": "用户"
+  },
+  "config": {
+    "title": "系统配置"
+  },
+  "i18nPage": {
+    "title": "多语言"
+  },
+  "audit": {
+    "title": "审计日志"
+  },
+  "jobs": {
+    "title": "任务"
+  }
+}

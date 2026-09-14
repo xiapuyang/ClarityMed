@@ -1,0 +1,21 @@
+Empty by design — see ../README.md for sourcing.
+
+Operators populating this directory should source from:
+
+- NIH GTEx Histology Image Library (open-access H&E whole-slide images).
+- The Cancer Imaging Archive (TCIA) collections tagged
+  `Histopathology` — most are CC-BY or PDDL; verify the per-collection
+  data-use agreement before committing.
+- LC25000 (Borkowski et al., 2019) is the training set used by the
+  per-organ histopath modules; the source license permits research use
+  but not redistribution, so do NOT commit raw LC25000 images here.
+
+Each committed image MUST be sourced from a public-domain, CC0, or
+CC-BY archive (with attribution captured in the per-fixture comment).
+Tests that need this fixture call `pytest.skip` when only the
+placeholder is present.
+
+The vision e2e tests for both `lung_cancer_histopathology` and
+`colon_cancer_histopathology` read from this directory — one image is
+enough to drive both e2e tests (the same fixture is reused; the
+disease_id in the prompt steers the LLM toward the right tool call).

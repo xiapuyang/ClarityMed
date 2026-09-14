@@ -1,0 +1,74 @@
+# MedQA-USMLE — 4-option English MCQA.
+#
+# Dataset choice deviates from the plan's nominal `bigbio/med_qa` because
+# `datasets >= 3.0` removed the trust_remote_code script-dataset loader path
+# `bigbio` depends on, and we install datasets 5.x via the `evals` extra.
+# `GBaker/MedQA-USMLE-4-options-hf` is parquet-only, holds the same 4-option
+# English USMLE content (1273 test questions), and is the dataset lm-eval's
+# own bundled `medqa` task uses, so it's the de-facto standard.
+#
+# Schema:
+#   sent1                  question stem
+#   ending0..ending3       options A..D
+#   label                  int 0..3 — gold answer index
+#
+# Scoring mode is `generate_until` (not loglikelihood), because the plan's
+# constraint R4 requires provider neutrality and Anthropic does not expose
+# per-token logprobs through pydantic-ai. We force the model to emit a
+# single letter, regex-extract it, and compare via `exact_match`.
+
+task: medqa
+dataset_path: GBaker/MedQA-USMLE-4-options-hf
+test_split: test
+training_split: train
+validation_split: validation
+output_type: generate_until
+
+doc_to_text: |-
+  Question: {{sent1}}
+  (A) {{ending0}}
+  (B) {{ending1}}
+  (C) {{ending2}}
+  (D) {{ending3}}
+  Answer with a single letter (A, B, C, or D).
+  Answer:
+
+doc_to_target: '{{ ["A", "B", "C", "D"][label] }}'
+
+generation_kwargs:
+  # Explicit empty ``until`` — when the key is missing, lm-eval-harness
+  # silently injects ``[fewshot_delimiter]`` (= ``"\n\n"``) as a stop,
+  # which would cut reasoning-tuned models (Qwen3, o1, etc.) off at the
+  # first paragraph break, right before they write "Answer: X". Setting
+  # ``until: []`` keeps the key present so the injection is skipped and
+  # the filter below sees the model's full conclusion.
+  until: []
+  max_gen_toks: 2048
+  temperature: 0
+  do_sample: false
+
+filter_list:
+  # Two-layer extraction:
+  #   1. Strict — prefer the *last* "Answer: X" / "answer is X" / "(X)"
+  #      anchor in the completion. ``group_select: -1`` picks the LAST
+  #      match so reasoning text that mentions options earlier ("option
+  #      A then C") doesn't poison the result; the model's final answer
+  #      always lands later than its analysis.
+  #   2. Flexible — if no "Answer:" anchor exists, take the last bare
+  #      A-D word in the completion. Same group_select: -1 logic.
+  - name: extract_letter
+    filter:
+      - function: regex
+        regex_pattern: '(?i)(?:answer(?:\s+is)?[:\s]*\(?([A-D])\)?|\(([A-D])\)|(?<!\w)([A-D])(?!\w))'
+        group_select: -1
+      - function: take_first
+
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+
+metadata:
+  version: 1.0

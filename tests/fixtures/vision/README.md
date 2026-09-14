@@ -1,0 +1,54 @@
+# Vision e2e fixtures — provenance
+
+These images drive Unit 9's `tests/e2e/test_vision_*` tests and the
+in-process integration test at
+`tests/integration/orchestrator/test_vision_full_pipeline.py`. The
+benchmark runner (`tests/benchmarks/tool_invoke/vision/`) reads the
+same files via its own `seed` map.
+
+Every image MUST be public-domain or CC0. ClarityMed is "open-source
+hygiene by default" (CLAUDE.md) and any fixture leak into a published
+repo carries legal risk. When adding a new file, append a row to the
+table below with source URL + license.
+
+## Subdirectories
+
+| Subdir | What goes here | Use case |
+|---|---|---|
+| `busi/` | Real BUSI ultrasound images (benign / malignant / normal) | Happy-path e2e; modality match; specialist-keyword check |
+| `chest_ct/` | Real chest-CT axial slices (adenocarcinoma / large cell / squamous / normal) | Happy-path e2e for `lung_cancer_chest_ct`; modality match |
+| `skin/` | Real dermoscopy lesion images (malignant / benign) | Happy-path e2e for `skin_cancer_dermoscopy`; modality match |
+| `modality_mismatch/` | CT / X-ray images | KTD-V3 hard refuse; tool never reaches `/v1/detect` |
+| `report_overlay/` | Ultrasound with embedded clinician report text (FINDINGS/IMPRESSION) | KTD-V6 OCR override; tool short-circuits |
+| `non_medical/` | Pet photos, document screenshots | R6 / `is_medical=false` filter |
+
+## File rows
+
+| Path | Source URL | License | Added |
+|---|---|---|---|
+| `busi/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `busi/benign_busi_001.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`benign (1).png`) | CC0 | 2026-06-15 |
+| `busi/malignant_busi_001.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`malignant (1).png`) | CC0 | 2026-06-15 |
+| `modality_mismatch/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `modality_mismatch/benign_busi_002_as_ct.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`benign (2).png`) — test injects modality="ct" | CC0 | 2026-06-15 |
+| `report_overlay/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `report_overlay/benign_busi_003_with_report.png` | kaggle.com/datasets/aryashah2k/breast-ultrasound-images-dataset (`benign (3).png`) — test injects ocr_has_report=True | CC0 | 2026-06-15 |
+| `non_medical/_PLACEHOLDER.txt` | — | — | 2026-06-14 |
+| `chest_ct/_PLACEHOLDER.txt` | — | — | 2026-06-16 |
+| `skin/_PLACEHOLDER.txt` | — | — | 2026-06-16 |
+
+Operators populating these directories should source from:
+
+- **BUSI samples** — Kaggle `aryashah2k/breast-ultrasound-images-dataset`
+  (Dataset_BUSI_with_GT) is CC0 per the dataset card.
+- **CT / X-ray mismatch** — RSNA challenge public archives, NIH
+  ChestX-ray14 (both public-domain for research).
+- **Dermoscopy ceiling cases** — ISIC CC0 archive.
+- **Report-overlay** — compose synthetic FINDINGS/IMPRESSION text onto
+  a CC0 ultrasound base. Never use a real radiologist's report verbatim
+  (PHI risk + copyright).
+- **Non-medical** — Unsplash, Wikimedia Commons (filter for CC0).
+
+The e2e tests `pytest.skip` when the relevant subdir is empty — they
+do NOT generate fixtures on the fly. Empty subdirs are visible in CI as
+"skipped" rather than "passed-but-unverified".

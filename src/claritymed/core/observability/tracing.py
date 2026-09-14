@@ -1,0 +1,330 @@
+"""OpenTelemetry tracing — sends spans to a self-hosted Phoenix instance.
+
+``setup_tracing()`` is the one entry point. It reads ``tracing:`` from
+``configs/app.yaml``; when ``enabled`` is ``false`` (the default) the
+function returns silently and nothing about the process changes. This is
+the CI / offline / opt-in path — no test, no shell session, no notebook
+gets surprise traffic.
+
+When ``enabled: true``, we configure a global ``TracerProvider``, attach
+``OpenInferenceSpanProcessor`` (in-place enrichment with OI semantic
+conventions — model, prompt, response, token counts, cache hits), and an
+OTLP HTTP exporter pointed at Phoenix. Finally we call
+``Agent.instrument_all()`` so every pydantic-ai run / model_call /
+tool_call automatically becomes a span — no per-call wiring.
+
+PHI scrubbing uses the same ``OutboundTextGate`` / ``resolve_phi_kind``
+logic as the embedder and reranker service clients:
+
+* Localhost Phoenix (``localhost``, ``127.0.0.1``, ``::1``) → no gate →
+  spans are exported as-is.  PHI stays on the local host, same as the
+  embedder/reranker case.
+* Remote Phoenix → ``PhiOutboundGate`` is injected into
+  ``PhiScrubSpanProcessor``, which scrubs OI-written attributes before
+  ``BatchSpanProcessor`` picks them up for export.
+
+``phi_kind`` can override auto-detection: set ``"local"`` to skip scrubbing
+even for a remote endpoint, or ``"cloud"`` to force scrubbing on localhost
+(unusual, but supported).
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
+
+# Attribute keys (or key prefixes) OpenInference writes that may carry
+# PHI in their values. We pin to OI's documented attribute names rather
+# than wildcards so a future OI release cannot silently slip new keys
+# past the scrubber — if it adds one, the test catches the gap.
+PHI_SCRUB_ATTR_KEYS: tuple[str, ...] = (
+    "input.value",
+    "output.value",
+)
+PHI_SCRUB_ATTR_PREFIXES: tuple[str, ...] = (
+    "llm.input_messages.",
+    "llm.output_messages.",
+    "llm.prompts.",
+    "llm.prompt.",
+    "llm.completion.",
+    "llm.tool_call.",
+    "tool.parameters.",
+    "retrieval.documents.",
+    "embedding.embeddings.",
+)
+
+_lock = threading.Lock()
+_configured: bool = False
+
+
+class TracingConfig(BaseModel):
+    """Schema for the ``tracing:`` section in ``configs/app.yaml``."""
+
+    enabled: bool = False
+    endpoint: str = "http://localhost:6006"
+    api_key_env: str | None = None
+    phi_kind: Literal["local", "cloud"] | None = None
+    service_name: str = "claritymed"
+    project_name: str = "claritymed"
+
+
+def _resolve_project_name(cfg_name: str) -> str:
+    """Pick the Phoenix project name for this process.
+
+    Priority order:
+    1. ``CLARITYMED_TRACE_PROJECT`` env var (set by conftest for test runs)
+    2. ``cfg_name`` from ``configs/app.yaml`` (production default)
+
+    Conftest files are responsible for setting the env var *before* the
+    first ``setup_tracing()`` call, which is why this is read at install
+    time rather than at config-load time.
+    """
+    import os
+
+    return os.environ.get("CLARITYMED_TRACE_PROJECT") or cfg_name
+
+
+def _load_config() -> TracingConfig:
+    from claritymed.config import load_yaml
+
+    return TracingConfig.model_validate(load_yaml("app.yaml").get("tracing", {}))
+
+
+def setup_tracing() -> bool:
+    """Configure global tracing if enabled in ``configs/app.yaml``.
+
+    Returns ``True`` if tracing was installed (or was already installed
+    by a prior call), ``False`` if disabled. Multiple callers in the same
+    process (CLI entry, TUI mount, web boot) can call this freely —
+    the underlying setup runs at most once.
+    """
+    global _configured
+    cfg = _load_config()
+    if not cfg.enabled:
+        return False
+    with _lock:
+        if _configured:
+            return True
+        try:
+            _install(cfg)
+            _configured = True
+            logger.info("tracing installed -> %s", cfg.endpoint)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to install tracing; continuing without it")
+            return False
+
+
+def is_configured() -> bool:
+    return _configured
+
+
+def reset_for_testing() -> None:
+    """Test hook — clears the once-only guard. Not for production."""
+    global _configured
+    with _lock:
+        _configured = False
+
+
+def _install(cfg: TracingConfig) -> None:
+    # Imports are local so the rest of the codebase doesn't pay the OTel
+    # import cost when tracing is off.
+    import os
+
+    from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
+    from openinference.semconv.resource import (
+        ResourceAttributes as OIResourceAttributes,
+    )
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from pydantic_ai import Agent
+
+    project_name = _resolve_project_name(cfg.project_name)
+    resource = Resource.create(
+        {
+            SERVICE_NAME: cfg.service_name,
+            OIResourceAttributes.PROJECT_NAME: project_name,
+        }
+    )
+    provider = TracerProvider(resource=resource)
+
+    # Copy our baggage (request_id / user_id) onto every span as the first
+    # thing that runs at span start. Phoenix and Tempo can then group by
+    # request_id without parsing baggage manually, and the audit-log line
+    # that recorded the trace_id round-trips both ways.
+    provider.add_span_processor(BaggageSpanProcessor())
+
+    # OpenInference enriches spans in place with provider/model/usage/cache
+    # attributes that Phoenix UI knows how to render. It does not export.
+    provider.add_span_processor(OpenInferenceSpanProcessor())
+
+    # Scrub PHI from OI-written attributes *before* the exporter sees the
+    # batch. Gate follows the same resolve_phi_kind logic as service clients:
+    # localhost → None (no processor), remote → PhiOutboundGate.
+    # If ScrubService init fails for a remote endpoint, let the exception
+    # propagate — setup_tracing() will catch it and skip tracing entirely
+    # rather than exporting spans without PHI scrubbing.
+    from claritymed.core.phi.outbound_gate import make_outbound_gate, resolve_phi_kind
+
+    gate = make_outbound_gate(resolve_phi_kind(cfg.phi_kind, cfg.endpoint))
+    provider.add_span_processor(PhiScrubSpanProcessor(gate))
+
+    # OTLP HTTP is what self-hosted Phoenix accepts on /v1/traces. Batch
+    # processor so streaming latency isn't taxed by export.
+    # Phoenix reads `x-project-name` header (FastAPI param: x_project_name).
+    headers: dict[str, str] = {"x-project-name": project_name}
+    if cfg.api_key_env:
+        api_key = os.environ.get(cfg.api_key_env, "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+    exporter = OTLPSpanExporter(
+        endpoint=f"{cfg.endpoint.rstrip('/')}/v1/traces",
+        headers=headers,
+        timeout=3,
+    )
+    logger.info("tracing project -> %s", project_name)
+    provider.add_span_processor(
+        BatchSpanProcessor(exporter, export_timeout_millis=3000)
+    )
+
+    trace.set_tracer_provider(provider)
+
+    # Global hook — every pydantic-ai Agent run starts emitting spans
+    # without per-call wiring.
+    Agent.instrument_all()
+
+
+def _baggage_span_processor_class():
+    """Return the BaggageSpanProcessor class, importing OTel lazily."""
+    from opentelemetry import baggage
+    from opentelemetry import context as otel_context
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    from claritymed.context import (
+        BAGGAGE_REQUEST_ID,
+        BAGGAGE_SESSION_ID,
+        BAGGAGE_USER_ID,
+    )
+
+    _COPY_KEYS = (BAGGAGE_REQUEST_ID, BAGGAGE_USER_ID, BAGGAGE_SESSION_ID)
+
+    class _BaggageSpanProcessor(SpanProcessor):
+        """Lifts our two baggage keys onto every starting span as attrs."""
+
+        def on_start(self, span, parent_context=None):  # noqa: D401
+            ctx = parent_context or otel_context.get_current()
+            for key in _COPY_KEYS:
+                value = baggage.get_baggage(key, ctx)
+                if value:
+                    span.set_attribute(key, str(value))
+
+        def on_end(self, span):
+            return
+
+        def shutdown(self):
+            return
+
+        def force_flush(self, timeout_millis: int = 30000):  # noqa: ARG002
+            return True
+
+    return _BaggageSpanProcessor
+
+
+def BaggageSpanProcessor():  # noqa: N802 — factory mimics a class name on purpose
+    """Construct a baggage-copying span processor.
+
+    Hidden behind a factory so importing ``tracing`` does not require the
+    OTel SDK; the class is built only inside ``_install``.
+    """
+    return _baggage_span_processor_class()()
+
+
+def _phi_scrub_processor_class():
+    """Return the PhiScrubSpanProcessor class, importing OTel lazily.
+
+    The class scrubs attributes OpenInference set during span lifetime
+    by mutating ``span._attributes`` on ``on_end``. The mutation is safe
+    because OTel's SDK only freezes the attribute mapping on export, and
+    BatchSpanProcessor (the exporter we feed) runs after us.
+    """
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    class _PhiScrubSpanProcessor(SpanProcessor):
+        """Strip / redact PHI from OI-written attributes pre-export.
+
+        Accepts an ``OutboundTextGate`` — the same primitive used by the
+        embedder / reranker service clients — so scrubbing logic and
+        testability are unified across all outbound boundaries.
+        """
+
+        def __init__(self, gate=None) -> None:
+            self._gate = gate
+
+        def on_start(self, span, parent_context=None):  # noqa: D401, ARG002
+            return
+
+        def on_end(self, span):  # noqa: D401
+            if self._gate is None:
+                return
+            attrs = getattr(span, "_attributes", None)
+            if not attrs:
+                return
+            try:
+                for key in list(attrs.keys()):
+                    if not _is_phi_attr_key(key):
+                        continue
+                    value = attrs[key]
+                    if not isinstance(value, str) or not value:
+                        continue
+                    attrs[key] = self._gate.scrub(value)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "PHI scrub failed on span %s", getattr(span, "name", "?")
+                )
+
+        def shutdown(self):  # noqa: D401
+            return
+
+        def force_flush(self, timeout_millis: int = 30000):  # noqa: ARG002, D401
+            return True
+
+    return _PhiScrubSpanProcessor
+
+
+def _is_phi_attr_key(key: str) -> bool:
+    """Match attribute keys against the static allow-list of PHI-bearing names."""
+    if key in PHI_SCRUB_ATTR_KEYS:
+        return True
+    return any(key.startswith(prefix) for prefix in PHI_SCRUB_ATTR_PREFIXES)
+
+
+def PhiScrubSpanProcessor(gate):  # noqa: N802 — factory mimics a class name on purpose
+    """Construct a PHI scrub span processor around an ``OutboundTextGate``.
+
+    Hidden behind a factory for the same reason as ``BaggageSpanProcessor``
+    — OTel SDK import is deferred to install time.
+    """
+    return _phi_scrub_processor_class()(gate=gate)
+
+
+__all__ = [
+    "BaggageSpanProcessor",
+    "PHI_SCRUB_ATTR_KEYS",
+    "PHI_SCRUB_ATTR_PREFIXES",
+    "PhiScrubSpanProcessor",
+    "TracingConfig",
+    "is_configured",
+    "reset_for_testing",
+    "setup_tracing",
+]

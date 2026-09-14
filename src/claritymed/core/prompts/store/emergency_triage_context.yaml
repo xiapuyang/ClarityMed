@@ -1,0 +1,31 @@
+name: emergency_triage_context
+description: |
+  Closing LLM directive for the dynamic [SAFETY CONTEXT] block injected
+  as a pydantic-ai system prompt before every LLM request when triage
+  level is urgent or moderate (KTD-E4).
+
+  This prompt holds the **single tunable piece** — the instruction
+  telling the model to lead with the suggested action verbatim, then
+  elicit any missing qualifiers, then answer. The scaffolding labels
+  (header, level prefix, lead-ins, etc.) live in
+  ``configs/i18n/{en,zh}/emergency.yaml`` under ``emergency.triage_context.*``
+  because they are translation-only and never tuned for prompt quality.
+
+  The Python composer is ``_triage_system_prompt`` in
+  ``orchestrator/services/ask_service.py``.
+
+versions:
+  - version: v1
+    created_at: 2026-06-24
+    notes: |
+      Split from the v0 fragment-bundle design. v0 used a custom
+      ``---FRAGMENT:<name>---`` delimiter to pack 6 strings into one
+      registry entry; 5 of those were i18n labels and have been moved
+      to ``configs/i18n/{en,zh}/emergency.yaml::emergency.triage_context``.
+      Only this closing directive (the actual LLM instruction) remains
+      in the prompt registry, where it can be iterated in Phoenix.
+    languages:
+      en: |
+        Lead your reply with the suggested_action above (verbatim), then elicit any missing_qualifiers, then add your answer to the user's question. Do not soften, paraphrase, or move the suggested_action below your answer.
+      zh: |
+        请逐字采用上述"建议处置"作为回复开头，随后追问任何待澄清的关键信息，然后再回答用户原本的问题。不要软化、改写或将"建议处置"移到回答之后。

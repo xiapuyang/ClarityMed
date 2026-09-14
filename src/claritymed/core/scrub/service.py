@@ -1,0 +1,735 @@
+"""Free-text PII scrubbing service: regex first, privacy-filter model as fallback.
+
+Two-layer pipeline:
+
+1. Regex pass — fast, zero-dependency, covers structured PII (phone, email,
+   ID, MRN). Rules declared in ``configs/safety.yaml`` under
+   ``phi.free_text_patterns``.
+
+2. Model pass — OpenAI Privacy Filter (1.5B-param bidirectional token
+   classifier). Catches unstructured PII the regex layer misses: names,
+   addresses, dates, secrets, URLs, account numbers. Two sub-paths:
+
+   a. ONNX path (default, ~809 MB): ``onnx_file`` set in config →
+      raw ``onnxruntime.InferenceSession``. Bypasses ``AutoConfig`` entirely
+      (which fails for the non-standard ``openai_privacy_filter`` model type).
+      Label mapping is read from ``config.json`` as plain JSON.
+      CoreMLExecutionProvider used on Apple Silicon when available; falls
+      back to CPUExecutionProvider.
+   b. PyTorch path (``onnx_file: null``): ``transformers`` pipeline on
+      the device chosen by ``resolve_device``. ~2.8 GB safetensors.
+
+   Opt-in via ``phi.privacy_filter.enabled``.
+
+Both layers run regardless of provider kind (local or cloud) — user privacy
+is not solely a cloud-egress concern.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from claritymed import config as _cfg
+from claritymed.core.device import resolve_device
+from claritymed.core.observability.silence import silence_fd_stderr
+
+logger = logging.getLogger(__name__)
+
+REDACTED = "[REDACTED]"
+
+
+def _emit_scrub_audit(payload: dict) -> None:
+    """Emit scrub.privacy_filter audit event."""
+    try:
+        from claritymed.core.observability.audit import audit_event
+
+        audit_event("scrub.privacy_filter", payload)
+    except Exception:  # noqa: BLE001
+        logger.warning("scrub.privacy_filter audit failed", exc_info=True)
+
+
+# HF entity_group label → our [REDACTED:X] placeholder
+_LABEL_MAP: dict[str, str] = {
+    "private_person": "[REDACTED:PERSON]",
+    "private_address": "[REDACTED:ADDRESS]",
+    "private_email": "[REDACTED:EMAIL]",
+    "private_phone": "[REDACTED:PHONE]",
+    "private_url": "[REDACTED:URL]",
+    "account_number": "[REDACTED:ACCOUNT]",
+    "secret": "[REDACTED:SECRET]",
+}
+
+# Labels detected by the model that should NOT be redacted.
+# Dates are clinical context (appointment dates, symptom onset), not PHI that
+# needs scrubbing — redacting them makes answers medically useless.
+_SKIP_LABELS: frozenset[str] = frozenset({"private_date"})
+
+# Labels the whitelist is allowed to override. The NER misclassifies Chinese
+# drug names as ``private_person`` and random slugs as ``secret`` /
+# ``account_number``, but it rarely flags clinical terms as address / email /
+# phone / URL — so we don't expose those to whitelist bypass.
+_WHITELIST_LABELS: frozenset[str] = frozenset(
+    {"private_person", "secret", "account_number"}
+)
+
+# Maximum non-whitespace residual characters left after stripping all matched
+# whitelist terms from a span. Above this, we assume the span contains real
+# PHI co-mingled with a clinical term (e.g. "李医生开的青霉素" → residual
+# "李医生开的") and leave it for the NER to redact. Tuned for short Chinese
+# fillers like "过敏" / "片" / "颗粒" / "针" without letting whole sentences
+# slip through.
+_WHITELIST_RESIDUAL_MAX: int = 3
+
+
+def _patch_tqdm_lock() -> None:
+    """Replace tqdm's class-level lock with a threading.RLock.
+
+    tqdm's default TqdmDefaultWriteLock creates a multiprocessing.RLock
+    which spawns a resource_tracker subprocess (spawnv_passfds). That spawn
+    fails on macOS with uv's Python 3.12, crashing any code that uses tqdm —
+    including transformers weight-loading progress bars. A threading.RLock is
+    sufficient for single-process use and avoids the subprocess entirely.
+
+    Idempotent: calling multiple times is safe.
+    """
+    import threading
+
+    try:
+        import tqdm
+
+        tqdm.tqdm.set_lock(threading.RLock())
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "tqdm lock patch failed; multiprocessing may fail during model load",
+            exc_info=True,
+        )
+
+
+class _OnnxNerPipeline:
+    """Minimal NER pipeline backed by an ``onnxruntime.InferenceSession``.
+
+    Replicates the output contract of ``transformers.pipeline(
+    "token-classification", aggregation_strategy="simple")``:
+    a list of dicts with ``entity_group``, ``start``, ``end``.
+
+    Aggregates consecutive subword tokens with the same label (BIO or flat)
+    into a single span, skipping special tokens (offset start == end).
+    """
+
+    def __init__(self, session: Any, tokenizer: Any, id2label: dict[int, str]) -> None:
+        self._session = session
+        self._tokenizer = tokenizer
+        self._id2label = id2label
+        self._input_names: frozenset[str] = frozenset(
+            i.name for i in session.get_inputs()
+        )
+
+    def __call__(self, text: str) -> list[dict]:
+        enc = self._tokenizer(
+            text,
+            return_tensors="np",
+            return_offsets_mapping=True,
+            truncation=True,
+            max_length=512,
+        )
+        offset_mapping = enc.pop("offset_mapping")[0]  # (seq_len, 2)
+        feed = {k: v for k, v in enc.items() if k in self._input_names}
+        # Silence CoreML per-inference diagnostics written directly to fd 2.
+        with silence_fd_stderr():
+            logits = self._session.run(None, feed)[0][0]  # (seq_len, num_labels)
+        predictions = logits.argmax(axis=-1)
+        return self._aggregate(predictions, offset_mapping)
+
+    def _aggregate(self, predictions: Any, offset_mapping: Any) -> list[dict]:
+        """Merge subword tokens into char-offset spans using BIOES decoding.
+
+        The model uses BIOES tagging (Begin/Inside/Outside/End/Single):
+        - B-X: opens a new span of type X
+        - I-X: extends the current B-X span
+        - E-X: extends and closes the current span
+        - S-X: single-token span (open + close immediately)
+        - O:   closes any open span
+        """
+        spans: list[dict] = []
+        current: dict | None = None
+
+        for pred, (char_start, char_end) in zip(predictions, offset_mapping):
+            # Special tokens ([CLS], [SEP], padding) have zero-length offsets
+            if int(char_start) == int(char_end):
+                if current:
+                    spans.append(current)
+                    current = None
+                continue
+
+            raw_label = self._id2label.get(int(pred), "O")
+            prefix = raw_label[:2]
+
+            if prefix == "B-":
+                label = raw_label[2:]
+                if current:
+                    spans.append(current)
+                current = {
+                    "entity_group": label,
+                    "start": int(char_start),
+                    "end": int(char_end),
+                }
+
+            elif prefix == "I-":
+                label = raw_label[2:]
+                if current and current["entity_group"] == label:
+                    current["end"] = int(char_end)
+                else:
+                    # I- without a matching open span — treat as span start
+                    if current:
+                        spans.append(current)
+                    current = {
+                        "entity_group": label,
+                        "start": int(char_start),
+                        "end": int(char_end),
+                    }
+
+            elif prefix == "E-":
+                label = raw_label[2:]
+                if current and current["entity_group"] == label:
+                    current["end"] = int(char_end)
+                    spans.append(current)
+                    current = None
+                else:
+                    # E- without matching open span — close anything open, emit this token
+                    if current:
+                        spans.append(current)
+                    spans.append(
+                        {
+                            "entity_group": label,
+                            "start": int(char_start),
+                            "end": int(char_end),
+                        }
+                    )
+                    current = None
+
+            elif prefix == "S-":
+                label = raw_label[2:]
+                if current:
+                    spans.append(current)
+                    current = None
+                spans.append(
+                    {
+                        "entity_group": label,
+                        "start": int(char_start),
+                        "end": int(char_end),
+                    }
+                )
+
+            else:  # "O" or anything unrecognised
+                if current:
+                    spans.append(current)
+                    current = None
+
+        if current:
+            spans.append(current)
+        return spans
+
+
+class FreeTextRule(BaseModel):
+    """One regex rule for free-text PII scrubbing."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    regex: str
+    replacement: str
+
+
+class PrivacyFilterConfig(BaseModel):
+    """OpenAI Privacy Filter model config."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    device: str = "auto"  # "auto" → mps → cuda → cpu; or explicit "cpu"/"mps"/"cuda"
+    model_name: str = "openai/privacy-filter"
+    # ONNX quantized file path relative to the HF repo root (~809 MB total
+    # including the _data companion). Set to null to use PyTorch safetensors.
+    onnx_file: str | None = "onnx/model_q4f16.onnx"
+    # Words that should be exempt from redaction even when the NER tags them.
+    # The model trips on Chinese drug names ("青霉素", "阿莫西林") as
+    # ``private_person`` and on random slug-like tokens as ``secret``; both
+    # are clinical context, not PHI. Matched case-insensitively against the
+    # span's exact text — substrings do not count.
+    whitelist: list[str] = Field(default_factory=list)
+
+
+class ScrubConfig(BaseModel):
+    """Parsed scrub settings from ``configs/safety.yaml`` ``phi`` section."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    free_text_patterns: list[FreeTextRule] = Field(default_factory=list)
+    privacy_filter: PrivacyFilterConfig = Field(default_factory=PrivacyFilterConfig)
+
+
+class ScrubReport(BaseModel):
+    """Per-call summary of what the scrub pipeline did.
+
+    Counts only — no original spans recorded, so the report is safe to
+    emit as audit log.
+
+    ``model_failed`` is True when ``privacy_filter.enabled`` was set but
+    the model layer either failed to load or raised during inference.
+    Callers that consider model scrub mandatory (cloud-bound prompts)
+    can branch on this flag to fail loud rather than silently leak
+    PHI the regex pass missed. The regex output is still returned —
+    failing closed at the orchestrator level is the caller's policy
+    decision, not this service's.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rule_hits: dict[str, int] = Field(default_factory=dict)
+    model_hits: int = 0
+    model_hit_types: dict[str, int] = Field(default_factory=dict)
+    model_failed: bool = False
+    text_len_before: int = 0
+    text_len_after: int = 0
+
+
+class ScrubService:
+    """Two-layer free-text PII scrubber: regex + optional privacy-filter model.
+
+    Thread-safe: the pipeline is loaded at most once per instance under a lock.
+    """
+
+    def __init__(self, config: ScrubConfig) -> None:
+        self._config = config
+        self._pipeline: Any = None
+        self._pipeline_tried = False
+        self._lock = threading.Lock()
+        # Pre-compile the regex layer once at construction. ScrubService is
+        # long-lived (cached in PhiGuard) and ``_layer_regex`` runs on every
+        # cloud-bound prompt; re-compiling per call was a measurable hot-
+        # path cost.
+        self._compiled_patterns: list[tuple[str, re.Pattern[str], str]] = [
+            (rule.name, re.compile(rule.regex), rule.replacement)
+            for rule in self._config.free_text_patterns
+        ]
+
+    @classmethod
+    def from_config(cls) -> "ScrubService":
+        """Load config from safety.yaml and return a ready service.
+
+        Reads through the YAML lru_cache without forcing a reload.
+        Earlier versions called ``_cfg.reload_configs()`` here, which
+        invalidated the whole YAML cache and made the very next
+        ``load_yaml`` call (e.g. ``retrieval.yaml``) re-parse from disk
+        for every retrieval. Admins who edit safety.yaml at runtime can
+        call ``_cfg.reload_configs()`` explicitly to refresh.
+        """
+        phi_raw = _cfg.load_yaml("safety.yaml").get("phi") or {}
+        config = ScrubConfig.model_validate(
+            {
+                "free_text_patterns": phi_raw.get("free_text_patterns", []),
+                "privacy_filter": phi_raw.get("privacy_filter", {}),
+            }
+        )
+        return cls(config)
+
+    def scrub(self, text: str) -> tuple[str, ScrubReport]:
+        """Run regex then model pass. Returns (scrubbed_text, report).
+
+        When ``privacy_filter.enabled`` is True but the model layer
+        fails (load or inference), ``ScrubReport.model_failed`` is set
+        so callers can distinguish a clean model pass from a silent
+        degradation to regex-only output.
+        """
+        if not text:
+            return text, ScrubReport(text_len_before=0, text_len_after=0)
+
+        original_len = len(text)
+        scrubbed, rule_hits = self._layer_regex(text)
+
+        if rule_hits:
+            try:
+                from claritymed.core.observability.audit import audit_event
+
+                audit_event("scrub.regex", {"rule_hits": rule_hits})
+            except Exception:  # noqa: BLE001
+                logger.warning("scrub.regex audit failed", exc_info=True)
+
+        model_hits = 0
+        model_hit_types: dict[str, int] = {}
+        model_failed = False
+        if self._config.privacy_filter.enabled:
+            scrubbed, model_hits, model_failed, model_hit_types = self._layer_model(
+                scrubbed
+            )
+
+        return scrubbed, ScrubReport(
+            rule_hits=rule_hits,
+            model_hits=model_hits,
+            model_hit_types=model_hit_types,
+            model_failed=model_failed,
+            text_len_before=original_len,
+            text_len_after=len(scrubbed),
+        )
+
+    def check_runtime_deps(self) -> None:
+        """Raise ImportError if required packages for the model layer are missing.
+
+        Call at startup to fast-fail with a clear remediation hint rather
+        than silently degrading to regex-only at the first scrub call.
+        Does nothing when ``privacy_filter.enabled`` is False.
+        """
+        if not self._config.privacy_filter.enabled:
+            return
+        if self._config.privacy_filter.onnx_file:
+            try:
+                import onnxruntime  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "privacy_filter with onnx_file requires onnxruntime. "
+                    "Install with: uv sync --extra privacy-filter"
+                ) from None
+        else:
+            try:
+                import torch  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "privacy_filter with onnx_file=null requires torch. "
+                    "Install with: uv sync --extra privacy-filter"
+                ) from None
+        try:
+            # transformers._configure_library_root_logger() resets the Python
+            # log level on import, overwriting any pre-set we do.  The only
+            # reliable hook is TRANSFORMERS_VERBOSITY, which it reads as its
+            # initial level.  We use setdefault so a user-set env var wins.
+            import os
+
+            os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+            import transformers  # noqa: F401
+
+            transformers.logging.set_verbosity_error()
+            logger.debug(
+                "transformers imported (ONNX path); PyTorch/TF/Flax "
+                "backend warning suppressed via TRANSFORMERS_VERBOSITY"
+            )
+        except ImportError:
+            raise ImportError(
+                "privacy_filter.enabled=true requires transformers. "
+                "Install with: uv sync --extra privacy-filter"
+            ) from None
+
+    def ensure_downloaded(self) -> bool:
+        """Pre-download model weights to the HuggingFace cache.
+
+        ONNX path (``onnx_file`` set): fetches only the specified ONNX file
+        + its ``_data`` companion + tokenizer + ``config.json`` (~809 MB total
+        for ``model_q4f16``). No custom Python code needed — we read
+        ``config.json`` directly as JSON.
+
+        PyTorch path (``onnx_file`` unset): fetches the safetensors weights,
+        skipping TF/Flax/ONNX variants (~2.8 GB).
+
+        The model is NOT loaded into memory here; that still happens lazily
+        on the first ``scrub()`` call. Returns True if the cache is ready,
+        False on failure or missing extras.
+        """
+        if not self._config.privacy_filter.enabled:
+            return True
+        try:
+            from huggingface_hub import snapshot_download
+            from huggingface_hub.errors import LocalEntryNotFoundError
+
+            onnx_file = self._config.privacy_filter.onnx_file
+            repo_id = self._config.privacy_filter.model_name
+            kwargs: dict = (
+                {
+                    "allow_patterns": [
+                        "config.json",
+                        "tokenizer*.json",
+                        "special_tokens_map.json",
+                        onnx_file,
+                        f"{onnx_file}_data",
+                    ]
+                }
+                if onnx_file
+                else {
+                    "ignore_patterns": [
+                        "*.msgpack",
+                        "*.h5",
+                        "flax_*",
+                        "tf_*",
+                        "onnx/*",
+                    ]
+                }
+            )
+            try:
+                # Fast path: all files already in local cache — skip ETag check.
+                snapshot_download(repo_id=repo_id, local_files_only=True, **kwargs)
+                logger.debug("privacy-filter cache hit; skipping network check")
+            except LocalEntryNotFoundError:
+                # First run or cache evicted: download from HuggingFace Hub.
+                logger.info("downloading privacy-filter model weights: %s", repo_id)
+                snapshot_download(repo_id=repo_id, **kwargs)
+            return True
+        except ImportError:
+            logger.warning("huggingface_hub not installed; skipping pre-download")
+            return False
+        except Exception:
+            logger.exception(
+                "could not pre-download %s", self._config.privacy_filter.model_name
+            )
+            return False
+
+    def _layer_regex(self, text: str) -> tuple[str, dict[str, int]]:
+        rule_hits: dict[str, int] = {}
+        for name, pattern, replacement in self._compiled_patterns:
+            new_text, count = pattern.subn(replacement, text)
+            if count > 0:
+                rule_hits[name] = count
+                text = new_text
+        return text, rule_hits
+
+    def _layer_model(self, text: str) -> tuple[str, int, bool, dict[str, int]]:
+        """Run privacy-filter pipeline. Returns ``(text, hits, failed, hit_types)``.
+
+        ``failed`` is True when the model layer was supposed to run but
+        either the pipeline could not be constructed (None) or inference
+        raised. Callers that consider model scrub mandatory branch on
+        this to fail loud — text is still returned (regex output) so
+        the orchestrator can choose between substituting and refusing.
+        """
+        pipe = self._get_pipeline()
+        backend = "onnx" if self._config.privacy_filter.onnx_file else "torch"
+        if pipe is None:
+            _emit_scrub_audit({"status": "skipped", "backend": backend})
+            return text, 0, True, {}
+        t0 = time.perf_counter()
+        try:
+            spans = pipe(text)
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            # Drop spans whose exact text matches a whitelisted term before
+            # they ever influence hit_types or text substitution. Done here
+            # rather than in _apply_spans so both the count (which gates
+            # PhiAssertionModel) and the replacement see the same filtered
+            # view.
+            spans, whitelisted = self._apply_whitelist(text, spans)
+            hit_types: dict[str, int] = {}
+            for span in spans:
+                label = span.get("entity_group", "unknown")
+                if label not in _SKIP_LABELS:
+                    hit_types[label] = hit_types.get(label, 0) + 1
+            scrubbed = self._apply_spans(text, spans)
+            _emit_scrub_audit(
+                {
+                    "status": "ok",
+                    "backend": backend,
+                    "duration_ms": duration_ms,
+                    "hits": sum(hit_types.values()),
+                    "hit_types": hit_types,
+                    "whitelisted": whitelisted,
+                    "chars_in": len(text),
+                    "chars_out": len(scrubbed),
+                }
+            )
+            return scrubbed, sum(hit_types.values()), False, hit_types
+        except Exception:
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            _emit_scrub_audit(
+                {
+                    "status": "error",
+                    "backend": backend,
+                    "duration_ms": duration_ms,
+                }
+            )
+            logger.exception("privacy-filter scrub failed; using regex-only output")
+            return text, 0, True, {}
+
+    def _get_pipeline(self) -> Any:
+        """Return the cached pipeline (ONNX or PyTorch), or None if unavailable."""
+        if self._pipeline_tried:
+            return self._pipeline
+        with self._lock:
+            if self._pipeline_tried:
+                return self._pipeline
+            self._pipeline_tried = True
+            onnx_file = self._config.privacy_filter.onnx_file
+            if onnx_file:
+                self._pipeline = self._load_onnx_pipeline(onnx_file)
+            else:
+                self._pipeline = self._load_torch_pipeline()
+        return self._pipeline
+
+    def _load_onnx_pipeline(self, onnx_file: str) -> Any:
+        """Load pipeline via raw onnxruntime, bypassing AutoConfig entirely.
+
+        ``openai/privacy-filter`` has a non-standard model type
+        (``openai_privacy_filter``) that is not registered in the transformers
+        library. Calling ``AutoConfig.from_pretrained`` (which both the
+        transformers pipeline and ``optimum.ORTModelForTokenClassification``
+        do internally) raises ``ValueError`` / ``KeyError``. This method
+        avoids that by:
+
+        - Using ``ort.InferenceSession`` directly on the local ONNX file.
+        - Reading ``config.json`` as plain JSON to get ``id2label``.
+        - Using ``AutoTokenizer`` only (tokenizers are not model-type-gated).
+
+        Providers: tries CoreMLExecutionProvider first (Apple Silicon), then
+        falls back to CPUExecutionProvider.
+        """
+        try:
+            import onnxruntime as ort
+            from huggingface_hub import hf_hub_download
+            from transformers import PreTrainedTokenizerFast
+
+            model_name = self._config.privacy_filter.model_name
+
+            # Resolve cached file paths (downloads only if not already cached)
+            onnx_path = hf_hub_download(repo_id=model_name, filename=onnx_file)
+            config_path = hf_hub_download(repo_id=model_name, filename="config.json")
+
+            # Read id2label from plain JSON — no AutoConfig needed
+            with open(config_path) as fh:
+                id2label = {
+                    int(k): v for k, v in json.load(fh).get("id2label", {}).items()
+                }
+
+            # tokenizer_config.json specifies "tokenizer_class": "TokenizersBackend"
+            # which is not registered in transformers and has no .py in the repo.
+            # Load tokenizer.json directly via the fast tokenizer constructor —
+            # this bypasses the class dispatch entirely and avoids the warning.
+            tok_path = hf_hub_download(repo_id=model_name, filename="tokenizer.json")
+            tokenizer = PreTrainedTokenizerFast(tokenizer_file=tok_path)
+
+            providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            # Suppress CoreML's C-level stderr diagnostics — they write directly
+            # to fd 2 and corrupt TUI display if not redirected.
+            with silence_fd_stderr():
+                session = ort.InferenceSession(onnx_path, providers=providers)
+            used = session.get_providers()
+            logger.info("privacy-filter ONNX session ready (providers: %s)", used)
+
+            return _OnnxNerPipeline(session, tokenizer, id2label)
+
+        except ImportError:
+            logger.warning(
+                "onnxruntime not installed; privacy-filter layer disabled. "
+                "Install with: uv sync --extra privacy-filter"
+            )
+            return None
+        except Exception:
+            logger.exception("privacy-filter ONNX pipeline load failed; layer disabled")
+            return None
+
+    def _load_torch_pipeline(self) -> Any:
+        """Load pipeline via PyTorch transformers (GPU-capable, larger footprint)."""
+        try:
+            from transformers import pipeline
+
+            # tqdm's default lock is a multiprocessing.RLock whose init
+            # spawns a resource_tracker subprocess via spawnv_passfds —
+            # that spawn fails with uv's Python 3.12 on macOS. Pre-set
+            # tqdm's class-level lock to a threading.RLock so the mp path
+            # is never taken, regardless of what transformers does internally.
+            _patch_tqdm_lock()
+
+            device = resolve_device(self._config.privacy_filter.device)
+            try:
+                pipe = pipeline(
+                    task="token-classification",
+                    model=self._config.privacy_filter.model_name,
+                    aggregation_strategy="simple",
+                    device=device,
+                )
+                logger.info("privacy-filter pipeline loaded on %s", device)
+                return pipe
+            except Exception:
+                if device == "cpu":
+                    raise
+                # Non-CPU backends (MPS, CUDA) may not support all ops in
+                # this model. Fall back to CPU rather than disabling the layer.
+                logger.warning("privacy-filter failed on %s, retrying on cpu", device)
+                pipe = pipeline(
+                    task="token-classification",
+                    model=self._config.privacy_filter.model_name,
+                    aggregation_strategy="simple",
+                    device="cpu",
+                )
+                logger.info("privacy-filter pipeline loaded on cpu (fallback)")
+                return pipe
+        except ImportError:
+            logger.warning(
+                "transformers not installed; privacy-filter layer disabled. "
+                "Install with: uv sync --extra privacy-filter"
+            )
+            return None
+        except Exception:
+            logger.exception("privacy-filter pipeline load failed; layer disabled")
+            return None
+
+    @staticmethod
+    def _apply_spans(text: str, spans: list[dict]) -> str:
+        """Replace detected spans in reverse offset order to preserve indices."""
+        if not spans:
+            return text
+        for span in sorted(spans, key=lambda s: s["start"], reverse=True):
+            label = span["entity_group"]
+            if label in _SKIP_LABELS:
+                continue
+            placeholder = _LABEL_MAP.get(label, REDACTED)
+            text = text[: span["start"]] + placeholder + text[span["end"] :]
+        return text
+
+    def _apply_whitelist(self, text: str, spans: list[dict]) -> tuple[list[dict], int]:
+        """Drop spans where a whitelisted term explains the whole span.
+
+        Two-layer gate to avoid leaking real PHI that the NER co-flagged
+        with a clinical word (e.g. "李医生开的青霉素" — one ``private_person``
+        span covering both the doctor's name and the drug):
+
+        1. Only ``private_person`` / ``secret`` / ``account_number`` spans
+           are eligible; other labels (address, email, phone, URL) are not
+           known to misfire on clinical terms, so we don't expose them to
+           bypass.
+        2. Strip every whitelisted term from the span text; if the residual
+           is more than ``_WHITELIST_RESIDUAL_MAX`` non-whitespace chars,
+           assume the span carries real PHI alongside the clinical word and
+           keep the span (the original NER decision applies — the whole
+           span gets redacted, drug name included). Below the threshold we
+           treat the span as the NER over-extending around a clinical
+           token and exempt it whole.
+
+        Returns the surviving spans plus the count of dropped ones, surfaced
+        in the audit log so over-broad whitelist entries can be spotted.
+        """
+        whitelist = self._config.privacy_filter.whitelist
+        if not whitelist or not spans:
+            return spans, 0
+        terms = tuple(w.strip().lower() for w in whitelist if w.strip())
+        if not terms:
+            return spans, 0
+        kept: list[dict] = []
+        dropped = 0
+        for span in spans:
+            label = span.get("entity_group", "")
+            if label not in _WHITELIST_LABELS:
+                kept.append(span)
+                continue
+            residual = text[span["start"] : span["end"]].lower()
+            matched = False
+            for t in terms:
+                if t in residual:
+                    matched = True
+                    residual = residual.replace(t, "")
+            residual_chars = sum(1 for c in residual if not c.isspace())
+            if matched and residual_chars <= _WHITELIST_RESIDUAL_MAX:
+                dropped += 1
+                continue
+            kept.append(span)
+        return kept, dropped

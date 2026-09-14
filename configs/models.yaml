@@ -1,0 +1,134 @@
+# Provider catalog. Each entry is a tiny declaration:
+#
+#   id:          our catalog key (stored in Account.provider_id, audit logs).
+#   kind:        local | cloud — PHI guard reads this. PHI may only leave
+#                the box when kind == local.
+#   model:       Two shapes:
+#                  - no base_url → pydantic-ai "<prefix>:<model>" form
+#                    (e.g. "openai:gpt-4o"). The prefix selects wire format
+#                    and which env var holds the API key.
+#                  - with base_url → bare model name (e.g. "qwen3:14b",
+#                    "mlx-community/Llama-3.2-3B"). Forwarded as-is to the
+#                    server.
+#   base_url:    optional — set when the endpoint is self-hosted (Ollama,
+#                MLX, llama.cpp, LM Studio) or a corporate mirror.
+#   api_key_env: optional — env var name for the API key. Only honored
+#                when base_url is set; raises MissingApiKeyError if
+#                declared but unset. Stock cloud entries ignore this and
+#                use pydantic-ai's own env-var conventions.
+#   thinking:    optional reasoning toggle. One of:
+#                  - omitted  → use the vendor's default behavior
+#                  - true     → enable with the vendor's default effort
+#                  - false    → explicitly disable (useful for always-on
+#                               models like Gemini 2.5 where you want it off)
+#                  - "minimal" | "low" | "medium" | "high" | "xhigh"
+#                               → enable at a specific effort level
+#                Forwarded to pydantic-ai's unified ModelSettings.thinking,
+#                which maps to anthropic_thinking / openai_reasoning_effort /
+#                google_thinking_config under the hood. Silently ignored on
+#                models that don't support reasoning.
+#   supports_vision: optional bool (default false). Set true only for
+#                multimodal models that accept image/binary inputs
+#                (BinaryContent). The OCR factory reads this at startup
+#                and raises immediately if a non-vision provider is wired
+#                into the LLM-OCR chain — preventing a silent runtime
+#                failure (e.g. DeepSeek rejecting a JPEG at inference
+#                time). Leave unset / false for pure-text models.
+#
+# Adding a cloud entry only declares the option exists. The admin must
+# still populate the env var before any request actually goes out.
+
+providers:
+  # ---- Local: OpenAI-compatible servers ----
+  - id: ollama
+    kind: local
+    model: "qwen3:14b"
+    base_url: "http://127.0.0.1:11434/v1"
+    # qwen3:14b is a text-only model; supports_vision omitted (defaults false).
+
+  # Local OpenAI-compatible MLX server (omlx) on port 8000 with bearer auth.
+  - id: omlx
+    kind: local
+    model: "Qwen3.6-35B-A3B-oQ4-mtp"
+    base_url: "http://127.0.0.1:8000/v1"
+    api_key_env: OMLX_API_KEY
+    supports_vision: true   # Qwen3.6-35B-A3B supports image/binary inputs
+
+  # Same MLX endpoint, dense 27B variant. MLX server serves one model at a
+  # time — hot-swap the loaded model before using this provider id.
+  - id: omlx-27b
+    kind: local
+    model: "Qwen3.6-27B-oQ4-mtp"
+    base_url: "http://127.0.0.1:8000/v1"
+    api_key_env: OMLX_API_KEY
+    supports_vision: true
+
+  # Example: remote local model behind auth (uncomment + set env var to use).
+  # - id: ollama-remote
+  #   kind: local
+  #   model: "qwen3:14b"
+  #   base_url: "https://ollama.example.internal/v1"
+  #   api_key_env: OLLAMA_REMOTE_KEY
+
+  # ---- Cloud: OpenAI-compatible vendors ----
+  # Env vars (read by pydantic-ai's stock providers, no code in this repo
+  # touches them): OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY,
+  # ALIBABA_API_KEY (or DASHSCOPE_API_KEY), MOONSHOTAI_API_KEY,
+  # OPENROUTER_API_KEY, ANTHROPIC_API_KEY.
+  - id: openai
+    kind: cloud
+    model: "openai:gpt-4o"
+    supports_vision: true   # GPT-4o is multimodal
+  - id: deepseek-v4-flash
+    kind: cloud
+    model: "deepseek:deepseek-v4-flash"
+    # DeepSeek-V4 does not support image inputs; supports_vision omitted (false).
+  - id: deepseek-v4-pro
+    kind: cloud
+    model: "deepseek:deepseek-v4-pro"
+    # DeepSeek-V4 does not support image inputs; supports_vision omitted (false).
+  - id: gemini-2-5-flash
+    kind: cloud
+    model: "google:gemini-2.5-flash"
+    supports_vision: true   # Gemini 2.5 Flash is multimodal
+  - id: gemini-3-1-flash-lite
+    kind: cloud
+    model: "google:gemini-3.1-flash-lite"
+    supports_vision: true   # Gemini 3.1 Flash Lite is multimodal
+  - id: qwen
+    kind: cloud
+    model: "alibaba:qwen-max"
+    # qwen-max (DashScope text endpoint) does not accept image inputs.
+    # Use a Qwen-VL endpoint + base_url if you need cloud vision via Alibaba.
+  - id: kimi
+    kind: cloud
+    model: "moonshotai:kimi-k2-0711-preview"
+    # Kimi-K2 is a text-only model; supports_vision omitted (false).
+  - id: openrouter
+    kind: cloud
+    model: "openrouter:anthropic/claude-sonnet-4.5"
+    supports_vision: true   # Routed to Claude Sonnet which is multimodal
+
+  # ---- Cloud: native Anthropic Messages API ----
+  - id: claude
+    kind: cloud
+    model: "anthropic:claude-sonnet-4-6"
+    supports_vision: true   # All Claude Sonnet/Haiku/Opus models are multimodal
+  - id: claude-haiku-4-5
+    kind: cloud
+    model: "anthropic:claude-haiku-4-5"
+    supports_vision: true
+  - id: claude-opus-4-7
+    kind: cloud
+    model: "anthropic:claude-opus-4-7"
+    supports_vision: true
+
+  # Example: same Claude model with extended thinking turned on. The
+  # orchestrator may still override per-request when a specific question
+  # needs more or less reasoning.
+  # - id: claude-thinking
+  #   kind: cloud
+  #   model: "anthropic:claude-sonnet-4-5"
+  #   thinking: high
+
+default_provider: omlx

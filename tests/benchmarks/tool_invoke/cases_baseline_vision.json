@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "runner": "vision",
+  "cases": {
+    "base_breast_us_strong_empty_ocr": {
+      "revision": 1,
+      "content_sha256": "c8a102998d2266d3e6b2f46f5bb7d662e7cf425ebbb630397b79a6aca379fd82"
+    },
+    "en_breast_us_benign_malignant_normal": {
+      "revision": 1,
+      "content_sha256": "677acfcb31e593004774d7e0d563bcc6fa1c71d74e891245135fb5edd25147ea"
+    },
+    "en_breast_us_explicit_concerning": {
+      "revision": 1,
+      "content_sha256": "fc1730f9ea758dddbab630dd2f143678e4aec28b94e71e3855a8aa4372f63fd0"
+    },
+    "en_chest_ct_explicit_nodule": {
+      "revision": 1,
+      "content_sha256": "a0f4ba3138aca2d1f7dc39c7c21b3fc72dde2cb636d9ef88fb245f2f405418d2"
+    },
+    "en_chest_ct_subtype_question": {
+      "revision": 1,
+      "content_sha256": "6e582b49bc3d2f7befbce602cc4586dba19000c653de2015ace072ff451dea91"
+    },
+    "en_colon_histopath_explicit_biopsy": {
+      "revision": 1,
+      "content_sha256": "76aad8a6e7c13d528f38561b9c20da815f5faa46286836a385e85b91ba1c7e9b"
+    },
+    "en_colon_histopath_subtype_question": {
+      "revision": 1,
+      "content_sha256": "13d34f85007cbc26fe95f6f7444aa55fa5ed1615039063198f7bd4108dbea9fc"
+    },
+    "en_lung_histopath_explicit_biopsy": {
+      "revision": 1,
+      "content_sha256": "cb0152a5af965ef12f0aa973bed305760d07045adb65848787f1cbe9b898c7e2"
+    },
+    "en_lung_histopath_subtype_question": {
+      "revision": 1,
+      "content_sha256": "128045ad7d2d3a34f883aebfe5ea626a446f13480655fa92666a01fb776e6740"
+    },
+    "en_skin_explicit_mole_concern": {
+      "revision": 1,
+      "content_sha256": "1da6af3e81a807c70a761ff0a3720869eb94ee7f8196de431a1105c45490add2"
+    },
+    "en_skin_isic_subtype_question": {
+      "revision": 1,
+      "content_sha256": "eafac7df2a1567035021bdcfaddd60014855d9e837d341ac6ad6bfcf833acc82"
+    },
+    "en_skin_melanoma_question": {
+      "revision": 1,
+      "content_sha256": "ea8ed3a1943bd211dd51aa671c078171a669dfdaadb2462c4cac511aaf521542"
+    },
+    "fp_chest_ct_modality_mismatch_us": {
+      "revision": 1,
+      "content_sha256": "f574ce8ed551a14bd0da4663b84665b24ecc8c2cd12a801802ee37c70e1a4573"
+    },
+    "fp_chest_ct_ocr_report": {
+      "revision": 1,
+      "content_sha256": "f3a35e563db314e6bec9c2ad749b6c9b6d72f0803c7af1694ba03b7eb41a3ac7"
+    },
+    "fp_colon_histopath_knowledge_only": {
+      "revision": 1,
+      "content_sha256": "365e061887925a87cd149527e2f8b9687691738ff415b89f82b3d7171e4f47fd"
+    },
+    "fp_colon_histopath_non_medical": {
+      "revision": 1,
+      "content_sha256": "b0b4b5ae0f6f9a505c320108b9837f5b3c82447bd92d59f81f6e160747c729a1"
+    },
+    "fp_colon_histopath_wrong_organ_in_prompt": {
+      "revision": 1,
+      "content_sha256": "1dc1d1d4d4785336bb72fd510fc904a61766600e90d2e816875603830058fc8c"
+    },
+    "fp_image_attached_unrelated_question": {
+      "revision": 1,
+      "content_sha256": "be80067abd07599de87d82da56604036024565cd705bf40d316d21cf52d26772"
+    },
+    "fp_knowledge_question_no_image": {
+      "revision": 1,
+      "content_sha256": "384911081597eb6290c4ab54f2ee12450d1d2c00daae534dba13b51d3b412590"
+    },
+    "fp_lung_histopath_knowledge_only": {
+      "revision": 1,
+      "content_sha256": "dfd2fc132c21fecb5225b4c4a429d9b173b11d7eda0200f5b7b7aa50f42f16c5"
+    },
+    "fp_lung_histopath_ocr_report": {
+      "revision": 1,
+      "content_sha256": "eff78eff2931d5dc4c9f15b51cd4062b794976672539a708533a33c7e1606115"
+    },
+    "fp_lung_histopath_wrong_modality_ct": {
+      "revision": 1,
+      "content_sha256": "b5a3e70ef70b15f199146b7a0a260f0d77675aaea4349b1d9369810f929f774b"
+    },
+    "fp_modality_mismatch_explicit": {
+      "revision": 1,
+      "content_sha256": "aef508f323e8214348bfe65133462ac5168ea81e4f2e951da8f54486e4aea4d2"
+    },
+    "fp_non_medical_pet_photo": {
+      "revision": 1,
+      "content_sha256": "52b5988f2009267c418af593b5c093d377f1d13ccda208eff4d4e10df2a62b37"
+    },
+    "fp_ocr_report_dominant": {
+      "revision": 1,
+      "content_sha256": "8668ffbbaccb1c23735b9a3c74974b0758078a412c599491d33ca70c3884a49f"
+    },
+    "fp_screenshot_of_text": {
+      "revision": 1,
+      "content_sha256": "3ec34e9726f2afb7388c7243d51fc6872f7ddaa82881e0a5ef99236d2b29ca47"
+    },
+    "fp_skin_knowledge_only_dermoscopy": {
+      "revision": 1,
+      "content_sha256": "551fe0c7cc9cfeccb668df1a971d3b5e4335b424a2860b8f5d9b7b4cedfe0bb0"
+    },
+    "fp_skin_modality_mismatch_us": {
+      "revision": 1,
+      "content_sha256": "751850f51ebb4640296986a7f77c674d148cc726b1529c7079065c174c12a1e1"
+    },
+    "fp_skin_non_medical_arm_photo": {
+      "revision": 1,
+      "content_sha256": "7b9d00ea993bf9a72a2702ace7f19d8774ed59f46121576de4ed8a00c6535307"
+    },
+    "hard_breast_us_vague_empty_ocr": {
+      "revision": 1,
+      "content_sha256": "4e1117c53b5ab1fa65f82be02990a8a3d2f23fe4b0672229bc83a56321e0812d"
+    },
+    "hard_chest_ct_caption_ocr": {
+      "revision": 1,
+      "content_sha256": "61775a3ead20fc5f241e04cf7014c4b4046569c3add5b70ef4f5a804aaceb0fe"
+    },
+    "hard_chest_ct_implicit_anxious": {
+      "revision": 1,
+      "content_sha256": "68f1596b07953033deda9ac21b73fb48637444faea4128c79a67034f82b975ea"
+    },
+    "hard_chest_ct_watermark_ocr": {
+      "revision": 1,
+      "content_sha256": "be35ced210fee0c93d9cdf11e970e8e76150758e5d71bfd0c8301225888aef21"
+    },
+    "hard_colon_histopath_implicit_followup": {
+      "revision": 1,
+      "content_sha256": "93f7ba80385d2acbb81983aaddad4761e787fa8f3f18cac5aad8a2dd6107018a"
+    },
+    "hard_implicit_concern_zh": {
+      "revision": 1,
+      "content_sha256": "db0439949dbc08ad5c95a99473e7c71cd26d0de5dff8590a4a7521fcc3598c48"
+    },
+    "hard_implicit_routine_check_en": {
+      "revision": 1,
+      "content_sha256": "f3f3ad2ec7329e6977fc51e099bb11d539e5793d29efc13c4716367e8c9adb43"
+    },
+    "hard_lung_histopath_implicit_pathologist": {
+      "revision": 1,
+      "content_sha256": "e2a032a00b610c8ca1ac8cd8fd797b7e91fbea3a010b9c5f154961651acf2eee"
+    },
+    "hard_modality_subtle_mismatch": {
+      "revision": 1,
+      "content_sha256": "e50fcb4917f07b24de127696140af0d1af47491b942e191ffa5b93121e785f4c"
+    },
+    "hard_ocr_report_with_followup": {
+      "revision": 1,
+      "content_sha256": "c3b7122c296860f92fe8ebb443da6100e909f8cbd34a28477978515b8cab89cc"
+    },
+    "hard_skin_implicit_change_zh": {
+      "revision": 1,
+      "content_sha256": "2e3726f57a390b20352a422badb87ea5af2952e610417fe8b8cce3b32faee121"
+    },
+    "hard_skin_implicit_observe_en": {
+      "revision": 1,
+      "content_sha256": "bca55757bebadf0e15611c38db4f9def194ed96cb6a6fdf7b2e036c98c9d6efb"
+    },
+    "hard_skin_vague_clarification_zh": {
+      "revision": 1,
+      "content_sha256": "55a1aa34474ad832f38618e0c3310059c3cf6941205a5ff071936fc712ba4560"
+    },
+    "rule5_modality_unknown_clear_disease_cue": {
+      "revision": 1,
+      "content_sha256": "0b49e9fdd5edb907a4b1c4941c7a896c8893be217ab73f187267a207c2b0a868"
+    },
+    "rule5_modality_unknown_vague_prompt": {
+      "revision": 1,
+      "content_sha256": "1114869f0c63e7582ac60c8a47655cff21bd0c89e4de4bed978c40c4d2fe342c"
+    },
+    "rule6_bare_tag_breast_cue": {
+      "revision": 1,
+      "content_sha256": "02ca41982b8c893c1e5a4198667e7c691a2a3300db96bfe32b89863522125cf2"
+    },
+    "rule6_bare_tag_chest_ct_cue": {
+      "revision": 1,
+      "content_sha256": "c3b0236b1cf3b7e33bbdbc83edc2bd7920c739c762b05c7946a446b47d206879"
+    },
+    "rule6_bare_tag_non_medical_prompt": {
+      "revision": 1,
+      "content_sha256": "8d7ed802c5d8cfe147dd04731b02fd085f55606505ed9c88f9959300429a8eea"
+    },
+    "rule6_bare_tag_vague_prompt": {
+      "revision": 1,
+      "content_sha256": "a4660ef0eef196e7504c1a27028f26680821800b9338b2d6f9cac4ffa3309509"
+    },
+    "zh_breast_us_anxious": {
+      "revision": 1,
+      "content_sha256": "7f8428203f91aef5a50bd39b8abcf35afe61116b149863a764b99f1fe38f46fa"
+    }
+  }
+}

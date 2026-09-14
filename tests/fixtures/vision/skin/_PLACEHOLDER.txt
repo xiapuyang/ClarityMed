@@ -1,0 +1,13 @@
+Empty by design — see ../README.md for sourcing.
+
+Operators populating this directory should source from:
+
+- ISIC Archive (https://www.isic-archive.com/) — most images are CC0
+  with explicit `dataset.gallery` licensing. Filter by `cc0=true`
+  before downloading.
+- Kaggle `nodoubttome/skin-cancer9-classesisic` mirrors a CC0 ISIC
+  subset; verify the per-image license tag before committing.
+
+Each committed image MUST be sourced from a public-domain or CC0
+archive. Tests that need this fixture call `pytest.skip` when only the
+placeholder is present.

@@ -1,0 +1,69 @@
+{
+  "app": {
+    "title": "ClarityMed Admin",
+    "loading": "Loading…",
+    "error": "Something went wrong.",
+    "retry": "Retry",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "confirm": "Confirm",
+    "restart_required": "Restart the backend to apply changes."
+  },
+  "nav": {
+    "overview": "Overview",
+    "rag": "RAG Corpus",
+    "benchmark": "Benchmark",
+    "models": "Models",
+    "servers": "Servers",
+    "users": "Users",
+    "config": "System Config",
+    "i18n": "Localization",
+    "audit": "Audit Log",
+    "jobs": "Jobs"
+  },
+  "forbidden": {
+    "title": "Admin only",
+    "body": "Your account does not have admin access. Sign in as an admin or return to the chat home."
+  },
+  "lang": {
+    "en": "English",
+    "zh": "中文"
+  },
+  "overview": {
+    "title": "Overview"
+  },
+  "rag": {
+    "title": "RAG Corpus"
+  },
+  "benchmark": {
+    "title": "Benchmark"
+  },
+  "models": {
+    "title": "Models",
+    "tabs": {
+      "catalogs": "Catalogs",
+      "versions": "Versions & Flow",
+      "secrets": "Secrets"
+    }
+  },
+  "servers": {
+    "title": "Servers"
+  },
+  "users": {
+    "title": "Users"
+  },
+  "config": {
+    "title": "System Config"
+  },
+  "i18nPage": {
+    "title": "Localization"
+  },
+  "audit": {
+    "title": "Audit Log"
+  },
+  "jobs": {
+    "title": "Jobs"
+  }
+}

@@ -1,0 +1,334 @@
+name: update_profile_field_tool
+description: |
+  Tool description shown to the LLM for ``update_profile_field`` — write
+  one structural profile column. Distinct from the three save_* fact
+  tools: those upsert a row, this one updates a column on the single
+  Profile row.
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. Enumerates the whitelist of writable fields,
+      reinforces "only when the user volunteered the value", and bans
+      proactive solicitation of passive fields.
+    languages:
+      en: |
+        Update one column on the user's Profile row.
+
+        Allowed fields (anything else is rejected):
+          - ``sex``, ``birth_date``
+          - ``weight_kg``, ``height_cm``
+          - ``residence``, ``birthplace``
+          - ``marital_status``, ``has_children``
+          - ``current_occupation``, ``past_occupations``
+
+        Use this only when the user volunteered the value in this turn
+        or stated a clear update ("my weight is now 72 kg", "I moved
+        to Berlin in March"). Do not call this tool just because a
+        column is empty — passive fields stay empty until the user
+        offers them.
+
+        Field notes:
+          - ``field`` must be one of the whitelist values verbatim
+            (snake_case, exactly as above). Any other value is
+            rejected by the schema.
+          - ``value`` is permissive at the boundary: string for
+            ``residence`` / ``birthplace``, float for ``weight_kg`` /
+            ``height_cm``, bool for ``has_children``, ISO date string
+            ``YYYY-MM-DD`` for ``birth_date``. The tool body coerces
+            to the Profile column type, so ``"72"`` works as well as
+            ``72.0`` for ``weight_kg``.
+          - For ``past_occupations``, pass a comma-separated string —
+            the tool body splits and stores as a list.
+
+        One call per field. To update weight and height in one turn,
+        propose two calls.
+      zh: |
+        更新用户 Profile 表的一列。
+
+        允许的字段（其余一律拒绝）：
+          - ``sex`` / ``birth_date``
+          - ``weight_kg`` / ``height_cm``
+          - ``residence`` / ``birthplace``
+          - ``marital_status`` / ``has_children``
+          - ``current_occupation`` / ``past_occupations``
+
+        **仅当**用户本回合主动提到该值，或明确更新（"我现在体重 72 kg"、
+        "我三月搬到柏林了"）时使用。**不要**因为某列为空就主动调用——
+        被动字段保持空白，直到用户自己提供。
+
+        字段说明：
+          - ``field`` 必须一字不差地是白名单里的值（snake_case，与上面
+            完全一致）。其他值会被 schema 拒绝。
+          - ``value`` 在入口处宽松：``residence`` / ``birthplace`` 用字符串；
+            ``weight_kg`` / ``height_cm`` 用 float；``has_children`` 用 bool；
+            ``birth_date`` 用 ISO 日期串 ``YYYY-MM-DD``。工具体会把它转成
+            Profile 列的目标类型，所以 ``"72"`` 和 ``72.0`` 对 ``weight_kg``
+            都行。
+          - ``past_occupations`` 传英文逗号分隔的字符串，工具体会拆分
+            并存为列表。
+
+        一次调用对应一个字段。同一回合要更新体重和身高，发起两次调用。
+  - version: v2
+    created_at: 2026-06-12
+    notes: |
+      Add explicit correct/wrong call structure examples to prevent
+      models from passing the field name as the argument key instead
+      of using the field/value pair format.
+    languages:
+      en: |
+        Update one column on the user's Profile row.
+
+        THIS TOOL ALWAYS TAKES EXACTLY TWO ARGUMENTS: "field" and "value".
+        Do NOT pass the column name as a key — always nest it inside "field".
+
+          CORRECT:  field="birth_date"  value="1989-01-01"
+          WRONG:    birth_date="1989-01-01"
+
+          CORRECT:  field="weight_kg"   value=72.5
+          WRONG:    weight_kg=72.5
+
+        Allowed values for "field" (anything else is rejected):
+          - ``sex``, ``birth_date``
+          - ``weight_kg``, ``height_cm``
+          - ``residence``, ``birthplace``
+          - ``marital_status``, ``has_children``
+          - ``current_occupation``, ``past_occupations``
+
+        Use this only when the user volunteered the value in this turn
+        or stated a clear update ("my weight is now 72 kg", "I moved
+        to Berlin in March"). Do not call this tool just because a
+        column is empty — passive fields stay empty until the user
+        offers them.
+
+        Value format by field:
+          - ``birth_date``: ISO date string  YYYY-MM-DD
+          - ``weight_kg``, ``height_cm``: number (float or int, e.g. 72.5)
+          - ``has_children``: boolean (true / false)
+          - ``sex``, ``residence``, ``birthplace``, ``marital_status``,
+            ``current_occupation``: plain string
+          - ``past_occupations``: comma-separated string; the tool splits it
+
+        One call per field. Two fields in one turn = two calls.
+      zh: |
+        更新用户 Profile 表的一列。
+
+        此工具**始终只接受两个参数**："field" 和 "value"。
+        不要把字段名当 key 直接传——必须放在 "field" 参数里。
+
+          正确：  field="birth_date"  value="1989-01-01"
+          错误：  birth_date="1989-01-01"
+
+          正确：  field="weight_kg"   value=72.5
+          错误：  weight_kg=72.5
+
+        "field" 允许的值（其余一律拒绝）：
+          - ``sex`` / ``birth_date``
+          - ``weight_kg`` / ``height_cm``
+          - ``residence`` / ``birthplace``
+          - ``marital_status`` / ``has_children``
+          - ``current_occupation`` / ``past_occupations``
+
+        **仅当**用户本回合主动提到该值，或明确更新（"我现在体重 72 kg"、
+        "我三月搬到柏林了"）时使用。不要因为某列为空就主动调用——
+        被动字段保持空白，直到用户自己提供。
+
+        各字段的 value 格式：
+          - ``birth_date``：ISO 日期串 YYYY-MM-DD
+          - ``weight_kg`` / ``height_cm``：数字（float 或 int，如 72.5）
+          - ``has_children``：布尔值（true / false）
+          - ``sex`` / ``residence`` / ``birthplace`` / ``marital_status`` /
+            ``current_occupation``：普通字符串
+          - ``past_occupations``：英文逗号分隔字符串，工具体会拆分
+
+        一次调用对应一个字段。同一回合要更新两个字段，发起两次调用。
+  - version: v3
+    created_at: 2026-06-12
+    notes: |
+      Add age → birth_year inference rule: when the user states their age
+      instead of a full birth date, compute an approximate birth_date from
+      the current year and store it.
+    languages:
+      en: |
+        Update one column on the user's Profile row.
+
+        THIS TOOL ALWAYS TAKES EXACTLY TWO ARGUMENTS: "field" and "value".
+        Do NOT pass the column name as a key — always nest it inside "field".
+
+          CORRECT:  field="birth_date"  value="1989-01-01"
+          WRONG:    birth_date="1989-01-01"
+
+          CORRECT:  field="weight_kg"   value=72.5
+          WRONG:    weight_kg=72.5
+
+        Allowed values for "field" (anything else is rejected):
+          - ``sex``, ``birth_date``
+          - ``weight_kg``, ``height_cm``
+          - ``residence``, ``birthplace``
+          - ``marital_status``, ``has_children``
+          - ``current_occupation``, ``past_occupations``
+
+        Use this only when the user volunteered the value in this turn
+        or stated a clear update ("my weight is now 72 kg", "I moved
+        to Berlin in March"). Do not call this tool just because a
+        column is empty — passive fields stay empty until the user
+        offers them.
+
+        Value format by field:
+          - ``birth_date``: ISO date string  YYYY-MM-DD
+              Age inference: if the user states their age N ("I'm 35")
+              but not their birth date, compute birth_year = current_year − N
+              and call with value="{birth_year}-01-01". Use the full date
+              verbatim when the user provides it (e.g. "born 1989-05-02").
+              A specific date takes precedence over an age-derived estimate —
+              if the profile already has a full date, do not overwrite it
+              with a year-only approximation.
+          - ``weight_kg``, ``height_cm``: number (float or int, e.g. 72.5)
+          - ``has_children``: boolean (true / false)
+          - ``sex``, ``residence``, ``birthplace``, ``marital_status``,
+            ``current_occupation``: plain string
+          - ``past_occupations``: comma-separated string; the tool splits it
+
+        One call per field. Two fields in one turn = two calls.
+      zh: |
+        更新用户 Profile 表的一列。
+
+        此工具**始终只接受两个参数**："field" 和 "value"。
+        不要把字段名当 key 直接传——必须放在 "field" 参数里。
+
+          正确：  field="birth_date"  value="1989-01-01"
+          错误：  birth_date="1989-01-01"
+
+          正确：  field="weight_kg"   value=72.5
+          错误：  weight_kg=72.5
+
+        "field" 允许的值（其余一律拒绝）：
+          - ``sex`` / ``birth_date``
+          - ``weight_kg`` / ``height_cm``
+          - ``residence`` / ``birthplace``
+          - ``marital_status`` / ``has_children``
+          - ``current_occupation`` / ``past_occupations``
+
+        **仅当**用户本回合主动提到该值，或明确更新（"我现在体重 72 kg"、
+        "我三月搬到柏林了"）时使用。不要因为某列为空就主动调用——
+        被动字段保持空白，直到用户自己提供。
+
+        各字段的 value 格式：
+          - ``birth_date``：ISO 日期串 YYYY-MM-DD
+              年龄推算：如果用户说了年龄 N（如"我 35 岁"）但没说具体生日，
+              则计算 birth_year = 当前年份 − N，以 value="{birth_year}-01-01"
+              调用工具。若用户提供了完整日期（如"1989-05-02 出生"），直接用
+              原值。具体日期优先于年龄推算——如果 Profile 中已有完整日期，
+              不要用仅含年份的估算覆盖它。
+          - ``weight_kg`` / ``height_cm``：数字（float 或 int，如 72.5）
+          - ``has_children``：布尔值（true / false）
+          - ``sex`` / ``residence`` / ``birthplace`` / ``marital_status`` /
+            ``current_occupation``：普通字符串
+          - ``past_occupations``：英文逗号分隔字符串，工具体会拆分
+
+        一次调用对应一个字段。同一回合要更新两个字段，发起两次调用。
+  - version: v4
+    created_at: 2026-06-12
+    notes: |
+      Add dedup guard: check [Patient profile] block before calling to skip
+      redundant invocations when the field already holds the same value.
+      Special rule: do not overwrite a precise birth_date with a year-only
+      approximation (YYYY-01-01).
+    languages:
+      en: |
+        Update one column on the user's Profile row.
+
+        THIS TOOL ALWAYS TAKES EXACTLY TWO ARGUMENTS: "field" and "value".
+        Do NOT pass the column name as a key — always nest it inside "field".
+
+          CORRECT:  field="birth_date"  value="1989-01-01"
+          WRONG:    birth_date="1989-01-01"
+
+          CORRECT:  field="weight_kg"   value=72.5
+          WRONG:    weight_kg=72.5
+
+        Before calling: check the ``[Patient profile]`` block in the current
+        context. Skip this call if:
+          - The field already holds the same value (numeric coercion applies:
+            ``"72.5"`` and ``72.5`` are the same).
+          - The field is ``birth_date``, the profile already holds a precise
+            date (month or day ≠ 1), and the new value is a year-only
+            approximation (``YYYY-01-01``). Do not downgrade precision.
+        The tool returns ``{"ok": false, "reason": "no_change"}`` in these
+        cases, so skip proactively to avoid a wasted round-trip.
+
+        Allowed values for "field" (anything else is rejected):
+          - ``sex``, ``birth_date``
+          - ``weight_kg``, ``height_cm``
+          - ``residence``, ``birthplace``
+          - ``marital_status``, ``has_children``
+          - ``current_occupation``, ``past_occupations``
+
+        Use this only when the user volunteered the value in this turn
+        or stated a clear update ("my weight is now 72 kg", "I moved
+        to Berlin in March"). Do not call this tool just because a
+        column is empty — passive fields stay empty until the user
+        offers them.
+
+        Value format by field:
+          - ``birth_date``: ISO date string  YYYY-MM-DD
+              Age inference: if the user states their age N ("I'm 35")
+              but not their birth date, compute birth_year = current_year − N
+              and call with value="{birth_year}-01-01". Use the full date
+              verbatim when the user provides it (e.g. "born 1989-05-02").
+              A specific date takes precedence over an age-derived estimate —
+              if the profile already has a full date, do not overwrite it
+              with a year-only approximation.
+          - ``weight_kg``, ``height_cm``: number (float or int, e.g. 72.5)
+          - ``has_children``: boolean (true / false)
+          - ``sex``, ``residence``, ``birthplace``, ``marital_status``,
+            ``current_occupation``: plain string
+          - ``past_occupations``: comma-separated string; the tool splits it
+
+        One call per field. Two fields in one turn = two calls.
+      zh: |
+        更新用户 Profile 表的一列。
+
+        此工具**始终只接受两个参数**："field" 和 "value"。
+        不要把字段名当 key 直接传——必须放在 "field" 参数里。
+
+          正确：  field="birth_date"  value="1989-01-01"
+          错误：  birth_date="1989-01-01"
+
+          正确：  field="weight_kg"   value=72.5
+          错误：  weight_kg=72.5
+
+        调用前：检查当前上下文里的 ``[Patient profile]`` 块。遇到以下情况
+        **跳过此次调用**：
+          - 该字段已经保存了相同的值（数字宽松匹配：``"72.5"`` 与 ``72.5``
+            视为相同）。
+          - 字段为 ``birth_date``，Profile 中已有精确日期（月份或日不为 1），
+            而新值是仅含年份的估算（``YYYY-01-01``）。不要降低精度。
+        这些情况工具会返回 ``{"ok": false, "reason": "no_change"}``，提前
+        跳过可避免浪费一次往返。
+
+        "field" 允许的值（其余一律拒绝）：
+          - ``sex`` / ``birth_date``
+          - ``weight_kg`` / ``height_cm``
+          - ``residence`` / ``birthplace``
+          - ``marital_status`` / ``has_children``
+          - ``current_occupation`` / ``past_occupations``
+
+        **仅当**用户本回合主动提到该值，或明确更新（"我现在体重 72 kg"、
+        "我三月搬到柏林了"）时使用。不要因为某列为空就主动调用——
+        被动字段保持空白，直到用户自己提供。
+
+        各字段的 value 格式：
+          - ``birth_date``：ISO 日期串 YYYY-MM-DD
+              年龄推算：如果用户说了年龄 N（如"我 35 岁"）但没说具体生日，
+              则计算 birth_year = 当前年份 − N，以 value="{birth_year}-01-01"
+              调用工具。若用户提供了完整日期（如"1989-05-02 出生"），直接用
+              原值。具体日期优先于年龄推算——如果 Profile 中已有完整日期，
+              不要用仅含年份的估算覆盖它。
+          - ``weight_kg`` / ``height_cm``：数字（float 或 int，如 72.5）
+          - ``has_children``：布尔值（true / false）
+          - ``sex`` / ``residence`` / ``birthplace`` / ``marital_status`` /
+            ``current_occupation``：普通字符串
+          - ``past_occupations``：英文逗号分隔字符串，工具体会拆分
+
+        一次调用对应一个字段。同一回合要更新两个字段，发起两次调用。

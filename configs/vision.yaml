@@ -1,0 +1,223 @@
+# Vision feature — disease detection from medical images.
+#
+# Schema lives at src/claritymed/core/vision/schemas.py. A typo here
+# fails loud at load (catalog + cross-reference pattern mirrors
+# configs/symptoms.yaml).
+#
+# Disease identity convention: a `disease` here is a two-dimensional
+# coordinate — `(condition × modality)`. Same condition under a
+# different modality (e.g. lung cancer on chest CT vs lung cancer on
+# histopathology) gets its OWN disease entry with its own disease_id,
+# its own i18n display name, and its own model(s). Two entries with
+# the same (condition × modality) coordinate must NOT exist — when
+# multiple checkpoints target the same coordinate (e.g. BUSI and the
+# breast_us_kaggle alternate), they share one disease_id and the
+# disease's `flow:` array enumerates the **fallback-only** order. The
+# primary model lives in `primary_model_id` and is auto-prepended at
+# runtime (DiseaseSpec.effective_flow); listing it again in `flow`
+# fails validation.
+#
+# Kill switch: set `diseases[0].enabled: false` to ship the file with
+# the plugin disabled. Removing this file entirely takes the plugin
+# out of the agent's toolset.
+#
+# `manifest_sha256` is the SHA-256 of the model's manifest.json (the
+# config-side root of the two-level integrity chain — KTD-V7). The
+# vision server hashes the manifest at startup and refuses to load on
+# mismatch. The placeholder below is overwritten by the BUSI training
+# pipeline (Unit 6 — `claritymed-vision-train-breast-cancer-ultrasound`);
+# pre-train, keep the disease disabled.
+
+diseases:
+  - id: breast_cancer_ultrasound
+    enabled: true                               # promoted artifact present; deploy pipeline verified
+    primary_model_id: breast_busi_unet_v1
+    flow: [breast_us_kaggle_resnet50_v1]         # fallbacks only; primary auto-prepended. Same accepted_modality required.
+    cancer_class: true                          # enables cancer_status + clinical_action post-processing
+    intent_hints_i18n_key: vision.intent.breast_cancer_ultrasound
+  # Chest CT (lung cancer) — scaffolding landed in
+  # src/claritymed/ingest/vision/chest_ct/. Disabled until a trained
+  # model + manifest are promoted; flip enabled to true after the train
+  # pipeline (mirrored on BUSI's) produces a versioned artifact under
+  # ~/.claritymed/models/vision/lung_cancer_chest_ct/.
+  - id: lung_cancer_chest_ct
+    enabled: true
+    primary_model_id: lung_chest_ct_resnet50_v1
+    flow: []                                    # no fallbacks declared yet
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.lung_cancer_chest_ct
+  # Skin lesion (ISIC 9-class dermoscopy) — scaffolding landed in
+  # src/claritymed/ingest/vision/skin_lesion/. Disabled until a trained
+  # model + manifest are promoted; flip enabled to true after the train
+  # pipeline (mirrored on chest_ct's) produces a versioned artifact under
+  # ~/.claritymed/models/vision/skin_cancer_dermoscopy/.
+  - id: skin_cancer_dermoscopy
+    enabled: true
+    primary_model_id: skin_isic_resnet50_v1
+    flow: []                                    # no fallbacks declared yet
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.skin_cancer_dermoscopy
+  # Lung histopathology (LC25000 subset) — scaffolding landed in
+  # src/claritymed/ingest/vision/lung_histopath/. Trains on LC25000's
+  # lung_image_sets/ subdir only (3 classes: adenocarcinoma, normal,
+  # squamous_cell_carcinoma). The Modality literal in
+  # core/medical_clip/schemas.py and the BiomedCLIP candidate prompts
+  # in configs/medical_clip.yaml were extended with `histopathology`
+  # so the upstream tagger has a target. Stays disabled until the
+  # train pipeline produces a real artifact + manifest under
+  # ~/.claritymed/models/vision/lung_cancer_histopathology/.
+  - id: lung_cancer_histopathology
+    enabled: true
+    primary_model_id: lung_histopath_resnet50_v1
+    flow: []                                    # no fallbacks declared yet
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.lung_cancer_histopathology
+  # Colon histopathology (LC25000 subset) — scaffolding landed in
+  # src/claritymed/ingest/vision/colon_histopath/. Trains on LC25000's
+  # colon_image_sets/ subdir only (2 classes: adenocarcinoma, normal).
+  # Same upstream archive as lung_histopath; the two share
+  # `histopathology` modality but get separate models because lung and
+  # colon biopsies are clinically independent.
+  - id: colon_cancer_histopathology
+    enabled: true
+    primary_model_id: colon_histopath_resnet50_v1
+    flow: []                                    # no fallbacks declared yet
+    cancer_class: true
+    intent_hints_i18n_key: vision.intent.colon_cancer_histopathology
+  # Chest X-ray pneumonia (Kermany pediatric) — scaffolding landed in
+  # src/claritymed/ingest/vision/chest_xray_pneumonia/. The
+  # ``RESNET50_V1`` ModelSpec is intentionally tuned for pediatric
+  # chest X-rays (Kermany / Guangzhou Women & Children's, 5,856
+  # images) and is primarily used as a **drift probe** against RSNA
+  # adult pneumonia (see ``models/resnet50_v1.py`` docstring). Starts
+  # disabled — flip true only after you've explicitly decided that
+  # serving a pediatric-tuned model for clinical inference is OK in
+  # context. ``cancer_class: false`` because pneumonia is
+  # infectious/inflammatory, not oncology — no cancer_status_mapping
+  # required on the manifest.
+  - id: chest_xray_pneumonia
+    enabled: false
+    primary_model_id: chest_xray_pneumonia_resnet50_v1
+    flow: []                                    # no fallbacks declared yet
+    cancer_class: false
+    intent_hints_i18n_key: vision.intent.chest_xray_pneumonia
+
+servers:
+  - id: local_default
+    base_url: http://127.0.0.1:8085             # loopback-only — KTD-V8
+    expected_ms: 800
+    health_check_interval_s: 300
+  # Multi-server example (deferred to v1.x when a second server actually lands):
+  # - id: gpu_box
+  #   base_url: http://10.0.0.4:8085
+  #   expected_ms: 250
+
+models:
+  - id: breast_busi_unet_v1
+    disease_id: breast_cancer_ultrasound
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: ultrasound               # KTD-V3 hard gate
+    weights_subpath: vision/breast_cancer_ultrasound/breast_busi_unet_v1__20260620T205819Z
+    # Placeholder — replaced by Unit 6's train pipeline. Validator accepts any
+    # 64-char hex so the file shape is valid; the server's startup check is
+    # what catches a real mismatch.
+    manifest_sha256: "0d6c23adf21427aa492a25df2b472b69a7e97d7f72786efe2403ef63d7da36e7"
+    expected_ms: 800
+  # Alternative breast-US training source (Kaggle vuppalaadithyasairam
+  # ~9000 augmented 2-class images, no `normal` class). Scaffolded in
+  # src/claritymed/ingest/vision/breast_us_kaggle/ as a fallback for
+  # the breast_cancer_ultrasound disease — same disease_id, same
+  # accepted_modality, alternate training data and model checkpoint.
+  # Wired as flow[1] for breast_cancer_ultrasound: the orchestrator
+  # falls through to it when the BUSI primary returns low confidence
+  # or is unreachable within the per-call budget.
+  - id: breast_us_kaggle_resnet50_v1
+    disease_id: breast_cancer_ultrasound
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: ultrasound               # KTD-V3 hard gate
+    weights_subpath: vision/breast_cancer_ultrasound/breast_us_kaggle_resnet50_v1__20260621T183047Z
+    manifest_sha256: "64e41e9163fb86ad214957126bdc9e898d85f151af322d27ba485e1c06d4c7f3"
+    expected_ms: 700
+  # Chest CT model entry — paired with the lung_cancer_chest_ct disease
+  # above. Both stay disabled until the chest_ct training pipeline produces
+  # a real manifest; the placeholder sha is the all-zeros 64-hex string so
+  # an accidental enabled=true on the disease side fails the integrity check
+  # loudly instead of silently mounting unverified weights.
+  - id: lung_chest_ct_resnet50_v1
+    disease_id: lung_cancer_chest_ct
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: ct                       # KTD-V3 hard gate
+    weights_subpath: vision/lung_cancer_chest_ct/lung_chest_ct_resnet50_v1__20260616T141103Z
+    manifest_sha256: "848d597e383fb3d98cef8c3e12aec6bc004425c1a1ccca50ca38a61f1ba4fbff"
+    expected_ms: 600
+  # Skin lesion (ISIC 9-class) model entry — paired with the
+  # skin_cancer_dermoscopy disease above. Stays bound to the disabled
+  # disease until the skin_lesion training pipeline produces a real
+  # manifest; until then the all-zeros placeholder sha fails the
+  # integrity check loudly if the disease is flipped on.
+  - id: skin_isic_resnet50_v1
+    disease_id: skin_cancer_dermoscopy
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: dermoscopy               # KTD-V3 hard gate
+    weights_subpath: vision/skin_cancer_dermoscopy/skin_isic_resnet50_v1__20260617T024228Z
+    manifest_sha256: "dad50c186d791c8e8b00356db15d43d79b39c0c07b35c1d200e6e9c01e3ae49c"
+    expected_ms: 600
+  # Lung histopathology model entry — paired with the
+  # lung_cancer_histopathology disease above. Stays bound to the
+  # disabled disease until the lung_histopath training pipeline
+  # produces a real manifest; until then the all-zeros placeholder sha
+  # fails the integrity check loudly if the disease is flipped on.
+  - id: lung_histopath_resnet50_v1
+    disease_id: lung_cancer_histopathology
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: histopathology           # KTD-V3 hard gate
+    weights_subpath: vision/lung_cancer_histopathology/lung_histopath_resnet50_v1__20260617T033755Z
+    manifest_sha256: "b7893aa07652d0aa07d10b0ebf693f5e20002cd2c217f6e5cd6339efb335a5b7"
+    expected_ms: 600
+  # Colon histopathology model entry — paired with the
+  # colon_cancer_histopathology disease above. Same scaffolding-only
+  # status as lung_histopath above.
+  - id: colon_histopath_resnet50_v1
+    disease_id: colon_cancer_histopathology
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: histopathology           # KTD-V3 hard gate
+    weights_subpath: vision/colon_cancer_histopathology/colon_histopath_resnet50_v1__20260617T040909Z
+    manifest_sha256: "90555189f6c08bb8fc9c0982e62f52e5264880576fb2801f3fdee65e835060d9"
+    expected_ms: 600
+  # Chest X-ray pneumonia classifier (Kermany pediatric, 2-class:
+  # normal / pneumonia). Paired with the chest_xray_pneumonia disease
+  # above; disease is disabled until clinical use is intentionally
+  # authorised. The placeholder weights_subpath / manifest_sha256
+  # values below are overwritten by the deploy phase with the real
+  # version_tag + hash; until then the all-zeros sha fails the
+  # integrity check loudly if the disease is flipped on.
+  - id: chest_xray_pneumonia_resnet50_v1
+    disease_id: chest_xray_pneumonia
+    server_id: local_default
+    framework: pytorch
+    accepted_modality: xray                     # KTD-V3 hard gate
+    weights_subpath: vision/chest_xray_pneumonia/chest_xray_pneumonia_resnet50_v1__20260618T145634Z
+    manifest_sha256: "c021ea94cf83896e5391eb47b382640163c940c4ac23f29bbe9d7077835daead"
+    expected_ms: 600
+
+tool:
+  total_budget_ms: 20000                        # per LLM tool call, all fallbacks summed
+  fallback_safety_factor: 1.5                   # skip secondary if remaining < expected_ms * 1.5
+  catalog_refresh_seconds: 300
+  confirm_before_run: true                      # set false for headless e2e
+  shadow_inference_on_report_override: false    # KTD-V9 — default OFF; opt-in only for offline-eval runs
+  top_k: 3                                      # labels surfaced in LLMDetectionPayload after result transform
+
+# OCR-report override (KTD-V6) — when the image already contains a clinician's
+# report, the vision tool stays out of the way and the LLM uses the OCR text.
+ocr_report:
+  min_chars: 200
+  markers:
+    en: [findings, impression, conclusion, diagnosis, recommendation]
+    zh: ["所见", "印象", "结论", "诊断", "建议"]

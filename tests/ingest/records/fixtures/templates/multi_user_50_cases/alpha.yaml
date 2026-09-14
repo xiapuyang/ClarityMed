@@ -1,0 +1,102 @@
+cases:
+- case_id: case-alpha-001
+  event_date: '2024-01-01'
+  title: Alpha encounter 1
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #1.'
+- case_id: case-alpha-002
+  event_date: '2024-02-02'
+  title: Alpha encounter 2
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #2.'
+- case_id: case-alpha-003
+  event_date: '2024-03-03'
+  title: Alpha encounter 3
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #3.'
+- case_id: case-alpha-004
+  event_date: '2024-04-04'
+  title: Alpha encounter 4
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #4.'
+- case_id: case-alpha-005
+  event_date: '2024-05-05'
+  title: Alpha encounter 5
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #5.'
+- case_id: case-alpha-006
+  event_date: '2024-06-06'
+  title: Alpha encounter 6
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #6.'
+- case_id: case-alpha-007
+  event_date: '2024-07-07'
+  title: Alpha encounter 7
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #7.'
+- case_id: case-alpha-008
+  event_date: '2024-08-08'
+  title: Alpha encounter 8
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #8.'
+- case_id: case-alpha-009
+  event_date: '2024-09-09'
+  title: Alpha encounter 9
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #9.'
+- case_id: case-alpha-010
+  event_date: '2024-10-10'
+  title: Alpha encounter 10
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #10.'
+- case_id: case-alpha-011
+  event_date: '2024-11-11'
+  title: Alpha encounter 11
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #11.'
+- case_id: case-alpha-012
+  event_date: '2024-12-12'
+  title: Alpha encounter 12
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #12.'
+- case_id: case-alpha-013
+  event_date: '2024-01-13'
+  title: Alpha encounter 13
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #13.'
+- case_id: case-alpha-014
+  event_date: '2024-02-14'
+  title: Alpha encounter 14
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #14.'
+- case_id: case-alpha-015
+  event_date: '2024-03-15'
+  title: Alpha encounter 15
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #15.'
+- case_id: case-alpha-016
+  event_date: '2024-04-16'
+  title: Alpha encounter 16
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #16.'
+- case_id: case-alpha-017
+  event_date: '2024-05-17'
+  title: Alpha encounter 17
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #17.'
+- case_id: case-alpha-018
+  event_date: '2024-06-18'
+  title: Alpha encounter 18
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #18.'
+- case_id: case-alpha-019
+  event_date: '2024-07-19'
+  title: Alpha encounter 19
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #19.'
+- case_id: case-alpha-020
+  event_date: '2024-08-20'
+  title: Alpha encounter 20
+  kind: exam-report
+  body_md: 'Routine encounter for alpha, visit #20.'
+facts: {}

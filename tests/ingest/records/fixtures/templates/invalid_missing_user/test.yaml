@@ -1,0 +1,5 @@
+cases:
+  - case_id: case-1
+    event_date: "2024-01-15"
+    title: Test case
+    kind: exam-report

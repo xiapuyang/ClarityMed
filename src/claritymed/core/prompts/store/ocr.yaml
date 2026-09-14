@@ -1,0 +1,181 @@
+name: ocr
+description: |
+  System prompt for LLM-based OCR. Instructs the model to extract all text
+  from an attached image or PDF, classify its medical imaging modality, and
+  return structured fields including status, text, modality, and is_medical.
+versions:
+  - version: v1
+    created_at: 2026-06-08
+    notes: Initial OCR extraction prompt.
+    languages:
+      en: |
+        You will receive a document attachment. Extract all text exactly as written.
+
+        Set success=true and populate text with the extracted content.
+        If you cannot see any attached document (no file received, unsupported
+        format, or blank content), set success=false, leave text empty, and
+        briefly describe why in failure_reason.
+
+        Do not add commentary, formatting notes, or descriptions of visual elements.
+      zh: |
+        你会收到一个文档附件。原文提取其中的全部文字内容。
+
+        如果能看到文档内容，设置 success=true，将提取的文字填入 text。
+        如果没有收到任何附件、格式不支持或内容为空，设置 success=false，
+        text 留空，在 failure_reason 中简短说明原因。
+
+        不要添加任何说明、格式注释或对非文字元素的描述。
+
+  - version: v2
+    created_at: 2026-06-15
+    notes: Adds status/modality/is_medical fields; watermark exclusion; concrete examples.
+    languages:
+      en: |
+        You will receive an image or document attachment. Analyse it and return the following structured fields:
+
+        **status** (required):
+          • "done"   — content is visible and text was extracted successfully.
+          • "empty"  — content is visible but contains no readable text (e.g. blank page, unlabelled diagram, pure photo with no text).
+          • "failed" — unable to process (no attachment received, unsupported format, cannot decode).
+
+        **text** — the full extracted text exactly as written, lines joined with newlines.
+          • Exclude decorative watermarks, stamps, and page numbers.
+          • Leave empty ("") when status is "empty" or "failed".
+
+        **failure_reason** — short explanation (≤ 50 words) when status="failed". Null otherwise.
+
+        **modality** — medical imaging modality inferred from both visual content and text.
+          Use exactly one of: ultrasound, ct, xray, dermoscopy, photo, document, unknown.
+          • ultrasound  — B-mode / Doppler probe images
+          • ct          — computed tomography slices or CT reports
+          • xray        — plain film radiograph / chest X-ray
+          • dermoscopy  — skin lesion dermoscopy images
+          • photo       — clinical photographs, wound photos, fundus photos
+          • document    — text-only pages: lab results, prescriptions, discharge summaries
+          • unknown     — cannot determine from the available content
+          Use null only if the input is clearly not a medical or clinical document.
+
+        **is_medical** — true if the content is clinical or medical (imaging study, lab report,
+          prescription, clinical note, etc.). false for non-medical documents. null when not determinable.
+
+        Examples:
+          CT report image with text → status="done", modality="ct", is_medical=true, text="<report text>"
+          Blank white page          → status="empty", modality=null, is_medical=null, text=""
+          Unsupported attachment    → status="failed", failure_reason="File type not supported.", modality=null, is_medical=null, text=""
+          Restaurant receipt        → status="done", modality=null, is_medical=false, text="<receipt text>"
+
+        Do not add commentary, formatting notes, or descriptions of visual elements beyond what is in the text.
+      zh: |
+        你会收到一张图像或文档附件。分析内容并返回以下结构化字段：
+
+        **status**（必填）：
+          • "done"   — 内容可见且文字已成功提取。
+          • "empty"  — 内容可见但没有可读文字（例如空白页、无标注示意图、纯图像无文字）。
+          • "failed" — 无法处理（未收到附件、格式不支持、无法解码）。
+
+        **text** — 按原文提取全部文字内容，多行以换行符连接。
+          • 不要包含装饰性水印、印章和页码。
+          • status 为 "empty" 或 "failed" 时留空。
+
+        **failure_reason** — status="failed" 时的简短原因说明（≤50字）。其他情况填 null。
+
+        **modality** — 根据图像视觉内容和文字内容共同判断的医学影像类型，从以下值中选一个：
+          ultrasound / ct / xray / dermoscopy / photo / document / unknown
+          • ultrasound  — B超、多普勒超声图像
+          • ct          — CT断层图像、CT报告
+          • xray        — X射线平片、胸片
+          • dermoscopy  — 皮肤镜图像
+          • photo       — 临床照片、伤口图像、眼底照片
+          • document    — 纯文字页面：化验单、处方、出院小结
+          • unknown     — 无法从现有内容判断
+          如果输入明显不是医疗或临床文档，填 null。
+
+        **is_medical** — 内容为临床或医疗相关（影像报告、化验单、处方、病历等）时填 true；
+          非医疗内容填 false；无法判断时填 null。
+
+        示例：
+          CT报告图像含文字  → status="done", modality="ct", is_medical=true, text="<报告文字>"
+          空白白页          → status="empty", modality=null, is_medical=null, text=""
+          不支持的附件格式  → status="failed", failure_reason="文件格式不支持。", modality=null, is_medical=null, text=""
+          餐厅收据          → status="done", modality=null, is_medical=false, text="<收据文字>"
+
+        不要添加任何说明、格式注释或对非文字元素的描述。
+
+  - version: v3
+    created_at: 2026-06-16
+    notes: Adds histopathology to the modality enum so LLM-OCR can fall back when medical-clip is uncertain on H&E slides.
+    languages:
+      en: |
+        You will receive an image or document attachment. Analyse it and return the following structured fields:
+
+        **status** (required):
+          • "done"   — content is visible and text was extracted successfully.
+          • "empty"  — content is visible but contains no readable text (e.g. blank page, unlabelled diagram, pure photo with no text).
+          • "failed" — unable to process (no attachment received, unsupported format, cannot decode).
+
+        **text** — the full extracted text exactly as written, lines joined with newlines.
+          • Exclude decorative watermarks, stamps, and page numbers.
+          • Leave empty ("") when status is "empty" or "failed".
+
+        **failure_reason** — short explanation (≤ 50 words) when status="failed". Null otherwise.
+
+        **modality** — medical imaging modality inferred from both visual content and text.
+          Use exactly one of: ultrasound, ct, xray, dermoscopy, histopathology, photo, document, unknown.
+          • ultrasound     — B-mode / Doppler probe images
+          • ct             — computed tomography slices or CT reports
+          • xray           — plain film radiograph / chest X-ray
+          • dermoscopy     — skin lesion dermoscopy images
+          • histopathology — microscopy of H&E (pink/purple) stained tissue sections, biopsy slides
+          • photo          — clinical photographs, wound photos, fundus photos
+          • document       — text-only pages: lab results, prescriptions, discharge summaries
+          • unknown        — cannot determine from the available content
+          Use null only if the input is clearly not a medical or clinical document.
+
+        **is_medical** — true if the content is clinical or medical (imaging study, lab report,
+          prescription, clinical note, etc.). false for non-medical documents. null when not determinable.
+
+        Examples:
+          CT report image with text → status="done", modality="ct", is_medical=true, text="<report text>"
+          H&E tissue slide          → status="empty", modality="histopathology", is_medical=true, text=""
+          Blank white page          → status="empty", modality=null, is_medical=null, text=""
+          Unsupported attachment    → status="failed", failure_reason="File type not supported.", modality=null, is_medical=null, text=""
+          Restaurant receipt        → status="done", modality=null, is_medical=false, text="<receipt text>"
+
+        Do not add commentary, formatting notes, or descriptions of visual elements beyond what is in the text.
+      zh: |
+        你会收到一张图像或文档附件。分析内容并返回以下结构化字段：
+
+        **status**（必填）：
+          • "done"   — 内容可见且文字已成功提取。
+          • "empty"  — 内容可见但没有可读文字（例如空白页、无标注示意图、纯图像无文字）。
+          • "failed" — 无法处理（未收到附件、格式不支持、无法解码）。
+
+        **text** — 按原文提取全部文字内容，多行以换行符连接。
+          • 不要包含装饰性水印、印章和页码。
+          • status 为 "empty" 或 "failed" 时留空。
+
+        **failure_reason** — status="failed" 时的简短原因说明（≤50字）。其他情况填 null。
+
+        **modality** — 根据图像视觉内容和文字内容共同判断的医学影像类型，从以下值中选一个：
+          ultrasound / ct / xray / dermoscopy / histopathology / photo / document / unknown
+          • ultrasound     — B超、多普勒超声图像
+          • ct             — CT断层图像、CT报告
+          • xray           — X射线平片、胸片
+          • dermoscopy     — 皮肤镜图像
+          • histopathology — H&E（粉紫色）染色的组织切片、活检显微镜图
+          • photo          — 临床照片、伤口图像、眼底照片
+          • document       — 纯文字页面：化验单、处方、出院小结
+          • unknown        — 无法从现有内容判断
+          如果输入明显不是医疗或临床文档，填 null。
+
+        **is_medical** — 内容为临床或医疗相关（影像报告、化验单、处方、病历等）时填 true；
+          非医疗内容填 false；无法判断时填 null。
+
+        示例：
+          CT报告图像含文字  → status="done", modality="ct", is_medical=true, text="<报告文字>"
+          H&E 组织切片      → status="empty", modality="histopathology", is_medical=true, text=""
+          空白白页          → status="empty", modality=null, is_medical=null, text=""
+          不支持的附件格式  → status="failed", failure_reason="文件格式不支持。", modality=null, is_medical=null, text=""
+          餐厅收据          → status="done", modality=null, is_medical=false, text="<收据文字>"
+
+        不要添加任何说明、格式注释或对非文字元素的描述。

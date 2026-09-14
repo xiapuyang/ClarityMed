@@ -1,0 +1,26 @@
+# Evaluation suite — drives `claritymed eval ...` subcommands.
+#
+# This file is consumed by the lm-evaluation-harness runner under
+# src/claritymed/evals/runners/lm_eval_runner.py. See the plan in
+# docs/plans/2026-06-09-002-feat-evals-medqa-plan.md for the full design.
+#
+# Fields:
+#   tasks               default task id list. CLI `--task <id>` overrides
+#                       per invocation. Each id must have a matching
+#                       <id>.yaml under src/claritymed/evals/tasks/.
+#   output_dir          where per-run JSONL files land. Relative paths
+#                       resolve from the project root. Directory is
+#                       created on first run.
+#   judge_provider_id   reserved — Phase 2 may want a dedicated provider
+#                       to score open-ended completions (e.g. deepeval
+#                       triad reuse). Null until then.
+#   default_limit       cap on questions per run when CLI `--limit` is
+#                       omitted. Null = full test split (1273 for MedQA).
+#                       Negative values are rejected by the schema.
+
+tasks:
+  - medqa
+
+output_dir: data/evals/results
+judge_provider_id: null
+default_limit: null

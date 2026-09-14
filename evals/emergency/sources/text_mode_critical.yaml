@@ -1,0 +1,347 @@
+# Text-mode cases for the composite-recall benchmark.
+#
+# Unlike the structured fixtures (ddxplus_subset, public_vignettes,
+# synthetic_adversarial) — which set ``symptoms:`` so the runner
+# exercises only the rule engine — every case here sets ``turns:``
+# so the e2e bench drives the full pipeline:
+#
+#     real LLM extractor  →  rule engine  →  matched_rules
+#
+# The composite metric measures rule-engine recall on the extractor's
+# *actual* output, not on idealized symptoms. The gap between
+# structured-mode recall (rule layer only) and composite recall
+# (rule + extractor) is the extractor's information loss.
+#
+# Authoring approach:
+# Mirror high-value critical rules + their adversarial mimics + a
+# routine baseline. Prose is hand-authored to be specific enough that
+# a 7-14B-class local extractor (qwen3:14b, MLX Llama-3.2-3B, etc.)
+# can plausibly map it to canonical qualifier tokens — short enough
+# that one or two turns suffice. Adversarial cases mimic the critical
+# presentation but omit the load-bearing qualifier (e.g. panic
+# attacker says "chest pain + sweating" but is 22, no radiation, no
+# cardiac risk factors) so a well-tuned extractor + rule pack should
+# *not* fire critical.
+#
+# Distribution (24 cases):
+#   Critical (12):
+#     - ACS: 3 (en textbook, en atypical, zh)
+#     - Stroke FAST: 2 (en, zh)
+#     - Anaphylaxis: 2 (food + swelling, hives + wheeze)
+#     - SAH: 2 (en thunderclap, zh worst-of-life)
+#     - Active SI: 1
+#     - Ectopic pregnancy: 1
+#     - Meningitis classic triad: 1
+#   Adversarial — must NOT fire critical (7):
+#     - Panic attack (chest-pain mimic): 2 (en + zh)
+#     - Costochondritis: 1
+#     - Tension headache: 1
+#     - GERD: 1
+#     - Passive SI: 1
+#     - Urticaria alone (no wheeze): 1
+#   Routine (5):
+#     - Greeting: 2 (en + zh)
+#     - Medication info question: 1
+#     - Diet question: 1
+#     - Lab interpretation question: 1
+#
+# Languages: ~30% zh exercises the extractor's bilingual handling and
+# the rule engine's profile-derived demographic gates (which are
+# language-agnostic but worth confirming end-to-end).
+
+cases:
+
+  # =================================================================
+  # ACS — Acute Coronary Syndrome (3 critical)
+  # =================================================================
+
+  - id: text_acs_001
+    source: synthetic
+    language: en
+    citation: "Patterned after AHA/ACC 2021 STEMI textbook presentation"
+    notes: "Classic quad: chest pain + radiation + diaphoresis + dyspnea + age >35."
+    turns:
+      - role: user
+        text: "I'm a 58-year-old man. For the past 30 minutes I've had crushing chest pain that's radiating into my left arm. I'm sweating heavily and feel short of breath."
+    ground_truth_level: critical
+    ground_truth_rule_id: acs_acute_coronary_syndrome
+
+  - id: text_acs_002
+    source: synthetic
+    language: en
+    citation: "ACEP Clinical Policy: Chest Pain 2018 — atypical female presentation"
+    notes: "Atypical: jaw radiation, gradual onset, diabetic — still ACS."
+    turns:
+      - role: user
+        text: "I'm a 62-year-old woman with diabetes. Over the last hour I've had increasing pressure in my chest that radiates up into my jaw, and I feel really short of breath."
+    ground_truth_level: critical
+    ground_truth_rule_id: acs_acute_coronary_syndrome
+
+  - id: text_acs_003
+    source: synthetic
+    language: zh
+    citation: "Patterned after Chinese Chest Pain Center 2019 STEMI guidance"
+    notes: "中文 ACS 描述，含放射 + 大汗。"
+    turns:
+      - role: user
+        text: "我今年 55 岁，男性。半小时前突然胸口压榨样疼痛，疼痛放射到左臂，全身大汗。"
+    ground_truth_level: critical
+    ground_truth_rule_id: acs_acute_coronary_syndrome
+
+  # =================================================================
+  # Stroke FAST (2 critical)
+  # =================================================================
+
+  - id: text_stroke_001
+    source: synthetic
+    language: en
+    citation: "AHA/ASA FAST campaign — classic three-element stroke presentation"
+    notes: "Sudden facial droop + arm weakness + slurred speech."
+    turns:
+      - role: user
+        text: "My mom just suddenly had the right side of her face droop, and she can't lift her right arm. Her speech is slurred. It started about ten minutes ago."
+    ground_truth_level: critical
+    ground_truth_rule_id: stroke_fast_positive
+
+  - id: text_stroke_002
+    source: synthetic
+    language: zh
+    citation: "Patterned after Chinese Stroke Association FAST"
+    notes: "突发面瘫 + 一侧肢体无力 + 言语含糊。"
+    turns:
+      - role: user
+        text: "我父亲刚刚突然出现左侧面部歪斜，左手抬不起来，说话也含糊不清，大约 15 分钟前开始。"
+    ground_truth_level: critical
+    ground_truth_rule_id: stroke_fast_positive
+
+  # =================================================================
+  # Anaphylaxis (2 critical) — lenient floor; fires in all profiles
+  # =================================================================
+
+  - id: text_anaph_001
+    source: synthetic
+    language: en
+    citation: "WAO Anaphylaxis Guidelines 2020 — food trigger + airway involvement"
+    notes: "Lip + tongue swelling + throat tightening after peanut."
+    turns:
+      - role: user
+        text: "I ate something with peanuts about ten minutes ago. My lips and tongue are swelling up and my throat feels tight. I can barely swallow."
+    ground_truth_level: critical
+    ground_truth_rule_id: anaphylaxis
+
+  - id: text_anaph_002
+    source: synthetic
+    language: en
+    citation: "Patterned after WAO criterion 2: hives + wheeze after exposure"
+    notes: "Hives + wheeze after bee sting — anaphylaxis by criterion 2."
+    turns:
+      - role: user
+        text: "A bee stung me five minutes ago and now I have hives all over my body and I'm wheezing and feel like I can't get enough air."
+    ground_truth_level: critical
+    ground_truth_rule_id: anaphylaxis
+
+  # =================================================================
+  # SAH — subarachnoid hemorrhage (2 critical)
+  # =================================================================
+
+  - id: text_sah_001
+    source: synthetic
+    language: en
+    citation: "Patterned after ACEP SAH clinical policy — thunderclap headache"
+    notes: "Sudden, peak-under-1min, worst headache of life."
+    turns:
+      - role: user
+        text: "About fifteen minutes ago I got hit with the worst headache of my life — it peaked within seconds, like a thunderclap. My neck feels stiff too."
+    ground_truth_level: critical
+    ground_truth_rule_id: sah_thunderclap_headache
+
+  - id: text_sah_002
+    source: synthetic
+    language: zh
+    citation: "Patterned after Chinese SAH textbook presentation"
+    notes: "突发剧烈头痛，颈项强直。"
+    turns:
+      - role: user
+        text: "我刚才突然出现一生中最剧烈的头痛，是在几秒钟内达到顶点的，现在脖子也很僵硬抬不动。"
+    ground_truth_level: critical
+    ground_truth_rule_id: sah_thunderclap_headache
+
+  # =================================================================
+  # Active suicidal ideation (1 critical) — lenient floor
+  # =================================================================
+
+  - id: text_active_si_001
+    source: synthetic
+    language: en
+    citation: "C-SSRS critical threshold: ideation + plan + means"
+    notes: "Explicit plan + means available — meets C-SSRS critical bar."
+    turns:
+      - role: user
+        text: "I've been thinking about killing myself for the past week. I have a plan to do it tonight and I have the pills ready in my drawer."
+    ground_truth_level: critical
+    ground_truth_rule_id: active_suicidal_ideation
+
+  # =================================================================
+  # Ectopic pregnancy (1 critical) — lenient floor, sex=F required
+  # =================================================================
+
+  - id: text_ectopic_001
+    source: synthetic
+    language: en
+    citation: "ACOG Practice Bulletin 193 — ectopic pregnancy clinical features"
+    notes: "Female + abdominal pain + missed period + positive HCG + bleeding."
+    turns:
+      - role: user
+        text: "I'm a 28-year-old woman. I've had sharp pain on the right side of my lower belly for the past four hours. My period is six weeks late and I took a pregnancy test yesterday that came back positive. I'm also having some vaginal bleeding."
+    ground_truth_level: critical
+    ground_truth_rule_id: ectopic_pregnancy_bleed
+
+  # =================================================================
+  # Meningitis classic triad (1 critical)
+  # =================================================================
+
+  - id: text_meningitis_001
+    source: synthetic
+    language: en
+    citation: "IDSA Bacterial Meningitis 2004 — classic triad"
+    notes: "Fever + neck stiffness + photophobia + altered mental status."
+    turns:
+      - role: user
+        text: "I have a high fever (40°C), my neck is so stiff I can barely move it, and bright light really hurts my eyes. I feel really out of it and confused."
+    ground_truth_level: critical
+    ground_truth_rule_id: meningitis_classic_triad
+
+  # =================================================================
+  # Adversarial — must NOT fire critical (7)
+  # =================================================================
+
+  - id: text_panic_001
+    source: synthetic
+    language: en
+    citation: "DSM-5 panic attack — chest tightness + palpitations, no cardiac risk"
+    notes: "22 yo + anxiety hx + no radiation + no diaphoresis pattern → not ACS."
+    turns:
+      - role: user
+        text: "I'm 22 and I have a history of anxiety. I'm at work and suddenly my chest feels tight, my heart is racing, I'm trembling, and I feel like something terrible is about to happen. This has happened to me before during panic attacks."
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: text_panic_002
+    source: synthetic
+    language: zh
+    citation: "DSM-5 panic attack — Chinese clinical context"
+    notes: "年轻 + 焦虑史 + 无放射 + 无糖尿病/吸烟 → 应判 routine。"
+    turns:
+      - role: user
+        text: "我 24 岁，平时有焦虑症。刚才坐地铁突然感觉胸口发闷，心跳很快，手发抖，感觉自己快要死掉了。我以前也有过这种发作。"
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: text_costo_001
+    source: synthetic
+    language: en
+    citation: "AAFP costochondritis — sharp localized + reproducible on palpation"
+    notes: "Sharp + reproducible on touch + no radiation → not ACS."
+    turns:
+      - role: user
+        text: "I have a sharp pain on the left side of my chest right at the breastbone. It's worse when I press on it or take a deep breath. I'm 30 and otherwise healthy."
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: text_tension_ha_001
+    source: synthetic
+    language: en
+    citation: "ICHD-3 tension-type headache — gradual, bilateral, mild-moderate"
+    notes: "Gradual onset + bilateral + no neck stiffness → not SAH."
+    turns:
+      - role: user
+        text: "I've had a dull headache for the last six hours. It came on gradually after a long day staring at my screen. It feels like a tight band around my head."
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: text_gerd_001
+    source: synthetic
+    language: en
+    citation: "AGA GERD guideline — burning retrosternal pain, postprandial"
+    notes: "Burning + after meal + better with antacids → not ACS."
+    turns:
+      - role: user
+        text: "I get this burning feeling in the middle of my chest about an hour after meals, especially spicy food. It gets better when I take an antacid."
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: text_passive_si_001
+    source: synthetic
+    language: en
+    citation: "C-SSRS passive ideation — wish to die without plan/means/intent"
+    notes: "Passive ideation only — no plan, no means, no intent → not critical SI."
+    turns:
+      - role: user
+        text: "Sometimes I feel like the world would be better off without me, or I wish I just wouldn't wake up. I don't have any plan or thoughts about actually doing anything though."
+    ground_truth_level: routine
+    is_adversarial: true
+
+  - id: text_urticaria_001
+    source: synthetic
+    language: en
+    citation: "AAAAI urticaria alone — hives without airway/cardiovascular involvement"
+    notes: "Hives only — no wheeze, no swelling, no hypotension → not anaphylaxis."
+    turns:
+      - role: user
+        text: "I have these itchy red bumps all over my arms and chest. They showed up about an hour after I ate some shrimp. No trouble breathing, no swelling of my face or throat."
+    ground_truth_level: routine
+    is_adversarial: true
+
+  # =================================================================
+  # Routine baseline (5)
+  # =================================================================
+
+  - id: text_routine_greet_001
+    source: synthetic
+    language: en
+    citation: "Non-clinical baseline"
+    notes: "Pure greeting — extractor should return primary_complaint=None."
+    turns:
+      - role: user
+        text: "Hi! How are you today?"
+    ground_truth_level: routine
+
+  - id: text_routine_greet_002
+    source: synthetic
+    language: zh
+    citation: "Non-clinical baseline (zh)"
+    notes: "中文寒暄 — 应判 routine。"
+    turns:
+      - role: user
+        text: "你好，今天天气真不错！"
+    ground_truth_level: routine
+
+  - id: text_routine_med_001
+    source: synthetic
+    language: en
+    citation: "Information-seeking — medication usage question"
+    notes: "Asking about ibuprofen — not symptomatic input."
+    turns:
+      - role: user
+        text: "How often can I take ibuprofen for a mild headache? Is 400 mg every six hours safe for an adult?"
+    ground_truth_level: routine
+
+  - id: text_routine_diet_001
+    source: synthetic
+    language: en
+    citation: "Information-seeking — diet question"
+    notes: "Lifestyle question with no symptoms."
+    turns:
+      - role: user
+        text: "What's a good Mediterranean-style breakfast for someone with mildly elevated cholesterol?"
+    ground_truth_level: routine
+
+  - id: text_routine_labs_001
+    source: synthetic
+    language: en
+    citation: "Information-seeking — lab interpretation"
+    notes: "Asks for context, not reporting a symptom."
+    turns:
+      - role: user
+        text: "My recent fasting glucose came back as 105 mg/dL. What does that mean in terms of prediabetes risk?"
+    ground_truth_level: routine

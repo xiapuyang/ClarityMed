@@ -1,0 +1,114 @@
+# 症状功能交互模态的用户可见文案。
+# 通过 core/i18n/loader.py 加载，key 形如 `symptoms.<…>`。
+# 插件代码 (orchestrator/features/symptoms_plugin.py) 用
+# t() / t_list() 读取——保持 en/zh 同步，缺失 key 会回落到原始
+# key 字符串，作为明显的"翻译丢失"信号显示给用户。
+symptoms:
+  ui:
+    not_applicable: "不适用"
+  confirm:
+    text: "我可以做一轮基于症状的鉴别诊断（约 5-12 个追问）来缩小范围。要试试吗？"
+    header: "试一下吗？"
+    yes_label: "是"
+    yes_description: "开始症状问答流程。"
+    no_label: "否"
+    no_description: "跳过，按自由文本回答。"
+  age:
+    question: "请问您今年多大（岁）？"
+    header: "年龄"
+    unit: "岁"
+  sex:
+    question: "生理性别（用于鉴别诊断模型）？"
+    header: "性别"
+    female_label: "女"
+    female_description: "生理性别为女。"
+    male_label: "男"
+    male_description: "生理性别为男。"
+  # 多卡片渲染器（symptoms_plugin/_card_builder.py）会读取以下子树，
+  # 用于分桶置信度、生成方向性标题、选取卡片上方 banner，以及给
+  # 单卡引用打权威度徽章。阈值浮点数放在 i18n 里是刻意的（按
+  # feat-symptoms-multi-card-render spec）——运营人员可以在同一文件
+  # 里一起调标签措辞和阈值；如果 zh 缺失，i18n loader 会回落到 en，
+  # 故仅在 en 下维护也安全。
+  confidence:
+    thresholds:
+      very_high: 0.75    # 概率 ≥ 0.75 → very_high 档
+      high: 0.55         # 0.55-0.75 → high
+      moderate: 0.30     # 0.30-0.55 → moderate；更低 → low
+    labels:
+      very_high: "非常确定"
+      high: "较为确定"
+      moderate: "中等确定"
+      low: "不太确定"
+
+  # 方向性标题模板。``{condition}`` 会被替换为 symptoms_conditions.yaml
+  # 中对应语言的 display_name。
+  headline:
+    top:
+      likely: "很可能是{condition}"          # rank 1、概率 ≥ 0.60
+      probably: "可能是{condition}"          # rank 1、0.40-0.60
+      consider: "{condition}"                 # rank 1、< 0.40
+    # rank 2+ 的 standard 变体已下线 —— 卡片标题已经显示
+    # ``{condition_name} — {confidence_label} · {probability}%``，
+    # "另需考虑{condition}" 只是把条件名重复了一遍，造成粗体冗余。
+    # 只保留高严重度低概率场景下 "unlikely but rule out" 的安全变体，
+    # 那种情况下 headline 带的临床意图是标题本身给不出的。
+    also:
+      unlikely_but_rule_out: "{condition}（但需排查）"
+
+  card:
+    # 卡片上方 banner。banner_key 由服务端根据 DifferentialSessionMeta
+    # 中若干标志位组合计算得出；``None`` 表示无 banner。
+    banner:
+      hit_cap: "已达追问上限——下方卡片基于目前已收集到的答案。"
+      severity_override: "模型尚未收敛，但症状模式已指向可能较严重的病因——请**不要**拖延就诊。"
+      cancelled_early_meaningful: "您已提前结束追问——下方卡片基于部分答案。"
+      cancelled_no_result: "追问在模型收敛前已结束，暂无可靠的鉴别诊断可展示——如果可以，多回答几个问题再试一次。"
+      session_expired: "追问会话已超时，暂无可靠的鉴别诊断可展示——请再试一次。"
+    # v3 subset-parametric ``Other`` 类的显示文案 —— 当数据集设置
+    # ``target_condition_ids`` 时，wire 会产出一张合成的 Other 卡片，
+    # card builder 用这里的三个 key 拼出对应的 ``ConditionEntry``（见
+    # ``symptoms_card_builder._other_condition_entry``）。不是真实的
+    # DDXPlus 疾病，所以不在 symptoms_conditions.yaml 里。
+    #
+    # * ``name``   —— 卡片 display_name（同时也是
+    #                servers/symptoms/differential.py::_topk_rows_v3
+    #                产出的 DifferentialRow.condition_name）。
+    # * ``report`` —— 2-4 句面向患者的解释，说明模型为什么落在这个
+    #                桶而不是任一 target。
+    # * ``suggestion`` —— 下一步行动建议（会汇总进 LLM 的总结段，
+    #                    不逐卡渲染）。
+    other:
+      name: "其他可能的情况"
+      report: "症状表现不太像两个追踪目标疾病——很可能是这个模型追踪范围以外的病因。"
+      suggestion: "建议就诊做更广的鉴别评估——这个模型只覆盖两个追踪目标，无法确诊或排除范围以外的任何病。"
+    # 卡片本身只渲染 headline + report。次日汇总的下一步建议和
+    # 权威引用由 LLM 依 symptoms_final_reply 提示写成的摘要段落
+    # 承担，而不是逐卡展示（避免噪音 + 保留 LLM 组织语言的能力）。
+
+  # 审计用关键词白名单。**不是**安全提示原话——LLM 按
+  # symptoms_final_reply.yaml 自己组织措辞；post_process 钩子扫
+  # 描回复里是否出现下列任意关键词。Critical / Urgent 档缺失会
+  # 触发 symptoms.safety_keywords.missing 审计事件。
+  safety_keywords:
+    Critical:                          # 严重度 1
+      - "立即拨打120"
+      - "立即拨打"
+      - "急救"
+      - "急诊"
+      - "不要自行前往"
+    Urgent:                            # 严重度 2
+      - "今日就诊"
+      - "急诊"
+      - "出现以下情况"
+      - "24小时内"
+    Moderate:                          # 严重度 3-4
+      - "一周内"
+      - "门诊"
+      - "如果出现"
+      - "建议就诊"
+    Mild:                              # 严重度 5
+      - "居家护理"
+      - "如加重"
+      - "如持续"
+      - "休息"

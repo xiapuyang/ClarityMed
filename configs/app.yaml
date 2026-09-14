@@ -1,0 +1,151 @@
+i18n:
+  default_lang: en
+  supported_langs: [en, zh]
+
+logging:
+  level: INFO
+  app_filename: app.log
+  access_filename: access.log
+  audit_filename: audit.log
+
+access_log:
+  skip_prefixes: ["/api/health", "/favicon"]
+
+# --- Paste / drag-drop / /upload size cap -------------------------------
+# Hard ceiling on a single attachment's size, applied at every ingest
+# entry point (Ctrl+V, terminal drag-drop, /upload). Oversized files are
+# rejected before any disk read so the UI never blocks on a multi-second
+# read of a 1GB blob. Set to a higher number if you regularly paste large
+# scans; PHI scrubbing and OCR latency both grow super-linearly past
+# ~50MB so go cautiously.
+paste:
+  max_file_size_mb: 20
+  # Hard cap on raw text paste length (chars). Pastes above this are
+  # rejected with a toast so the user re-pastes a shorter snippet.
+  max_text_chars: 100000
+  # Threshold for collapsing a paste into a `[Pasted text #N +M lines]`
+  # placeholder. Either limit triggers: long-by-lines OR long-by-chars.
+  # Short multi-line snippets (a few lines) inline as-is so the user
+  # can see what landed.
+  placeholder_min_lines: 6
+  placeholder_min_chars: 800
+
+# --- OpenTelemetry / Phoenix tracing ------------------------------------
+# Opt-in: set enabled: true to install the global TracerProvider and
+# start sending spans to Phoenix. Off by default so CI and offline
+# sessions never generate surprise traffic.
+#
+# endpoint:    OTLP collector URL. Default points at a local Phoenix
+#              instance started with `uvx arize-phoenix serve` or Docker.
+# api_key_env: name of an env var holding the Bearer token (e.g.
+#              PHOENIX_API_KEY). Omit or null for unauthenticated local
+#              Phoenix. The key value is never written here — only the
+#              env var name.
+# phi_kind:    null (auto-detect from endpoint URL), "local" (no scrub),
+#              or "cloud" (force PHI scrubbing). Auto-detect treats
+#              localhost / 127.0.0.1 / ::1 as local and everything else
+#              as cloud, which is secure by default for remote endpoints.
+# service_name: OTel resource SERVICE_NAME shown in Phoenix UI.
+# project_name: Phoenix project to route spans into (default: "claritymed").
+#               Override with CLARITYMED_TRACE_PROJECT env var — test conftest
+#               files use this to route pytest → "claritymed-pytest" and
+#               e2e → "claritymed-e2e" without touching this file.
+# --- Patient profile context in ask turns ------------------------------
+# mode: "deterministic" splices a profile/allergy/condition/medication/record
+#        summary into every prompt before the LLM is called.
+#       "tool" exposes a retrieve_profile tool the LLM can call on demand.
+#       "off" disables the plugin entirely.
+profile_context:
+  mode: deterministic
+
+# --- Agent / LLM loop limits --------------------------------------------
+# request_limit: max LLM requests per user turn (includes tool-call rounds).
+# Raise if deep multi-tool flows hit the cap; lower for cost-constrained deploys.
+agent:
+  request_limit: 10
+
+# --- Tool approval rules ------------------------------------------------
+# rule_ttl_hours: how long an "always allow" rule stays active before the
+# user is prompted again. Range: 1–720 (1 hour to 30 days).
+tool_approval:
+  rule_ttl_hours: 24
+
+# --- Tool retry budget --------------------------------------------------
+# Per-tool-name budget for argument-validation retries inside one
+# agent.run. A small / local model that emits "None" strings or wrong
+# field names gets N chances to self-correct after pydantic-ai feeds
+# the error back as a ToolRetryError; failing on the (N+1)-th attempt
+# of the same tool name raises UnexpectedModelBehavior and ends the
+# turn. Counter is keyed by tool NAME, not call_id — three concurrent
+# save_record calls share one budget.
+#
+# Default 3 is biased toward keeping small-model TUI sessions usable;
+# drop to 1 if you'd rather fail-fast and surface the bad model output.
+tools:
+  ingest:
+    max_retries: 3
+  ask_user_question:
+    max_retries: 3
+
+# --- Medical-clip (modality classification) server ---------------------
+# Loopback-bound BiomedCLIP server consumed by the OCR ingest worker to
+# tag every uploaded image with `{modality, is_medical, ocr_has_report}`.
+# These tags drive the vision tool's hard gate (KTD-V3) and the OCR-report
+# override (KTD-V6). If the server is unreachable, OCR still completes;
+# the image is tagged `modality=unknown` and the vision plugin treats it
+# the same way the classifier-low-confidence path does.
+medical_clip:
+  base_url: http://127.0.0.1:8086
+
+# --- Vision feature toggles + image guard rails -------------------------
+# enabled:       master kill switch for the vision tool. When false the
+#                tool is not registered with the agent (LLM doesn't see
+#                it in its toolset), ensure_bootstrapped sets a clear
+#                disabled_reason, and the <image> tag advertises the
+#                feature as off. Defaults to true.
+# image_limits:  upper + lower bounds enforced at the LLM OCR / vision
+#                inference boundary. Lower bounds reflect what the
+#                encoder can actually use (ViT/CLIP families resize to
+#                224 internally; below that the model upscales garbage).
+#                Upper bounds keep cloud API bills and round-trip
+#                latency bounded. Violations raise
+#                ImageTooLargeError / ImageTooSmallError with the
+#                specific axis that tripped.
+vision:
+  enabled: true
+  image_limits:
+    max_bytes: 20_000_000      # 20 MB — matches paste.max_file_size_mb
+    max_dimension: 4096        # ChestX-Det max is 3,408 → margin
+    max_pixels: 16_000_000     # 16 MP — guards against tall scan strips
+    min_bytes: 10_000          # 10 KB — below this is blank / corrupt
+    min_dimension: 224         # ViT/CLIP encoder input floor
+    min_pixels: 50_000         # ≈ 224×224 — also blocks freak aspect ratios
+
+# --- Upload / RAG ingest dedupe ----------------------------------------
+# dedupe_cosine_threshold: per-chunk cosine-similarity threshold for the
+# RAG dedupe pass. New chunks whose dense embedding cosines >= this
+# against an existing chunk in the user's collection are dropped as
+# duplicates. Loader: ``claritymed.config.upload_dedupe_cosine_threshold``;
+# in-code default is 0.93 (DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD). Pinned
+# here so the admin Editable-fields panel can show the live value.
+upload:
+  dedupe_cosine_threshold: 0.93
+
+# --- Record import dedupe ----------------------------------------------
+# dedupe_cosine_threshold: per-chunk cosine-similarity threshold for the
+# PHI-side dedupe pass on records imported via
+# ``claritymed record import-from-template``. Higher than upload's
+# threshold (0.93) because personal records have less legitimate
+# near-duplication than published library content. Loader:
+# ``claritymed.config.record_dedupe_cosine_threshold``; in-code default
+# is 0.95 (DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD).
+record:
+  dedupe_cosine_threshold: 0.95
+
+# --- OpenTelemetry / Phoenix tracing ------------------------------------
+tracing:
+  enabled: true
+  endpoint: http://localhost:6006
+  api_key_env: PHOENIX_API_KEY
+  phi_kind: null
+  service_name: claritymed

@@ -1,0 +1,142 @@
+disclaimer:
+  default: "本回答仅供一般参考，不能替代专业医疗建议。"
+  emergency: "如果是医疗紧急情况，请立即拨打 120 或当地急救电话。"
+  privacy_phi: "个人健康信息仅保留在本机。除非您明确开启，否则云模型不会被使用。"
+
+redflag:
+  chest_pain_with_dyspnea: "胸痛伴随呼吸困难可能是医疗紧急情况，请立即拨打 120 或当地急救电话。"
+  anaphylaxis_signs: "暴露后出现呼吸困难、面部肿胀或晕厥可能是过敏性休克，请立即拨打急救电话。"
+
+ui:
+  cli:
+    greeting: "ClarityMed 命令行 — 面向患者的医学问答。"
+    user_required: "未指定 --user，回落到 'default'。可用 'claritymed init-user <id>' 创建新档案。"
+  api:
+    health: "OK"
+
+term:
+  loinc:
+    glucose: "血糖"
+    creatinine: "肌酐"
+    hba1c: "糖化血红蛋白"
+
+modes:
+  ask:
+    label: "咨询"
+    description: "问医疗问题，得到带引用的答案。"
+    empty_prompt: "你想了解什么？"
+
+rag:
+  collection:
+    # 与 en.yaml 同结构。StatPearls / MedRAG 是品牌名两侧一致，
+    # user_rag 用中文 label，避免暴露 user_rag_<id> 这种内部标识。
+    # Keys must match FROZEN Qdrant collection names — change display values only.
+    statpearls_en: "MedRAG-StatPearls"
+    textbooks_en: "MedRAG-Textbooks"
+    user_rag: "我的资料库"
+  upload:
+    # /upload 完成后会话里显示的结果行。优先用带 filename 的版本，
+    # 兜底（display_name 缺失时）用 added。
+    added_named: "✓ 已将 {filename} 加入资料库（{summary}）"
+    added: "rag ✓ {summary}"
+    confirm:
+      # UploadModal 的确认弹窗文案
+      title: "加入资料库？"
+      yes_button: "是 (y)"
+      no_button: "否 (n)"
+    part:
+      # 单个 part 在预览里的一行
+      row: "{icon} {source}（{kind}，{chars} 字）"
+      row_empty: "{icon} {source}（{kind}，无文本）"
+    kind:
+      text: "文本"
+      image: "图片"
+      file: "文件"
+    gate:
+      empty: "没有可上传的内容。"
+      ocr_failed: "{source} 的 OCR 失败。"
+      ocr_pending: "{source} 仍在提取文本——稍后重试。"
+      low_content: "{source} 的内容太少。"
+      total_too_short: "总内容 {actual} 字；至少需要 {floor} 字。"
+    result:
+      bundle: "✓ 加入 {added} 项，{skipped} 项已在资料库，{failed} 项失败（新增 {chunks} 个 chunk）"
+      all_skipped: "{source} 已在资料库——无新增内容。"
+
+library:
+  # LibraryModal 的文案。每一行里的 topic 列保持英文不翻译——它们直接来自
+  # configs/retrieval.yaml 的医学领域名，没有维护并行中文表。
+  title: "资料库 — RAG 集合 + 实时检索"
+  search_placeholder: "搜索…"
+  columns:
+    kind: "类型"
+    name: "名称"
+    chunks: "分片数"
+    notes: "备注"
+    topics: "领域"
+  loading: "加载中…"
+  error: "错误：{error}"
+  tier: "tier {tier}"
+  tier_unknown: "tier ?"
+  topics_none: "（未声明领域）"
+  user:
+    not_initialised: "（未初始化——/upload 来填充）"
+    your_uploads: "（你上传的内容）"
+    notes: "用户 '{user_id}'"
+  list_status: "{system_count} 系统 + 1 用户 · 检索：{state}"
+  retrieval_ready: "就绪"
+  retrieval_disabled: "已禁用 (rag.enabled=false)"
+  disabled_banner: "RAG 已禁用（configs/retrieval.yaml: rag.enabled=false）——无法搜索。"
+  search_status: "从 [{collections}] 中获取 {count} 个分片\n扩展查询：{expanded}\n{timings}"
+  timings: "embed {embed_ms}ms · search {search_ms}ms · rerank {rerank_ms}ms · parent {parent_ms}ms"
+  none_collections: "（无）"
+  no_expansion: "（无扩展）"
+  score: "score={score}"
+  close_button: "关闭"
+
+ask_modal:
+  answer_header: "↳ 你的回答"
+  answer_question: "  • {question}"
+  answer_value: "    ▶ {value}"
+  declined_header: "用户已取消追问"
+  declined_question: "  └ · {question}（{options}）"
+  declined_question_numeric: "  └ · {question}（{range}）"
+  multi_empty: "—"
+  hint_single: "↑↓ 选择 · enter 提交 · esc 取消"
+  hint_multi: "↑↓ 移动 · space 勾选 · enter 提交 · esc 取消"
+  hint_numeric: "输入数字，回车提交 · esc 取消"
+  badge_single: "单选"
+  badge_multi: "多选"
+  badge_numeric: "数字"
+  numeric_out_of_range: "请输入 {min} 到 {max} 之间的数值。"
+  numeric_step_mismatch: "数值必须是 {step} 的整数倍。"
+  numeric_invalid: "请输入数字。"
+
+phi:
+  redaction_marker:
+    name: "[已脱敏:姓名]"
+    phone: "[已脱敏:手机]"
+    email: "[已脱敏:邮箱]"
+    id: "[已脱敏:证件]"
+    mrn: "[已脱敏:病历号]"
+    address: "[已脱敏:地址]"
+
+# 类型化异常的展示文案。错误类本身说明*出了什么事*；这些字符串告诉用户
+# *接下来该怎么做*。保持简短，避免使用内部术语。
+errors:
+  revision_conflict: "该记录已被其他进程修改，请刷新后重试。"
+  unknown_sha256: "该文件未附加到本次会话，请重新上传或从资料库选择。"
+  phi_leak_detected: "PHI 防护已启动：为保护本地个人健康信息，此次云端调用已被拒绝。"
+  ocr_failed: "无法从附件中提取文本。你可以选择无 OCR 文本直接保存记录，或在资料库视图中重试。"
+  record_not_found: "该路径下未找到记录，可能已在其他会话中删除。"
+  path_outside_user_domain: "该路径不在你的数据目录内，操作已被拒绝。"
+  usage_limit: "本次对话步骤过多，请重试。"
+
+tool:
+  approval:
+    update_profile_field: "更新档案：{field} → {value}"
+    save_allergy: "保存过敏史：{substance}（{severity}）"
+    save_condition: "保存病史：{display}"
+    save_medication: "保存用药记录：{name}"
+    save_record: "保存记录：{kind} · {title}"
+    save_to_library: "存入我的资料库：{title}"
+    delete_record: "删除记录：{record_path}"

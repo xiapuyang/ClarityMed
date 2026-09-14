@@ -1,0 +1,92 @@
+cases:
+- case_id: case-bravo-021
+  event_date: '2024-01-01'
+  title: Bravo encounter 1
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #1.'
+- case_id: case-bravo-022
+  event_date: '2024-02-02'
+  title: Bravo encounter 2
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #2.'
+- case_id: case-bravo-023
+  event_date: '2024-03-03'
+  title: Bravo encounter 3
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #3.'
+- case_id: case-bravo-024
+  event_date: '2024-04-04'
+  title: Bravo encounter 4
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #4.'
+- case_id: case-bravo-025
+  event_date: '2024-05-05'
+  title: Bravo encounter 5
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #5.'
+- case_id: case-bravo-026
+  event_date: '2024-06-06'
+  title: Bravo encounter 6
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #6.'
+- case_id: case-bravo-027
+  event_date: '2024-07-07'
+  title: Bravo encounter 7
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #7.'
+- case_id: case-bravo-028
+  event_date: '2024-08-08'
+  title: Bravo encounter 8
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #8.'
+- case_id: case-bravo-029
+  event_date: '2024-09-09'
+  title: Bravo encounter 9
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #9.'
+- case_id: case-bravo-030
+  event_date: '2024-10-10'
+  title: Bravo encounter 10
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #10.'
+- case_id: case-bravo-031
+  event_date: '2024-11-11'
+  title: Bravo encounter 11
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #11.'
+- case_id: case-bravo-032
+  event_date: '2024-12-12'
+  title: Bravo encounter 12
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #12.'
+- case_id: case-bravo-033
+  event_date: '2024-01-13'
+  title: Bravo encounter 13
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #13.'
+- case_id: case-bravo-034
+  event_date: '2024-02-14'
+  title: Bravo encounter 14
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #14.'
+- case_id: case-bravo-035
+  event_date: '2024-03-15'
+  title: Bravo encounter 15
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #15.'
+- case_id: case-bravo-036
+  event_date: '2024-04-16'
+  title: Bravo encounter 16
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #16.'
+- case_id: case-bravo-037
+  event_date: '2024-05-17'
+  title: Bravo encounter 17
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #17.'
+- case_id: case-bravo-038
+  event_date: '2024-06-18'
+  title: Bravo encounter 18
+  kind: exam-report
+  body_md: 'Routine encounter for bravo, visit #18.'
+facts: {}

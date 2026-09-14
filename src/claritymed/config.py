@@ -1,0 +1,451 @@
+"""Runtime configuration: paths, YAML loader, language default.
+
+Three independent override layers:
+
+    CLARITYMED_HOME  (single dial)  -> ~/.claritymed
+        |                               |
+        +------------+------------------+------------------+
+                     |                  |                  |
+    CLARITYMED_DATA_DIR  CLARITYMED_SHARED_DIR  CLARITYMED_LOG_DIR
+       per-user PHI       admin-managed shared    logs
+        ~/.claritymed/data  ~/.claritymed/shared    ~/.claritymed/logs
+
+Per the foundation plan, ``DATA_DIR`` / ``SHARED_DIR`` / ``LOG_DIR`` are
+evaluated once at import time (constant style). Tests that need to redirect
+them must set env vars *before* importing ``claritymed`` (see ``tests/conftest.py``).
+"""
+
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+from pathlib import Path
+
+import yaml
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+SRC_ROOT = PROJECT_ROOT / "src" / "claritymed"
+CONFIGS_DIR = PROJECT_ROOT / "configs"
+I18N_DIR = CONFIGS_DIR / "i18n"
+PROMPTS_STORE = SRC_ROOT / "core" / "prompts" / "store"
+
+CLARITYMED_HOME = Path(os.environ.get("CLARITYMED_HOME", Path.home() / ".claritymed"))
+DATA_DIR = Path(os.environ.get("CLARITYMED_DATA_DIR", CLARITYMED_HOME / "data"))
+SHARED_DIR = Path(os.environ.get("CLARITYMED_SHARED_DIR", CLARITYMED_HOME / "shared"))
+LOG_DIR = Path(os.environ.get("CLARITYMED_LOG_DIR", CLARITYMED_HOME / "logs"))
+
+DEFAULT_LANG_FALLBACK = "en"
+DEFAULT_PASTE_MAX_FILE_SIZE_MB = 20
+DEFAULT_PASTE_MAX_TEXT_CHARS = 100_000
+DEFAULT_PASTE_PLACEHOLDER_MIN_LINES = 6
+DEFAULT_PASTE_PLACEHOLDER_MIN_CHARS = 800
+
+# Vision feature defaults — duplicated from configs/app.yaml so a stripped
+# install (or a test that mocks load_yaml) still gets a usable guard.
+DEFAULT_VISION_ENABLED = True
+DEFAULT_VISION_MAX_BYTES = 20_000_000
+DEFAULT_VISION_MAX_DIMENSION = 4096
+DEFAULT_VISION_MAX_PIXELS = 16_000_000
+DEFAULT_VISION_MIN_BYTES = 10_000
+DEFAULT_VISION_MIN_DIMENSION = 224
+DEFAULT_VISION_MIN_PIXELS = 50_000
+
+# /upload quality gates — see core/upload/bundle.py
+DEFAULT_UPLOAD_MIN_TOTAL_CHARS = 100
+DEFAULT_UPLOAD_MIN_PART_CHARS = 30
+DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD = 0.93
+
+# /record import — chunk-dedup threshold for PHI-side add_record
+# (see core/rag/dedup.py + ingest/records/case_writer.py). Higher than
+# upload because personal records have less legitimate near-duplication
+# than published library content.
+DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD = 0.95
+
+
+def ensure_runtime_dirs() -> None:
+    """Create ``data/``, ``shared/``, and ``logs/`` under the runtime root.
+
+    Idempotent. Called by ``setup_logging()`` and ``init_user()`` at first use.
+    Subdirectories (``data/users/<id>/``, ``shared/knowledge/``, etc.) are
+    created lazily by the code that first writes to them — keeping the top
+    level empty when a feature has not been exercised yet.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@lru_cache(maxsize=32)
+def load_yaml(name: str) -> dict:
+    """Load ``configs/<name>`` with ``yaml.safe_load``.
+
+    Returns an empty dict when the file is missing. Result is cached in
+    process; call ``reload_configs()`` to invalidate.
+    """
+    path = CONFIGS_DIR / name
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    return data or {}
+
+
+def default_lang() -> str:
+    """Return ``app.yaml`` ``i18n.default_lang`` or ``"en"``."""
+    return (
+        load_yaml("app.yaml").get("i18n", {}).get("default_lang")
+        or DEFAULT_LANG_FALLBACK
+    )
+
+
+def paste_max_file_size_bytes() -> int:
+    """Max bytes accepted by a single drag-drop / Ctrl+V / /upload entry.
+
+    Read from ``app.yaml`` ``paste.max_file_size_mb`` and converted to
+    bytes. Falls back to ``DEFAULT_PASTE_MAX_FILE_SIZE_MB`` when missing
+    so an unconfigured install still has a sensible ceiling.
+    """
+    mb = load_yaml("app.yaml").get("paste", {}).get("max_file_size_mb")
+    if mb is None:
+        mb = DEFAULT_PASTE_MAX_FILE_SIZE_MB
+    return int(float(mb) * 1024 * 1024)
+
+
+def paste_max_text_chars() -> int:
+    """Max chars accepted in a single raw-text paste into the input bar.
+
+    Pastes above this are rejected with a toast (no truncation). Read
+    from ``app.yaml`` ``paste.max_text_chars``; falls back to
+    ``DEFAULT_PASTE_MAX_TEXT_CHARS`` when missing.
+    """
+    n = load_yaml("app.yaml").get("paste", {}).get("max_text_chars")
+    if n is None:
+        n = DEFAULT_PASTE_MAX_TEXT_CHARS
+    return int(n)
+
+
+def paste_placeholder_min_lines() -> int:
+    """Pastes with >= this many lines collapse to a placeholder.
+
+    Lets short multi-line snippets inline as-is so the user sees what
+    landed; long pastes fold into ``[Pasted text #N +M lines]``.
+    """
+    n = load_yaml("app.yaml").get("paste", {}).get("placeholder_min_lines")
+    if n is None:
+        n = DEFAULT_PASTE_PLACEHOLDER_MIN_LINES
+    return int(n)
+
+
+def paste_placeholder_min_chars() -> int:
+    """Pastes with >= this many chars collapse to a placeholder.
+
+    Catches single long lines that would horizontally scroll forever in
+    the input bar, even when the line count is small.
+    """
+    n = load_yaml("app.yaml").get("paste", {}).get("placeholder_min_chars")
+    if n is None:
+        n = DEFAULT_PASTE_PLACEHOLDER_MIN_CHARS
+    return int(n)
+
+
+def upload_min_total_chars() -> int:
+    """Assembled-payload floor for ``/upload``.
+
+    Bundles whose combined non-whitespace char count falls below this
+    are rejected by ``UploadBundle.validate`` before any RAG insert. Read
+    from ``app.yaml`` ``upload.min_total_chars``; falls back to
+    ``DEFAULT_UPLOAD_MIN_TOTAL_CHARS`` when missing.
+    """
+    n = load_yaml("app.yaml").get("upload", {}).get("min_total_chars")
+    if n is None:
+        n = DEFAULT_UPLOAD_MIN_TOTAL_CHARS
+    return int(n)
+
+
+def upload_min_part_chars() -> int:
+    """Per-part floor for ``/upload``.
+
+    Individual parts (one OCR'd image, one file, one inline-text run)
+    shorter than this are marked ``low_content`` during validation. Read
+    from ``app.yaml`` ``upload.min_part_chars``; falls back to
+    ``DEFAULT_UPLOAD_MIN_PART_CHARS`` when missing.
+    """
+    n = load_yaml("app.yaml").get("upload", {}).get("min_part_chars")
+    if n is None:
+        n = DEFAULT_UPLOAD_MIN_PART_CHARS
+    return int(n)
+
+
+def upload_dedupe_cosine_threshold() -> float:
+    """Cosine-similarity threshold for per-chunk RAG dedupe.
+
+    During ingest each new chunk's dense embedding is KNN-searched
+    against the user's existing collection; matches at or above this
+    score are skipped (already-in-library). Read from ``app.yaml``
+    ``upload.dedupe_cosine_threshold``; falls back to
+    ``DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD`` when missing.
+    """
+    n = load_yaml("app.yaml").get("upload", {}).get("dedupe_cosine_threshold")
+    if n is None:
+        n = DEFAULT_UPLOAD_DEDUPE_COSINE_THRESHOLD
+    return float(n)
+
+
+def record_dedupe_cosine_threshold() -> float:
+    """Cosine-similarity threshold for per-chunk PHI-record dedupe.
+
+    Used by ``UserPhiRagStore.add_record`` when applying records imported
+    via ``claritymed record import-from-template``. Read from ``app.yaml``
+    ``record.dedupe_cosine_threshold``; falls back to
+    ``DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD`` when missing.
+    """
+    n = load_yaml("app.yaml").get("record", {}).get("dedupe_cosine_threshold")
+    if n is None:
+        n = DEFAULT_RECORD_DEDUPE_COSINE_THRESHOLD
+    return float(n)
+
+
+def supported_langs() -> tuple[str, ...]:
+    """Return ``app.yaml`` ``i18n.supported_langs`` or ``(DEFAULT_LANG_FALLBACK,)``."""
+    raw = load_yaml("app.yaml").get("i18n", {}).get("supported_langs")
+    if not raw:
+        return (DEFAULT_LANG_FALLBACK,)
+    return tuple(str(x).lower() for x in raw)
+
+
+def load_evals_config() -> "EvalsConfig":
+    """Load and validate ``configs/evals.yaml``.
+
+    Single source of truth for which benchmark tasks the runner executes by
+    default, where per-run JSONL lands, and which provider (if any) acts as
+    a judge. Wraps :func:`load_yaml` (cached) and validates with Pydantic so
+    a typo fails fast at load time, not in the middle of a 20-minute run.
+
+    Raises:
+        FileNotFoundError: If ``configs/evals.yaml`` does not exist.
+        pydantic.ValidationError: If the YAML is structurally wrong.
+    """
+    from claritymed.core.schemas.evals import EvalsConfig
+
+    raw = load_yaml("evals.yaml")
+    if not raw:
+        raise FileNotFoundError(
+            "configs/evals.yaml missing or empty — required for `claritymed eval`."
+        )
+    return EvalsConfig.model_validate(raw)
+
+
+def load_symptoms_config() -> "SymptomsConfig":
+    """Load and validate ``configs/symptoms.yaml``.
+
+    Single source of truth for the symptoms feature's dataset/model
+    catalog, eligibility strategy catalog, and tier-keyed safety-keyword
+    allow-list (audit-only — verbatim safety sentences are NOT stored
+    here; per-tier behavioural prose lives in ``symptoms_final_reply.yaml``
+    in the prompt registry).
+
+    Raises:
+        FileNotFoundError: ``configs/symptoms.yaml`` does not exist. The
+            file is the feature's enable gate — its absence is the
+            documented "kill switch" that keeps the symptoms plugin out
+            of the agent's toolset entirely.
+        pydantic.ValidationError: The YAML is structurally wrong.
+        UnknownEligibilityStrategyError: ``eligibility.active`` does not
+            match a catalog entry id.
+    """
+    from claritymed.core.symptoms.schemas import SymptomsConfig
+
+    raw = load_yaml("symptoms.yaml")
+    if not raw:
+        raise FileNotFoundError(
+            "configs/symptoms.yaml missing or empty — required when the "
+            "symptoms feature is enabled. Set datasets[0].enabled=false "
+            "to ship with the feature off rather than removing the file."
+        )
+    return SymptomsConfig.model_validate(raw)
+
+
+def load_vision_config() -> "VisionConfig":
+    """Load and validate ``configs/vision.yaml``.
+
+    Single source of truth for the vision feature's disease/model catalog.
+    Loaded by both the vision-server (which honors ``enabled`` and loads
+    the manifest chain) and the orchestrator-side ``VisionRegistry``
+    (which cross-checks against ``/v1/catalog`` at boot — KTD-V2).
+
+    Raises:
+        FileNotFoundError: ``configs/vision.yaml`` does not exist. The
+            file is the feature's kill switch — its absence keeps the
+            vision plugin out of the agent's toolset entirely (same
+            semantic as ``configs/symptoms.yaml``).
+        pydantic.ValidationError: The YAML is structurally wrong.
+    """
+    from claritymed.core.vision.schemas import VisionConfig
+
+    raw = load_yaml("vision.yaml")
+    if not raw:
+        raise FileNotFoundError(
+            "configs/vision.yaml missing or empty — required when the "
+            "vision feature is enabled. Set diseases[0].enabled=false "
+            "to ship with the feature off rather than removing the file."
+        )
+    return VisionConfig.model_validate(raw)
+
+
+def load_env_file(path: Path | None = None) -> dict[str, str]:
+    """Load ``KEY=VALUE`` lines from ``CLARITYMED_HOME/.env`` into ``os.environ``.
+
+    Per-user keys (provider API keys, language overrides, default user) live
+    in the runtime root rather than the repo, so an open-source clone never
+    ships secrets. Lines starting with ``#`` are ignored. A leading
+    ``export `` is stripped so the same file can be sourced by a shell.
+    Existing env vars are preserved — the file is a default, not an override.
+
+    Returns the dict of keys that were applied (useful for tests).
+    """
+    env_path = path or CLARITYMED_HOME / ".env"
+    if not env_path.exists():
+        return {}
+    applied: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value
+        applied[key] = value
+    return applied
+
+
+_DEFAULT_TOOL_APPROVAL_TTL_HOURS = 24
+
+_DEFAULT_INGEST_TOOL_MAX_RETRIES = 3
+
+_DEFAULT_ASK_USER_QUESTION_MAX_RETRIES = 3
+
+
+def tool_approval_rule_ttl_hours() -> int:
+    """Return the TTL (in hours) for always-allow tool approval rules.
+
+    Read from ``app.yaml`` ``tool_approval.rule_ttl_hours``.
+    Falls back to ``_DEFAULT_TOOL_APPROVAL_TTL_HOURS`` when missing.
+    """
+    val = load_yaml("app.yaml").get("tool_approval", {}).get("rule_ttl_hours")
+    if val is None:
+        return _DEFAULT_TOOL_APPROVAL_TTL_HOURS
+    return int(val)
+
+
+def ingest_tool_max_retries() -> int:
+    """Return the per-tool-name retry budget for ingest tools.
+
+    Read from ``app.yaml`` ``tools.ingest.max_retries``. Passed to
+    pydantic-ai's ``Tool(max_retries=N)`` so a small / local model gets
+    N chances to self-correct its arg payload after the dispatcher
+    raises ``ModelRetry``. Counter is keyed by tool name, not call_id,
+    so concurrent calls of the same tool share the budget.
+
+    Defaults to ``_DEFAULT_INGEST_TOOL_MAX_RETRIES`` when missing.
+    """
+    val = load_yaml("app.yaml").get("tools", {}).get("ingest", {}).get("max_retries")
+    if val is None:
+        return _DEFAULT_INGEST_TOOL_MAX_RETRIES
+    return int(val)
+
+
+def ask_user_question_max_retries() -> int:
+    """Return the retry budget for the ``ask_user_question`` tool.
+
+    Read from ``app.yaml`` ``tools.ask_user_question.max_retries``.
+    Passed to pydantic-ai's ``Tool(max_retries=N)`` so a small / local
+    model gets N chances to repair a malformed question payload (too
+    few options, missing field, header > 12 chars) before pydantic-ai
+    raises ``UnexpectedModelBehavior``.
+
+    Separate from ``ingest_tool_max_retries`` because the failure modes
+    differ — ingest tools fail on stringified lists and field-name
+    typos, ``ask_user_question`` more often fails on schema shape
+    (1 option instead of ≥2, label length). Defaults to
+    ``_DEFAULT_ASK_USER_QUESTION_MAX_RETRIES`` when missing.
+    """
+    val = (
+        load_yaml("app.yaml")
+        .get("tools", {})
+        .get("ask_user_question", {})
+        .get("max_retries")
+    )
+    if val is None:
+        return _DEFAULT_ASK_USER_QUESTION_MAX_RETRIES
+    return int(val)
+
+
+def vision_enabled() -> bool:
+    """Return ``app.yaml`` ``vision.enabled`` (default ``True``).
+
+    Master kill switch consulted by :class:`VisionFeature.ensure_bootstrapped`
+    — when ``False`` the tool is not registered with the agent and the
+    ``<image>`` tag advertises the feature as off.
+    """
+    val = load_yaml("app.yaml").get("vision", {}).get("enabled")
+    if val is None:
+        return DEFAULT_VISION_ENABLED
+    return bool(val)
+
+
+def vision_image_limits() -> "ImageLimits":
+    """Return image guard limits read from ``app.yaml`` ``vision.image_limits``.
+
+    Falls back to ``DEFAULT_VISION_*`` constants for any missing key so
+    a partial YAML still produces a usable :class:`ImageLimits`.
+    """
+    from claritymed.core.vision.image_guard import ImageLimits
+
+    raw = load_yaml("app.yaml").get("vision", {}).get("image_limits", {}) or {}
+    return ImageLimits(
+        max_bytes=int(raw.get("max_bytes", DEFAULT_VISION_MAX_BYTES)),
+        max_dimension=int(raw.get("max_dimension", DEFAULT_VISION_MAX_DIMENSION)),
+        max_pixels=int(raw.get("max_pixels", DEFAULT_VISION_MAX_PIXELS)),
+        min_bytes=int(raw.get("min_bytes", DEFAULT_VISION_MIN_BYTES)),
+        min_dimension=int(raw.get("min_dimension", DEFAULT_VISION_MIN_DIMENSION)),
+        min_pixels=int(raw.get("min_pixels", DEFAULT_VISION_MIN_PIXELS)),
+    )
+
+
+def emergency_gate_force_on() -> bool:
+    """Return ``True`` when ``CLARITYMED_FORCE_EMERGENCY_GATE`` is on.
+
+    When on, the sensitivity resolver refuses to honor a per-user
+    ``off`` and downgrades to ``lenient`` instead. This is the
+    deploy-time master switch the operator flips in production:
+    individual users may still ask for less noise, but they cannot
+    fully disable the gate behind the operator's back.
+
+    Truth-y values: ``"on"``, ``"1"``, ``"true"`` (case-insensitive).
+    Default is ``True`` — production is the safer default; CI / dev
+    images that need to test the off-path explicitly set the env var
+    to ``"off"``.
+    """
+    raw = os.environ.get("CLARITYMED_FORCE_EMERGENCY_GATE")
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"on", "1", "true", "yes"}
+
+
+def reload_configs() -> None:
+    """Invalidate the YAML cache. Test helper / admin hot-reload entry."""
+    load_yaml.cache_clear()
+
+
+if False:  # pragma: no cover — TYPE_CHECKING-only forward ref
+    from claritymed.core.schemas.evals import EvalsConfig  # noqa: F401
+    from claritymed.core.symptoms.schemas import SymptomsConfig  # noqa: F401
+    from claritymed.core.vision.image_guard import ImageLimits  # noqa: F401
+    from claritymed.core.vision.schemas import VisionConfig  # noqa: F401

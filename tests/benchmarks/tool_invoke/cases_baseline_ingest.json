@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "runner": "ingest",
+  "cases": {
+    "age_to_birth_year": {
+      "revision": 1,
+      "content_sha256": "12152f3df2264b53eec559afbfe12c54a895fb832a1f1104cc9fd5ccc1a4d148"
+    },
+    "age_to_birth_year_casual": {
+      "revision": 1,
+      "content_sha256": "1a11b1419372790e826723b5bb905ce7600a0686c023516914079db19e3cf74f"
+    },
+    "ask_allergy_no_severity": {
+      "revision": 1,
+      "content_sha256": "881462beaf57928bed576ebc98992aa9a5083eba25737ff61db24b2f33c8e69f"
+    },
+    "ask_ambiguous_record": {
+      "revision": 1,
+      "content_sha256": "45f6f19880984f6b8dad2c33794252829d6bfa9eef636e73b7a30b1b7e1a71b5"
+    },
+    "ask_delete_by_description": {
+      "revision": 1,
+      "content_sha256": "994744d41369fb4b69de640980018a1630abe80e1176ccc6c934be64a24ed067"
+    },
+    "ask_drug_class": {
+      "revision": 1,
+      "content_sha256": "5ba17bfc2d3b33e514ee46f8b6373ccd05b660625424b39b747727e781a062c8"
+    },
+    "ask_empty_save": {
+      "revision": 1,
+      "content_sha256": "65c56138da343c835fe9a43c68a6b31454df9049eb0e11b0db51193dcaadc413"
+    },
+    "ask_then_save_allergy": {
+      "revision": 1,
+      "content_sha256": "9e6504a5ec2c422b02fa209d6a61c4fb950eba0646ce20c12737fa9bcec90729"
+    },
+    "ask_then_save_medication": {
+      "revision": 1,
+      "content_sha256": "ac30a2eb16a34c3e2db700c306eac90bcdd0639e3867126e7b4c887d0dcf6ba9"
+    },
+    "ask_vague_conditions": {
+      "revision": 1,
+      "content_sha256": "378a9c9ac91d506763a1a310a9904dbe5848007c00fd809c83d1236f1ce5495b"
+    },
+    "decline_thinking_aloud": {
+      "revision": 1,
+      "content_sha256": "af34b1dab3983b79a1da3f252852d3cc6128d469e05e22e79968c02b041394c9"
+    },
+    "delete_record": {
+      "revision": 1,
+      "content_sha256": "5918a926203fdfe73539c00fe4beded549c414e96070b731d567e9b267be92ce"
+    },
+    "fp_chitchat": {
+      "revision": 1,
+      "content_sha256": "aea4214cf6686b9d5956f9691df966d3a6afd150c7d301db490a242dc2faac5b"
+    },
+    "fp_hypothetical": {
+      "revision": 1,
+      "content_sha256": "971def5f1a04d7958531a7cde69b9bee61ceea4e5eb501905d59dc451dc38263"
+    },
+    "fp_knowledge_alt": {
+      "revision": 1,
+      "content_sha256": "f4ef40c76b18804e72a528a05709e832410cfb0a39e7bd073ee2f92fc5a11ea2"
+    },
+    "fp_pure_knowledge": {
+      "revision": 1,
+      "content_sha256": "02d7a03a48e49fd01bf71efd54841750908ccb0e8bb3058a20bd50c4cc162c2f"
+    },
+    "fp_repeat_allergy": {
+      "revision": 1,
+      "content_sha256": "e590c1d21f32779fa64e37b56dc57c1df6a7afa55e6568e978deb186de2839ca"
+    },
+    "fp_repeat_condition": {
+      "revision": 1,
+      "content_sha256": "eac88775deb1966dbedcbb5ff8c57f23ec2b8af686211c8a71fce8d666510b8b"
+    },
+    "fp_repeat_medication": {
+      "revision": 1,
+      "content_sha256": "1bf79aaaff548c25854c904dbd8074fedb41b35b1a77499706de4417377bdb3f"
+    },
+    "fp_repeat_occupation": {
+      "revision": 1,
+      "content_sha256": "edf1c64155336c209948d10b2118457d08341649e069194870ab105ed745b2be"
+    },
+    "fp_repeat_sex": {
+      "revision": 1,
+      "content_sha256": "a8ca7cdce74aeab22bbbd6d3d05570417124b125c7e39128600590dc9aeea1b9"
+    },
+    "fp_repeat_weight": {
+      "revision": 1,
+      "content_sha256": "7d293b801656c81829aadc8c8b8a366527fcbe7077b9b83816d49ac56a3844e4"
+    },
+    "fp_retrieve_not_save": {
+      "revision": 1,
+      "content_sha256": "d91c12e77c814cc9f28a1f44421334eb7b89fb207f9f9bba1b8954902d09bb7c"
+    },
+    "fp_third_party_subject": {
+      "revision": 1,
+      "content_sha256": "6abb17ddf758c22de76dcb525aa62cac980beff540f0552ca4e6908f712d1563"
+    },
+    "implicit_allergy": {
+      "revision": 1,
+      "content_sha256": "7e285461aa12ea6eb28cb8403fceca3da0a8383bdc4f87e64652c4bd38349900"
+    },
+    "implicit_save_record": {
+      "revision": 1,
+      "content_sha256": "fc4f55c551f5a75abc2aeef16a4a3b940548952d02a48393e820e5121a2194ca"
+    },
+    "implicit_save_record_hinted": {
+      "revision": 1,
+      "content_sha256": "828b6fe2b69502188974fcd9d1927a471d87e3699fcf3e7fb51bfca616dfd783"
+    },
+    "implicit_save_to_library": {
+      "revision": 1,
+      "content_sha256": "6c94fda992e44229e258057923af80d31676f52aae38890204ae6babe7bad4d7"
+    },
+    "implicit_save_to_library_hinted": {
+      "revision": 1,
+      "content_sha256": "5050d23eaeb02d7f26cc0760543dbec0cf5c569daa1f7b2f124a9dfc35c8080e"
+    },
+    "multi_condition_med": {
+      "revision": 1,
+      "content_sha256": "d0d8de6ae4a252afd7a2a4dd6aa8d5ef6be109d9783021176eb9383866a8fb29"
+    },
+    "multi_condition_med_hinted": {
+      "revision": 1,
+      "content_sha256": "c1b4ccf2e94aff75a08590d2d3fa72fc2927bb5e70b999351d4eb28583513ef9"
+    },
+    "save_allergy": {
+      "revision": 1,
+      "content_sha256": "d502dce1c968c3589c3841e46e9982b50e6f29dd7fbf3ca07af2d7a800a46308"
+    },
+    "save_condition": {
+      "revision": 1,
+      "content_sha256": "18c49f1123cf7dfdb70ebda02577ca54e8443321ad9ff06895ca98fec17864e1"
+    },
+    "save_medication": {
+      "revision": 1,
+      "content_sha256": "72201f464c303bae654ad30f8f791930f580ef5be7b6ca8a9d8d05af4b52cb51"
+    },
+    "save_record": {
+      "revision": 1,
+      "content_sha256": "b5ad20c422022d361d6dbced25a71519a3cbbeba4fe16a919006615b7d3810d7"
+    },
+    "save_to_library": {
+      "revision": 1,
+      "content_sha256": "b0b9f1c4169bbe5e2c656e0931d40a53a8925e945bb3c34381b85f54b4b49177"
+    },
+    "update_profile_weight": {
+      "revision": 1,
+      "content_sha256": "0ec3a90cf4021cf9e94685039395316081cb91f61e62a31fde917185d6912c03"
+    },
+    "weight_unit_conversion": {
+      "revision": 1,
+      "content_sha256": "6d1d9bd8b3a8bdc798efe053557c73aab92aa6a1f8d0631590b0ae13c6517a87"
+    }
+  }
+}

@@ -1,0 +1,62 @@
+name: delete_record_tool
+description: |
+  Tool description shown to the LLM for ``delete_record`` — remove a
+  PHI event manifest and its Qdrant chunks. Approval modal for this
+  tool only ever shows accept/deny (no always_*), and ``confirm_kind``
+  is a mandatory second-channel check the LLM must pass correctly.
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. Hard ban on "did the user say delete? then
+      delete" — the model must read the record's manifest first via
+      the library view so ``confirm_kind`` is grounded, not guessed.
+    languages:
+      en: |
+        Delete one PHI event record (manifest + indexed chunks).
+        This is irreversible — there is no undo.
+
+        Use this only when:
+          - The user explicitly asks to delete a specific record.
+            "Forget my last checkup" is a deletion request; "I don't
+            want to discuss this" is not.
+          - You can ground ``record_path`` in the user's library view
+            or chat history. Do not pick a record from memory.
+          - You can ground ``confirm_kind`` in the manifest's actual
+            ``kind`` field — typically by reading the library view
+            entry first.
+
+        Field notes:
+          - ``record_path`` is the relative path
+            ``<category>/<slug>``. Do not pass an absolute path; the
+            tool rejects any path that resolves outside the user's
+            records root.
+          - ``confirm_kind`` must equal the ``kind`` field of the
+            manifest at ``record_path``. A mismatch raises an error
+            and the record is NOT deleted. This is the second-channel
+            anti-mistake check — propagate the value verbatim from
+            the library view, do not paraphrase.
+
+        Do NOT propose a follow-up ``delete_record`` for the same
+        path after a denial — the user said no.
+      zh: |
+        删除一条 PHI 事件记录（manifest + 已索引的 Qdrant 切片）。
+        **此操作不可撤销**。
+
+        以下条件全部满足才使用：
+          - 用户**明确**要求删除某条具体记录。"忘掉我上次体检"是删除请求；
+            "我不想讨论这个"不是。
+          - ``record_path`` 能从用户的库视图或聊天历史里追溯到，**不要**
+            凭印象选记录。
+          - ``confirm_kind`` 能从该记录 manifest 的 ``kind`` 字段追溯
+            （通常先读一遍库视图）。
+
+        字段说明：
+          - ``record_path`` 是相对路径 ``<category>/<slug>``。不要传绝对
+            路径；工具会拒绝任何解析到用户 records 根之外的路径。
+          - ``confirm_kind`` 必须**精确等于**该 ``record_path`` 对应
+            manifest 的 ``kind`` 字段。不一致会报错且记录**不会**被删。
+            这是二次确认锚点——从库视图里**一字不差地**取，不要换说法。
+
+        用户拒绝一次删除后，**不要**在下一回合对同一路径再次提议
+        ``delete_record``——用户已经说不了。

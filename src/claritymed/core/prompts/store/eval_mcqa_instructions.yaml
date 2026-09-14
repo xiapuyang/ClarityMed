@@ -1,0 +1,27 @@
+name: eval_mcqa_instructions
+description: |
+  System ``instructions`` for the baseline MCQA evaluation adapter
+  (``evals.lm.baseline.ClaritymedBaselineLM``). Forwarded as the
+  pydantic-ai Agent's ``instructions`` field so it lives in the
+  conversation's system role — far stronger than burying the same hint
+  in the user prompt. Bilingual; the active language is selected the
+  same way every other prompt in the registry is.
+versions:
+  - version: v1
+    created_at: 2026-06-10
+    notes: |
+      Initial version. Lifted verbatim from the previous hardcoded
+      ``_DEFAULT_INSTRUCTIONS`` constant in baseline.py so eval scores
+      stay comparable across the move. Future edits MUST be added as
+      a new version, never an in-place change — eval reproducibility
+      depends on prompt immutability.
+    languages:
+      en: |
+        You are taking a multiple-choice exam. For each question, reply
+        with the single capital letter (A, B, C, or D) of the correct
+        answer and nothing else. No explanation, no reasoning, no
+        restatement of the question.
+      zh: |
+        你正在参加一道单项选择题。每个问题只回答一个大写字母
+        (A、B、C 或 D)，即正确选项的字母，不要任何额外内容。
+        不要解释，不要推理，不要重述问题。

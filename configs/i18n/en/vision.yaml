@@ -1,0 +1,280 @@
+# User-facing copy for the vision-detection feature.
+#
+# Loaded via core/i18n/loader.py (configs/i18n/<lang>/*.yaml are merged
+# into a per-language flat dict, keyed dotted). Vision deliberately
+# uses this `configs/i18n/` surface — rather than the prompt-registry
+# under `core/prompts/store/*.yaml` — so disease display names, label
+# translations, confirm-modal copy, and audit `specialist_keywords`
+# live alongside the rest of the localized strings. The prompt
+# registry stays scoped to LLM system prompts whose immutable-version
+# validator would be overkill for translator-edited UI strings.
+#
+# Plugin code (Unit 7's orchestrator/features/vision_plugin.py) reads
+# these via t() / t_list() — keep both en + zh in sync. Missing keys
+# fall back to the bare key string, which surfaces as obviously broken
+# copy.
+vision:
+  # 1-line "use when…" snippets fed into the LLM tool description so it
+  # can pick the right disease_id when multiple diseases are enabled.
+  intent:
+    breast_cancer_ultrasound: |
+      Use when the user uploads a breast-ultrasound image and asks
+      whether a lesion is concerning, benign, or malignant. Do NOT
+      call this tool when the image is not an ultrasound, when the
+      image already carries a radiologist's report (ocr_has_report),
+      or when the image is not medical.
+    lung_cancer_chest_ct: |
+      Use when the user uploads a chest-CT image (axial slice) and
+      asks whether a lung nodule or mass is concerning, what type of
+      lung cancer it might be, or whether it looks normal. Do NOT
+      call this tool when the image is not a CT scan, when the image
+      already carries a radiologist's report (ocr_has_report), or
+      when the image is not medical.
+    skin_cancer_dermoscopy: |
+      Use when the user uploads a dermoscopy (close-up skin) image
+      and asks whether a mole, lesion, or skin patch is concerning,
+      what kind of skin cancer it might be (melanoma, basal cell,
+      squamous cell, actinic keratosis), or whether it looks benign
+      (nevus, dermatofibroma, vascular lesion, seborrheic keratosis,
+      pigmented benign keratosis). Do NOT call this tool when the
+      image is not a dermoscopy / close-up skin photo, when the
+      image already carries a dermatologist's report
+      (ocr_has_report), or when the image is not medical.
+    lung_cancer_histopathology: |
+      Use when the user uploads a lung histopathology (microscopy)
+      slide image — typically a stained tissue patch from a lung
+      biopsy — and asks whether the tissue shows adenocarcinoma,
+      squamous cell carcinoma, or healthy lung tissue. Do NOT call
+      this tool when the image is not a lung histology slide (e.g.
+      it's a colon biopsy, a chest CT, or a non-medical image), when
+      the image already carries a pathologist's report
+      (ocr_has_report), or when the image is not medical.
+    colon_cancer_histopathology: |
+      Use when the user uploads a colon histopathology (microscopy)
+      slide image — typically a stained tissue patch from a colon
+      biopsy — and asks whether the tissue shows adenocarcinoma or
+      healthy colon tissue. Do NOT call this tool when the image is
+      not a colon histology slide (e.g. it's a lung biopsy, a
+      colonoscopy photo, or a non-medical image), when the image
+      already carries a pathologist's report (ocr_has_report), or
+      when the image is not medical.
+    chest_xray_pneumonia: |
+      Use when the user uploads a chest X-ray (radiograph) and asks
+      whether it looks like pneumonia or normal lung fields. Do NOT
+      call this tool when the image is not a chest X-ray, when the
+      image already carries a radiologist's report (ocr_has_report),
+      or when the image is not medical.
+
+  # Per-disease display name shown in confirm modals + LLM-side text.
+  # Disease identity is two-dimensional: (condition × modality). Same
+  # condition under different modalities (e.g. lung cancer on chest CT
+  # vs lung cancer on histopathology) gets distinct disease_ids and
+  # distinct display names so the confirm modal can disambiguate
+  # which model is about to run. Multi-model fallback within ONE
+  # disease_id (same (condition × modality)) is expressed via the
+  # disease's `flow:` array in configs/vision.yaml, not by adding a
+  # new disease entry here.
+  disease:
+    breast_cancer_ultrasound:
+      name: "breast cancer (ultrasound)"
+    lung_cancer_chest_ct:
+      name: "lung cancer (chest CT)"
+    skin_cancer_dermoscopy:
+      name: "skin cancer (dermoscopy)"
+    lung_cancer_histopathology:
+      name: "lung cancer (histopathology)"
+    colon_cancer_histopathology:
+      name: "colon cancer (histopathology)"
+    chest_xray_pneumonia:
+      name: "pneumonia (chest X-ray)"
+
+  # Per-label localized names + short descriptions. Descriptions are
+  # surfaced by the LLM when the user asks "what does X mean here?".
+  label:
+    breast_cancer_ultrasound:
+      benign:
+        name: "benign"
+        description: "Non-cancerous lesion. Routine follow-up is usually appropriate."
+      malignant:
+        name: "malignant"
+        description: "Suspicious for cancer. A breast specialist should review the image."
+      normal:
+        name: "normal"
+        description: "No lesion identified. No action required from this image alone."
+    lung_cancer_chest_ct:
+      adenocarcinoma:
+        name: "adenocarcinoma"
+        description: "Adenocarcinoma of the lung. Specialist review required."
+      large_cell_carcinoma:
+        name: "large cell carcinoma"
+        description: "Large cell carcinoma of the lung. Specialist review required."
+      squamous_cell_carcinoma:
+        name: "squamous cell carcinoma"
+        description: "Squamous cell carcinoma of the lung. Specialist review required."
+      normal:
+        name: "normal"
+        description: "No lung-cancer findings identified. No action required from this image alone."
+    skin_cancer_dermoscopy:
+      actinic_keratosis:
+        name: "actinic keratosis"
+        description: "Pre-malignant sun-damage lesion. Dermatology review is recommended."
+      basal_cell_carcinoma:
+        name: "basal cell carcinoma"
+        description: "Most common skin cancer. Dermatology review is recommended."
+      dermatofibroma:
+        name: "dermatofibroma"
+        description: "Benign fibrous nodule. Routine follow-up is appropriate."
+      melanoma:
+        name: "melanoma"
+        description: "Suspicious for melanoma — the most serious skin cancer. Urgent dermatology review."
+      nevus:
+        name: "nevus"
+        description: "Common mole (benign). Routine self-monitoring is appropriate."
+      pigmented_benign_keratosis:
+        name: "pigmented benign keratosis"
+        description: "Benign pigmented keratosis. Routine follow-up is appropriate."
+      seborrheic_keratosis:
+        name: "seborrheic keratosis"
+        description: "Benign seborrheic keratosis. Routine follow-up is appropriate."
+      squamous_cell_carcinoma:
+        name: "squamous cell carcinoma"
+        description: "Squamous cell carcinoma. Dermatology review is recommended."
+      vascular_lesion:
+        name: "vascular lesion"
+        description: "Benign vascular lesion (e.g. cherry angioma). Routine follow-up is appropriate."
+    lung_cancer_histopathology:
+      adenocarcinoma:
+        name: "adenocarcinoma"
+        description: "Lung adenocarcinoma on histology. Specialist review is recommended."
+      normal:
+        name: "normal"
+        description: "Healthy lung tissue on histology. No malignant features identified."
+      squamous_cell_carcinoma:
+        name: "squamous cell carcinoma"
+        description: "Lung squamous cell carcinoma on histology. Specialist review is recommended."
+    colon_cancer_histopathology:
+      adenocarcinoma:
+        name: "adenocarcinoma"
+        description: "Colon adenocarcinoma on histology. Specialist review is recommended."
+      normal:
+        name: "normal"
+        description: "Healthy colon tissue on histology. No malignant features identified."
+    chest_xray_pneumonia:
+      normal:
+        name: "normal"
+        description: "No pneumonia signs detected on this chest X-ray."
+      pneumonia:
+        name: "pneumonia"
+        description: "Findings suggestive of pneumonia on this chest X-ray. Clinical correlation and physician review are recommended."
+
+  # Confirm modal copy — fired from the tool body before any HTTP call.
+  # `title` shows as the modal header; `body` is the question. `yes` /
+  # `no` label the two options (descriptions are optional flavor).
+  confirm:
+    breast_cancer_ultrasound:
+      title: "Analyze breast ultrasound?"
+      body: |
+        I can run a small breast-ultrasound model on this image to
+        estimate whether the lesion looks benign, malignant, or normal.
+        The result is an estimate — a clinician's reading is always
+        the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local breast-ultrasound model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    lung_cancer_chest_ct:
+      title: "Analyze chest CT?"
+      body: |
+        I can run a small chest-CT model on this image to estimate
+        whether a lung nodule looks like adenocarcinoma, large cell
+        carcinoma, squamous cell carcinoma, or normal lung tissue.
+        The result is an estimate — a radiologist's reading is always
+        the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local chest-CT model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    skin_cancer_dermoscopy:
+      title: "Analyze skin lesion?"
+      body: |
+        I can run a small dermoscopy model on this image to estimate
+        whether a skin lesion looks malignant (melanoma, basal cell,
+        squamous cell, actinic keratosis) or benign (nevus,
+        dermatofibroma, seborrheic / pigmented keratosis, vascular
+        lesion). The result is an estimate — a dermatologist's
+        reading is always the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local skin-lesion model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    lung_cancer_histopathology:
+      title: "Analyze lung histology slide?"
+      body: |
+        I can run a small histopathology model on this microscopy
+        slide to estimate whether the lung tissue shows
+        adenocarcinoma, squamous cell carcinoma, or looks healthy.
+        The result is an estimate — a pathologist's reading is
+        always the final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local lung histopathology model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    colon_cancer_histopathology:
+      title: "Analyze colon histology slide?"
+      body: |
+        I can run a small histopathology model on this microscopy
+        slide to estimate whether the colon tissue shows
+        adenocarcinoma or looks healthy. The result is an estimate —
+        a pathologist's reading is always the final word. Run the
+        model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local colon histopathology model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+    chest_xray_pneumonia:
+      title: "Analyze this chest X-ray?"
+      body: |
+        I can run a small chest X-ray model on this image to estimate
+        whether the lungs look more like pneumonia or normal. The
+        result is an estimate — a physician's reading is always the
+        final word. Run the model?
+      yes_label: "Yes, run it"
+      yes_description: "Send the image to the local chest X-ray model."
+      no_label: "No, skip"
+      no_description: "Skip the model and answer from text only."
+
+  # Audit-only allow-list (KTD-V1, mirrors symptoms.safety_keywords).
+  # The post_process hook in vision_plugin scans the LLM's reply for any
+  # phrase below when clinical_action is in _AUDIT_ACTIONS; absence emits
+  # `vision.specialist_keywords.missing`. NOT a verbatim template — the
+  # LLM composes prose per vision_final_reply.yaml.
+  specialist_keywords:
+    urgent_specialist:
+      - "see a specialist"
+      - "specialist within"
+      - "breast specialist"
+      - "oncologist"
+      - "dermatologist"
+      - "schedule an appointment"
+    soon_specialist:
+      - "follow up"
+      - "specialist soon"
+      - "specialist visit"
+      - "see your doctor"
+
+  # askuserquestion modals the LLM emits when it cannot pick the right
+  # disease_id or confirm modality from the attachment tag alone (origin
+  # §9 [B]). Options are filled at runtime by the plugin — these keys
+  # only carry the human-readable prompt strings.
+  disambig:
+    disease:
+      title: "Which condition should I check for?"
+      body: |
+        I can run a vision model on this image, but I'm not sure which
+        condition you want me to check for. Pick one of the following:
+    modality:
+      title: "What kind of image is this?"
+      body: |
+        I'm not confident about what kind of scan this is. Knowing the
+        imaging type lets me pick the right model. Is this an
+        ultrasound, CT scan, X-ray, or something else?

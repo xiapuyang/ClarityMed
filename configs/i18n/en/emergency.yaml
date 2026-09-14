@@ -1,0 +1,96 @@
+# i18n for the emergency triage gate (English).
+#
+# Geographic scope: this file targets Canadian English deployments.
+# Emergency numbers are Canada-specific (911, 988 Canada). If the
+# product is ever extended to other English-speaking regions, introduce
+# a locale-scoped file (e.g. en-US.yaml) rather than adding multi-country
+# lists here — mixing regions in a single string causes ambiguity in
+# high-stakes moments.
+#
+# Phase 1 ships the footer keys: the deterministic suffixes appended
+# to every reply when the effective sensitivity is `off` (the gate
+# was disabled) or `strict` (the gate is running with high recall and
+# may seem aggressive). Phase 2 adds `emergency.action.*` keys for
+# each rule and `emergency.missing_qualifier.*` prompts.
+#
+# Wording rules:
+#   - `gate_disabled` is the un-bypassable safety disclaimer. It must
+#     be unambiguous and short — the user already saw an answer; this
+#     reminds them the answer came without the safety net.
+#   - `strict_mode_active` explains *why* alarms may seem aggressive
+#     so the user does not interpret false-positives as broken logic.
+
+emergency:
+  footer:
+    # Intentionally empty on operator request — the visible disclaimer
+    # was removed while default_sensitivity=off ships as the app-wide
+    # default. To restore the safety-net reminder later, put the text
+    # back in either literal form and ask_service.py:_emergency_footer_text
+    # will pick it up on the next request (no restart needed since
+    # i18n is mtime-cached, but a restart is harmless).
+    gate_disabled: ""
+    strict_mode_active: |
+      ---
+
+      *Strict-sensitivity mode is on, so I may flag mild symptoms as worth checking out. That is by design — turn it down in your settings if it feels like too much.*
+  action:
+    # ACS — STEMI / unstable angina pattern. AHA/ACC Chest Pain
+    # Guideline → "Call 911 (or local EMS). Do not drive yourself."
+    call_ems_cardiac: |
+      **Call your local emergency number now (Canada: 911) — this could be a heart attack.** Do not drive yourself; chew an aspirin if you are not allergic and have it available; stay seated or lying down until help arrives.
+    # Stroke FAST. "Time is brain" — every minute of delay costs
+    # ~1.9M neurons; the 4.5h thrombolysis window is hard.
+    call_ems_stroke: |
+      **Call your local emergency number now (Canada: 911) — these signs suggest a stroke.** Note the exact time the symptoms started (the treatment window matters). Do not eat or drink. Do not drive yourself.
+    # Anaphylaxis. WAO 2020 → epinephrine first, then EMS.
+    epi_then_ems: |
+      **Use your epinephrine auto-injector now if you have one, then call your local emergency number (Canada: 911).** Lie flat with legs raised. A second dose may be needed in 5–15 minutes if symptoms persist. Even if symptoms improve, go to the ER — biphasic reactions can recur hours later.
+    # SAH thunderclap. Ottawa SAH Rule → "worst headache of life" /
+    # sudden onset peaking < 1 min → CT head urgently.
+    call_ems_sah: |
+      **Call your local emergency number now (Canada: 911) — a sudden, very severe headache can be a brain bleed (subarachnoid hemorrhage).** Do not wait to see if it improves. Time-sensitive imaging matters.
+    # Active suicidal ideation with plan/means/intent. C-SSRS critical
+    # tier → immediate hotline + safety planning.
+    crisis_hotline_988: |
+      **You are not alone, and help is available right now. In Canada, call or text 988 (Suicide Crisis Helpline).** If you have means in front of you, please move away from them and ask someone to stay with you until you can reach help.
+    # Ambiguous chest pain (catch-all). ACEP 2018 → "needs evaluation
+    # within hours," not "go to the ER right now," but not "wait."
+    urgent_eval_chest_pain: |
+      **Chest pain needs evaluation today — please go to an urgent-care clinic or ER within the next few hours, even if the pain has eased.** While you wait, note when it started, what it feels like (pressure, sharp, burning), and whether anything makes it better or worse.
+    # PE — Wells/ACEP intermediate-to-high probability. Dyspnea +
+    # leg swelling / pleuritic / hemoptysis / syncope → time-sensitive
+    # CT-PA. Treat as life-threat.
+    urgent_eval_pe: |
+      **Call your local emergency number now (Canada: 911) — this could be a blood clot in the lung (pulmonary embolism).** Do not walk a long distance or drive yourself. If you have unilateral leg swelling, do not massage or rub the leg. Time-sensitive imaging matters.
+    # Sepsis (qSOFA positive). Surviving Sepsis Campaign: source-
+    # control plus antibiotics within 1 hour of recognition.
+    urgent_eval_sepsis: |
+      **Call your local emergency number now (Canada: 911) — these signs together can mean sepsis, which is a life-threatening response to infection.** Note your temperature, when symptoms started, and any source of infection (urinary, lung, skin, recent surgery). Antibiotics within the first hour of recognition save lives.
+    # Bacterial meningitis classic triad. IDSA 2004 → empiric
+    # antibiotics + dexamethasone immediately upon clinical suspicion.
+    urgent_eval_meningitis: |
+      **Call your local emergency number now (Canada: 911) — fever with a stiff neck and confusion can mean bacterial meningitis.** Do not wait for a fever to break. Note the time symptoms started; antibiotics within the first hour matter. If you have a rash that does not blanch when pressed, mention it on the call.
+    # Ectopic pregnancy with bleeding. ACOG Practice Bulletin 193 —
+    # rupture is a surgical emergency; even unruptured is time-
+    # sensitive (methotrexate vs. surgery).
+    urgent_eval_ectopic: |
+      **Call your local emergency number now (Canada: 911) — abdominal pain with bleeding in early pregnancy can mean an ectopic pregnancy, which is life-threatening if it ruptures.** Do not eat or drink in case surgery is needed. Bring your last menstrual period date and any pregnancy-test result.
+    # Testicular torsion. AUA Acute Scrotum Guideline — surgical
+    # detorsion within 6 hours preserves the testis.
+    urgent_eval_torsion: |
+      **Go to the nearest emergency department now — sudden severe one-sided testicular pain can mean testicular torsion, and the testicle has to be untwisted surgically within about 6 hours to save it.** Do not eat or drink in case surgery is needed. If you cannot get there fast, call your local emergency number (Canada: 911).
+    # Generic fallback — used when no specific action key is available
+    # but the gate has already determined the situation is critical.
+    generic_emergency: |
+      **If this may be a medical emergency, call your local emergency number now (Canada: 911).** Do not wait to see if symptoms improve.
+  # Labels for the dynamic [SAFETY CONTEXT] block that the agent's
+  # system prompt receives on urgent/moderate triage turns. These are
+  # scaffolding strings (not prompt-engineering knobs); the LLM
+  # directive that ties them together lives in
+  # core/prompts/store/emergency_triage_context.yaml.
+  triage_context:
+    header: "[SAFETY CONTEXT]"
+    level_prefix: "level:"
+    suggested_action_lead_in: "suggested_action (LEAD with this verbatim):"
+    missing_qualifiers_lead_in: "missing_qualifiers (elicit these from the user this turn BEFORE giving general advice):"
+    reasoning_prefix: "reasoning:"

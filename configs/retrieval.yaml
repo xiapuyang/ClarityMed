@@ -1,0 +1,244 @@
+# Retrieval-layer config. Catalog + active-id resolution mirrors models.yaml.
+#
+# Schema is owned by RetrievalConfig (src/claritymed/core/rag/schemas.py).
+# Every section that has a `catalog` also has an `active` id that must
+# resolve to one of the catalog entries — a typo raises Unknown*Error
+# (fail-loud, not silent fallback).
+
+# --- rag bootstrap ------------------------------------------------------
+# Master switch. When `enabled: false` AskService runs without a strategy
+# and the embedder/reranker/qdrant deps are never touched — ask works on
+# a bare laptop with no RAG stack running. When `enabled: true` CLI/TUI
+# build the HybridRetriever at startup; any missing dep fails loud.
+#
+# `mode` chooses how the LLM interacts with retrieval (orthogonal to
+# `strategies.active`, which decides *how* to retrieve):
+#   * deterministic — retrieve once before the LLM call; splice evidence
+#                     into the prompt; no tool registered. Predictable
+#                     cost, no multi-hop within one turn.
+#   * tool          — register `retrieve_medical_literature`; the LLM
+#                     decides per-turn whether and how often to retrieve
+#                     (multi-hop ok; bounded by UsageLimits). Default.
+#   * agentic       — reserved for a future state-graph workflow
+#                     (planner / CRAG-style evaluator / writer); raises
+#                     NotImplementedError at runtime in v1.
+#
+# Env overrides: `CLARITYMED_RAG_ENABLED` (1/0/true/false/yes/no/on/off)
+# flips `enabled`; `CLARITYMED_RAG_MODE` (deterministic/tool/agentic)
+# flips `mode`. Both validate at load — typos raise.
+rag:
+  enabled: false
+  max_evidence: 5
+  mode: deterministic
+
+# --- qdrant connection -------------------------------------------------
+# Required — server-only (local file-locked mode was removed; see
+# docs/rag-setup.md §1 for the Docker recipe). CLARITYMED_QDRANT_URL env
+# var overrides this. api_key_env is only needed for Qdrant Cloud; local
+# Docker server uses no auth.
+qdrant:
+  url: "http://localhost:6333"
+  api_key_env: null
+
+# --- strategies (how retrieval is done, pluggable) ----------------------
+# v1 ships `naive_hybrid` + `hyde`. Future ids: `graph` (GraphRAG /
+# MedGraphRAG), `raptor`, `late_chunking`. See
+# docs/plans/2026-06-07-002-feat-rag-module-plan.md.
+#
+# Strategy is orthogonal to `rag.mode` above (which decides how the LLM
+# interacts with retrieval). `agentic` used to live in this catalog as a
+# tagged naive_hybrid — that was a mode masquerading as a strategy and
+# now lives at `rag.mode` instead.
+strategies:
+  active: naive_hybrid
+  catalog:
+    - id: naive_hybrid
+      grader:
+        # CRAG-lite hook. Off by default. When on, computes mean rerank
+        # score over top_n hits and re-issues one rewritten query when
+        # below threshold. Deterministic — not Agentic RAG.
+        enabled: false
+        threshold: 0.5
+        top_n: 5
+        rewrite_mode: deterministic  # deterministic | llm
+    - id: hyde
+      # HyDE: the LLM drafts a hypothetical passage that would answer
+      # the question; that passage is embedded and used as the dense
+      # retrieval query. Rerank still scores against the original
+      # question. Adds one LLM call per query (the configured model).
+      include_original: true
+
+# --- chunker (parent-child default) -------------------------------------
+chunker:
+  active: parent_child
+  catalog:
+    - id: parent_child
+      child_tok: 200
+      parent_tok: 1000
+      overlap_tok: 20
+
+# --- embedders (catalog + active) ---------------------------------------
+# kind: http → an OpenAI/TEI-style embedding server reachable over HTTP.
+# `base_url` is the server root; the client appends /embed and
+# /embed_sparse for BGE-M3 dual outputs. `api_key_env` is honored when
+# set; missing env raises MissingApiKeyError.
+embedders:
+  active: bge_m3_http
+  catalog:
+    - id: bge_m3_http
+      kind: http
+      base_url: "http://127.0.0.1:8082"
+      dense_dim: 1024
+      batch_size: 64
+      timeout_s: 30
+      api_key_env: null
+
+# --- rerankers (catalog + active) ---------------------------------------
+# Both entries share the TEI /rerank wire format and the same default
+# port — only one reranker server runs at a time, and the operator swaps
+# which model the server loads via BGE_RERANKER_MODEL_PATH (+ the
+# instruction-prefix env var for Gemma). Flip `active` to switch.
+# Tradeoff: v2-gemma scores ~2 MTEB points higher but is ~2× slower per
+# batch and uses ~3× the memory, so its batch_size is smaller.
+rerankers:
+  active: bge_v2_m3_http
+  catalog:
+    - id: bge_v2_m3_http
+      kind: http
+      base_url: "http://127.0.0.1:8083"
+      batch_size: 32
+      timeout_s: 30
+      api_key_env: null
+    - id: bge_v2_gemma_http
+      kind: http
+      base_url: "http://127.0.0.1:8083"
+      batch_size: 8
+      timeout_s: 30
+      api_key_env: null
+
+# --- term service (query expansion only in v1) --------------------------
+# `umls_cmekg_local` reads `<SHARED_DIR>/terminology/concepts.jsonl`
+# (default `~/.claritymed/shared/terminology/`). Bootstrap with:
+#   uv run python scripts/init_terminology.py --seed
+# `data_dir` is an optional override — point it at an NAS export or any
+# directory containing a `concepts.jsonl`. Missing file → fail-loud at
+# startup with a message that names the seed script (see factory.py).
+term_service:
+  active: umls_cmekg_local
+  catalog:
+    - id: umls_cmekg_local
+      kind: local
+      # data_dir omitted → resolves to SHARED_DIR/terminology/concepts.jsonl
+    - id: none
+      kind: noop
+
+# --- collection router --------------------------------------------------
+# `rule_based` uses language gate + topic-overlap + authority bias.
+# `centroid_classifier` embeds the query and ranks collections by cosine
+# similarity against their precomputed centroids; falls back per-
+# collection to `rule_based` when a centroid file is absent (e.g. a new
+# collection added without a `rag corpora refresh-centroid` run yet).
+#
+# Env override: `CLARITYMED_RAG_ROUTER` rewrites `active` at load time
+# (e.g. `CLARITYMED_RAG_ROUTER=centroid_classifier uv run claritymed ask ...`).
+# Unknown ids still fail loud via RouterConfig._resolve_active.
+router:
+  active: centroid_classifier
+  catalog:
+    - id: rule_based
+      max_active: 3
+      # Topic-overlap threshold per authority tier — lower tiers need
+      # stronger topic match to survive routing.
+      authority_bias:
+        "1": 0.0
+        "2": 0.2
+        "3": 0.5
+    - id: centroid_classifier
+      max_active: 3
+      # Cosine similarity floor. 0.1 is conservative for BGE-M3 dense
+      # vectors — typical query→on-topic centroid similarity sits in the
+      # 0.4–0.7 range; cross-topic queries land near 0.0.
+      min_similarity: 0.1
+      # Inherited authority_bias still applies inside the rule-based
+      # fallback when a collection has no centroid yet.
+      authority_bias:
+        "1": 0.0
+        "2": 0.2
+        "3": 0.5
+
+# --- system RAG (shared authoritative knowledge) ------------------------
+# Declared as a list of collections, each with the metadata
+# CollectionRouter uses for per-query selection. `default_active` is the
+# fallback whitelist when Account.active_system_rag_collections is empty
+# AND no per-request override is given.
+system_rag:
+  default_active: []
+  # Minimum score to keep a retrieved chunk. Prefers rerank_score when the
+  # reranker ran; falls back to the initial retrieval score. Chunks below
+  # this value are dropped before prompt injection and Sources display.
+  # 0.4 filters out conversational queries ("hi", "thanks") that land far
+  # from any medical content.
+  score_threshold: 0.4
+  collections:
+    # FROZEN: collection names below are Qdrant index names on disk.
+    # Renaming requires a data migration — do not change without migrating.
+    - name: statpearls_en
+      language: en
+      cross_lingual: true
+      authority_tier: 1
+      topics:
+        - general clinical
+        - differential diagnosis
+        - drug therapy
+      disease_codes: []
+      source_uri_prefix: "https://www.ncbi.nlm.nih.gov/books/"
+      license: "Creative Commons (StatPearls)"
+    - name: textbooks_en
+      language: en
+      cross_lingual: true
+      authority_tier: 2
+      topics:
+        - anatomy
+        - biochemistry
+        - pharmacology
+        - pathology
+        - physiology
+        - internal medicine
+        - surgery
+        - pediatrics
+        - obstetrics
+        - psychiatry
+        - immunology
+        - neurology
+        - histology
+        - cell biology
+        - general clinical
+      disease_codes: []
+      source_uri_prefix: null
+      license: "MedRAG textbooks (see individual book licenses)"
+    - name: ats_idsa_pneumonia_guidelines_en
+      language: en
+      cross_lingual: true
+      authority_tier: 1
+      topics:
+        - pneumonia
+        - community-acquired pneumonia
+        - respiratory infections
+      disease_codes: []
+      source_uri_prefix: null
+      license: null
+
+# --- translation (query + answer translation) ---------------------------
+# provider: llm   — LLM call via the configured model (default, zero extra
+#                   infra). Adds one LLM round-trip per translated text.
+# provider: bge_m3 — (planned) Multilingual instruction embedding; reuses
+#                   the running embedder server; no LLM call.
+# provider: deepl/google — (planned) Cloud translation API; needs api_key_env.
+translation:
+  provider: llm
+
+# --- user RAG (per-user uploads) ----------------------------------------
+user_rag:
+  top_k: 5
+  rerank_k: 3
+  score_threshold: 0.4

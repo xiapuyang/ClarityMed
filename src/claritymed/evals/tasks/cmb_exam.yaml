@@ -1,0 +1,74 @@
+# CMB-Exam — Chinese 5-option MCQA (FreedomIntelligence/CMB, CMB-Exam subset).
+#
+# We score on the ``val`` split, not ``test`` — the test split has no
+# ``answer`` field (it's the leaderboard hold-out). val has answers for
+# every row, including 多项选择题 (multi-choice) which ``process_docs``
+# below filters out so the single-letter exact_match scorer stays sound.
+#
+# Each raw row stores options as a JSON string under a single ``option``
+# field. ``utils_cmb_exam.process_docs`` flattens that into
+# ``option_a``..``option_e`` so the Jinja template below can render them
+# directly; some questions have 4 options (A–D), some 5 (A–E), so the
+# regex covers ``[A-E]`` and the template emits ``(E)`` only when
+# ``option_e`` is non-empty.
+#
+# Scoring mode is ``generate_until`` (not loglikelihood) for the same
+# reason as ``medqa.yaml`` — R4 requires provider neutrality, and not
+# all backends expose per-token logprobs through pydantic-ai.
+
+task: cmb_exam
+dataset_path: FreedomIntelligence/CMB
+# Override ``dataset_name: CMB-Exam`` with explicit ``data_files`` because
+# the bundled CMB-Exam config's ``test`` split JSON has no ``answer``
+# field (it's the hidden-label leaderboard split), and ``datasets``'s
+# schema autodetection treats that as a generation error when it tries
+# to load all splits at once. Pointing data_files at the ``val`` JSON
+# only sidesteps the broken split; we never score against ``test`` here.
+dataset_kwargs:
+  data_files:
+    val: CMB-Exam/CMB-val/CMB-val-merge.json
+test_split: val
+output_type: generate_until
+process_docs: !function utils_cmb_exam.process_docs
+
+doc_to_text: |-
+  问题：{{question}}
+  (A) {{option_a}}
+  (B) {{option_b}}
+  (C) {{option_c}}
+  (D) {{option_d}}
+  {% if option_e %}(E) {{option_e}}
+  {% endif %}请用单个字母（A、B、C、D 或 E）回答。
+  答案：
+
+doc_to_target: '{{ answer }}'
+
+generation_kwargs:
+  # See medqa.yaml for the rationale on ``until: []`` and the generous
+  # ``max_gen_toks`` — reasoning-tuned models often think for hundreds of
+  # tokens before writing "答案：X".
+  until: []
+  max_gen_toks: 2048
+  temperature: 0
+  do_sample: false
+
+filter_list:
+  # Same two-layer extraction shape as medqa.yaml, extended for A–E and
+  # Chinese anchors. ``group_select: -1`` picks the LAST match so
+  # reasoning that mentions options earlier doesn't poison the result.
+  - name: extract_letter
+    filter:
+      - function: regex
+        regex_pattern: '(?i)(?:答案[:：\s]*\(?([A-E])\)?|answer(?:\s+is)?[:\s]*\(?([A-E])\)?|\(([A-E])\)|(?<!\w)([A-E])(?!\w))'
+        group_select: -1
+      - function: take_first
+
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+
+metadata:
+  version: 1.0

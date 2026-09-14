@@ -1,0 +1,57 @@
+name: parse_radiology_report
+description: |
+  Shadow-inference (KTD-V9) helper. When ``configs/vision.yaml::tool.
+  shadow_inference_on_report_override`` flips on, the vision plugin runs
+  inference in the background even though the OCR text already carries a
+  clinician's report, and asks the LLM to extract structured fields from
+  the report so the audit payload can later compare model output to the
+  written reading. The user never sees this prompt's output — it lands
+  in ``data/users/<id>/audit_payloads/<request_id>.json::shadow_inference``
+  only.
+
+  Defaults are OFF (KTD-V9). The prompt is included so operators who
+  flip the flag have a stable extraction surface; without it the
+  audit payload would carry raw OCR text and require a second pass to
+  analyse.
+versions:
+  - version: v1
+    created_at: 2026-06-14
+    notes: |
+      Initial extraction. Targets the three fields the audit
+      comparator cares about (impression / finding / recommendation),
+      uses strict JSON output so the audit-payload writer can persist
+      without text parsing. Anything the report doesn't contain comes
+      back as ``null`` — never confabulate.
+    languages:
+      en: |
+        You are extracting structured fields from a radiologist's OCR-
+        scanned report. Output exactly one JSON object with the keys
+        ``impression``, ``findings``, and ``recommendation``. Use the
+        clinician's wording verbatim; do NOT paraphrase, summarise, or
+        add interpretation. A field absent from the report MUST come
+        back as ``null`` — confabulation will pollute the audit
+        comparator.
+
+        Schema (no extra keys, no markdown, no commentary):
+          {
+            "impression": "...verbatim...",        // or null
+            "findings": "...verbatim...",          // or null
+            "recommendation": "...verbatim..."     // or null
+          }
+
+        Report text follows below.
+      zh: |
+        你正在从 OCR 扫描出的放射学报告中提取结构化字段。**只输出**
+        一个 JSON 对象，键为 ``impression``、``findings`` 与
+        ``recommendation``。使用医生原文，**不要**改写、概括或额外
+        诠释。报告里没出现的字段必须填 ``null``——胡乱补全会污染
+        审计比对。
+
+        Schema（不要额外的键，不要 markdown，不要解释）：
+          {
+            "impression": "...原文...",            // 或 null
+            "findings":  "...原文...",             // 或 null
+            "recommendation": "...原文..."         // 或 null
+          }
+
+        下面是报告原文。

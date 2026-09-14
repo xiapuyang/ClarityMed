@@ -1,0 +1,162 @@
+disclaimer:
+  default: "This information is for general guidance only and not a substitute for professional medical advice."
+  emergency: "If this is a medical emergency, call your local emergency number now."
+  privacy_phi: "Personal health information stays on your device. Cloud models are disabled unless you opt in."
+
+redflag:
+  chest_pain_with_dyspnea: "Chest pain with shortness of breath can be a medical emergency. Please call 911 / your local emergency line immediately."
+  anaphylaxis_signs: "Trouble breathing, facial swelling, or fainting after exposure may be anaphylaxis. Call emergency services now."
+
+ui:
+  cli:
+    greeting: "ClarityMed CLI — patient-facing medical Q&A."
+    user_required: "No --user provided. Falling back to 'default'. Use 'claritymed init-user <id>' to create a new profile."
+  api:
+    health: "OK"
+
+term:
+  loinc:
+    glucose: "Blood glucose"
+    creatinine: "Creatinine"
+    hba1c: "Hemoglobin A1c"
+
+modes:
+  ask:
+    label: "Ask"
+    description: "Ask a medical question and get an answer with citations."
+    empty_prompt: "What would you like to know?"
+
+rag:
+  collection:
+    # Display labels shown to users in the Sources section. Keys mirror
+    # collection ids in `configs/retrieval.yaml:system_rag.collections[].name`
+    # plus the synthetic `user_rag` key (one shared label across every
+    # per-user collection like `user_rag_alice`).
+    #
+    # StatPearls / MedRAG are brand names — same in en and zh — but we
+    # still maintain them here so adding a new collection only touches
+    # i18n yaml, never Python code.
+    # Keys must match FROZEN Qdrant collection names — change display values only.
+    statpearls_en: "MedRAG-StatPearls"
+    textbooks_en: "MedRAG-Textbooks"
+    user_rag: "My Library"
+  upload:
+    # Final status line shown in the conversation after /upload completes.
+    # `added_named` is preferred when the upload modal knew the source
+    # filename (path mode → `path.name`, approve mode → SessionAttachment.filename);
+    # `added` is the fallback used when no display name is available.
+    added_named: "✓ {filename} added to library ({summary})"
+    added: "rag ✓ {summary}"
+    confirm:
+      # UploadModal copy (yes/no approve dialog before RAG ingest).
+      title: "Add to library?"
+      yes_button: "Yes (y)"
+      no_button: "No (n)"
+    part:
+      # Per-part row in the bundle preview. ``{source}`` is the
+      # filename (attachments) or "inline" (typed text). ``{kind}``
+      # comes from ``rag.upload.kind.*`` below.
+      row: "{icon} {source} ({kind}, {chars} chars)"
+      row_empty: "{icon} {source} ({kind}, no text)"
+    kind:
+      text: "text"
+      image: "image"
+      file: "file"
+    gate:
+      # Validation reasons rendered under the part list. Multi-line
+      # block joins each reason with a newline. Source is the
+      # offending part's source label.
+      empty: "Nothing to upload."
+      ocr_failed: "OCR failed for {source}."
+      ocr_pending: "Still extracting text for {source} — try again in a moment."
+      low_content: "Too little content in {source}."
+      total_too_short: "Total content {actual} chars; minimum is {floor}."
+    result:
+      # Final conversation-system line emitted by the RAG worker after
+      # the bundle has been dispatched. `bundle` covers the multi-part
+      # case; `all_skipped` is the special-case for "every part was
+      # already in the library, nothing new landed."
+      bundle: "✓ {added} added, {skipped} already in library, {failed} failed ({chunks} new chunks)"
+      all_skipped: "{source} already in library — nothing new added."
+
+library:
+  # LibraryModal copy. The modal lists every RAG collection + runs the
+  # live retrieval pipeline. Topic strings inside each row stay in
+  # English on purpose — they come from `configs/retrieval.yaml` and
+  # are scientific terms we don't maintain a parallel translation for.
+  title: "Library — RAG collections + live retrieval"
+  search_placeholder: "Search…"
+  columns:
+    kind: "KIND"
+    name: "NAME"
+    chunks: "CHUNKS"
+    notes: "NOTES"
+    topics: "TOPICS"
+  loading: "Loading…"
+  error: "Error: {error}"
+  tier: "tier {tier}"
+  tier_unknown: "tier ?"
+  topics_none: "(no topics declared)"
+  user:
+    not_initialised: "(not initialised — /upload to populate)"
+    your_uploads: "(your uploads)"
+    notes: "user '{user_id}'"
+  list_status: "{system_count} system + 1 user · retrieval: {state}"
+  retrieval_ready: "ready"
+  retrieval_disabled: "disabled (rag.enabled=false)"
+  disabled_banner: "RAG is disabled (configs/retrieval.yaml: rag.enabled=false) — cannot search."
+  search_status: "{count} chunk(s) from [{collections}]\nexpanded query: {expanded}\n{timings}"
+  timings: "embed {embed_ms}ms · search {search_ms}ms · rerank {rerank_ms}ms · parent {parent_ms}ms"
+  none_collections: "(none)"
+  no_expansion: "(no expansion)"
+  score: "score={score}"
+  close_button: "Close"
+
+ask_modal:
+  answer_header: "↳ Your answer"
+  answer_question: "  • {question}"
+  answer_value: "    ▶ {value}"
+  declined_header: "User declined to answer questions"
+  declined_question: "  └ · {question}（{options}）"
+  declined_question_numeric: "  └ · {question}（{range}）"
+  multi_empty: "—"
+  hint_single: "↑↓ move · enter submit · esc cancel"
+  hint_multi: "↑↓ move · space toggle · enter submit · esc cancel"
+  hint_numeric: "Type a number, press enter · esc cancel"
+  badge_single: "Single"
+  badge_multi: "Multi"
+  badge_numeric: "Number"
+  numeric_out_of_range: "Enter a value between {min} and {max}."
+  numeric_step_mismatch: "Value must be a multiple of {step}."
+  numeric_invalid: "Enter a number."
+
+phi:
+  redaction_marker:
+    name: "[REDACTED:NAME]"
+    phone: "[REDACTED:PHONE]"
+    email: "[REDACTED:EMAIL]"
+    id: "[REDACTED:ID]"
+    mrn: "[REDACTED:MRN]"
+    address: "[REDACTED:ADDR]"
+
+# Typed-exception display strings. The error class itself names *what* went
+# wrong; these strings answer *what should the user do about it* in their
+# language. Keep messages short and free of internal jargon.
+errors:
+  revision_conflict: "This record was changed by another process. Reload and try again."
+  unknown_sha256: "That file is not attached to this session. Re-upload or pick from the library."
+  phi_leak_detected: "PHI defense engaged: this cloud call was refused to keep personal health information on your machine."
+  ocr_failed: "Could not extract text from the attachment. You can save the record without OCR or retry from the library view."
+  record_not_found: "No record at that path. It may have been deleted from another session."
+  path_outside_user_domain: "That path is outside your data directory. The action was refused."
+  usage_limit: "Too many steps in this turn — please try again."
+
+tool:
+  approval:
+    update_profile_field: "Update profile: {field} → {value}"
+    save_allergy: "Save allergy: {substance} ({severity})"
+    save_condition: "Save condition: {display}"
+    save_medication: "Save medication: {name}"
+    save_record: "Save {kind}: {title}"
+    save_to_library: "Save to library: {title}"
+    delete_record: "Delete record: {record_path}"

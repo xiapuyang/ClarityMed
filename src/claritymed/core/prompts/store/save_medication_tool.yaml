@@ -1,0 +1,117 @@
+name: save_medication_tool
+description: |
+  Tool description shown to the LLM for ``save_medication`` — append one
+  medication row to ``profile.db``. Profile rows are stand-alone facts
+  (no event date, no attachments); use this when the user states what
+  they take, not when they describe getting a new prescription as part
+  of a visit (that's ``save_record`` + an extracted ``medication``).
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. Explicit on the "currently taking" encoding —
+      ``end_date`` null means active; do not invent end dates when the
+      user is silent.
+    languages:
+      en: |
+        Add one medication to the user's profile. Use this when the
+        user states a medication they are or were taking and the
+        details are clear enough to store as a structured fact.
+
+        Field notes:
+          - ``name`` is the user-facing name (generic or brand). Keep
+            it as the user said it — do not normalize "Tylenol" to
+            "acetaminophen" silently.
+          - ``code`` is RxNorm / ATC / Snomed if known; null otherwise.
+            Do not guess.
+          - ``dose`` is the per-dose amount as a single string
+            ("500 mg", "10 mg", "1 puff"). Do not split into number +
+            unit columns.
+          - ``frequency`` is the schedule ("twice daily", "as needed",
+            "every 8 hours"). Free text; one line.
+          - ``onset_date`` is when the user started. Null if they did
+            not say.
+          - ``end_date``: null is the canonical "currently taking"
+            encoding. Only set this when the user explicitly says they
+            stopped on a specific date. Never set it to "today" just
+            because the user said "I stopped recently".
+
+        One call per medication. If the user lists three, propose
+        three ``save_medication`` calls in the same response.
+      zh: |
+        把一条药物记录加入用户画像。当用户陈述自己正在或曾经服用某种
+        药物，且细节足以存为结构化事实时使用。
+
+        字段说明：
+          - ``name`` 是用户口语里的名字（通用名或商品名）。**按用户说的
+            原样**记录，不要悄悄把"泰诺"标准化成"对乙酰氨基酚"。
+          - ``code`` 已知 RxNorm / ATC / Snomed 时填，否则留 null。
+            不要猜。
+          - ``dose`` 是单次剂量的整串（"500 mg" / "10 mg" /
+            "1 喷"）。**不要**拆成数字+单位两个字段。
+          - ``frequency`` 是用药节律（"每天两次" / "按需" / "每 8 小时
+            一次"）。自由文本，一行。
+          - ``onset_date`` 是开始服用日期。用户没说就留 null。
+          - ``end_date``：null 是"目前仍在服用"的规范编码。**只有**用户
+            明确说在某个具体日期停药时才填。不要因为用户说"最近停了"就
+            把它填成今天。
+
+        一次调用对应一种药。用户列了三种，就在同一回合里发起三次
+        ``save_medication`` 调用。
+  - version: v2
+    created_at: 2026-06-12
+    notes: |
+      Add dedup guard: check [Patient profile] block before calling to skip
+      redundant invocations for medications already listed as active.
+    languages:
+      en: |
+        Add one medication to the user's profile. Use this when the user states
+        a medication they are or were taking and the details are clear enough to
+        store as a structured fact.
+
+        Before calling: check the ``[Patient profile]`` block in the current
+        context. If the medication (case-insensitive match on name) is already
+        listed as active (no end date shown), skip this call — the tool returns
+        ``{"ok": false, "reason": "no_change"}``. Only call when the medication
+        is new to the profile, or was previously discontinued (has an end date)
+        and has been restarted.
+
+        Field notes:
+          - ``name`` is the user-facing name (generic or brand). Keep it as the
+            user said it — do not normalize "Tylenol" to "acetaminophen" silently.
+          - ``code`` is RxNorm / ATC / Snomed if known; null otherwise. Do not guess.
+          - ``dose`` is the per-dose amount as a single string ("500 mg", "10 mg",
+            "1 puff"). Do not split into number + unit columns.
+          - ``frequency`` is the schedule ("twice daily", "as needed", "every 8
+            hours"). Free text; one line.
+          - ``onset_date`` is when the user started. Null if they did not say.
+          - ``end_date``: null is the canonical "currently taking" encoding. Only
+            set this when the user explicitly says they stopped on a specific date.
+            Never set it to "today" just because the user said "I stopped recently".
+
+        One call per medication. If the user lists three, propose three
+        ``save_medication`` calls in the same response.
+      zh: |
+        把一条药物记录加入用户画像。当用户陈述自己正在或曾经服用某种药物，
+        且细节足以存为结构化事实时使用。
+
+        调用前：检查当前上下文里的 ``[Patient profile]`` 块。如果该药物
+        （忽略大小写匹配 name 字段）已经以活跃状态（无结束日期）列出，
+        **跳过此次调用**——工具会返回 ``{"ok": false, "reason": "no_change"}``。
+        仅当该药物对用户来说是新的，或之前已停药（有 end_date）且重新开始
+        服用时才调用。
+
+        字段说明：
+          - ``name`` 是用户口语里的名字（通用名或商品名）。**按用户说的原样**
+            记录，不要悄悄把"泰诺"标准化成"对乙酰氨基酚"。
+          - ``code`` 已知 RxNorm / ATC / Snomed 时填，否则留 null。不要猜。
+          - ``dose`` 是单次剂量的整串（"500 mg" / "10 mg" / "1 喷"）。
+            **不要**拆成数字+单位两个字段。
+          - ``frequency`` 是用药节律（"每天两次" / "按需" / "每 8 小时一次"）。
+            自由文本，一行。
+          - ``onset_date`` 是开始服用日期。用户没说就留 null。
+          - ``end_date``：null 是"目前仍在服用"的规范编码。**只有**用户明确说
+            在某个具体日期停药时才填。不要因为用户说"最近停了"就把它填成今天。
+
+        一次调用对应一种药。用户列了三种，就在同一回合里发起三次
+        ``save_medication`` 调用。

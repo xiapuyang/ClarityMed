@@ -1,0 +1,738 @@
+# Curated per-condition medical content for the symptoms card renderer.
+#
+# Keys MUST match wire.DifferentialRow.condition_id 1:1 — the canonical
+# slugs produced by core/symptoms/datasets/canonical.py:slugify_condition
+# and enumerated by demo/ddxplus_demo/ddxplus/release_conditions.json.
+# A missing key here (or in configs/i18n/zh/symptoms_conditions.yaml)
+# fails the plugin build via SymptomsCatalogValidationError — the
+# multi-card renderer will not construct a card for an uncovered
+# condition, so partial coverage is not a supported state.
+#
+# Content authoring guidelines:
+#   report        — 2-5 sentences, patient-facing, plain language.
+#                   Describes what the condition is + typical presenting
+#                   symptoms. NOT a treatment plan; NOT dosing.
+#   suggestion    — 1-3 sentences of action-oriented next-step guidance.
+#                   Tier-appropriate: emergency conditions lead with the
+#                   emergency direction; primary-care conditions with a
+#                   timeline. Rendered only in the aggregate "Next steps"
+#                   block below the cards — not per-card.
+conditions:
+  spontaneous_pneumothorax:
+    display_name: "Spontaneous pneumothorax"
+    report: |
+      A spontaneous pneumothorax is a collapsed lung caused by air
+      leaking into the space between the lung and the chest wall
+      without an obvious injury. It usually presents with sudden
+      one-sided sharp chest pain and shortness of breath, often
+      after a burst of coughing or exertion. Tall, thin young adults
+      and smokers are at higher risk.
+    suggestion: |
+      Go to the emergency department the same day. A chest X-ray
+      confirms the diagnosis, and small pneumothoraces can often
+      be observed while larger ones may need a chest tube or
+      needle decompression.
+
+  cluster_headache:
+    display_name: "Cluster headache"
+    report: |
+      Cluster headache is one of the most severe primary headache
+      disorders. Attacks are strictly one-sided, centered around
+      or behind the eye, last 15 minutes to 3 hours, and are often
+      accompanied by tearing, nasal congestion, or eyelid drooping
+      on the same side. Attacks tend to occur in daily bouts over
+      weeks to months, then remit.
+    suggestion: |
+      See a primary-care clinician or neurologist within days. Acute
+      attacks are typically treated with high-flow oxygen or
+      injectable triptans; preventive therapy is usually needed
+      during a cluster period.
+
+  boerhaave:
+    display_name: "Boerhaave syndrome"
+    report: |
+      Boerhaave syndrome is a spontaneous full-thickness rupture of
+      the esophagus, usually triggered by forceful vomiting. It
+      presents with sudden severe chest or upper-abdominal pain
+      after vomiting, often with shortness of breath and rapid
+      clinical deterioration. It is a surgical emergency with high
+      mortality if not treated within hours.
+    suggestion: |
+      Call emergency services immediately. Do not eat, drink, or
+      wait to see if the pain settles — diagnosis is usually
+      confirmed with CT, and definitive treatment is surgical or
+      endoscopic repair.
+
+  spontaneous_rib_fracture:
+    display_name: "Spontaneous rib fracture"
+    report: |
+      A spontaneous rib fracture is a break in a rib that occurs
+      without a clear injury, most often from a burst of coughing
+      or in people with weakened bone from osteoporosis or cancer.
+      It presents with sharp, well-localized chest-wall pain that
+      worsens with deep breathing, coughing, or twisting.
+    suggestion: |
+      See a clinician within days for chest imaging and pain
+      control. Return sooner if you develop shortness of breath,
+      fever, or increasing pain — these can signal a punctured
+      lung or pneumonia.
+
+  gerd:
+    display_name: "Gastroesophageal reflux disease (GERD)"
+    report: |
+      GERD is a chronic condition in which stomach acid flows back
+      into the esophagus, causing heartburn (a burning sensation
+      behind the breastbone), regurgitation, and sometimes a sour
+      taste, cough, or hoarseness. Symptoms are often worse after
+      meals or when lying down.
+    suggestion: |
+      Try lifestyle changes first — smaller meals, avoiding late
+      eating, and elevating the head of the bed. See a clinician
+      within a few weeks if symptoms persist or if you have
+      trouble swallowing, unintentional weight loss, or blood in
+      vomit or stool.
+
+  hiv_initial_infection:
+    display_name: "HIV — initial (acute) infection"
+    report: |
+      Acute HIV infection is the first stage after exposure, typically
+      2-4 weeks in. Many people develop flu-like symptoms — fever,
+      sore throat, muscle aches, swollen lymph nodes, and sometimes
+      a rash — that resolve on their own. Recognizing this stage
+      matters because viral load is very high and treatment can
+      begin early.
+    suggestion: |
+      Get tested for HIV soon, and tell the clinician about any
+      possible recent exposure so they order a test that detects
+      early infection (RNA or antigen/antibody). Early antiretroviral
+      therapy has major long-term benefit.
+
+  anemia:
+    display_name: "Anemia"
+    report: |
+      Anemia is a lower-than-normal number of red blood cells or
+      hemoglobin, which reduces how much oxygen the blood can carry.
+      It presents with fatigue, weakness, pale skin, shortness of
+      breath on exertion, and sometimes a fast heartbeat or
+      lightheadedness. Iron deficiency is the most common cause.
+    suggestion: |
+      See a primary-care clinician within a couple of weeks for a
+      blood count and workup for the cause. Return sooner if you
+      have chest pain, severe shortness of breath, or fainting.
+
+  viral_pharyngitis:
+    display_name: "Viral pharyngitis (sore throat)"
+    report: |
+      Viral pharyngitis is inflammation of the throat caused by a
+      viral infection. It presents with a sore, scratchy throat,
+      often with a runny nose, cough, mild fever, and hoarseness.
+      Most cases resolve on their own within a week.
+    suggestion: |
+      Rest, drink fluids, and use warm salt-water gargles or
+      throat lozenges for comfort. See a clinician if the sore
+      throat lasts more than a week, if you cannot swallow fluids,
+      or if you develop high fever with no cough.
+
+  inguinal_hernia:
+    display_name: "Inguinal hernia"
+    report: |
+      An inguinal hernia is a bulge in the groin caused by part of
+      the abdominal contents (usually fat or bowel) pushing through
+      a weak spot in the abdominal wall. It often presents as a
+      soft lump that appears with coughing or straining and may
+      cause discomfort or a dragging sensation.
+    suggestion: |
+      See a primary-care clinician or surgeon within a few weeks
+      for evaluation. Go to the emergency department urgently if
+      the bulge becomes painful, tender, hard, and cannot be pushed
+      back in — this may signal a strangulated hernia.
+
+  myasthenia_gravis:
+    display_name: "Myasthenia gravis"
+    report: |
+      Myasthenia gravis is an autoimmune disease of the
+      neuromuscular junction that causes muscle weakness that
+      worsens with use and improves with rest. Common early
+      symptoms are drooping eyelids, double vision, difficulty
+      swallowing, and slurred speech. Severe flares can weaken
+      the breathing muscles.
+    suggestion: |
+      See a neurologist within days for testing (antibodies,
+      nerve conduction). Go to the emergency department right
+      away if you develop shortness of breath or difficulty
+      swallowing your saliva — myasthenic crisis is
+      life-threatening.
+
+  whooping_cough:
+    display_name: "Whooping cough (pertussis)"
+    report: |
+      Whooping cough is a highly contagious bacterial infection of
+      the airways. It starts like a cold and progresses to
+      violent coughing fits, often followed by a high-pitched
+      "whoop" as the person breathes in. Coughing spells can last
+      weeks, and infants are at highest risk of severe disease.
+    suggestion: |
+      See a clinician within a day or two — antibiotics are most
+      helpful when started early and also reduce spread to
+      others. Infants under 6 months, or anyone with breathing
+      difficulty or blue lips, should be evaluated at an
+      emergency department.
+
+  anaphylaxis:
+    display_name: "Anaphylaxis"
+    report: |
+      Anaphylaxis is a severe, whole-body allergic reaction that
+      develops within minutes to hours of exposure to a trigger.
+      Signs include hives or flushed skin, swelling of the lips
+      or throat, wheezing or difficulty breathing, a fast drop in
+      blood pressure with lightheadedness or fainting, vomiting,
+      and abdominal cramping.
+    suggestion: |
+      Call emergency services immediately. If an epinephrine
+      auto-injector is available, use it in the outer thigh at
+      once — do not wait to see if symptoms get better. Even after
+      the injection, go to the emergency department because
+      symptoms can return.
+
+  epiglottitis:
+    display_name: "Epiglottitis"
+    report: |
+      Epiglottitis is rapid swelling of the flap of tissue above
+      the voice box. It presents with severe sore throat,
+      drooling, muffled voice, difficulty swallowing, and
+      shortness of breath that can rapidly progress to airway
+      obstruction. It is a medical emergency in both children
+      and adults.
+    suggestion: |
+      Call emergency services and go to the emergency department
+      immediately. Do not attempt to examine the throat at home —
+      any airway irritation can trigger complete obstruction.
+
+  guillain_barr_syndrome:
+    display_name: "Guillain-Barré syndrome"
+    report: |
+      Guillain-Barré syndrome is a rare autoimmune condition in
+      which the immune system attacks peripheral nerves, usually
+      within days to weeks after an infection. It typically
+      presents with weakness and tingling that starts in the feet
+      and legs and progresses upward, sometimes affecting the
+      breathing muscles.
+    suggestion: |
+      Go to the emergency department right away — early
+      admission is important because weakness can progress
+      rapidly and treatment (IVIG or plasma exchange) works
+      best when started early.
+
+  acute_laryngitis:
+    display_name: "Acute laryngitis"
+    report: |
+      Acute laryngitis is short-lived inflammation of the voice
+      box, most often from a viral infection or voice overuse.
+      It presents with hoarseness or loss of voice, a raw or
+      tickling throat, dry cough, and sometimes a low fever.
+      Symptoms usually clear within 1-2 weeks.
+    suggestion: |
+      Rest your voice, drink fluids, and avoid smoke. See a
+      clinician if hoarseness lasts longer than 2 weeks, if you
+      develop trouble breathing, or if you cough up blood.
+
+  croup:
+    display_name: "Croup"
+    report: |
+      Croup is a viral infection of the upper airway in young
+      children that causes swelling around the voice box and
+      windpipe. It presents with a distinctive "barking" cough,
+      hoarseness, and often a harsh sound when breathing in
+      (stridor), especially at night.
+    suggestion: |
+      Keep the child calm and try humidified or cool outdoor air.
+      See a clinician within 24 hours for evaluation, and go to
+      the emergency department right away if the child has
+      stridor at rest, is drooling, or is working hard to breathe.
+
+  psvt:
+    display_name: "Paroxysmal supraventricular tachycardia (PSVT)"
+    report: |
+      PSVT is a sudden burst of a fast, regular heart rhythm from
+      the upper chambers of the heart, usually 150-250 beats per
+      minute. It starts and stops abruptly and can last minutes
+      to hours. Symptoms include palpitations, chest fluttering,
+      lightheadedness, and sometimes brief shortness of breath.
+    suggestion: |
+      During an episode, try vagal maneuvers such as bearing down
+      or splashing cold water on the face, and see a clinician
+      afterward for evaluation. Go to the emergency department if
+      the episode does not stop within about 15 minutes, or if
+      you have chest pain, severe shortness of breath, or
+      fainting.
+
+  atrial_fibrillation:
+    display_name: "Atrial fibrillation"
+    report: |
+      Atrial fibrillation is an irregular and often rapid heart
+      rhythm that raises the risk of stroke and heart failure.
+      Common symptoms are palpitations, fluttering in the chest,
+      shortness of breath, and fatigue, though some people feel
+      nothing at all.
+    suggestion: |
+      See a clinician within days for an ECG and evaluation of
+      stroke risk — many patients need a rhythm- or rate-control
+      medicine and a blood thinner. Go to the emergency
+      department right away for chest pain, fainting, or severe
+      shortness of breath.
+
+  bronchiectasis:
+    display_name: "Bronchiectasis"
+    report: |
+      Bronchiectasis is a chronic condition in which the airways
+      are permanently widened and scarred, usually after
+      repeated infections. It presents with a long-standing daily
+      cough that brings up large amounts of sputum, recurrent
+      chest infections, and sometimes shortness of breath.
+    suggestion: |
+      See a primary-care clinician or pulmonologist within a few
+      weeks for a chest CT and evaluation. Return sooner for
+      fever, worsening cough, or coughing up blood.
+
+  allergic_sinusitis:
+    display_name: "Allergic sinusitis"
+    report: |
+      Allergic sinusitis is inflammation of the lining of the
+      sinuses caused by an allergic reaction (often to pollen,
+      dust, or pet dander). It presents with nasal congestion, a
+      runny nose, sneezing, itchy eyes, facial pressure, and
+      sometimes a mild headache. Symptoms tend to be seasonal or
+      triggered by specific exposures.
+    suggestion: |
+      Try over-the-counter saline rinses, intranasal
+      corticosteroids, or non-sedating antihistamines. See a
+      primary-care clinician within a few weeks if symptoms
+      persist or interfere with sleep or daily activity.
+
+  chagas:
+    display_name: "Chagas disease"
+    report: |
+      Chagas disease is caused by the parasite Trypanosoma cruzi,
+      spread by triatomine ("kissing") bugs mostly in Latin
+      America. Acute infection is often mild or unnoticed, though
+      some people develop fever, fatigue, and swelling around the
+      eye or bug bite. Decades later, chronic infection can
+      damage the heart or digestive tract.
+    suggestion: |
+      See a primary-care clinician or infectious-disease
+      specialist for testing if you have travelled or lived in
+      an endemic area. Antiparasitic treatment is most effective
+      when started early.
+
+  scombroid_food_poisoning:
+    display_name: "Scombroid food poisoning"
+    report: |
+      Scombroid poisoning is a histamine-like reaction to eating
+      spoiled fish (often tuna, mackerel, or mahi-mahi that was
+      not kept cold). Symptoms come on within minutes to a couple
+      of hours and include facial flushing, a peppery or hot
+      taste in the mouth, headache, palpitations, and diarrhea.
+      Most cases settle within a few hours.
+    suggestion: |
+      Take an over-the-counter antihistamine and hydrate. Go to
+      the emergency department if you develop wheezing, throat
+      swelling, chest pain, or if symptoms last more than a
+      few hours.
+
+  myocarditis:
+    display_name: "Myocarditis"
+    report: |
+      Myocarditis is inflammation of the heart muscle, most often
+      after a viral infection. It can present with chest pain,
+      shortness of breath, palpitations, fatigue, or leg swelling
+      — often within days to weeks of a flu-like illness. Severity
+      ranges from mild to life-threatening heart failure.
+    suggestion: |
+      Go to the emergency department right away for chest pain,
+      severe shortness of breath, or fainting. Otherwise see a
+      clinician within days for an ECG, cardiac biomarkers, and
+      an echocardiogram.
+
+  larygospasm:
+    display_name: "Laryngospasm"
+    report: |
+      Laryngospasm is a sudden, involuntary spasm of the vocal
+      cords that briefly closes the airway. It presents as a
+      sudden inability to speak or breathe in, sometimes with a
+      high-pitched sound, and typically resolves within seconds
+      to a minute. Reflux, allergies, and airway irritation are
+      common triggers.
+    suggestion: |
+      Stay calm and try slow nose-breathing during the episode.
+      See a clinician within days to look for triggers such as
+      acid reflux. Go to the emergency department if an episode
+      lasts more than about a minute or you lose consciousness.
+
+  acute_dystonic_reactions:
+    display_name: "Acute dystonic reaction"
+    report: |
+      An acute dystonic reaction is a sudden, involuntary muscle
+      contraction — most often of the neck, tongue, jaw, or eyes
+      — that follows exposure to certain medicines (typically
+      antipsychotics or anti-nausea drugs). It is uncomfortable
+      and frightening but rarely life-threatening.
+    suggestion: |
+      Go to the emergency department the same day. Treatment is
+      usually a single dose of an anticholinergic or
+      antihistamine and works within minutes. Tell every future
+      clinician which medicine caused the reaction.
+
+  localized_edema:
+    display_name: "Localized swelling (edema / angioedema)"
+    report: |
+      Localized edema is swelling of a limited part of the body,
+      often the face, lips, tongue, hands, or a limb. Causes
+      include allergic reactions (angioedema), local infection,
+      injury, or blocked venous or lymphatic flow. Angioedema of
+      the mouth or throat can compromise the airway.
+    suggestion: |
+      Take an over-the-counter antihistamine for suspected
+      allergic swelling and see a clinician within a day. Call
+      emergency services immediately if the swelling involves
+      the tongue, throat, or lips and there is any difficulty
+      breathing or swallowing.
+
+  sle:
+    display_name: "Systemic lupus erythematosus (SLE)"
+    report: |
+      SLE is an autoimmune disease in which the immune system
+      attacks several parts of the body. Symptoms vary widely
+      but often include fatigue, joint pain, a butterfly-shaped
+      facial rash, mouth ulcers, hair loss, and sensitivity to
+      sunlight. Flares can also affect the kidneys, heart, and
+      nervous system.
+    suggestion: |
+      See a primary-care clinician or rheumatologist within a few
+      weeks for blood tests and evaluation. Return sooner for
+      chest pain, severe headache, worsening rash, or dark urine.
+
+  tuberculosis:
+    display_name: "Tuberculosis"
+    report: |
+      Tuberculosis (TB) is a bacterial infection that most often
+      affects the lungs. Active pulmonary TB presents with a
+      cough lasting three weeks or more, sometimes with blood in
+      the sputum, along with night sweats, unintended weight
+      loss, and low-grade fevers.
+    suggestion: |
+      See a primary-care clinician within days for testing (skin
+      test or interferon-γ release assay plus chest X-ray). TB is
+      contagious and treatable with a multi-drug antibiotic
+      course — do not delay evaluation.
+
+  unstable_angina:
+    display_name: "Unstable angina"
+    report: |
+      Unstable angina is chest pain from reduced blood flow to
+      the heart that is new, more frequent, more severe, or
+      occurs at rest — a warning sign that a heart attack may be
+      imminent. Pain is often pressure-like and may radiate to
+      the arm, jaw, or back, with sweating, nausea, or shortness
+      of breath.
+    suggestion: |
+      Call emergency services immediately. Do not drive yourself,
+      and do not wait to see if the pain settles. Chew an aspirin
+      (325 mg) if you are not allergic and have been told it is
+      safe for you.
+
+  stable_angina:
+    display_name: "Stable angina"
+    report: |
+      Stable angina is chest discomfort brought on by predictable
+      triggers such as exertion, cold, or emotional stress, and
+      relieved by rest or nitroglycerin within a few minutes. It
+      reflects fixed narrowing of a heart artery and follows a
+      recognizable pattern for the individual.
+    suggestion: |
+      See a primary-care clinician or cardiologist within days
+      for evaluation and preventive treatment. Go to the
+      emergency department right away if the pattern changes —
+      pain at rest, longer episodes, or new symptoms are signs
+      of unstable angina.
+
+  ebola:
+    display_name: "Ebola virus disease"
+    report: |
+      Ebola is a severe viral illness spread through direct
+      contact with the body fluids of an infected person or
+      animal. Symptoms start 2-21 days after exposure with
+      fever, fatigue, muscle pain, and headache, followed by
+      vomiting, diarrhea, and sometimes internal or external
+      bleeding.
+    suggestion: |
+      Call ahead to the local public-health authority or an
+      emergency department before travelling for care so
+      isolation can be arranged. Mention any recent travel to
+      an outbreak area or contact with someone who has Ebola.
+
+  acute_otitis_media:
+    display_name: "Acute otitis media (middle ear infection)"
+    report: |
+      Acute otitis media is a middle-ear infection that often
+      follows a cold, especially in children. It presents with
+      ear pain, fever, irritability in young children,
+      hearing changes, and sometimes fluid drainage from the ear.
+      Most cases in older children and adults resolve without
+      antibiotics.
+    suggestion: |
+      Use over-the-counter pain relief and see a clinician within
+      a couple of days for examination. Return sooner for severe
+      pain, high fever, swelling behind the ear, or symptoms in
+      an infant under 6 months.
+
+  panic_attack:
+    display_name: "Panic attack"
+    report: |
+      A panic attack is a sudden surge of intense fear or
+      discomfort that peaks within about ten minutes. Symptoms
+      include a racing heart, chest tightness, shortness of
+      breath, sweating, trembling, dizziness, and a fear of
+      losing control or dying. Attacks are frightening but not
+      dangerous and can mimic more serious conditions.
+    suggestion: |
+      Try slow, paced breathing (in for 4 counts, out for 6)
+      and remind yourself the sensations will pass. See a
+      primary-care clinician within a couple of weeks if
+      attacks recur — panic disorder responds well to
+      cognitive-behavioral therapy and, when needed, medication.
+
+  bronchospasm_acute_asthma_exacerbation:
+    display_name: "Bronchospasm / acute asthma exacerbation"
+    report: |
+      An asthma exacerbation is worsening airway narrowing that
+      causes shortness of breath, wheezing, chest tightness, and
+      cough. Triggers include respiratory infections, allergens,
+      cold air, exercise, and smoke. Severe exacerbations can
+      progress to respiratory failure.
+    suggestion: |
+      Use your quick-relief inhaler (albuterol) as directed —
+      typically 4-8 puffs through a spacer every 20 minutes for
+      up to an hour. Call emergency services if symptoms do not
+      improve within an hour, if speech is limited to a few
+      words, or if lips or fingertips look bluish.
+
+  bronchitis:
+    display_name: "Acute bronchitis"
+    report: |
+      Acute bronchitis is inflammation of the large airways of
+      the lung, usually after a viral upper-respiratory
+      infection. Cough is the dominant symptom and may bring up
+      clear or discolored mucus. Wheezing, low fever, and a mild
+      sore throat are common. The cough often lingers for several
+      weeks after other symptoms resolve.
+    suggestion: |
+      Rest, drink fluids, and use over-the-counter symptom
+      relief. See a clinician if the cough lasts longer than
+      three weeks, if you cough up blood, or if you develop
+      high fever or shortness of breath.
+
+  acute_copd_exacerbation_infection:
+    display_name: "Acute COPD exacerbation (chest infection)"
+    report: |
+      A COPD exacerbation is a sustained worsening of chronic
+      obstructive pulmonary disease symptoms beyond day-to-day
+      variation. Increased shortness of breath, a change in the
+      color or volume of sputum, and worsening cough are the
+      classic three. Infections and air pollution are the most
+      common triggers.
+    suggestion: |
+      Use your bronchodilator inhalers as prescribed and start
+      any COPD "rescue pack" you have been given. See a
+      clinician the same day, and go to the emergency
+      department if breathing is severe, lips or fingers look
+      bluish, or you are confused or drowsy.
+
+  pulmonary_embolism:
+    display_name: "Pulmonary embolism"
+    report: |
+      A pulmonary embolism is a blood clot lodged in the lung's
+      arteries, usually after traveling from a deep vein in a
+      leg. It presents with sudden shortness of breath, sharp
+      chest pain that may worsen with deep breathing, cough
+      (sometimes with blood), fast heartbeat, and lightheadedness
+      or fainting. Untreated PE can be rapidly fatal.
+    suggestion: |
+      Call emergency services immediately. Diagnosis usually
+      requires a CT pulmonary angiogram; treatment is
+      anticoagulation and, in severe cases, clot-dissolving
+      therapy.
+
+  urti:
+    display_name: "Upper respiratory tract infection (common cold)"
+    report: |
+      An upper respiratory tract infection is a viral illness of
+      the nose, throat, and sinuses. It presents with a runny or
+      stuffy nose, sneezing, sore throat, mild cough, and a low
+      fever. Symptoms usually peak within 2-3 days and resolve
+      within a week.
+    suggestion: |
+      Rest, drink fluids, and use over-the-counter symptom
+      relief. See a clinician if symptoms last more than 10
+      days, worsen after initial improvement, or you develop
+      high fever, ear pain, or shortness of breath.
+
+  influenza:
+    display_name: "Influenza (flu)"
+    report: |
+      Influenza is a viral respiratory illness that comes on
+      abruptly with fever, chills, muscle aches, headache,
+      fatigue, sore throat, and cough. Symptoms are more severe
+      than a common cold and last about a week. Complications
+      include pneumonia, especially in older adults and people
+      with chronic disease.
+    suggestion: |
+      Rest, hydrate, and use over-the-counter symptom relief.
+      See a clinician within 48 hours of symptom onset if you
+      are at higher risk (older adults, young children,
+      pregnancy, chronic disease) — antiviral medicine works
+      best when started early.
+
+  pneumonia:
+    display_name: "Pneumonia"
+    report: |
+      Pneumonia is an infection of the lung tissue caused by
+      bacteria, viruses, or fungi. Presenting symptoms include
+      cough (often with sputum), fever, chills, and shortness of
+      breath. Chest pain that worsens with breathing may occur,
+      and older adults sometimes have only confusion or
+      weakness without a classic fever.
+    suggestion: |
+      Seek same-day medical evaluation. A clinician will
+      typically order chest imaging and, when a bacterial cause
+      is likely, start antibiotics.
+
+  acute_rhinosinusitis:
+    display_name: "Acute rhinosinusitis"
+    report: |
+      Acute rhinosinusitis is inflammation of the nasal passages
+      and sinuses lasting less than four weeks, usually viral
+      and following a cold. It presents with facial pressure or
+      pain, nasal congestion, a runny nose (which may be
+      thick or discolored), reduced sense of smell, and
+      sometimes a cough or headache.
+    suggestion: |
+      Try saline nasal rinses, decongestants, and pain relief
+      for the first 7-10 days. See a clinician if symptoms last
+      longer than 10 days, worsen after starting to improve,
+      or if you develop high fever, severe facial pain, or
+      swelling around an eye.
+
+  chronic_rhinosinusitis:
+    display_name: "Chronic rhinosinusitis"
+    report: |
+      Chronic rhinosinusitis is inflammation of the sinuses
+      lasting more than 12 weeks despite treatment. It presents
+      with persistent nasal congestion, facial pressure, thick
+      nasal discharge, reduced sense of smell, and often
+      post-nasal drip and fatigue.
+    suggestion: |
+      See a primary-care clinician or ENT specialist within a
+      few weeks for evaluation — treatment often includes
+      intranasal corticosteroids, saline rinses, and sometimes
+      imaging or endoscopy to identify structural causes.
+
+  bronchiolitis:
+    display_name: "Bronchiolitis"
+    report: |
+      Bronchiolitis is a viral infection of the small airways in
+      infants and toddlers, most often caused by RSV. It starts
+      like a cold and progresses over 1-2 days to fast breathing,
+      wheezing, and difficulty feeding. Most children recover
+      at home within 1-2 weeks.
+    suggestion: |
+      Keep the child hydrated, use saline drops and gentle
+      suction for a blocked nose, and monitor breathing. Go to
+      the emergency department for fast, laboured breathing,
+      dehydration, prolonged pauses in breathing, or a bluish
+      color of the lips or face.
+
+  pulmonary_neoplasm:
+    display_name: "Lung tumor (pulmonary neoplasm)"
+    report: |
+      A pulmonary neoplasm is a growth in the lung that may be
+      benign or malignant. Symptoms are often absent early and,
+      when present, include a persistent cough, coughing up
+      blood, chest pain, unintended weight loss, or recurring
+      chest infections. Smoking and prolonged exposure to
+      certain inhaled agents are major risk factors.
+    suggestion: |
+      See a primary-care clinician within days for evaluation
+      and chest imaging. Return sooner for coughing up blood,
+      severe chest pain, or shortness of breath at rest.
+
+  possible_nstemi_stemi:
+    display_name: "Possible heart attack (NSTEMI / STEMI)"
+    report: |
+      NSTEMI and STEMI are heart attacks — blocked blood flow
+      to a portion of the heart muscle. They present with
+      pressure-like chest pain or heaviness that may radiate to
+      the arm, jaw, or back, along with sweating, shortness of
+      breath, nausea, and lightheadedness. Symptoms can be
+      subtle in women, older adults, and people with diabetes.
+    suggestion: |
+      Call emergency services immediately. Do not drive
+      yourself. Chew an adult aspirin (325 mg) if you are not
+      allergic and have been told it is safe for you.
+
+  sarcoidosis:
+    display_name: "Sarcoidosis"
+    report: |
+      Sarcoidosis is an inflammatory disease in which
+      granulomas — small clumps of immune cells — form in
+      various organs, most often the lungs and lymph nodes.
+      Symptoms range from none at all to persistent cough,
+      shortness of breath, chest discomfort, fatigue, skin
+      rashes, and eye redness or pain.
+    suggestion: |
+      See a primary-care clinician within a few weeks for chest
+      imaging and blood work. Referral to a pulmonologist or
+      rheumatologist is often appropriate; treatment depends on
+      which organs are affected.
+
+  pancreatic_neoplasm:
+    display_name: "Pancreatic tumor"
+    report: |
+      A pancreatic neoplasm is a growth of the pancreas. It is
+      often silent until advanced; when symptoms appear they
+      may include upper-abdominal or mid-back pain, unintended
+      weight loss, loss of appetite, new-onset diabetes,
+      yellowing of the skin or eyes (jaundice), and pale stools.
+    suggestion: |
+      See a primary-care clinician within days for blood work
+      and abdominal imaging. Go to the emergency department for
+      severe abdominal pain, vomiting that will not stop, or
+      new jaundice.
+
+  acute_pulmonary_edema:
+    display_name: "Acute pulmonary edema"
+    report: |
+      Acute pulmonary edema is a rapid buildup of fluid in the
+      lungs, most often from acute heart failure. It presents
+      with severe shortness of breath, an urge to sit up to
+      breathe, a moist cough (sometimes with pink frothy
+      sputum), sweating, and a feeling of drowning or
+      suffocation.
+    suggestion: |
+      Call emergency services immediately. While waiting, sit
+      upright with the feet down to help breathing. This is a
+      medical emergency and requires oxygen, diuretics, and
+      treatment of the underlying cause.
+
+  pericarditis:
+    display_name: "Pericarditis"
+    report: |
+      Pericarditis is inflammation of the sac surrounding the
+      heart. It presents with sharp chest pain that is worse
+      lying flat and better sitting up and leaning forward,
+      and that may radiate to the shoulder. Fever and a
+      recent viral illness are common accompaniments.
+    suggestion: |
+      Go to the emergency department the same day for an ECG,
+      blood work, and an echocardiogram — most cases respond
+      to anti-inflammatory medicines, but a small number
+      develop complications that need close monitoring.

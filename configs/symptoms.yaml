@@ -1,0 +1,459 @@
+# Symptoms feature — disease prediction via typed-BASD.
+#
+# Schema lives at src/claritymed/core/symptoms/schemas.py. A typo here
+# fails loud at load (catalog + active-id pattern mirrors retrieval.yaml).
+#
+# Kill switch: set `datasets[0].enabled: false` to ship the file with
+# the plugin disabled. Removing this file entirely takes the plugin out
+# of the agent's toolset (Unit 16 wiring degrades silently).
+#
+# `manifest_sha256` is the SHA-256 of the model's manifest.json. The
+# server hashes the manifest at startup and refuses to load on
+# mismatch — this is half of the KTD-6 two-level integrity chain. The
+# placeholder below is overwritten by `claritymed-symptoms-train-ddxplus`
+# after a successful train; pre-train, keep the dataset disabled.
+
+datasets:
+  - id: ddxplus
+    enabled: false  # disabled — subset ddxplus_pneumonia_flu is the active dataset
+    # One or more models can serve this dataset; the first id is the
+    # canonical primary used by the "first" selection strategy. Add
+    # additional ids and set model_selection: round_robin for A/B or
+    # shadow inference.
+    model_ids: [typed_basd_v2]
+    model_selection: first
+    partial_min_confidence: 0.5    # top-3 mass cutoff for partial differential
+    severity_high_specificity_evidence_ids: []
+    session_ttl_seconds: 1800      # 30 min; KTD-12
+    # Init-symptom matcher: maps the LLM's symptom_summary (or raw
+    # complaint) to one candidate evidence and pre-reveals it on
+    # turn 0 — mirrors Mila BASD's INITIAL_EVIDENCE mechanism that
+    # ClarityMed's typed_basd.py:247 trains against. Filter defaults
+    # to is_antecedent=False ∧ dtype=B (96 candidates on DDXPlus).
+    use_initial_symptom_flag: true
+    init_symptom_filter:
+      exclude_antecedent: true
+      allowed_dtypes: ["B"]
+    # Domain scope surfaced in the LLM tool description (as_tool builds
+    # the {covered_conditions} block from these).  Describes what this
+    # dataset covers so the LLM can choose the right dataset_hint when
+    # multiple datasets are enabled.  Not used for eligibility scoring.
+    domain_description:
+      en: |
+        id: ddxplus
+        DDXPlus — 49 acute and subacute conditions from ED triage scenarios.
+        Use this dataset when the user names specific, currently-active symptoms
+        plausibly within one of these categories:
+          - Cardiopulmonary: chest pain, pulmonary embolism, spontaneous
+            pneumothorax, myocardial infarction analogues, pericarditis.
+          - Respiratory / infectious: bronchitis, pneumonia, tuberculosis,
+            asthma exacerbation, COVID-19, influenza, URI / sinusitis.
+          - Gastrointestinal: abdominal pain, GERD, pancreatitis,
+            cholecystitis, bowel obstruction, gastroenteritis.
+          - Neurological: cluster headache, migraine, meningitis.
+          - Allergy / dermatology: urticaria, anaphylaxis, angioedema.
+          - Other systemic infectious / inflammatory presentations.
+      zh: |
+        id: ddxplus
+        DDXPlus — 急诊分诊场景下 49 类急 / 亚急性疾病。
+        当用户描述的是当前正在经历、有具体名称的症状，且合理地落在以下范围时使用：
+          - 心肺：胸痛、肺栓塞、自发性气胸、心肌梗死类、心包炎。
+          - 呼吸 / 感染：支气管炎、肺炎、肺结核、哮喘急性发作、新冠、
+            流感、上呼吸道感染 / 鼻窦炎。
+          - 消化：腹痛、胃食管反流、胰腺炎、胆囊炎、肠梗阻、肠胃炎。
+          - 神经：丛集性头痛、偏头痛、脑膜炎。
+          - 过敏 / 皮肤：荨麻疹、过敏性休克、血管性水肿。
+          - 其他系统性感染 / 炎症性表现。
+
+  # -----------------------------------------------------------------
+  # Subset-trained DDXPlus model — Pneumonia + Influenza scope.
+  #
+  # The adapter cross-checks `disease_whitelist` below against
+  # `manifest.diseases_trained` in the checkpoint. A mismatch fails
+  # loud at startup — safer than silent class-index misalignment.
+  #
+  # Subset differentials are SUBSET-CONDITIONAL: P(disease | disease ∈
+  # trained_subset). The model CANNOT rule out conditions outside the
+  # whitelist — the LLM must gate scope BEFORE trusting the ranking.
+  # This caveat is surfaced to the LLM via domain_description below and
+  # feeds the `{covered_conditions}` block in the tool description.
+  - id: ddxplus_pneumonia_flu
+    enabled: true
+    adapter_id: ddxplus                    # reuse DDXPlusAdapter (same corpus)
+    i18n_key_prefix: symptoms.ddxplus      # share parent i18n namespace (same evidence pool + condition names)
+    #model_ids: [typed_basd_pneumonia_flu_v1, xgb_pneumonia_flu_v2, xgb_pne_inf_v3]
+    model_ids: [xgb_pne_inf_v5_recallig]
+    # v3 (subset-parametric, N+1-class native) is the shipping model.
+    # v2 (subset-conditional, 2-class) stays defined in ``models:`` below
+    # as a rollback target — swap ids here to switch. See
+    # docs/plans/2026-07-09-001-xgb-v3-subset-plan.md for design.
+    model_selection: first
+    partial_min_confidence: 0.5
+    severity_high_specificity_evidence_ids: []
+    session_ttl_seconds: 1800
+    use_initial_symptom_flag: true
+    init_symptom_filter:
+      exclude_antecedent: true
+      allowed_dtypes: ["B"]
+      # Data-driven whitelist of the top-16 INITIAL_EVIDENCE symbols among
+      # Pneumonia+Influenza training patients (15047 patients from
+      # DDXPlus train split). Prevents SapBERT from semantically reaching
+      # overly-specific disease claims like E_202 whooping cough,
+      # E_203 intense coughing fits, E_194 stridor, E_112/E_214 wheezing
+      # — those are training-time NEVER-init evidences for Pne/Flu and
+      # asking them first drives the model into wrong-disease territory.
+      # Percentages are frequency among Pne+Flu patients' INITIAL_EVIDENCE
+      # (see scripts/analyze in the plan docs).
+      allowed_evidence_ids:
+        - E_53   # pain somewhere (11.9%) — general pain screen
+        - E_129  # skin lesions (10.3%) — screening question
+        - E_201  # cough (9.2%)
+        - E_91   # fever (8.6%)
+        - E_94   # chills (7.8%)
+        - E_144  # diffuse muscle pain (7.4%)
+        - E_161  # loss of appetite (7.0%)
+        - E_181  # nasal congestion / runny nose (6.0%)
+        - E_88   # severe fatigue, cannot do usual activities (4.9%)
+        - E_50   # significantly increased sweating (4.5%)
+        - E_77   # colored/abundant sputum cough (4.4%)
+        - E_97   # sore throat (3.6%)
+        - E_66   # shortness of breath (3.6%)
+        - E_175  # generalized new fatigue + muscle aches (2.7%)
+        - E_45   # coughing up blood (2.6%)
+        - E_220  # pleuritic pain (2.5%)
+    # v3 subset-parametric — canonical condition slugs (NOT display names)
+    # for the target set. Non-target diseases lump into a synthetic
+    # ``Other`` class the classifier emits as its last output. The wire
+    # (servers/symptoms/differential.py::_topk_rows_v3) always emits
+    # N+1 rows in this order + Other, so the frontend can render fixed
+    # slots. Swap to a different target list (e.g. {stemi, pericarditis})
+    # by editing this list — no code changes needed downstream.
+    target_condition_ids:
+      - pneumonia
+      - influenza
+    domain_description:
+      en: |
+        id: ddxplus_pneumonia_flu
+        DDXPlus subset — Pneumonia + Influenza (2 respiratory infections)
+        with an explicit ``Other`` class for everything else in DDXPlus.
+        Use when the chief complaint plausibly falls anywhere in the
+        respiratory / infectious differential — the model will say
+        ``P(Pneumonia)``, ``P(Influenza)``, or ``P(Other)`` honestly.
+        Unlike v2, Other IS a first-class output: high P(Other) means
+        "the model is confident this is NEITHER of the two targets".
+        A patient with Bronchitis / URTI / COVID / TB will now surface
+        as high P(Other) rather than a false Pneumonia or Influenza
+        prediction. Only route to full ``ddxplus`` when the complaint
+        is clearly outside respiratory infection scope.
+      zh: |
+        id: ddxplus_pneumonia_flu
+        DDXPlus 子集 — 肺炎 + 流感（2 类呼吸道感染） + 显式 ``Other`` 类
+        （包含 DDXPlus 里其他 47 种疾病）。
+        当主诉大致落在呼吸 / 感染鉴别范围内时用；模型会诚实输出
+        ``P(肺炎)``、``P(流感)`` 或 ``P(Other)``。与 v2 不同，Other 是
+        一等公民 —— 高 P(Other) 明确说 "这两个都不像"。支气管炎 / URTI /
+        COVID / 肺结核 病人会以高 P(Other) 出现，而不是被错判为肺炎或流感。
+        仅当主诉明显不在呼吸感染范围时，用 dataset_hint 走全量 ``ddxplus``。
+
+models:
+  - id: typed_basd_v2
+    algorithm_module: typed_basd
+    weights_subpath: ddxplus/typed_basd_v2
+    # Placeholder — replaced by the train pipeline. Validator accepts any
+    # 64-char hex so the file shape is valid; the server's startup check
+    # is what catches a real mismatch.
+    manifest_sha256: "b6e3f4adcfc04dd8b4da476c406cd52db318efb5684e2c4d15149a3c65253b35"
+    # maxstep and patho_temp are populated from claritymed-symptoms-tune-ddxplus
+    # after each retrain. null → fall back to the value baked into the checkpoint.
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.1
+
+  # Subset model paired with the ddxplus_pneumonia_flu dataset above.
+  # maxstep + patho_temp are the operating point picked by
+  # `claritymed-symptoms-tune-ddxplus --diseases "Pneumonia,Influenza"`
+  # against the promoted checkpoint (2026-07-07 sweep: T=3.0, ms=6
+  # gave DDF1=86.07 IL=6.00 DDR=98.90 DDP=80.20 — 4x fewer questions
+  # and +7pp DDF1 over the baked defaults).
+  - id: typed_basd_pneumonia_flu_v1
+    algorithm_module: typed_basd
+    weights_subpath: ddxplus/typed_basd_pneumonia_flu_v1
+    manifest_sha256: "92044eb64c6fbb3732b2938ed5ef98a386bb32a6de2813a2130ddf5012863bde"
+    maxstep: 6
+    patho_temp: 3.0
+    stop_thres: 0.3
+
+  # Native 3-class typed_basd — targets = [Pneumonia, Influenza] + Other.
+  # Trained via `--targets` (v3 subset-parametric mode). Complements
+  # typed_basd_pneumonia_flu_v1 which is 2-class (drops Other patients).
+  # NOT wired to any dataset.model_ids — off-dataset A/B slot only. Chat
+  # still routes to xgb_pne_inf_v5_recallig.
+  # Train recipe mirrors typed_basd_pneumonia_flu_v1 (200k episodes, 15
+  # epochs, hidden=512, lr=3e-4, batch=200, patho_temp=1.0). Early
+  # stopped at epoch 8. Internal trainer test metrics on n=5000:
+  # IL=9.51, DDF1=90.49, DDR=86.38, DDP=99.91.
+  - id: typed_basd_pne_flu_other_v1
+    algorithm_module: typed_basd
+    weights_subpath: ddxplus/typed_basd_pne_flu_other_v1
+    manifest_sha256: "68f472c322b46fcdeb496465518a19491e846c1081d5d9428e8a23d4f243a4d9"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.3
+
+  # -----------------------------------------------------------------
+  # XGBoost sibling to the typed-BASD subset model — same Pneumonia +
+  # Influenza scope, different algorithm. Ships CPU-native and produces
+  # human-readable feature-importance rankings in its manifest.
+  #
+  # DIFFERENT stop_thres semantics vs typed-BASD (KTD-D3 overload):
+  # XGBoost stops when max class prob RISES ABOVE stop_thres; typed_basd
+  # stops when max symptom prob DROPS BELOW it. Same field, opposite
+  # direction — see ModelSpec.stop_thres docstring.
+  #
+  # patho_temp is ignored — XGBoost calibration is applied at training
+  # time via CalibratedClassifierCV, not runtime temperature.
+  #
+  # v2 (2026-07-08 retrain): blacklists E_131 / E_135 (dermatology
+  # categoricals with |Gap|>0.86 class-conditional prevalence — near-
+  # deterministic label proxies in the DDXPlus subset) at the encoder
+  # layer, and switches ig_policy from sum→mean per-evidence aggregation
+  # so wide multi-value evidences (E_55, E_133) no longer outrank strong
+  # binary evidences (E_77 sputum, E_88 fatigue) by column count alone.
+  # Post-mortem: docs/solutions/2026-07-08-001-xgb-label-leak.md.
+  #
+  # maxstep + stop_thres picked by the 2026-07-08 tune sweep against the
+  # v2 checkpoint (--maxsteps 3,4,6,8,10 --stop-thres 0.85,0.90,0.95,0.99).
+  # Elbow at ms=3 with stop_thres 0.85 (0.85 / 0.90 / 0.95 give identical
+  # numbers because the model rarely hits the gate without the derm label
+  # leak). Test slice (n=5000 raw → 236 kept): IL=1.18 DDF1=84.89 DDR=84.32
+  # DDP=93.01, ACC=96.44 on full 1039-patient test. Compared to v1
+  # (IL=0.68 DDF1=80.81 DDR=74.40 DDP=96.73 ACC=100 @ ms=6): v1's ACC=100
+  # was the label-leak mirage; v2 trades 3.6 pp ACC for +4.15 pp DDF1
+  # and +10 pp DDR — a much healthier differential.
+  - id: xgb_pneumonia_flu_v2
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pneumonia_flu_v2
+    manifest_sha256: "474fb05cd64dc5d1c40a7e71e07ec6bba67b74b15081eb0525f0e99d6f130eb5"
+    maxstep: 3
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.85
+
+  # -----------------------------------------------------------------
+  # v3 subset-parametric — 3-class native {Pneumonia, Influenza, Other}.
+  # Trained on the full 285k-patient DDXPlus corpus (no whitelist);
+  # ``Pneumonia`` and ``Influenza`` keep their pathology labels while
+  # every other disease is relabelled ``Other`` before ``multi:softprob``
+  # fitting. Sample weights apply inverse-frequency balancing so all
+  # three classes contribute equal loss mass, defeating the ~95% Other
+  # prior that made naive 49-class + projection stop at turn 0.
+  #
+  # Pairs with dataset ``ddxplus_pneumonia_flu`` which declares
+  # ``target_condition_ids: [pneumonia, influenza]``. The wire layer
+  # emits N+1 rows in that order + a synthetic ``Other`` row. Frontend
+  # renders fixed slots; no argmax reordering needed.
+  #
+  # Operating point picked from the 2026-07-09 sweep:
+  #   ms=18 thres=0.95 → IL=5.36 PR-AUC(Pne)=0.656 PR-AUC(Inf)=0.357
+  #                      R@P=0.7(Pne)=0.667 (5000-patient test slice)
+  # PR-AUC(Pne)=0.947 is achievable at IL=17.6/thres=0.99 (ceiling)
+  # but requires ~3× the questions — ms=18/thres=0.95 is the elbow.
+  # See docs/plans/2026-07-09-001-xgb-v3-subset-plan.md.
+  - id: xgb_pne_inf_v3
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v3
+    manifest_sha256: "41081d23e43ba57331e331b4b1074e7bc66424ba7fe4b4cbc01f4bb0686ada6f"
+    maxstep: 18
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.95
+
+  - id: xgb_pne_inf_v4b_initnoise03
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v4b_initnoise03
+    manifest_sha256: "aee11f3a2fffbd3985b26d4cb23f4388aebcc0a076a9ac53fa5f8ba97b0ba9bd"
+    maxstep: 18
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.95    # trained stop_thres=0.85; serve-time override to 0.95
+
+  # -----------------------------------------------------------------
+  # v5 — recall-weighted IG + biased init-noise replacement.
+  #
+  # Two changes over v4b:
+  #   1. ig_recall_weight=0.5: IG policy adds a bonus proportional to
+  #      expected |ΔP(Pne+Flu)| — biases question selection toward
+  #      features that shift target-class probability (E_77 colored
+  #      sputum, E_220 pleuritic pain) over features that only
+  #      distinguish within the Other bucket.
+  #   2. init_noise_common_evs=E_91,E_144,E_66: init-noise replacement
+  #      draws are 70% from this inference-distribution-matched pool
+  #      instead of uniform random over all 208 binary columns.
+  #
+  # Eval vs v4b (n=20000 test, maxstep=6, stop_thres=0.90 baked):
+  #   IL: 1.60 → 2.02 (+0.42 turns)  ACC: 88.9% → 90.3% (+1.4pp)
+  #   PSR: 15.8% → 16.0% (+0.2pp)   DDF1: 63.2% → 63.2% (flat)
+  - id: xgb_pne_inf_v5_recallig
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_recallig
+    manifest_sha256: "2e0e8b925ae345ab66cb9f17d4bdfb5895576e176eb4a8e34da29e2563b694aa"
+    maxstep: 18
+    patho_temp: 1.0     # ignored by xgb — kept for schema symmetry
+    stop_thres: 0.90    # serve-time override; trained at 0.90 (lowered from 0.98 for proj_max experiment)
+    antecedent_penalty: 0.15  # demote risk-factor questions; symptoms dominate
+    # Serve-time IG + stop overrides (no retraining). Rationale:
+    # - v5 checkpoint baked ig_recall_weight=0.5 under symmetric abs()
+    #   semantics; asymmetric mode counts only target-increasing shifts,
+    #   so 0.5 → 1.5 keeps the effective bias in the same ballpark while
+    #   removing the Other-drift bug.
+    # - stop_policy=proj_target_sum lets the model stop when P(Pne)+P(Flu)
+    #   > 0.65 without needing to resolve Pne vs Flu individually; matches
+    #   the "minimize questions × maximize target recall" utility.
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    stop_policy: proj_max
+    # 0.85 (not 0.65) so the model DIFFERENTIATES Pne vs Flu, not just
+    # "respiratory infection". Empirical: SapBERT init injection of
+    # fever+cough+muscle-pain already puts P(Pne+Flu) at ~0.83, so 0.65
+    # would fire the stop at turn 0 and freeze the answer at whichever
+    # target the classifier's prior favors (flu, in the v5 model). 0.85
+    # gives the IG policy 2-4 turns to disambiguate before stopping.
+    stop_target_thres: 0.95
+    stop_other_thres: 0.90
+
+  # -----------------------------------------------------------------
+  # Isotonic post-hoc calibration on top of xgb_pne_inf_v5_recallig
+  # (produced by scripts/calibrate_symptoms_model.py). Base XGBoost
+  # trees are untouched; only per-class monotonic recalibration heads
+  # are added via CalibratedClassifierCV(method='isotonic',
+  # FrozenEstimator). Purpose: cut the Other→Pne false-positive rate
+  # driving Pne precision down to ~0.36 in v5_recallig, without moving
+  # recall (monotonic preserves ranking).
+  #
+  # NOT wired into ddxplus_pneumonia_flu.model_ids yet — kept off-dataset
+  # for A/B eval only (scripts/eval_symptoms_metrics.py --model-id
+  # xgb_pne_inf_v5_iso). Promote by adding here after A/B validates the
+  # trade-off on the test split.
+  #
+  # All serve-time knobs mirror v5_recallig so the A/B compares
+  # calibration effect in isolation, not policy differences.
+  - id: xgb_pne_inf_v5_iso
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_iso
+    manifest_sha256: "fa80af84ce97a2e4367b8b9529b1ca6b80d119c38dac7b5af8cb2f9701965cad"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.90
+    antecedent_penalty: 0.15
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    # Isotonic pushes target probs toward 0 systematically, so proj_max
+    # against a symmetric threshold fires Other before targets ever build.
+    # Variant-A separates the two: stop only on Other when very confident
+    # (0.99), otherwise let IG accumulate target probability up to 0.40.
+    stop_policy: proj_variant_a
+    stop_target_thres: 0.40
+    stop_other_thres: 0.99
+
+  # Platt (sigmoid) sibling of xgb_pne_inf_v5_iso — 2-parameter smooth
+  # calibrator instead of non-parametric isotonic. Recommended default
+  # per train.py:378-384 ("isotonic overfits on small calibration sets").
+  # Same serve knobs as v5_recallig for a like-for-like A/B on the
+  # calibration mechanism alone.
+  - id: xgb_pne_inf_v5_platt
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_platt
+    manifest_sha256: "3f66dd2a7a3bbc774ff1e55d55654c1e1ef7f78aa311d2c0ad9199ada20c7619"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.90
+    antecedent_penalty: 0.15
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    stop_policy: proj_max
+    stop_target_thres: 0.95
+    stop_other_thres: 0.90
+
+  # Platt sibling calibrated on IG-loop *rollout snapshots* (not full-
+  # signature validation). 20k validation patients rolled through the
+  # actual IG loop under v5_recallig's serve config → 138k
+  # (encoded_state, label) pairs spanning turns 0..17. Calibrator learns
+  # the distribution of classifier inputs at diagnosis time, not at
+  # train time — the fix Path 1/2 couldn't make.
+  - id: xgb_pne_inf_v5_platt_rollout
+    algorithm_module: xgb
+    weights_subpath: ddxplus/xgb_pne_inf_v5_platt_rollout
+    manifest_sha256: "f98042a65a209ca257a9c06d544f0bbccaae8987122bf2b3fcd8618968573834"
+    maxstep: 18
+    patho_temp: 1.0
+    stop_thres: 0.90
+    antecedent_penalty: 0.15
+    ig_recall_weight: 1.5
+    ig_recall_mode: asymmetric
+    stop_policy: proj_max
+    stop_target_thres: 0.95
+    stop_other_thres: 0.90
+
+# Process-wide chief-complaint matcher embedder. Shared singleton —
+# every dataset's per-catalog vectors are encoded against this one
+# model. SapBERT is the default (UMLS-trained, ~440MB on disk, CPU-fast
+# enough since matching is a turn-0 one-shot). Set enabled: false to
+# turn the feature off without removing per-dataset opt-ins.
+init_matcher:
+  enabled: true
+  model_id: cambridgeltl/SapBERT-from-PubMedBERT-fulltext
+  device: cpu                     # CPU keeps BASD GPU/MPS free
+  # 0.50 is safe now that ``allowed_evidence_ids`` restricts the catalog
+  # to 16 Pne/Flu-relevant symptoms. On the full 96 candidates 0.55 was
+  # the right floor to keep noise out; on the restricted pool 0.50 lets
+  # in the ~0.51-0.52 matches for cough/muscle pain that showed up on
+  # normal Pne/Flu complaints. Sub-threshold false positives are still
+  # user-confirmed via pre-questions so the downside is bounded.
+  threshold: 0.50
+  # Multi-symptom injection: users often list several complaints in one
+  # message ("fever, cough, muscle aches"). Every match ≥ threshold up
+  # to this cap is queued as a Yes/No pre-question for the user to
+  # confirm BEFORE the IG policy takes over. Closes the "SapBERT silently
+  # decides Yes for the user" bug — see servers/symptoms/app.py::
+  # _match_init_evidences docstring.
+  max_matches: 3
+  # No min_confidence_gate: with the pre-question flow, low-confidence
+  # matches are just extra Yes/No questions the user can trivially deny.
+  # A gate here would over-suppress legit matches (SapBERT's score
+  # distribution for common Pne/Flu complaints tops out around 0.60-0.65
+  # so 0.62 gated everything). Left null so the base threshold is the
+  # only cutoff. To re-enable, add ``min_confidence_gate: 0.55`` here.
+
+# Multi-card renderer knob. After sub-session completion the plugin
+# builds up to `top_n_cap` DifferentialCard entries from the tool's
+# differential (or partial_differential), sorted by probability and
+# clipped after severity_override reordering. Default 3 matches the
+# feat-symptoms-multi-card-render spec.
+card_renderer:
+  top_n_cap: 3
+
+eligibility:
+  # Production default chosen by Phase 2 A/B (Unit 10). `direct` is the
+  # cheapest fallback while the eval set is being labeled.
+  active: translation
+  # Which LLM-supplied string the plugin forwards to the active
+  # strategy. `complaint` (default) is the user's raw text — preserves
+  # original-language surfaces, keeps audit honest. `symptom_summary`
+  # is the LLM-distilled 1-2 sentence EN clinical phrase — useful when
+  # the active strategy is `direct` and the user's typing tends to be
+  # lay/noisy. The summary requires the calling LLM to be up and adds
+  # a "model thought you meant…" step to the audit trail; pick
+  # accordingly. See EligibilityCatalogConfig for the full tradeoff.
+  input_source: complaint
+  catalog:
+    - id: direct
+      kind: direct
+    - id: term_service
+      kind: term_service
+    - id: translation
+      kind: translation
+      provider_id: omlx               # MUST be ProviderConfig.kind == "local"
+      prompt_name: translate_complaint
+      max_tokens: 256
+
+# Audit-only safety keywords moved to configs/i18n/<lang>/symptoms.yaml
+# under `symptoms.safety_keywords.<tier>` so they stay alongside the
+# rest of the localized user-facing strings. The post_process hook
+# reads them via `t_list("symptoms.safety_keywords.<tier>")`.

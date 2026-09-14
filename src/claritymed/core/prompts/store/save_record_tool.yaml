@@ -1,0 +1,91 @@
+name: save_record_tool
+description: |
+  Tool description shown to the LLM for ``save_record`` — the single PHI
+  event sink (one checkup, one lab report, one consult). Distinct from
+  ``save_to_library`` (reference papers, not user events) and from the
+  ``save_allergy / save_medication / save_condition`` profile-fact tools
+  (each upserts one structured fact, not a dated event).
+versions:
+  - version: v1
+    created_at: 2026-06-12
+    notes: |
+      Initial version. Reinforces the "one coherent event" framing
+      (don't bundle the lab report and the prescription pickup from
+      two different visits), the sha256-only attachment rule, and the
+      ``confirm_kind`` discriminator for downstream delete.
+    languages:
+      en: |
+        Save one dated PHI event under
+        ``records/<category>/<slug>/manifest.yaml``. Use this when the
+        user describes something that happened on a specific day —
+        checkup, lab visit, imaging, vaccination, consultation — and
+        wants the record persisted so future ask turns can ground
+        answers in it.
+
+        Do NOT use this for:
+          - A bare profile fact like "I'm allergic to penicillin" →
+            call ``save_allergy``.
+          - A reference paper or textbook chapter → call
+            ``save_to_library``.
+          - Two unrelated events ("I got my flu shot and also had a
+            knee MRI last month") → propose two separate
+            ``save_record`` calls in the same turn.
+
+        Field notes:
+          - ``category`` groups records on disk (``checkups``,
+            ``labs``, ``imaging``, ``vaccinations``…). Pick the
+            existing folder name if the user's chat history references
+            one; otherwise use a singular-noun lowercase folder.
+          - ``kind`` is the manifest-level type discriminator
+            (``checkup``, ``lab_report``, ``imaging_study``,
+            ``vaccination``, ``consultation``…). Used by
+            ``delete_record`` as the second-channel confirmation, so
+            do not paraphrase across turns.
+          - ``event_date`` is the date the event happened, not today.
+            If the user says "last Tuesday" resolve it; if they say
+            "a few months ago" leave it null rather than guessing.
+          - ``title`` is a one-line human label ("2026-03-12 annual
+            checkup", "Lipid panel — Dr. Chen"). Keep it under 80
+            chars.
+          - ``attachments`` references the sha256 of any uploaded
+            file relevant to the event. Use only sha values from the
+            inline ``<image sha="...">`` / ``<file sha="...">`` tags
+            in this turn's question. Never invent a sha.
+          - ``extracted_labs`` is for structured lab values the user
+            (or OCR) extracted from a report. Each entry needs
+            ``analyte``, ``value``, ``unit``, ``reference_low/high``.
+            Leave the list empty if you cannot parse with confidence.
+          - ``notes`` is free-form clinician-style commentary (1–3
+            sentences max). Do not paste OCR text verbatim; the
+            attachment already carries that.
+      zh: |
+        在 ``records/<category>/<slug>/manifest.yaml`` 下保存一个有日期的
+        PHI 事件。用户描述某天发生的具体事——体检、化验、影像、接种、
+        会诊——并希望沉淀下来供后续问答引用时使用本工具。
+
+        以下场景**不要**用：
+          - 简单的画像事实，如"我对青霉素过敏"→ 用 ``save_allergy``。
+          - 参考文献或教材章节 → 用 ``save_to_library``。
+          - 两件无关的事件（"上个月打了流感疫苗，还做了膝盖 MRI"）→
+            在同一回合里**分两次**调用 ``save_record``。
+
+        字段说明：
+          - ``category`` 是磁盘上的分组目录（``checkups`` / ``labs`` /
+            ``imaging`` / ``vaccinations`` …）。聊天历史里出现过的目录名
+            优先复用；否则用单数小写名词。
+          - ``kind`` 是 manifest 层的类型判别（``checkup`` /
+            ``lab_report`` / ``imaging_study`` / ``vaccination`` /
+            ``consultation`` …）。``delete_record`` 用它做二次确认，
+            轮次之间不要换说法。
+          - ``event_date`` 是**事件发生**的日期，不是今天。用户说
+            "上周二"请解析；说"几个月前"就留 null，不要瞎猜。
+          - ``title`` 是一行人类可读标签（"2026-03-12 年度体检"、
+            "血脂检查 — 陈医生"）。80 字内。
+          - ``attachments`` 用本回合问题里 ``<image sha="...">`` /
+            ``<file sha="...">`` 标签上的 sha256 引用相关上传文件。
+            **不要凭空编造 sha**。
+          - ``extracted_labs`` 用于用户或 OCR 提取出的结构化化验值。
+            每条需要 ``analyte`` / ``value`` / ``unit`` /
+            ``reference_low/high``。无法可靠解析就留空。
+          - ``notes`` 是 1–3 句的临床式备注。不要把 OCR 全文复制进来，
+            附件已经承载了原文。

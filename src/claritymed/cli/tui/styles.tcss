@@ -1,0 +1,27 @@
+/* ClarityMed Textual stylesheet.
+ *
+ * Widget-local CSS lives in each widget's `DEFAULT_CSS`. This file holds the
+ * outer app layout and a few colours that span more than one widget.
+ */
+
+Screen {
+    layout: vertical;
+}
+
+#main_row {
+    height: 1fr;
+    layout: horizontal;
+}
+
+/* Make Textual's Markdown widget feel less like a wall of muted text. */
+Markdown {
+    padding: 0 1;
+    background: $surface;
+}
+MarkdownH1, MarkdownH2, MarkdownH3 {
+    color: $accent;
+    text-style: bold;
+}
+MarkdownFence {
+    background: $boost;
+}

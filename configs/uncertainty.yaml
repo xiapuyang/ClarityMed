@@ -1,0 +1,7 @@
+# Filled in by the uncertainty fusion plan. Placeholder so loaders never trip.
+calibration:
+  temperature: null
+conformal:
+  alpha: null
+abstain:
+  threshold: null
