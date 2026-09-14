@@ -70,9 +70,9 @@ src/claritymed/web/admin_ui/coverage/
 # Project-specific
 # Runtime state lives in ~/.claritymed/ by default; these are tripwires
 # in case CLARITYMED_*_DIR points back into the repo during local debugging.
-data/
+data/*
+!data/.gitkeep
 benchmark/
-docs/
 demo/
 .claritymed/
 .deepeval/
@@ -80,3 +80,24 @@ hparam.db
 src/claritymed/web/admin_ui/.vite/
 mlruns/
 runs/
+
+# docs/ is default-deny to keep personal course materials, brainstorm
+# dumps, and plan drafts out of the public repo. Only the technical
+# reference documents are explicitly allowed through below.
+docs/*
+!docs/ARCHITECTURE.md
+!docs/architecture.png
+!docs/architecture.svg
+!docs/cli.md
+!docs/emergency-gate-eval.md
+!docs/hardware-sizing.md
+!docs/rag-setup.md
+!docs/setup.md
+!docs/symptoms-model-workflow.md
+!docs/symptoms-pneumonia-subset-selection.md
+!docs/textual-web.md
+!docs/tracing.md
+!docs/vision-datasets.md
+!docs/vision-model-workflow.md
+!docs/vision-server-protocol.md
+!docs/vision-server-protocol-zh-brief.md

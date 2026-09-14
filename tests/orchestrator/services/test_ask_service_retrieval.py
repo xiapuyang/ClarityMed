@@ -343,7 +343,7 @@ def test_format_sources_never_leaks_local_filesystem_paths():
         parent_id=None,
         parent_text=None,
         rerank_score=0.9,
-        source_uri="/Users/sharp/projects/ClarityMed/data/download/ATS-IDSA CAP Guidelines.pdf",
+        source_uri="/Users/example/projects/ClarityMed/data/download/ATS-IDSA CAP Guidelines.pdf",
         doc_title="ATS IDSA CAP Guidelines",
     )
     without_title = RetrievedChunk(
@@ -358,11 +358,11 @@ def test_format_sources_never_leaks_local_filesystem_paths():
         parent_id=None,
         parent_text=None,
         rerank_score=0.9,
-        source_uri="/Users/sharp/projects/ClarityMed/data/download/Some Study.pdf",
+        source_uri="/Users/example/projects/ClarityMed/data/download/Some Study.pdf",
         doc_title=None,
     )
     block = AskService._format_sources([with_title, without_title])
-    assert "/Users/sharp" not in block, (
+    assert "/Users/example" not in block, (
         f"local path leaked into Sources block:\n{block}"
     )
     assert "/data/download/" not in block
@@ -386,13 +386,15 @@ def test_display_source_uri_keeps_real_urls():
 
 def test_display_source_uri_prefers_doc_title_over_absolute_path():
     assert (
-        AskService._display_source_uri("/Users/sharp/foo/bar.pdf", "Nice Title")
+        AskService._display_source_uri("/Users/example/foo/bar.pdf", "Nice Title")
         == "Nice Title"
     )
 
 
 def test_display_source_uri_falls_back_to_basename_when_no_title():
-    assert AskService._display_source_uri("/Users/sharp/foo/bar.pdf", None) == "bar.pdf"
+    assert (
+        AskService._display_source_uri("/Users/example/foo/bar.pdf", None) == "bar.pdf"
+    )
 
 
 def test_display_source_uri_none_returns_doc_title():

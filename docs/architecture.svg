@@ -1,0 +1,187 @@
+<svg viewBox="0 0 1380 1180" xmlns="http://www.w3.org/2000/svg" font-family="'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#555"/>
+    </marker>
+    <marker id="arrowStart" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#555"/>
+    </marker>
+    <marker id="arrowBig" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1380" height="1180" fill="#ffffff"/>
+
+  <!-- ============ SIDE BANDS ============ -->
+  <rect x="60" y="330" width="30" height="650" rx="6" fill="#f0f0f0" stroke="#cfcfcf"/>
+  <text x="75" y="655" transform="rotate(-90 75 655)" text-anchor="middle" font-size="11" letter-spacing="2" fill="#9a9a9a">OBSERVABILITY + AUDIT</text>
+  <rect x="1290" y="330" width="30" height="650" rx="6" fill="#f0f0f0" stroke="#cfcfcf"/>
+  <text x="1305" y="655" transform="rotate(-90 1305 655)" text-anchor="middle" font-size="11" letter-spacing="2" fill="#9a9a9a">PER-USER PHI ISOLATION</text>
+
+  <!-- ============ BAND GROUPS ============ -->
+  <rect x="60" y="70" width="1180" height="120" rx="8" fill="none" stroke="#cfcfcf" stroke-dasharray="6 5"/>
+  <text x="650" y="90" text-anchor="middle" font-size="11" letter-spacing="2" fill="#9a9a9a">MULTI-MODAL INPUT</text>
+
+  <rect x="60" y="210" width="1180" height="98" rx="8" fill="#f7f7f7" stroke="#cfcfcf" stroke-dasharray="6 5"/>
+
+  <rect x="100" y="330" width="1185" height="120" rx="8" fill="#f7f7f7" stroke="#cfcfcf" stroke-dasharray="6 5"/>
+  <text x="690" y="350" text-anchor="middle" font-size="11" letter-spacing="2" fill="#9a9a9a">PRE-PROCESSING &amp; ROUTING</text>
+
+  <rect x="100" y="545" width="1185" height="290" rx="8" fill="#fafafa" stroke="#cfcfcf" stroke-dasharray="6 5"/>
+  <text x="690" y="565" text-anchor="middle" font-size="11" letter-spacing="2" fill="#9a9a9a">LLM AGENT + TOOLS</text>
+
+  <rect x="100" y="855" width="1185" height="120" rx="8" fill="#fafafa" stroke="#cfcfcf" stroke-dasharray="6 5"/>
+  <text x="690" y="875" text-anchor="middle" font-size="11" letter-spacing="2" fill="#9a9a9a">SAFETY &amp; OUTPUT</text>
+
+  <!-- ============ ARROWS (drawn first, under boxes) ============ -->
+  <g fill="none" stroke="#555" stroke-width="1.6">
+    <!-- inputs -> red-flag gate -->
+    <path d="M210,172 C 320,200 380,210 455,226" marker-end="url(#arrow)"/>
+    <path d="M430,172 C 470,195 500,205 520,226" marker-end="url(#arrow)"/>
+    <path d="M650,172 C 630,195 615,205 605,226" marker-end="url(#arrow)"/>
+    <path d="M870,172 C 760,200 710,210 685,226" marker-end="url(#arrow)"/>
+    <path d="M1090,172 C 920,205 800,215 740,226" marker-end="url(#arrow)"/>
+
+    <!-- lab report -> OCR (input-specific, dashed) -->
+    <path d="M415,172 C 300,250 235,300 212,358" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+
+    <!-- red-flag gate -> PHI guard (main) -->
+    <path d="M600,287 L600,353" stroke-width="2.4" marker-end="url(#arrow)"/>
+    <!-- OCR -> PHI guard -->
+    <path d="M310,393 L358,393" marker-end="url(#arrow)"/>
+
+    <!-- PHI guard fan-out -->
+    <path d="M600,429 L610,588" stroke-width="2.4" marker-end="url(#arrow)"/>
+    <path d="M470,429 C 420,500 400,545 390,592" marker-end="url(#arrow)"/>
+    <path d="M405,429 C 280,500 205,545 192,592" marker-end="url(#arrow)"/>
+
+    <!-- RAG <-> LLM (arc ABOVE Symptom Detection, never through LLM box) -->
+    <path d="M280,612 C 360,560 440,560 498,612" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+    <!-- Symptom Detection <-> LLM -->
+    <path d="M480,636 L498,640" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+    <!-- RAG <-> RAG Datasets -->
+    <path d="M190,673 L190,700" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+    <!-- Symptom Detection <-> DDxPlus -->
+    <path d="M390,673 L390,700" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+
+    <!-- LLM <-> Vision Detection -->
+    <path d="M722,648 L778,640" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+
+    <!-- LLM -> ask_user_question : arc ABOVE Vision Detection (no crossing) -->
+    <path d="M722,608 C 800,568 920,566 998,586" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+    <!-- LLM -> update_user_info : arc BELOW Vision Detection (no crossing) -->
+    <path d="M722,692 C 800,760 920,762 998,734" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+
+    <!-- LLM -> Safety & Compose -->
+    <path d="M560,710 C 545,790 545,845 558,883" stroke-width="2.0" marker-end="url(#arrow)"/>
+    <!-- Safety -> Output -->
+    <path d="M690,918 L718,918" stroke-width="2.0" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- red-flag gate -> Emergency (emergency exit, thick) -->
+  <path d="M820,257 L918,257" fill="none" stroke="#333" stroke-width="3" marker-end="url(#arrowBig)"/>
+
+  <!-- ============ BOXES ============ -->
+  <!-- helper style via repeated rects -->
+  <!-- INPUT ROW -->
+  <g>
+    <rect x="120" y="100" width="180" height="72" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+    <text x="210" y="132" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">💬 Text</text>
+    <text x="210" y="152" text-anchor="middle" font-size="10.5" fill="#8a8a8a">symptoms, questions</text>
+
+    <rect x="340" y="100" width="180" height="72" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+    <text x="430" y="132" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">📄 Lab Report</text>
+    <text x="430" y="152" text-anchor="middle" font-size="10.5" fill="#8a8a8a">PDF / scanned doc</text>
+
+    <rect x="560" y="100" width="180" height="72" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+    <text x="650" y="132" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">🩻 X-ray Image</text>
+    <text x="650" y="152" text-anchor="middle" font-size="10.5" fill="#8a8a8a">chest / bone scan</text>
+
+    <rect x="780" y="100" width="180" height="72" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+    <text x="870" y="132" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">📷 Skin Photo</text>
+    <text x="870" y="152" text-anchor="middle" font-size="10.5" fill="#8a8a8a">dermatology image</text>
+
+    <rect x="1000" y="100" width="180" height="72" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+    <text x="1090" y="132" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">🎙️ Voice / Other</text>
+    <text x="1090" y="152" text-anchor="middle" font-size="10.5" fill="#8a8a8a">audio, notes</text>
+  </g>
+
+  <!-- RED-FLAG GATE + EMERGENCY -->
+  <rect x="380" y="228" width="440" height="58" rx="7" fill="#ececec" stroke="#333" stroke-width="2"/>
+  <text x="600" y="254" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">🚩 Red-Flag Safety Gate</text>
+  <text x="600" y="273" text-anchor="middle" font-size="10.5" fill="#7a7a7a">deterministic rules — emergency triage</text>
+
+  <rect x="920" y="228" width="200" height="58" rx="7" fill="#fbfbfb" stroke="#9a9a9a" stroke-dasharray="6 4"/>
+  <text x="1020" y="254" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">⛔ Emergency</text>
+  <text x="1020" y="273" text-anchor="middle" font-size="10.5" fill="#8a8a8a">seek immediate care</text>
+
+  <!-- PRE-PROCESSING -->
+  <rect x="120" y="360" width="190" height="66" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+  <text x="215" y="390" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">🔍 OCR Module</text>
+  <text x="215" y="409" text-anchor="middle" font-size="10.5" fill="#8a8a8a">doc → structured text</text>
+
+  <rect x="360" y="355" width="480" height="74" rx="7" fill="#ececec" stroke="#333" stroke-width="2"/>
+  <text x="600" y="385" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">🔐 PHI Guard + Deterministic Router</text>
+  <text x="600" y="406" text-anchor="middle" font-size="10.5" fill="#7a7a7a">local / cloud decision · picks modules</text>
+
+  <!-- LLM AGENT + TOOLS -->
+  <rect x="100" y="595" width="180" height="78" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+  <text x="190" y="640" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">📚 RAG</text>
+
+  <rect x="100" y="700" width="180" height="54" rx="7" fill="#fbfbfb" stroke="#9a9a9a" stroke-dasharray="6 4"/>
+  <text x="190" y="732" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">🗄️ RAG Datasets</text>
+
+  <rect x="300" y="595" width="180" height="78" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+  <text x="390" y="640" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">🩺 Symptom Detection</text>
+
+  <rect x="300" y="700" width="180" height="54" rx="7" fill="#fbfbfb" stroke="#9a9a9a" stroke-dasharray="6 4"/>
+  <text x="390" y="732" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">🗄️ DDxPlus</text>
+
+  <rect x="500" y="590" width="220" height="120" rx="9" fill="#e6e6e6" stroke="#1f1f1f" stroke-width="2.6"/>
+  <text x="610" y="628" text-anchor="middle" font-size="17" font-weight="bold" fill="#161616">🧠 LLM Agent</text>
+  <text x="610" y="652" text-anchor="middle" font-size="10.5" fill="#666">Orchestrator · context assembler</text>
+  <text x="610" y="670" text-anchor="middle" font-size="10.5" fill="#666">uncertainty fusion</text>
+  <text x="610" y="688" text-anchor="middle" font-size="10.5" fill="#666">grounded answer</text>
+
+  <rect x="780" y="595" width="180" height="78" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+  <text x="870" y="640" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">👁️ Vision Detection</text>
+
+  <rect x="1000" y="558" width="190" height="56" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+  <text x="1095" y="582" text-anchor="middle" font-size="14" font-weight="bold" fill="#222">💬 ask_user_question</text>
+  <text x="1095" y="600" text-anchor="middle" font-size="10" fill="#8a8a8a">follow-up · clarify · history</text>
+
+  <rect x="1000" y="706" width="190" height="56" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+  <text x="1095" y="730" text-anchor="middle" font-size="14" font-weight="bold" fill="#222">📝 update_user_info</text>
+  <text x="1095" y="748" text-anchor="middle" font-size="10" fill="#8a8a8a">profile · allergy · history</text>
+
+  <!-- SAFETY & OUTPUT -->
+  <rect x="430" y="885" width="260" height="66" rx="7" fill="#ffffff" stroke="#5a5a5a"/>
+  <text x="560" y="915" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">🛡️ Safety &amp; Compose</text>
+  <text x="560" y="934" text-anchor="middle" font-size="10.5" fill="#8a8a8a">disclaimers · audit log</text>
+
+  <rect x="718" y="885" width="240" height="66" rx="7" fill="#ececec" stroke="#333" stroke-width="2"/>
+  <text x="838" y="915" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">📦 Output</text>
+  <text x="838" y="934" text-anchor="middle" font-size="10.5" fill="#7a7a7a">answer · citations · confidence · flags</text>
+
+  <!-- ============ LEGEND ============ -->
+  <rect x="100" y="1010" width="1185" height="110" rx="8" fill="none" stroke="#cfcfcf"/>
+  <text x="690" y="1035" text-anchor="middle" font-size="11" letter-spacing="2" fill="#9a9a9a">LEGEND</text>
+
+  <g font-size="11.5" fill="#555">
+    <path d="M150,1075 L210,1075" fill="none" stroke="#555" stroke-width="1.8" marker-end="url(#arrow)"/>
+    <text x="222" y="1079">main data flow</text>
+
+    <path d="M360,1075 L420,1075" fill="none" stroke="#555" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+    <text x="432" y="1079">input-specific route</text>
+
+    <path d="M590,1075 L650,1075" fill="none" stroke="#555" stroke-width="1.8" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+    <text x="662" y="1079">bidirectional (call / return)</text>
+
+    <path d="M905,1075 L965,1075" fill="none" stroke="#333" stroke-width="3" marker-end="url(#arrowBig)"/>
+    <text x="977" y="1079">emergency exit</text>
+
+    <rect x="1120" y="1063" width="44" height="24" rx="5" fill="#fbfbfb" stroke="#9a9a9a" stroke-dasharray="6 4"/>
+    <text x="1176" y="1079">external dataset</text>
+  </g>
+</svg>
