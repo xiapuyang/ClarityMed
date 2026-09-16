@@ -21,6 +21,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip("xgboost")
+
 from claritymed.core.symptoms.datasets.canonical import LoadedDataset
 from claritymed.core.symptoms.schemas import DatasetSpec, ModelSpec
 from claritymed.ingest.symptoms.ddxplus import adapter as adapter_mod

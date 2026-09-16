@@ -330,7 +330,16 @@ async def test_ask_service_audit_picks_up_trace_id_when_tracing_active(monkeypat
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
     from opentelemetry.sdk.trace import TracerProvider
 
+    from claritymed.core.phi.guard import PhiGuard
+    from claritymed.core.scrub.service import ScrubReport
     from claritymed.orchestrator.services import ChatSession
+
+    # ONNX model is not available in CI; patch scrub_free_text so the cloud
+    # scrub step succeeds and both mode.ask.scrub and mode.ask audit events fire.
+    def _noop_scrub(self, text: str) -> tuple[str, ScrubReport]:
+        return text, ScrubReport(text_len_before=len(text), text_len_after=len(text))
+
+    monkeypatch.setattr(PhiGuard, "scrub_free_text", _noop_scrub)
 
     # Local provider — we patch get_tracer instead of mutating the global
     # so concurrent tests in the session don't inherit our tracer state.

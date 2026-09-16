@@ -8,6 +8,9 @@ inline as orthogonal unit vectors so cosine scores are deterministic.
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+pytest.importorskip("sentence_transformers")
 
 from claritymed.core.symptoms.datasets.canonical import (
     CanonicalEvidence,

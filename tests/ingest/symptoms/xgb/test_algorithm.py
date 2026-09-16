@@ -14,6 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip("xgboost")
+
 from claritymed.ingest.symptoms.typed_basd import TypedEnv, build_layout
 from claritymed.ingest.symptoms.xgb.algorithm import XgbAgent, build_xgb_agent
 from claritymed.ingest.symptoms.xgb.encoding import (
