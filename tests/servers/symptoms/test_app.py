@@ -16,6 +16,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+pytest.importorskip("uvicorn")
+
 if TYPE_CHECKING:
     from claritymed.core.symptoms.init_matcher import MatchResult
 
