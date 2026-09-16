@@ -24,6 +24,8 @@ import httpx
 import numpy as np
 import pytest
 
+pytest.importorskip("uvicorn")
+
 from claritymed.context import apply_context, reset_context
 from claritymed.core.interaction.schemas import (
     AskUserQuestionInput,
