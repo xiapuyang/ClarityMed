@@ -122,7 +122,7 @@ start_bg() {
 
   local i
   for i in $(seq 1 "$HEALTH_TIMEOUT_S"); do
-    if curl -fsS "http://127.0.0.1:$port$hpath" >/dev/null 2>&1; then
+    if curl --noproxy '127.0.0.1,localhost' -fsS "http://127.0.0.1:$port$hpath" >/dev/null 2>&1; then
       echo "[$name] ready on :$port (pid $pid)"
       return 0
     fi

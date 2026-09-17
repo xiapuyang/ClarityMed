@@ -199,7 +199,9 @@ def build_qdrant_client(
     timeout_s = int(
         os.environ.get("CLARITYMED_QDRANT_TIMEOUT_S", _QDRANT_DEFAULT_TIMEOUT_S)
     )
-    return AsyncQdrantClient(url=url, api_key=api_key, timeout=timeout_s)
+    return AsyncQdrantClient(
+        url=url, api_key=api_key, timeout=timeout_s, trust_env=False
+    )
 
 
 @dataclass(frozen=True)

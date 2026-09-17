@@ -119,7 +119,7 @@ async def probe_node(client: httpx.AsyncClient, node: ServerNode) -> dict[str, A
 async def get_servers() -> dict[str, Any]:
     """Return the full server graph plus per-node status."""
     nodes_payload: list[dict[str, Any]] = []
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         probes = await asyncio.gather(
             *(probe_node(client, node) for node in NODES_PROCESS)
         )

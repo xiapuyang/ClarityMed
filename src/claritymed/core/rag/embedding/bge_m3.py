@@ -144,6 +144,7 @@ class BgeM3HttpEmbedder(Embedder):
                 "timeout": self._timeout_s,
                 "headers": self._headers(),
                 "event_hooks": {"request": [_inject_request_id]},
+                "trust_env": False,
             }
             if self._transport is not None:
                 kwargs["transport"] = self._transport

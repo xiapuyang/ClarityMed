@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+import httpx
 from pydantic_ai.models import infer_model
 from pydantic_ai.settings import ModelSettings
 
@@ -66,7 +67,11 @@ def build_model(provider: ProviderConfig) -> "Model":
 
         model = OpenAIChatModel(
             provider.model,
-            provider=OllamaProvider(base_url=provider.base_url, api_key=api_key),
+            provider=OllamaProvider(
+                base_url=provider.base_url,
+                api_key=api_key,
+                http_client=httpx.AsyncClient(trust_env=False),
+            ),
         )
 
     # Local providers: log-only-on-debug for backward compatibility.

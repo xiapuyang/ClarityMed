@@ -75,6 +75,7 @@ class VisionHttpClient:
             base_url=base_url.rstrip("/"),
             timeout=timeout,
             transport=transport,
+            trust_env=False,
         )
         self._base_url = base_url
 
