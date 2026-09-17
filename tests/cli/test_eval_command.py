@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,8 @@ from claritymed.cli.main import app
 from claritymed.evals.protocol import RunResult
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 # ---------------------------------------------------------------------------
@@ -27,8 +30,9 @@ def test_eval_help_lists_run_subcommand():
 def test_eval_run_help_documents_with_rag():
     result = runner.invoke(app, ["eval", "run", "--help"])
     assert result.exit_code == 0
-    assert "--with-rag" in result.stdout
-    assert "TASK_ID" in result.stdout.upper()
+    clean = _ANSI.sub("", result.stdout)
+    assert "--with-rag" in clean
+    assert "TASK_ID" in clean.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -319,5 +323,7 @@ def test_negative_limit_rejected_by_typer():
         app, ["eval", "run", "medqa", "--provider", "ollama", "--limit", "-5"]
     )
     assert result.exit_code != 0
-    # Typer renders the range error as part of usage output.
-    assert "--limit" in (result.stdout + (result.stderr or ""))
+    # Typer renders the range error as part of usage output; strip ANSI codes
+    # for cross-platform/cross-Python-version robustness.
+    combined = _ANSI.sub("", (result.stdout or "") + (result.stderr or ""))
+    assert "--limit" in combined

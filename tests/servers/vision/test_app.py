@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+pytest.importorskip("torch")
+
 from claritymed.core.vision.schemas import DiseaseSpec
 from claritymed.servers.vision import app as app_mod
 from claritymed.servers.vision.app import HOST, app

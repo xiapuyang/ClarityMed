@@ -24,6 +24,9 @@ phi:
     - name: phone_intl
       regex: '\+\d{1,3}[\s-]?\d{3,4}[\s-]?\d{3,4}[\s-]?\d{0,4}'
       replacement: '[REDACTED:PHONE]'
+    - name: phone_us
+      regex: '\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b'
+      replacement: '[REDACTED:PHONE]'
     - name: email
       regex: '[\w.+-]+@[\w-]+\.[\w.-]+'
       replacement: '[REDACTED:EMAIL]'

@@ -13,6 +13,10 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+pytest.importorskip("xgboost")
+
 
 from claritymed.ingest.symptoms.typed_basd import (
     TypedEnv,

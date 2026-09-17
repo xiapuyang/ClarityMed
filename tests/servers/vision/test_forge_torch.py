@@ -11,6 +11,8 @@ from __future__ import annotations
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("torchvision")
+pytest.importorskip("segmentation_models_pytorch")
 
 # ruff: noqa: E402 — module-level import lands after importorskip on
 # purpose so the suite is skippable on boxes without the vision extra.

@@ -19,6 +19,8 @@ from typing import Any
 
 import pytest
 
+pytest.importorskip("torch")
+
 from claritymed.core.medical_clip.schemas import Modality, ModalityScore
 from claritymed.servers.medical_clip.app import (
     HOST,

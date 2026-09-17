@@ -131,7 +131,17 @@ async def test_retrieval_started_carries_strategy_and_collections():
 # --- cloud PHI filter -----------------------------------------------
 
 
-async def test_cloud_provider_filters_phi_chunks():
+async def test_cloud_provider_filters_phi_chunks(monkeypatch: pytest.MonkeyPatch):
+    from claritymed.core.phi.guard import PhiGuard
+    from claritymed.core.scrub.service import ScrubReport
+
+    # ONNX model is not available in CI; patch scrub_free_text so the cloud
+    # scrub step succeeds and we can test RAG-level PHI chunk filtering.
+    def _noop_scrub(self, text: str) -> tuple[str, ScrubReport]:
+        return text, ScrubReport(text_len_before=len(text), text_len_after=len(text))
+
+    monkeypatch.setattr(PhiGuard, "scrub_free_text", _noop_scrub)
+
     bundle = EvidenceBundle(
         chunks=[
             _chunk(text="public reference", is_phi=False, can_cloud=True),
@@ -150,7 +160,8 @@ async def test_cloud_provider_filters_phi_chunks():
         provider_config=_provider("cloud"),
     )
     events = [ev async for ev in service.run("q", user_id="alice")]
-    filtered = next(e for e in events if isinstance(e, RetrievalFiltered))
+    filtered = next((e for e in events if isinstance(e, RetrievalFiltered)), None)
+    assert filtered is not None, f"no RetrievalFiltered in {events}"
     assert filtered.filtered_phi == 1
     assert filtered.kept == 1
     completed = next(e for e in events if isinstance(e, RetrievalCompleted))

@@ -369,3 +369,15 @@ markers = [
 
 [tool.coverage.run]
 source = ["src/claritymed"]
+omit = [
+    # Optional-dependency code paths not installed in base CI.
+    # xgboost extras (--extra symptoms-server)
+    "src/claritymed/ingest/symptoms/xgb/algorithm.py",
+    "src/claritymed/ingest/symptoms/xgb/mock_agent.py",
+    "src/claritymed/ingest/symptoms/xgb/train.py",
+    "src/claritymed/ingest/symptoms/xgb/tune.py",
+    # sentence-transformers extras (--extra symptoms-server)
+    "src/claritymed/core/symptoms/init_matcher.py",
+    # torch/torchvision/segmentation-models-pytorch extras (--extra vision-server)
+    "src/claritymed/servers/vision/adapters/forge_torch.py",
+]
