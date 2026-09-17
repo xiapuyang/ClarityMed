@@ -49,11 +49,12 @@ export async function adminFetch<T = unknown>(
     throw new AdminApiError(401, null, "not_authenticated");
   }
   if (!res.ok) {
+    const text = await res.text();
     let detail: unknown = null;
     try {
-      detail = await res.json();
+      detail = JSON.parse(text);
     } catch {
-      detail = await res.text();
+      detail = text;
     }
     throw new AdminApiError(res.status, detail);
   }
@@ -82,11 +83,12 @@ export async function adminFetchMultipart<T = unknown>(
     throw new AdminApiError(401, null, "not_authenticated");
   }
   if (!res.ok) {
+    const text = await res.text();
     let detail: unknown = null;
     try {
-      detail = await res.json();
+      detail = JSON.parse(text);
     } catch {
-      detail = await res.text();
+      detail = text;
     }
     throw new AdminApiError(res.status, detail);
   }

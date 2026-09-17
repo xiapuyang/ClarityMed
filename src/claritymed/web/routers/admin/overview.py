@@ -113,7 +113,7 @@ async def _servers_card() -> dict[str, Any]:
     overview card only renders the per-node status pills, not the
     topology graph.
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         nodes = await asyncio.gather(
             *(probe_node(client, node) for node in NODES_PROCESS)
         )

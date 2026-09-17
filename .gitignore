@@ -101,3 +101,4 @@ docs/*
 !docs/vision-model-workflow.md
 !docs/vision-server-protocol.md
 !docs/vision-server-protocol-zh-brief.md
+Claude outputs/
