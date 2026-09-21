@@ -52,6 +52,13 @@ class WebPromptChannel:
     Constructed once per stream. The same instance is reused if the LLM
     invokes ``ask_user_question`` multiple times in a single turn —
     each invocation mints a fresh interaction_id.
+
+    ``interaction_lock`` is a shared ``asyncio.Lock`` held for the full
+    lifetime of each interaction (emit → await future → release). This
+    prevents two concurrent tool calls from both emitting
+    ``interaction_requested`` before either is answered — the second
+    caller queues behind the first so the frontend only ever sees one
+    pending interaction at a time.
     """
 
     def __init__(
@@ -61,50 +68,58 @@ class WebPromptChannel:
         session_id: str,
         emit_queue: asyncio.Queue[Event],
         rendezvous: dict[str, dict[str, Any]],
+        interaction_lock: asyncio.Lock,
     ) -> None:
         self._user_id = user_id
         self._session_id = session_id
         self._emit_queue = emit_queue
         self._rendezvous = rendezvous
+        self._lock = interaction_lock
 
     async def ask(self, payload: AskUserQuestionInput) -> AskUserQuestionResult:
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[Any] = loop.create_future()
-        interaction_id = uuid.uuid4().hex
-        self._rendezvous[interaction_id] = {
-            "session_id": self._session_id,
-            "user_id": self._user_id,
-            "kind": "ask_user_question",
-            "future": future,
-            "ask_payload": payload,
-        }
-        await self._emit_queue.put(
-            InteractionRequested(
-                interaction_id=interaction_id,
-                kind="ask_user_question",
-                payload=payload.model_dump(mode="json"),
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[Any] = loop.create_future()
+            interaction_id = uuid.uuid4().hex
+            self._rendezvous[interaction_id] = {
+                "session_id": self._session_id,
+                "user_id": self._user_id,
+                "kind": "ask_user_question",
+                "future": future,
+                "ask_payload": payload,
+            }
+            await self._emit_queue.put(
+                InteractionRequested(
+                    interaction_id=interaction_id,
+                    kind="ask_user_question",
+                    payload=payload.model_dump(mode="json"),
+                )
             )
-        )
-        try:
-            raw = await future
-        except asyncio.CancelledError:
-            # Stream cancellation drops the rendezvous entry. Reraise so
-            # the surrounding tool body's UserDeclinedAnswer path is not
-            # bypassed — the LLM sees a "no answer" tool result instead
-            # of an empty hang.
-            self._rendezvous.pop(interaction_id, None)
-            raise UserDeclinedAnswer("interaction cancelled") from None
-        # Validate at the channel boundary so the tool body sees a
-        # well-typed result regardless of which UI submitted it.
-        try:
-            return AskUserQuestionResult.model_validate(raw)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("ask_user_question response failed validation")
-            raise UserDeclinedAnswer(f"invalid response shape: {exc}") from None
+            try:
+                raw = await future
+            except asyncio.CancelledError:
+                # Stream cancellation drops the rendezvous entry. Reraise so
+                # the surrounding tool body's UserDeclinedAnswer path is not
+                # skipped — the LLM sees a "no answer" tool result instead
+                # of an empty hang.
+                self._rendezvous.pop(interaction_id, None)
+                raise UserDeclinedAnswer("interaction cancelled") from None
+            # Validate at the channel boundary so the tool body sees a
+            # well-typed result regardless of which UI submitted it.
+            try:
+                return AskUserQuestionResult.model_validate(raw)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("ask_user_question response failed validation")
+                raise UserDeclinedAnswer(f"invalid response shape: {exc}") from None
 
 
 class WebToolApprovalChannel:
-    """``ToolApprovalChannel`` impl matched to ``WebPromptChannel``."""
+    """``ToolApprovalChannel`` impl matched to ``WebPromptChannel``.
+
+    Shares the same ``interaction_lock`` as ``WebPromptChannel`` so tool
+    approval modals and ask_user_question modals are globally serialized
+    — at most one interaction is ever pending at a time.
+    """
 
     def __init__(
         self,
@@ -113,11 +128,13 @@ class WebToolApprovalChannel:
         session_id: str,
         emit_queue: asyncio.Queue[Event],
         rendezvous: dict[str, dict[str, Any]],
+        interaction_lock: asyncio.Lock,
     ) -> None:
         self._user_id = user_id
         self._session_id = session_id
         self._emit_queue = emit_queue
         self._rendezvous = rendezvous
+        self._lock = interaction_lock
 
     async def request(
         self,
@@ -126,45 +143,46 @@ class WebToolApprovalChannel:
         *,
         breadcrumb: str | None = None,
     ) -> ApprovalDecision:
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[Any] = loop.create_future()
-        interaction_id = uuid.uuid4().hex
-        self._rendezvous[interaction_id] = {
-            "session_id": self._session_id,
-            "user_id": self._user_id,
-            "kind": "tool_approval",
-            "future": future,
-            "tool_name": tool_name,
-        }
-        await self._emit_queue.put(
-            InteractionRequested(
-                interaction_id=interaction_id,
-                kind="tool_approval",
-                payload={
-                    "tool_name": tool_name,
-                    "args": _safe_args(args),
-                    "breadcrumb": breadcrumb or "",
-                },
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[Any] = loop.create_future()
+            interaction_id = uuid.uuid4().hex
+            self._rendezvous[interaction_id] = {
+                "session_id": self._session_id,
+                "user_id": self._user_id,
+                "kind": "tool_approval",
+                "future": future,
+                "tool_name": tool_name,
+            }
+            await self._emit_queue.put(
+                InteractionRequested(
+                    interaction_id=interaction_id,
+                    kind="tool_approval",
+                    payload={
+                        "tool_name": tool_name,
+                        "args": _safe_args(args),
+                        "breadcrumb": breadcrumb or "",
+                    },
+                )
             )
-        )
-        try:
-            raw = await future
-        except asyncio.CancelledError:
-            self._rendezvous.pop(interaction_id, None)
-            # Match the headless contract: cancellation surfaces as
-            # "no channel" so AskService records a clean ToolDenied
-            # instead of hanging.
-            raise InteractiveChannelUnavailable(
-                "approval interaction cancelled"
-            ) from None
-        decision = (raw or {}).get("decision")
-        if decision not in {"once", "always_tool", "deny"}:
-            logger.warning(
-                "approval response had unknown decision %r; treating as deny",
-                decision,
-            )
-            return ApprovalDecision(decision="deny")
-        return ApprovalDecision(decision=decision)
+            try:
+                raw = await future
+            except asyncio.CancelledError:
+                self._rendezvous.pop(interaction_id, None)
+                # Match the headless contract: cancellation surfaces as
+                # "no channel" so AskService records a clean ToolDenied
+                # instead of hanging.
+                raise InteractiveChannelUnavailable(
+                    "approval interaction cancelled"
+                ) from None
+            decision = (raw or {}).get("decision")
+            if decision not in {"once", "always_tool", "deny"}:
+                logger.warning(
+                    "approval response had unknown decision %r; treating as deny",
+                    decision,
+                )
+                return ApprovalDecision(decision="deny")
+            return ApprovalDecision(decision=decision)
 
 
 def build_web_channels(
@@ -174,18 +192,29 @@ def build_web_channels(
     emit_queue: asyncio.Queue[Event],
     rendezvous: dict[str, dict[str, Any]],
 ) -> tuple[WebPromptChannel, WebToolApprovalChannel]:
-    """Construct both channels with a shared rendezvous + emit queue."""
+    """Construct both channels with a shared rendezvous + emit queue.
+
+    A single ``asyncio.Lock`` is shared between both channels so that at
+    most one interaction (ask_user_question OR tool_approval) is ever
+    pending at a time. Without this, two tool calls running in parallel
+    can each emit ``interaction_requested`` before either is answered —
+    the frontend only tracks one pending interaction, so the first
+    future's ID is orphaned and the backend hangs indefinitely.
+    """
+    lock = asyncio.Lock()
     prompt = WebPromptChannel(
         user_id=user_id,
         session_id=session_id,
         emit_queue=emit_queue,
         rendezvous=rendezvous,
+        interaction_lock=lock,
     )
     approval = WebToolApprovalChannel(
         user_id=user_id,
         session_id=session_id,
         emit_queue=emit_queue,
         rendezvous=rendezvous,
+        interaction_lock=lock,
     )
     return prompt, approval
 
