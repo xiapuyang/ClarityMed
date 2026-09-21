@@ -32,21 +32,23 @@ from claritymed.web.channels import (
 # --- helpers ------------------------------------------------------------
 
 
-def _make_prompt_channel(rendezvous=None, emit_queue=None):
+def _make_prompt_channel(rendezvous=None, emit_queue=None, lock=None):
     return WebPromptChannel(
         user_id="test",
         session_id="sess-1",
         emit_queue=emit_queue or asyncio.Queue(),
         rendezvous=rendezvous if rendezvous is not None else {},
+        interaction_lock=lock or asyncio.Lock(),
     )
 
 
-def _make_approval_channel(rendezvous=None, emit_queue=None):
+def _make_approval_channel(rendezvous=None, emit_queue=None, lock=None):
     return WebToolApprovalChannel(
         user_id="test",
         session_id="sess-1",
         emit_queue=emit_queue or asyncio.Queue(),
         rendezvous=rendezvous if rendezvous is not None else {},
+        interaction_lock=lock or asyncio.Lock(),
     )
 
 
@@ -296,3 +298,68 @@ def test_build_web_channels_returns_both():
     )
     assert isinstance(prompt, WebPromptChannel)
     assert isinstance(approval, WebToolApprovalChannel)
+
+
+async def test_concurrent_asks_are_serialized():
+    """Two concurrent ask() calls emit their interactions one at a time.
+
+    When the LLM calls two tools in parallel and both call channel.ask(),
+    the shared interaction_lock must ensure only one interaction_requested
+    is ever pending. The second ask() waits until the first future resolves
+    before emitting its own event.
+    """
+    rendezvous: dict = {}
+    emit_queue: asyncio.Queue = asyncio.Queue()
+    lock = asyncio.Lock()
+    channel = _make_prompt_channel(
+        rendezvous=rendezvous, emit_queue=emit_queue, lock=lock
+    )
+
+    resolved_order: list[str] = []
+
+    async def _ask_and_record(label: str) -> None:
+        payload = AskUserQuestionInput(
+            questions=[
+                Question(
+                    question=f"Question {label}",
+                    header=label,
+                    options=[
+                        QuestionOption(label="Yes", description="yes"),
+                        QuestionOption(label="No", description="no"),
+                    ],
+                )
+            ]
+        )
+        await channel.ask(payload)
+        resolved_order.append(label)
+
+    async def _resolver() -> None:
+        # Resolve each interaction in arrival order, one at a time,
+        # verifying only one is ever pending.
+        for _ in range(2):
+            deadline = asyncio.get_running_loop().time() + 2.0
+            while asyncio.get_running_loop().time() < deadline:
+                pending = {
+                    iid: rec
+                    for iid, rec in rendezvous.items()
+                    if not rec["future"].done()
+                }
+                if pending:
+                    # At most one pending (unresolved) interaction at a time.
+                    assert len(pending) == 1, (
+                        f"Expected exactly 1 pending interaction, got {len(pending)}"
+                    )
+                    iid = next(iter(pending))
+                    # Mimic POST /interactions: remove entry then resolve.
+                    rendezvous.pop(iid)
+                    pending[iid]["future"].set_result({"answers": {}})
+                    # Let the lock release and the next task acquire it.
+                    await asyncio.sleep(0.05)
+                    break
+                await asyncio.sleep(0.01)
+
+    task_a = asyncio.ensure_future(_ask_and_record("A"))
+    task_b = asyncio.ensure_future(_ask_and_record("B"))
+    await _resolver()
+    await asyncio.gather(task_a, task_b)
+    assert len(resolved_order) == 2
